@@ -5,7 +5,7 @@ few positions each, and **presets** that set every switch at once. The birth flo
 identity as `charter.json` and a readable `CHARTER.md`. The entity reads its own Charter and is told which positions its
 creator picked.
 
-Status: draft, not yet accepted.
+Status: the floor is accepted. The modules and presets are a draft until the birth flow exists.
 
 ## 1. The floor (not switchable)
 
