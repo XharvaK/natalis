@@ -250,6 +250,17 @@ describe("recall", () => {
     expect(hits[3]).toMatchObject({ path: "places/harbour.md", line: 1 });
   });
 
+  it("finds a note from a few loose words, the line holding most of them first", async () => {
+    const { run, notebook } = await fixture();
+    await notebook.write("owner.md", "Favourite bird: heron\nCode word: kettle-four", "setup", "test");
+
+    const receipt = await run("recall", { query: "favourite bird heron kettle-four" });
+    const notes = (receipt.data?.["hits"] as Array<Record<string, unknown>>).filter((h) => h["from"] === "notebook");
+
+    expect(notes.map((h) => h["line"])).toEqual([1, 2]);
+    expect(notes[0]).toMatchObject({ path: "owner.md", text: "Favourite bird: heron" });
+  });
+
   it("respects the limit and the cap of 20", async () => {
     const { run, river, notebook } = await fixture();
     for (let i = 0; i < 30; i += 1) {

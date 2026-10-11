@@ -2,7 +2,7 @@
 // Each tool checks its own arguments and answers with a receipt in plain words. A refused act says why.
 // Notebook writes are attributed to "thread:<thread>" with the reason you gave.
 
-import { NotebookError, type Receipt, type Tool, type ToolContext } from "../contracts.js";
+import { NotebookError, type Notebook, type Receipt, type Tool, type ToolContext } from "../contracts.js";
 
 const READ_LIMIT = 20_000;
 const RECALL_DEFAULT = 10;
@@ -238,7 +238,7 @@ const recall: Tool = {
         .search(query.value, { limit: RECALL_MAX })
         .map((hit) => hit.row)
         .sort((a, b) => b.seq - a.seq);
-      const noteLines = context.notebook.search(query.value, RECALL_MAX);
+      const noteLines = searchNotebookWords(context.notebook, query.value);
 
       // Round-robin: newest river rows and notebook lines take turns, so neither crowds out the other.
       const hits: Array<Record<string, unknown>> = [];
@@ -271,6 +271,27 @@ const recall: Tool = {
     });
   },
 };
+
+// A query is usually a few words, not a phrase that sits on one line. Lines are ranked by how many of the words
+// they hold; the whole phrase, when a line has it, counts as every word.
+function searchNotebookWords(notebook: Notebook, query: string): Array<{ path: string; line: number; text: string }> {
+  const words = [...new Set(query.toLowerCase().split(/\s+/).filter((word) => word.length > 0))];
+  const scored = new Map<string, { hit: { path: string; line: number; text: string }; score: number }>();
+  const add = (hits: Array<{ path: string; line: number; text: string }>, points: number) => {
+    for (const hit of hits) {
+      const key = `${hit.path}:${hit.line}`;
+      const seen = scored.get(key);
+      if (seen === undefined) scored.set(key, { hit, score: points });
+      else seen.score += points;
+    }
+  };
+  add(notebook.search(query, RECALL_MAX), words.length);
+  if (words.length > 1) for (const word of words) add(notebook.search(word, RECALL_MAX * 4), 1);
+  return [...scored.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, RECALL_MAX)
+    .map((entry) => entry.hit);
+}
 
 const forget: Tool = {
   spec: {
