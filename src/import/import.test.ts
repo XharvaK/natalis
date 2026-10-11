@@ -439,7 +439,8 @@ describe("applying", () => {
     const lastSeq = entity.river.lastSeq();
     await entity.stop();
     expect(model.requests).toHaveLength(0);
-    expect(lastSeq).toBe(5);
+    // Five imported rows, then the body's start note, which is the sixth.
+    expect(lastSeq).toBe(6);
     expect(entity.notebook.read("people/mara.md")).toBe("Mara.\n");
     expect(entity.notebook.read("self/constitution.md")).toBe("Mine.\n");
     expect(entity.notebook.read("people/README.md")).toContain("# people");

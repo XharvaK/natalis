@@ -99,7 +99,8 @@ describe("natalis backup --seal-to and natalis unseal", () => {
 
     const target = join(root, "restored", "iris");
     await restoreEntity({ from: unsealed, dir: target, say: () => {} });
-    expect(textsOf(target)).toEqual(textsOf(lar));
+    // The restored river is the backup's rows, then the note of the restore.
+    expect(textsOf(target).slice(0, textsOf(lar).length)).toEqual(textsOf(lar));
     expect(headOf(join(target, "notebook"))).toBe(made.manifest.notebookHead);
     expect(headOf(join(target, "notebook"))).toBe(headOf(join(lar, "notebook")));
     expect(readFileSync(join(target, "notebook", "notes", "first.md"), "utf8")).toBe("The first note.\n");
