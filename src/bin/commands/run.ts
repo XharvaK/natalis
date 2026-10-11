@@ -1,6 +1,6 @@
 // `natalis run --dir <entity folder>` keeps an entity living in its worlds until the process is told to stop
 // (SIGINT or SIGTERM), then closes it cleanly. Worlds come from small files beside entity.json: discord.json,
-// sandbox.json, web.json. Those files hold platform ids and the name of the environment variable with the token, never
+// sandbox.json, web.json, domus.json. Those files hold platform ids and the name of the environment variable with the token, never
 // the token itself, and they stay on the host: they are not part of the entity's notebook.
 
 import { existsSync, readFileSync } from "node:fs";
@@ -11,6 +11,7 @@ import { openEntity } from "../../entity/runtime.js";
 import { modelFromConfig } from "../../model/from-config.js";
 import { createSecretScanner } from "../../secrets/index.js";
 import { createDiscordWorld } from "../../worlds/discord/index.js";
+import { createDomusWorld, DOMUS_FILE, parseDomusFile } from "../../worlds/domus/index.js";
 import { createSandboxWorld, parseSandboxFile, SANDBOX_FILE } from "../../worlds/sandbox/index.js";
 import { createWebWorld, loadWebFile, WEB_FILE } from "../../worlds/web/index.js";
 import { flagValue } from "./args.js";
@@ -69,6 +70,8 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
   const scanner = createSecretScanner({ knownValues: known });
 
   const worlds: World[] = [];
+  // Every token the body holds, so the game helper's token can be checked to differ from each.
+  const held: string[] = [...known];
   const discordPath = join(dir, DISCORD_FILE);
   if (existsSync(discordPath)) {
     const discord = parseDiscordFile(JSON.parse(readFileSync(discordPath, "utf8")) as unknown);
@@ -78,6 +81,7 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
       return 1;
     }
     scanner.addKnownValue(token);
+    held.push(token);
     worlds.push(
       createDiscordWorld({
         token,
@@ -101,6 +105,18 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
       return 1;
     }
     worlds.push(createWebWorld({ dir, scanner }));
+  }
+  const domusPath = join(dir, DOMUS_FILE);
+  if (existsSync(domusPath)) {
+    const domus = parseDomusFile(JSON.parse(readFileSync(domusPath, "utf8")) as unknown);
+    const token = process.env[domus.tokenEnv];
+    if (token === undefined || token === "") {
+      err(`${DOMUS_FILE} names ${domus.tokenEnv} for the helper token, but it is not set.`);
+      return 1;
+    }
+    worlds.push(createDomusWorld({ dir, token, ...(domus.host !== undefined ? { host: domus.host } : {}),
+      ...(domus.port !== undefined ? { port: domus.port } : {}), otherTokens: [...held] }));
+    scanner.addKnownValue(token);
   }
   if (worlds.length === 0) {
     err(`No worlds to run in: add ${DISCORD_FILE} to ${dir}, or use natalis chat for the terminal.`);

@@ -159,4 +159,5 @@ attached." Stop: `game_act` is refused while the emergency stop is on.
 | domus | Acts piling up while the game is detached | 90 s expiry; the receipt and the now board say the game is not attached |
 | domus | Undo leaves false memories | a body row tells the Lar; the notebook is the Lar's to correct |
 | domus | Game text treated as orders | events are outside text like any world's |
+| domus | Acts requested before a stop reach the game after it | at every sync and timed pass, the stop withdraws waiting acts and drops waiting plan steps; the Lar is told |
 | all | The stop does not reach a new world | every world tool goes through `gateWorldTool`; none is `safeWhenStopped` |
