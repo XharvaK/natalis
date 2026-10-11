@@ -126,6 +126,155 @@ function flagLines(portrait: Record_): string[] {
   return flags.filter(([on]) => on).map(([, text]) => text);
 }
 
+
+/** A text the game gave, trimmed; anything else (a number, null, an empty string) is undefined. */
+function wordOf(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+/** A whole number from the game; anything else is undefined. */
+function wholeOf(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) ? value : undefined;
+}
+
+/** A whole number with a comma between each group of three digits: 1234 is "1,234". */
+function grouped(value: number): string {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function traitsLine(traits: unknown): string | undefined {
+  const names = Array.isArray(traits) ? traits.map(wordOf).filter((item): item is string => item !== undefined) : [];
+  return names.length ? `You are ${names.join(", ")}.` : undefined;
+}
+
+function skillsLine(skills: unknown): string | undefined {
+  const items = records(skills).map((item) => {
+    const skill = wordOf(item.skill);
+    const level = wholeOf(item.level);
+    return skill !== undefined && level !== undefined ? `${skill} ${level}` : undefined;
+  }).filter((item): item is string => item !== undefined);
+  return items.length ? `Skills: ${items.join(", ")}.` : undefined;
+}
+
+function moneyLine(funds: unknown): string | undefined {
+  const amount = wholeOf(funds);
+  return amount === undefined ? undefined : `Money: ${amount < 0 ? "-" : ""}§${grouped(Math.abs(amount))}.`;
+}
+
+/** Her jobs, one line each; an empty list is "No job."; an absent list says nothing. */
+function jobLines(jobs: unknown): string[] {
+  if (!Array.isArray(jobs)) return [];
+  if (jobs.length === 0) return ["No job."];
+  return records(jobs).map((item) => {
+    const title = wordOf(item.title);
+    const job = wordOf(item.job);
+    const name = title !== undefined && job !== undefined ? `${title} (${job})` : title ?? job;
+    if (name === undefined) return undefined;
+    const level = wholeOf(item.level);
+    return `Job: ${name}${level === undefined ? "" : `, level ${level}`}${item.at_work === true ? "; at work now" : ""}.`;
+  }).filter((item): item is string => item !== undefined);
+}
+
+/** One want as the panel lists it: its progress and deadline in brackets, its way in square brackets, and "(locked)". */
+function wantText(item: Record_): string | undefined {
+  const want = wordOf(item.want);
+  if (want === undefined) return undefined;
+  const progress = wordOf(item.progress);
+  const until = wordOf(item.until);
+  const detail = [progress, until === undefined ? undefined : `until ${until}`].filter((part): part is string => part !== undefined);
+  const how = wordOf(item.how);
+  return `${want}${detail.length ? ` (${detail.join(", ")})` : ""}${how ? ` [${how}]` : ""}${item.locked === true ? " (locked)" : ""}`;
+}
+
+/** Her wants and her fears, each list in the order the game gave it. */
+function wantsLines(wants: unknown): string[] {
+  const all = records(wants);
+  const wanted = all.filter((item) => item.fear !== true).map(wantText).filter((item): item is string => item !== undefined);
+  const feared = all.filter((item) => item.fear === true).map((item) => wordOf(item.want)).filter((item): item is string => item !== undefined);
+  return [
+    ...(wanted.length ? [`Wants: ${wanted.join("; ")}.`] : []),
+    ...(feared.length ? [`Fears: ${feared.join("; ")}.`] : []),
+  ];
+}
+
+/** The life facts that are true, and her age stage in plain words. */
+function lifeLines(life: unknown): string[] {
+  const facts = record(life);
+  if (!facts) return [];
+  const lines: string[] = [];
+  if (facts.pregnant === true) lines.push("You are pregnant.");
+  if (facts.sick === true) lines.push("You are sick.");
+  if (facts.ghost === true) lines.push("You are a ghost.");
+  const age = wordOf(facts.age);
+  if (age !== undefined) lines.push(`Age: ${age.replace(/_/g, " ").toLowerCase()}.`);
+  return lines;
+}
+
+/** Her aspiration, its objectives in the order given; a line needs its name. */
+function aspirationLine(aspiration: unknown): string | undefined {
+  const a = record(aspiration);
+  const name = a ? wordOf(a.name) : undefined;
+  if (!a || name === undefined) return undefined;
+  const objectives = records(a.objectives).map((item) => {
+    const text = wordOf(item.text);
+    return text === undefined ? undefined : `${text}${item.done === true ? " (done)" : ""}`;
+  }).filter((item): item is string => item !== undefined);
+  return `Aspiration: ${name}${objectives.length ? `; now: ${objectives.join(", ")}` : ""}.`;
+}
+
+/** What she owes, whether the bills came in the mail, and whether they are late; none owed is said as such. */
+function billsLine(bills: unknown): string | undefined {
+  const b = record(bills);
+  const owed = b ? wholeOf(b.owed) : undefined;
+  if (!b || owed === undefined || owed < 0) return undefined;
+  const late = b.late === true;
+  if (owed === 0 && !late) return "No bills owed.";
+  const parts = [
+    `§${grouped(owed)} owed`,
+    b.delivered === true ? "they came in the mail" : undefined,
+    late ? "late" : undefined,
+  ].filter((part): part is string => part !== undefined);
+  return `Bills: ${parts.join("; ")}.`;
+}
+
+/** What she carries; a count is said only when it is more than one. */
+function carryLine(inventory: unknown): string | undefined {
+  const items = records(inventory).map((item) => {
+    const name = wordOf(item.item);
+    const count = wholeOf(item.count);
+    if (name === undefined || count === undefined || count < 1) return undefined;
+    return count > 1 ? `${count} × ${name}` : name;
+  }).filter((item): item is string => item !== undefined);
+  return items.length ? `You carry: ${items.join(", ")}.` : undefined;
+}
+
+/** The season and the weather of the lot: the season first, then the weather words, all in plain words. */
+function weatherLine(portrait: Record_): string | undefined {
+  const season = wordOf(portrait.season);
+  const weather = Array.isArray(portrait.weather)
+    ? portrait.weather.map((item) => wordOf(item)?.replace(/_/g, " ").toLowerCase()).filter((item): item is string => item !== undefined)
+    : [];
+  const parts = [season?.replace(/_/g, " ").toLowerCase(), ...weather].filter((item): item is string => item !== undefined);
+  return parts.length ? `${capitalised(parts.join(", "))}.` : undefined;
+}
+
+/** The "You" section from the helper's portrait of her Sim: each part is skipped when absent or malformed. */
+function youLines(self: unknown): string[] {
+  const s = record(self);
+  if (!s) return [];
+  return [
+    traitsLine(s.traits),
+    skillsLine(s.skills),
+    moneyLine(s.funds),
+    ...jobLines(s.jobs),
+    ...wantsLines(s.wants),
+    ...lifeLines(s.life),
+    aspirationLine(s.aspiration),
+    billsLine(s.bills),
+    carryLine(s.inventory),
+  ].filter((item): item is string => item !== undefined);
+}
+
 /** Whether the game is attached when the view is shown; when not, the last time it was attached, if ever. */
 export type AttachmentNow = { attached: true } | { attached: false; lastAttachedMs: number | undefined; nowMs: number };
 
@@ -148,6 +297,8 @@ export function bodyLines(portrait: unknown, attachment?: AttachmentNow, attenti
   if (!p) return lines;
   const clock = clockLine(p);
   if (clock) lines.push(clock);
+  const weather = weatherLine(p);
+  if (weather) lines.push(weather);
   const room = textOrUndefined(record(p.zone)?.room_label);
   if (room) lines.push(`Room: ${room}.`);
   const posture = textOrUndefined(p.posture);
@@ -199,5 +350,6 @@ export function bodyLines(portrait: unknown, attachment?: AttachmentNow, attenti
     .filter((item): item is string => item !== undefined)
     .slice(0, LISTED_MAX);
   if (situations.length) lines.push(`Situations: ${situations.map((item) => capitalised(item)).join(", ")}.`);
+  lines.push(...youLines(p.self));
   return lines;
 }

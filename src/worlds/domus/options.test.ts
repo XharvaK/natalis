@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { OptionObject } from "./answers.js";
-import { BRIEF_MAX, choicesSignature, findOption, labelOf, optionsOf, refsOf, renderView, VIEW_TEXT_MAX, viewBrief } from "./options.js";
+import { BRIEF_MAX, choicesSignature, findOption, labelOf, optionsOf, perceptSentence, refsOf, renderView, VIEW_TEXT_MAX, viewBrief } from "./options.js";
 
 const TABLE: OptionObject[] = [
   { object: "Test kettle", object_id: "obj-kettle", where: "here, 2.0 m", acts: [
@@ -193,5 +193,59 @@ describe("the brief of an older view", () => {
     const brief = viewBrief(percepts);
     expect(brief.length).toBeLessThanOrEqual(BRIEF_MAX + 100);
     expect(brief).toMatch(/more not shown\)/);
+  });
+});
+
+describe("the game's notices and her own changes, as plain sentences", () => {
+  it("says a notice of the game with its title, and without one", () => {
+    expect(perceptSentence({ kind: "notice", salience: 1, facts: { title: "Bills are due", text: "Pay them soon." } }))
+      .toBe("The game says: Bills are due: Pay them soon.");
+    expect(perceptSentence({ kind: "notice", salience: 1, facts: { text: "Pay them soon" } })).toBe("The game says: Pay them soon.");
+  });
+
+  it("says a change to her own self as the text was sent, with a full stop only when it has none", () => {
+    expect(perceptSentence({ kind: "self", salience: 0.5, facts: { text: "Skill: Cooking 4 (was 3)." } })).toBe("Skill: Cooking 4 (was 3).");
+    expect(perceptSentence({ kind: "self", salience: 0.5, facts: { text: "New want: Learn to cook" } })).toBe("New want: Learn to cook.");
+    expect(perceptSentence({ kind: "self", salience: 0.5, facts: { text: "Was that a want?" } })).toBe("Was that a want?");
+    expect(perceptSentence({ kind: "self", salience: 0.5, facts: { text: "Done!" } })).toBe("Done!");
+  });
+
+  it("falls back to the old line for a notice or a self change that is malformed", () => {
+    const malformed: Array<{ kind: string; facts: Record<string, unknown> }> = [
+      { kind: "notice", facts: {} },
+      { kind: "notice", facts: { text: 3 } },
+      { kind: "notice", facts: { text: "" } },
+      { kind: "notice", facts: { title: "Bills are due" } },
+      { kind: "notice", facts: { title: 5, text: "Pay them soon" } },
+      { kind: "notice", facts: { title: "", text: "Pay them soon" } },
+      { kind: "self", facts: {} },
+      { kind: "self", facts: { text: "   " } },
+      { kind: "self", facts: { text: 4 } },
+    ];
+    for (const percept of malformed) {
+      expect(perceptSentence({ ...percept, salience: 0.5 })).toBeUndefined();
+    }
+    const text = renderView({
+      world: "slot3", options: [], percepts: [{ kind: "notice", salience: 1, facts: { text: 3 } }, { kind: "self", salience: 1, facts: {} }],
+    });
+    expect(text).toContain("- notice: text 3");
+    expect(text).toContain("- self");
+  });
+
+  it("shows both in a view and in a brief, as their sentences", () => {
+    const percepts = [
+      { kind: "notice", salience: 1, facts: { title: "Bills are due", text: "Pay them soon." } },
+      { kind: "self", salience: 0.5, facts: { text: "New want: Learn to cook" } },
+    ];
+    const text = renderView({ world: "slot3", percepts, options: [] });
+    expect(text).toContain("- The game says: Bills are due: Pay them soon.\n- New want: Learn to cook.");
+    expect(viewBrief(percepts)).toBe("- The game says: Bills are due: Pay them soon.\n- New want: Learn to cook.");
+  });
+});
+
+describe("the look she asked for", () => {
+  it("says it is the look she asked for, whatever its facts say", () => {
+    expect(perceptSentence({ kind: "look", salience: 1, facts: { subject: "self", object: "", bucket: "asked" } })).toBe("This is the look you asked for.");
+    expect(perceptSentence({ kind: "look", salience: 1, facts: {} })).toBe("This is the look you asked for.");
   });
 });

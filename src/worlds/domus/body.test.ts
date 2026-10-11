@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { bodyLines } from "./body.js";
-import { renderView } from "./options.js";
+import { renderView, viewBrief } from "./options.js";
 
 const BUSY = {
   needs: {
@@ -136,5 +136,174 @@ describe("her attention, the first line of the block", () => {
       attention: "Your attention: when something calls you.",
     });
     expect(text.startsWith("Your body now:\nYour attention: when something calls you.\nThe game is paused.\n\nThe game (slot3) shows:\n")).toBe(true);
+  });
+});
+
+const SELF = {
+  traits: ["Cheerful", "Loyal"],
+  skills: [{ skill: "Cooking", level: 3 }, { skill: "Piano", level: 5 }],
+  funds: 1234,
+  life: { age: "young_adult", pregnant: false, sick: false, dead: false, ghost: false, npc: false },
+  jobs: [{ job: "Chef", title: "Head Chef", level: 3, at_work: true }],
+  wants: [
+    { want: "Learn to cook", fear: false, progress: "2/3", until: "18:00", how: "Practise at the stove" },
+    { want: "Feel loved", fear: false, locked: true },
+    { want: "Being alone", fear: true },
+  ],
+};
+
+describe("the You section of her body, in the full view", () => {
+  it("says who she is, her skills, her money, her job, her wants and her fears, as the game names them", () => {
+    const lines = bodyLines({ self: SELF });
+    expect(lines).toEqual([
+      "You are Cheerful, Loyal.",
+      "Skills: Cooking 3, Piano 5.",
+      "Money: §1,234.",
+      "Job: Head Chef (Chef), level 3; at work now.",
+      "Wants: Learn to cook (2/3, until 18:00) [Practise at the stove]; Feel loved (locked).",
+      "Fears: Being alone.",
+      "Age: young adult.",
+    ]);
+  });
+
+  it("keeps the wants and the fears in the order the game gave them, and never sorts them", () => {
+    const lines = bodyLines({ self: { wants: [...SELF.wants].reverse() } });
+    expect(lines).toEqual([
+      "Wants: Feel loved (locked); Learn to cook (2/3, until 18:00) [Practise at the stove].",
+      "Fears: Being alone.",
+    ]);
+  });
+
+  it("says a job with no title by its job, with no empty brackets, and says so when she is not at work", () => {
+    expect(bodyLines({ self: { jobs: [{ job: "Chef", title: null, level: 3, at_work: true }] } })).toEqual(["Job: Chef, level 3; at work now."]);
+    expect(bodyLines({ self: { jobs: [{ job: "Chef", title: "Head Chef", level: 3, at_work: false }] } })).toEqual(["Job: Head Chef (Chef), level 3."]);
+  });
+
+  it("says No job. for an empty list of jobs, and nothing when the jobs are absent", () => {
+    expect(bodyLines({ self: { jobs: [] } })).toEqual(["No job."]);
+    expect(bodyLines({ self: { traits: ["Cheerful"] } })).toEqual(["You are Cheerful."]);
+  });
+
+  it("writes money with thousands separators, and skips it when it is not a whole number", () => {
+    expect(bodyLines({ self: { funds: 1234567 } })).toEqual(["Money: §1,234,567."]);
+    expect(bodyLines({ self: { funds: 0 } })).toEqual(["Money: §0."]);
+    expect(bodyLines({ self: { funds: null } })).toEqual([]);
+    expect(bodyLines({ self: { funds: "12" } })).toEqual([]);
+  });
+
+  it("says the life facts that are true and the age stage in plain words", () => {
+    const lines = bodyLines({ self: { life: { age: "young_adult", pregnant: true, sick: true, ghost: true } } });
+    expect(lines).toEqual(["You are pregnant.", "You are sick.", "You are a ghost.", "Age: young adult."]);
+    expect(bodyLines({ self: { life: { age: "adult", pregnant: false, sick: false, ghost: false } } })).toEqual(["Age: adult."]);
+  });
+
+  it("skips each part that is absent or malformed, and never throws", () => {
+    expect(bodyLines({ self: { traits: [1, null], skills: [null, { skill: "Cooking" }], wants: [{ fear: false }], jobs: [{ level: 2 }] } })).toEqual([]);
+    expect(bodyLines({ self: null })).toEqual([]);
+    expect(bodyLines({ self: 5 })).toEqual([]);
+    expect(bodyLines({ self: "Cheerful" })).toEqual([]);
+    expect(bodyLines({ self: { traits: "Cheerful", life: "bad", jobs: "Chef" } })).toEqual([]);
+    expect(bodyLines({ self: { skills: [null, { skill: "Piano", level: 5 }] } })).toEqual(["Skills: Piano 5."]);
+  });
+
+  it("uses no advice and no judgment", () => {
+    expect(bodyLines({ self: SELF }).join("\n")).not.toMatch(/could|should|ought|must|better|worse|need to/i);
+  });
+});
+
+describe("the You section is only in the full view", () => {
+  it("is not in the brief of a view, which carries the percept lines only", () => {
+    const brief = viewBrief([{ kind: "sim_arrives", salience: 0, facts: { subject: "Pim Dorrow" } }]);
+    expect(brief).not.toContain("You are");
+    expect(brief).toBe("- sim arrives: subject Pim Dorrow");
+    expect(renderView({ world: "slot3", percepts: [], options: [], portrait: { self: SELF } })).toContain("You are Cheerful, Loyal.");
+  });
+});
+
+describe("the You section: her aspiration, her bills and what she carries", () => {
+  it("says her aspiration, its objectives in the order given, and which are done", () => {
+    const aspiration = { name: "Cheerful Cook", objectives: [{ text: "Make soup", done: true }, { text: "Bake bread", done: false }] };
+    expect(bodyLines({ self: { aspiration } })).toEqual(["Aspiration: Cheerful Cook; now: Make soup (done), Bake bread."]);
+  });
+
+  it("skips an objective with no text, and says the aspiration alone when no objective is left", () => {
+    expect(bodyLines({ self: { aspiration: { name: "Cheerful Cook", objectives: [{ text: null, done: false }, { text: "Bake bread", done: false }] } } }))
+      .toEqual(["Aspiration: Cheerful Cook; now: Bake bread."]);
+    expect(bodyLines({ self: { aspiration: { name: "Cheerful Cook", objectives: [{ text: null, done: true }] } } }))
+      .toEqual(["Aspiration: Cheerful Cook."]);
+    expect(bodyLines({ self: { aspiration: { name: "Cheerful Cook", objectives: [] } } })).toEqual(["Aspiration: Cheerful Cook."]);
+  });
+
+  it("says nothing of an aspiration with no name, or one that is malformed", () => {
+    expect(bodyLines({ self: { aspiration: { name: null, objectives: [{ text: "Bake bread", done: false }] } } })).toEqual([]);
+    expect(bodyLines({ self: { aspiration: "Cheerful Cook" } })).toEqual([]);
+  });
+
+  it("says the bills owed, whether they came in the mail, and whether they are late, in words", () => {
+    expect(bodyLines({ self: { bills: { owed: 320, delivered: true, late: false } } })).toEqual(["Bills: §320 owed; they came in the mail."]);
+    expect(bodyLines({ self: { bills: { owed: 320, delivered: false, late: false } } })).toEqual(["Bills: §320 owed."]);
+    expect(bodyLines({ self: { bills: { owed: 320, delivered: true, late: true } } })).toEqual(["Bills: §320 owed; they came in the mail; late."]);
+    expect(bodyLines({ self: { bills: { owed: 320, delivered: false, late: true } } })).toEqual(["Bills: §320 owed; late."]);
+    expect(bodyLines({ self: { bills: { owed: 1234567, delivered: false, late: false } } })).toEqual(["Bills: §1,234,567 owed."]);
+  });
+
+  it("says No bills owed. when nothing is owed and nothing is late", () => {
+    expect(bodyLines({ self: { bills: { owed: 0, delivered: true, late: false } } })).toEqual(["No bills owed."]);
+    expect(bodyLines({ self: { bills: { owed: 0, delivered: false, late: false } } })).toEqual(["No bills owed."]);
+    expect(bodyLines({ self: { bills: { owed: 0, delivered: false, late: true } } })).toEqual(["Bills: §0 owed; late."]);
+  });
+
+  it("skips bills that are malformed, and never throws", () => {
+    expect(bodyLines({ self: { bills: { owed: null, delivered: true, late: false } } })).toEqual([]);
+    expect(bodyLines({ self: { bills: { owed: "320", delivered: true, late: false } } })).toEqual([]);
+    expect(bodyLines({ self: { bills: "320" } })).toEqual([]);
+  });
+
+  it("says what she carries, with a count only when there is more than one", () => {
+    expect(bodyLines({ self: { inventory: [{ item: "phone", count: 1 }, { item: "apple", count: 2 }] } }))
+      .toEqual(["You carry: phone, 2 × apple."]);
+    expect(bodyLines({ self: { inventory: [] } })).toEqual([]);
+  });
+
+  it("skips what she carries that is malformed, and keeps the rest", () => {
+    expect(bodyLines({ self: { inventory: [{ item: "phone", count: 1 }, { item: "apple" }, { item: "pen", count: 0 }, null, { count: 2 }] } }))
+      .toEqual(["You carry: phone."]);
+    expect(bodyLines({ self: { inventory: "phone" } })).toEqual([]);
+  });
+
+  it("comes after the rest of her You section, in the order the spec gives", () => {
+    const lines = bodyLines({ self: { traits: ["Cheerful"], bills: { owed: 0, delivered: false, late: false }, inventory: [{ item: "phone", count: 1 }] } });
+    expect(lines).toEqual(["You are Cheerful.", "No bills owed.", "You carry: phone."]);
+  });
+});
+
+describe("the weather and the season, after the game time", () => {
+  const CLOCK = { time: { hour: 14, minute: 5, weekday: "Monday", day_index: 0, week: 3 } };
+
+  it("says the season first, capitalised, then the weather in lower case, right after the game time", () => {
+    expect(bodyLines({ ...CLOCK, season: "SPRING", weather: ["SUNNY", "WINDY"] })).toEqual([
+      "Game time: Monday 14:05.",
+      "Spring, sunny, windy.",
+    ]);
+    expect(bodyLines({ ...CLOCK, zone: { room_label: "Test kitchen" }, season: "SPRING" })).toEqual([
+      "Game time: Monday 14:05.",
+      "Spring.",
+      "Room: Test kitchen.",
+    ]);
+  });
+
+  it("turns underscores into spaces, and says the weather alone when there is no season", () => {
+    expect(bodyLines({ ...CLOCK, weather: ["HEAVY_RAIN"] })).toEqual(["Game time: Monday 14:05.", "Heavy rain."]);
+    expect(bodyLines({ ...CLOCK, season: "SUMMER" })).toEqual(["Game time: Monday 14:05.", "Summer."]);
+  });
+
+  it("says nothing when both are absent, and says the line without a game time when there is no clock", () => {
+    expect(bodyLines({ ...CLOCK, season: null, weather: [] })).toEqual(["Game time: Monday 14:05."]);
+    expect(bodyLines({ season: "AUTUMN" })).toEqual(["Autumn."]);
+  });
+
+  it("skips what is malformed, and keeps the rest", () => {
+    expect(bodyLines({ ...CLOCK, season: 3, weather: "sunny" })).toEqual(["Game time: Monday 14:05."]);
+    expect(bodyLines({ ...CLOCK, season: "", weather: [1, null, "", "SUNNY"] })).toEqual(["Game time: Monday 14:05.", "Sunny."]);
   });
 });
