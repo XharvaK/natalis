@@ -1764,6 +1764,26 @@ describe("repeating wakes", () => {
     await expect(open(new ScriptedModel([]), { nowMs: () => NOW })).rejects.toThrow(/repeat/);
   });
 
+  it("reads a date and time with no offset in the Lar's own zone, and one with an offset as it is", async () => {
+    const model = new ScriptedModel([
+      reply({
+        toolCalls: [
+          call("schedule_wake", { at_iso: "2026-10-12T09:00", why: "breakfast" }, "w1"),
+          call("schedule_wake", { at_iso: "2026-10-12T09:00:00Z", why: "utc" }, "w2"),
+        ],
+      }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model, { config: { ...CONFIG, timeZone: "America/New_York" } });
+    await entity.start();
+    cli.send("Go.");
+    await entity.idle();
+
+    const wakes = readStateJson().wakes as Array<{ why: string; atMs: number }>;
+    expect(wakes.find((wake) => wake.why === "breakfast")?.atMs).toBe(Date.parse("2026-10-12T09:00:00-04:00"));
+    expect(wakes.find((wake) => wake.why === "utc")?.atMs).toBe(Date.parse("2026-10-12T09:00:00Z"));
+  });
+
   it("refuses a wake reason longer than 500 characters, names the limit, and keeps no wake for it", async () => {
     const model = new ScriptedModel([
       reply({

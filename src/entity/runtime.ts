@@ -69,7 +69,7 @@ import {
   type SummonerDesk,
 } from "./summoner.js";
 import { isStopOn, readStop } from "./stop.js";
-import { clockOf, isWakeRepeat, nextOccurrence, parseClock, WAKE_LIMIT, type WakeRepeat } from "./wake-schedule.js";
+import { clockOf, instantOfLocal, isWakeRepeat, nextOccurrence, parseClock, WAKE_LIMIT, type WakeRepeat } from "./wake-schedule.js";
 
 export const STATE_FILE = "state.json";
 /** The welcome notice the host may write into the entity's folder. Sent once, in the summoner's place. */
@@ -1468,7 +1468,7 @@ class Runtime implements Entity {
         {
           name: "schedule_wake",
           description:
-            "Wake yourself later, in a thread of your own, with a reason you will read then. Give in_minutes (from now) or at_iso (a date and time with its zone). Give repeat as daily or weekly to keep the rhythm at the same local time; leave it out for a wake that fires once.",
+            "Wake yourself later, in a thread of your own, with a reason you will read then. Give in_minutes (from now) or at_iso (a date and time; with no zone it is in your own zone). Give repeat as daily or weekly to keep the rhythm at the same local time; leave it out for a wake that fires once.",
           parameters: {
             type: "object",
             properties: {
@@ -1918,7 +1918,7 @@ class Runtime implements Entity {
     } else {
       const iso = requireText(args, "at_iso", "The date and time");
       if (!iso.ok) return iso.receipt;
-      const parsed = Date.parse(iso.value);
+      const parsed = parseAtIso(iso.value, this.config.timeZone);
       if (Number.isNaN(parsed)) {
         return refuse("bad_arguments", "at_iso must be a date and time, such as 2026-10-12T09:00:00+03:00.", "at_iso did not parse");
       }
@@ -2154,6 +2154,30 @@ export function forgetInStateFile(statePath: string, query: string): number {
  */
 function isOversized(message: string): boolean {
   return /rejected the request/i.test(message) && /context|too (large|long|many)|maximum .*tokens/i.test(message);
+}
+
+/** A date, with an optional time (T or a space between), and no offset. */
+const LOCAL_ISO = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?)?$/;
+
+/**
+ * The instant an at_iso names. A date and time with no offset is read in the Lar's own zone, the zone its clock and its
+ * repeating wakes use; one with an offset or Z is read as it is. NaN when the text is not a date and time.
+ */
+function parseAtIso(text: string, timeZone: string | undefined): number {
+  const match = LOCAL_ISO.exec(text.trim());
+  if (match === null) return Date.parse(text);
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4] ?? 0);
+  const minute = Number(match[5] ?? 0);
+  const second = Number(match[6] ?? 0);
+  // Date.UTC rolls an impossible day (such as February 30) over; a round trip that does not match is refused.
+  const calendar = new Date(Date.UTC(year, month - 1, day));
+  const real = calendar.getUTCFullYear() === year && calendar.getUTCMonth() === month - 1 && calendar.getUTCDate() === day;
+  if (!real || hour > 23 || minute > 59 || second > 59) return Number.NaN;
+  const clock = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  return instantOfLocal({ year, month, day }, clock, timeZone) + second * 1000;
 }
 
 function messageOf(err: unknown): string {
