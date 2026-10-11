@@ -132,6 +132,8 @@ const RECENT_LIMIT = 30;
 const RECALL_LIMIT = 8;
 const RECALL_WORDS = 4;
 const RECALL_CLIP = 300;
+/** How much of a receipt's returned data recall shows. */
+const RECEIPT_SHOW = 200;
 const MOOD_LIMIT = 200;
 /** The most characters a wake's reason may hold, so a wake can never carry a page of text into every later turn. */
 const WAKE_WHY_MAX = 500;
@@ -1612,7 +1614,7 @@ class Runtime implements Entity {
     return [...found.values()]
       .sort((a, b) => b.score - a.score || b.row.seq - a.row.seq)
       .slice(0, RECALL_LIMIT)
-      .map(({ row }) => `[${this.stamp(row.atMs)} ${row.thread} ${who(row)}] ${clip(row.text ?? "", RECALL_CLIP)}`)
+      .map(({ row }) => `[${this.stamp(row.atMs)} ${row.thread} ${who(row)}] ${shownRow(row)}`)
       .join("\n");
   }
 
@@ -2318,6 +2320,14 @@ function pictureAbility(vision: boolean): string {
   return vision
     ? "You can see pictures: look shows one picture from your shelf to you, once, on your next call. You can also keep and send them."
     : "You cannot see pictures with your current model; you can keep and send them.";
+}
+
+/** A row as recall shows it: its words, and for a receipt the start of what its tool returned. */
+function shownRow(row: RiverRow): string {
+  const text = clip(row.text ?? "", RECALL_CLIP);
+  const returned = row.data?.["dataJson"];
+  if (row.kind !== "receipt" || typeof returned !== "string" || returned === "") return text;
+  return `${text} It returned: ${clip(oneLine(returned), RECEIPT_SHOW)}`;
 }
 
 function who(row: RiverRow): string {

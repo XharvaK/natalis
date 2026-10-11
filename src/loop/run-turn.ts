@@ -3,6 +3,7 @@
 // end_turn, when the ceiling is reached, when the model fails, or when the signal aborts.
 // Every step is written to the river, so the turn can be read back later.
 
+import { createHash } from "node:crypto";
 import {
   ModelError,
   type Ceiling,
@@ -27,6 +28,8 @@ import {
 import { MalformedToolBlock } from "../model/emulated-tools.js";
 
 export const END_TURN = "end_turn";
+/** How much of a receipt's data JSON the river keeps. The SHA-256 of all of it is kept beside the start. */
+const RECEIPT_KEPT_BYTES = 2048;
 
 /** The loop's own tool. Always offered; calling it ends the turn once its receipt is ok. */
 export const endTurnSpec: ToolSpec = {
@@ -155,6 +158,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
         ...(receipt.refused === undefined ? {} : { refused: receipt.refused }),
         turnId,
         callId: call.id,
+        ...keptData(receipt.data),
       },
     });
     receipts.push({ tool: call.name, receipt });
@@ -315,6 +319,34 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
     ...(errorKind === undefined ? {} : { errorKind }),
   };
   return { result, messages };
+}
+
+/**
+ * A receipt's data as the river keeps it: the start of its JSON (up to RECEIPT_KEPT_BYTES), the JSON's whole length, and
+ * its SHA-256. The record says what the tool returned without holding all of it, and the hash shows whether a copy matches.
+ */
+function keptData(data: Receipt["data"]): Record<string, unknown> {
+  if (data === undefined) return {};
+  const json = JSON.stringify(data);
+  return {
+    dataJson: clipBytes(json, RECEIPT_KEPT_BYTES),
+    dataBytes: Buffer.byteLength(json),
+    dataSha256: createHash("sha256").update(json).digest("hex"),
+  };
+}
+
+/** The longest start of a text that fits in max bytes, cut between characters so no character is split. */
+function clipBytes(text: string, max: number): string {
+  if (Buffer.byteLength(text) <= max) return text;
+  let kept = "";
+  let bytes = 0;
+  for (const char of text) {
+    const size = Buffer.byteLength(char);
+    if (bytes + size > max) break;
+    kept += char;
+    bytes += size;
+  }
+  return kept;
 }
 
 /** A call's reported counts, under the names a turn's meter uses. */

@@ -814,6 +814,27 @@ describe("what the Lar sends and what it is shown", () => {
     expect(system).toContain("## recall");
     expect(system).toContain("fake:room mara] The lighthouse at the point is my favourite place.");
   });
+
+  it("lets a later turn recall an earlier receipt, and shows the start of what the tool returned", async () => {
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("read_note", { path: "places/lighthouse.md" }), call("end_turn")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    // The first line is the one the notebook index shows; the sentence the test looks for is only in the note's body.
+    await entity.notebook.write("places/lighthouse.md", "Notes on the point.\nThe lighthouse keeper lives at the point.\n", "Note on the lighthouse", "body");
+
+    cli.send("Read the lighthouse note.");
+    await entity.idle();
+    cli.send("Where is the lighthouse?");
+    await entity.idle();
+
+    const system = systemTextOf(model.requests[1]);
+    expect(system).toContain("## recall");
+    expect(system).toContain("Read places/lighthouse.md.");
+    expect(system).toContain("The lighthouse keeper lives at the point.");
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { ModelError, type ChatMessage, type Receipt, type RiverRow, type Tool } from "../contracts.js";
 import { MemoryNotebook } from "../testing/memory-notebook.js";
@@ -130,6 +131,32 @@ describe("runTurn: the two-turn tool loop", () => {
     });
     const sent = model.requests[1]?.messages.find((m) => m.role === "assistant");
     expect(sent).toMatchObject({ role: "assistant", providerState: state });
+  });
+
+  it("keeps a receipt's data on its river row: the first 2 KB of its JSON, and a SHA-256 of all of it", async () => {
+    const page = { page: "ö".repeat(5000) };
+    const bulky: Tool = {
+      spec: { name: "bulk", description: "Returns a lot.", parameters: { type: "object", properties: {} } },
+      async run(): Promise<Receipt> {
+        return { ok: true, summary: "Read the big page.", data: page };
+      },
+    };
+    const { input, river } = await setup({
+      tools: [bulky],
+      steps: [reply({ toolCalls: [call("bulk")] }), reply({ toolCalls: [call("end_turn")] })],
+    });
+    await runTurn(input);
+    const receipt = rowsOf(river).find((row) => row.kind === "receipt");
+    const whole = JSON.stringify(page);
+    expect(receipt?.text).toBe("Read the big page.");
+    const kept = String(receipt?.data?.["dataJson"]);
+    expect(Buffer.byteLength(kept)).toBeLessThanOrEqual(2048);
+    expect(Buffer.byteLength(kept)).toBeGreaterThan(2000);
+    expect(whole.startsWith(kept)).toBe(true);
+    expect(receipt?.data).toMatchObject({
+      dataBytes: Buffer.byteLength(whole),
+      dataSha256: createHash("sha256").update(whole).digest("hex"),
+    });
   });
 
   it("records the model, its effort and the tokens the provider reported on the turn's end row", async () => {
