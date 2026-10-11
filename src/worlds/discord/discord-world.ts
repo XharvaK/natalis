@@ -85,6 +85,8 @@ export type PlatformClient = {
 export type DiscordWorldOptions = {
   token: string;
   ownerUserId: string;
+  /** The owner's alias in places ("discord:dm:<alias>"). Defaults to "owner", the entity config's usual alias. */
+  ownerAlias?: string;
   /** Channel ids she lives in. */
   rooms: string[];
   /** JSON file holding the alias map. Platform ids live only here. */
@@ -141,7 +143,8 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
   const guestLimit = options.guestLimit ?? { messages: 4, perMs: 20_000 };
   const botExchangeLimit = options.botExchangeLimit ?? 4;
 
-  const aliases: AliasStore = createAliasStore({ path: options.aliasesPath, ownerUserId: options.ownerUserId });
+  const ownerAlias = options.ownerAlias ?? OWNER_ALIAS;
+  const aliases: AliasStore = createAliasStore({ path: options.aliasesPath, ownerUserId: options.ownerUserId, ownerAlias });
   const client: PlatformClient = options.client ?? createDiscordJsClient();
 
   let status: Status = "idle";
@@ -486,6 +489,8 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
   const readHistoryTool: Tool = {
     spec: {
       name: "read_history",
+      // Reading sends nothing out, so it still works while the owner's emergency stop is on.
+      safeWhenStopped: true,
       description: `Read the most recent messages in a Discord place, oldest first, as lines with their refs. Up to ${HISTORY_MAX}.`,
       parameters: {
         type: "object",
@@ -613,13 +618,17 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       };
     },
 
+    isOwnerPlace(place) {
+      return place === `${PLACE_PREFIX}dm:${ownerAlias}`;
+    },
+
     tools() {
       return [reactTool, readHistoryTool];
     },
 
     now() {
       if (status === "connected" && self) {
-        const places = [`dm:${OWNER_ALIAS}`, ...liveRoomSlugs.map((slug) => `room:${slug}`)];
+        const places = [`dm:${ownerAlias}`, ...liveRoomSlugs.map((slug) => `room:${slug}`)];
         const missing = unreachableRooms > 0 ? ` ${unreachableRooms} room(s) not reachable.` : "";
         return `Discord: connected as ${self.name}; places: ${places.join(", ")}.${missing}`;
       }

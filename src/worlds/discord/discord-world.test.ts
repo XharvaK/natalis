@@ -584,6 +584,30 @@ describe("now and lifecycle", () => {
   });
 });
 
+describe("owner places", () => {
+  it("counts only the owner's direct message as the owner's place", async () => {
+    const { world } = await startWorld();
+    expect(world.isOwnerPlace?.("discord:dm:owner")).toBe(true);
+    expect(world.isOwnerPlace?.("discord:dm:mara")).toBe(false);
+    expect(world.isOwnerPlace?.("discord:room:general")).toBe(false);
+  });
+
+  it("follows the owner alias it is given, for places and for delivery", async () => {
+    const { world, fake } = await startWorld({ ownerAlias: "boss" });
+    expect(world.isOwnerPlace?.("discord:dm:boss")).toBe(true);
+    expect(world.isOwnerPlace?.("discord:dm:owner")).toBe(false);
+    const receipt = await world.say("discord:dm:boss", "hello boss");
+    expect(receipt.ok).toBe(true);
+    expect(fake.sent[0]).toMatchObject({ channelId: DM_OWNER, text: "hello boss" });
+  });
+
+  it("marks only the read-only history tool as safe while the owner's stop is on", async () => {
+    const { world } = await startWorld();
+    const safe = world.tools().filter((tool) => tool.spec.safeWhenStopped === true).map((tool) => tool.spec.name);
+    expect(safe).toEqual(["read_history"]);
+  });
+});
+
 describe("splitForDiscord", () => {
   it("keeps a short reply as one message and an empty reply as none", () => {
     expect(splitForDiscord("  hello there  ")).toEqual(["hello there"]);

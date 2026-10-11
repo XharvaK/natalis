@@ -7,8 +7,6 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 
 export const OWNER_ALIAS = "owner";
-/** Aliases a person can never take: the owner's, and the word she uses for her own messages. */
-const RESERVED_USER_ALIASES = new Set([OWNER_ALIAS, "you"]);
 const ALIAS_MAX_CHARS = 32;
 
 export type AliasStore = {
@@ -80,8 +78,10 @@ function uniqueAlias(base: string, reserved: ReadonlySet<string>, taken: Readonl
   return candidate;
 }
 
-export function createAliasStore(options: { path: string; ownerUserId: string }): AliasStore {
+export function createAliasStore(options: { path: string; ownerUserId: string; ownerAlias?: string }): AliasStore {
   const { path, ownerUserId } = options;
+  const ownerAlias = options.ownerAlias ?? OWNER_ALIAS;
+  const reserved = new Set([ownerAlias, "you"]);
   const file = readFile(path);
 
   const userAliasById = new Map<string, string>(Object.entries(file.users));
@@ -102,21 +102,21 @@ export function createAliasStore(options: { path: string; ownerUserId: string })
 
   return {
     userAlias(userId, displayName) {
-      if (userId === ownerUserId) return OWNER_ALIAS;
+      if (userId === ownerUserId) return ownerAlias;
       const known = userAliasById.get(userId);
       if (known) return known;
-      const alias = uniqueAlias(slugify(displayName, "person"), RESERVED_USER_ALIASES, userIdByAlias);
+      const alias = uniqueAlias(slugify(displayName, "person"), reserved, userIdByAlias);
       userAliasById.set(userId, alias);
       userIdByAlias.set(alias, userId);
       save();
       return alias;
     },
     knownUserAlias(userId) {
-      if (userId === ownerUserId) return OWNER_ALIAS;
+      if (userId === ownerUserId) return ownerAlias;
       return userAliasById.get(userId) ?? null;
     },
     userIdForAlias(alias) {
-      if (alias === OWNER_ALIAS) return ownerUserId;
+      if (alias === ownerAlias) return ownerUserId;
       return userIdByAlias.get(alias) ?? null;
     },
     roomAlias(channelId, channelName) {
