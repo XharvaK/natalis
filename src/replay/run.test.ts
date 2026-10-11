@@ -109,7 +109,7 @@ describe("runReplay", () => {
       // Turn for the owner's question: the Lar answers, then ends.
       reply({ toolCalls: [call("say", { place: "cli:owner", text: "I am here." })] }),
       reply({ content: null }),
-      // Turn for the room: she sets a wake for right away (which must not fire), speaks, then ends.
+      // Turn for the room: the Lar sets a wake for right away (which must not fire), speaks, then ends.
       reply({ toolCalls: [call("schedule_wake", { in_minutes: 0, why: "look at the harbour again" })] }),
       reply({ toolCalls: [call("say", { place: "discord:room:general", text: "Hello, room." })] }),
       reply({ content: null }),

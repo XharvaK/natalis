@@ -214,7 +214,7 @@ describe("intake", () => {
     expect(events[0]).toMatchObject({ place: "discord:dm:mara", actor: "mara", source: "outside" });
   });
 
-  it("ignores her own messages, rooms she does not live in, and other channel kinds", async () => {
+  it("ignores the Lar's own messages, rooms it does not live in, and other channel kinds", async () => {
     const { fake, events } = await startWorld();
     fake.deliver(incoming({ author: { id: SELF, displayName: "Natalis", bot: true }, content: "my own line" }));
     fake.deliver(incoming({ channelId: OFF_TOPIC, author: MARA_AUTHOR, content: "not my room" }));
@@ -423,7 +423,7 @@ describe("say", () => {
     expect(second.events[0]?.data?.messageRefs).not.toContain("m1");
   });
 
-  it("turns @alias of a person she knows into a mention that pings only them", async () => {
+  it("turns @alias of a person the Lar knows into a mention that pings only them", async () => {
     const { world, fake } = await startWorld();
     fake.deliver(incoming({ author: MARA_AUTHOR, content: "hi there" }));
     await vi.advanceTimersByTimeAsync(1500);
@@ -482,7 +482,7 @@ describe("say", () => {
     });
   });
 
-  it("refuses to say anything before she is connected", async () => {
+  it("refuses to say anything before the Lar is connected", async () => {
     const fake = fakeClient();
     const world = createDiscordWorld({ token: TOKEN, ownerUserId: OWNER, rooms: [GENERAL], aliasesPath, client: fake.client });
     expect(world.now()).toBe("Discord: not connected (not started).");
@@ -548,12 +548,12 @@ describe("tools", () => {
 });
 
 describe("now and lifecycle", () => {
-  it("says who she is and where she lives once connected", async () => {
+  it("says who the Lar is and where it lives once connected", async () => {
     const { world } = await startWorld({ rooms: [GENERAL, OFF_TOPIC] });
     expect(world.now()).toBe("Discord: connected as Natalis; places: dm:owner, room:general, room:off-topic.");
   });
 
-  it("says she is not connected when login fails, without the token", async () => {
+  it("says the Lar is not connected when login fails, without the token", async () => {
     const fake = fakeClient();
     fake.loginError = new Error(`bad credentials for ${TOKEN}`);
     const world = createDiscordWorld({ token: TOKEN, ownerUserId: OWNER, rooms: [GENERAL], aliasesPath, client: fake.client });
