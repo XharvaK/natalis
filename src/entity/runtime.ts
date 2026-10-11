@@ -54,9 +54,10 @@ import { LAR_NATURE } from "./nature.js";
 import { HONESTY_SYSTEM, type HonestyVerdict, parseHonestyReply } from "./honesty.js";
 import {
   createPrivacyWatch,
+  outwardHold,
   PRIVACY_FILE,
+  PRIVACY_UNREADABLE_REASON,
   privacyCategories,
-  privacyHit,
   type PrivacyLoad,
   type PrivacyWatch,
 } from "./privacy.js";
@@ -272,6 +273,13 @@ type EntityState = {
   actsSeenSeq: number;
   /** Set once the body has given the Lar its daily rhythm of wakes (its first start). Never given again. */
   rhythmGiven?: boolean;
+  /** The place the summoner last spoke in, where the body's notices to them go. */
+  summonerPlace?: string;
+  /**
+   * Set while the privacy list cannot be read: one episode of damage. told is whether the summoner has been sent the
+   * notice for it. The episode ends when the list reads again.
+   */
+  privacyDamage?: { told: boolean };
 };
 
 function emptyState(): EntityState {
@@ -422,6 +430,17 @@ function checkState(value: unknown): EntityState {
     if (typeof rhythmGiven !== "boolean") bad("rhythmGiven");
     state.rhythmGiven = rhythmGiven as boolean;
   }
+  const summonerPlace = root["summonerPlace"];
+  if (summonerPlace !== undefined) {
+    if (typeof summonerPlace !== "string" || summonerPlace === "") bad("summonerPlace");
+    state.summonerPlace = summonerPlace as string;
+  }
+  const privacyDamage = root["privacyDamage"];
+  if (privacyDamage !== undefined) {
+    const damage = privacyDamage as { told?: unknown };
+    if (typeof damage !== "object" || damage === null || typeof damage.told !== "boolean") bad("privacyDamage");
+    state.privacyDamage = { told: damage.told as boolean };
+  }
   return state;
 }
 
@@ -533,7 +552,8 @@ class Runtime implements Entity {
     this.privacy = init.privacy;
     this.state = init.state;
     this.shelf = init.shelf;
-    this.body = shelfBody(init.shelf, init.nowMs);
+    // The body's outward check reads the privacy list through the same watch as the say, so a damaged list is noticed there too.
+    this.body = shelfBody(init.shelf, init.nowMs, (texts) => outwardHold(this.privacyNow(), texts));
     this.ceiling = init.config.ceiling ?? DEFAULT_CEILING;
     this.river = init.river;
     this.larRiver = this.riverForLar(init.river);
@@ -608,8 +628,11 @@ class Runtime implements Entity {
     if (this.started) throw new Error("The entity is already started.");
     this.started = true;
     this.stopPoll = setInterval(() => {
-      if (!this.stopping) this.stopIsOn();
+      if (this.stopping) return;
+      this.stopIsOn();
+      this.privacyNow();
     }, this.stopPollMs);
+    this.privacyNow();
     this.seedRhythm();
     for (const wake of this.state.wakes) this.armWake(wake);
     try {
@@ -711,6 +734,11 @@ class Runtime implements Entity {
       // The summoner's own place. The welcome notice goes first, then a "!" line is a body command: it is never a turn
       // and opens no ask. Everything else is an ordinary message. During shutdown there are no commands to answer.
       this.queueOutbox(() => this.sendWelcome(event.place));
+      if (this.state.summonerPlace !== event.place) {
+        this.state.summonerPlace = event.place;
+        this.saveState();
+      }
+      this.tellSummonerOfPrivacy();
       if (isSummonerCommand(event.text)) {
         this.state.lastOwnerMs = atMs;
         this.saveState();
@@ -1316,7 +1344,7 @@ class Runtime implements Entity {
       { name: "constitution", text: this.constitutionText(), priority: 100, core: true },
       { name: "character", text: this.noteOr("self/character.md", CHARACTER_STUB), priority: 100, core: true },
       { name: "your life", text: this.noteOr(LIFE_PATH, LIFE_STUB), priority: 100, core: true },
-      { name: "privacy list", text: privacyText(this.privacy.current()), priority: 100, core: true },
+      { name: "privacy list", text: privacyText(this.privacyNow()), priority: 100, core: true },
       { name: "index", text: this.indexText(), priority: 50 },
       { name: "now", text: this.nowBoard(thread, nowMs, snapshot), priority: 100, core: true },
       timeFacts({
@@ -1428,9 +1456,9 @@ class Runtime implements Entity {
         lines.push(`- ${place}, asked ${formatDuration(nowMs - entry.oldest)} ago${more}.`);
       }
     }
-    const privacy = this.privacy.current();
+    const privacy = this.privacyNow();
     if (privacy.problem !== undefined) {
-      lines.push(`Body note: the privacy list could not be read (${privacy.problem}). It counts as empty until it is fixed.`);
+      lines.push(`Body note: your summoner's privacy list cannot be read, so nothing leaves until it is fixed (${privacy.problem}).`);
     }
     lines.push(`Your mood: ${this.state.mood ?? "not set"}.`);
     const limit = this.config.limits?.turnsPerDay;
@@ -1686,7 +1714,7 @@ class Runtime implements Entity {
     if (secret !== undefined) return secret;
 
     if (!ownerPlace) {
-      const held = this.privacyHold(place.value, text.value, context.thread);
+      const held = this.privacyHold(place.value, [text.value, ...this.pictureNames(args)], context.thread);
       if (held !== undefined) return held;
     }
 
@@ -1786,6 +1814,16 @@ class Runtime implements Entity {
     return { ok: true, value: { files, ids } };
   }
 
+  /** The names of the shelf pictures a say carries. An unknown id has no name here; pictureFiles refuses it. */
+  private pictureNames(args: Args): string[] {
+    const raw = args["attach"];
+    if (!Array.isArray(raw)) return [];
+    return raw.flatMap((id) => {
+      const name = typeof id === "string" ? this.shelf.get(id)?.name : undefined;
+      return name === undefined ? [] : [name];
+    });
+  }
+
   private newestPictureIds(): string[] {
     return this.shelf.list().slice(0, SHELF_LIST).map((meta) => meta.id);
   }
@@ -1882,10 +1920,78 @@ class Runtime implements Entity {
     };
   }
 
-  /** Holds words that contain a term from the owner's privacy list. Logs the category, never the words. */
-  private privacyHold(place: string, text: string, thread: string): Receipt | undefined {
-    const hit = privacyHit(text, this.privacy.current().list);
-    if (hit === undefined) return undefined;
+  /**
+   * The privacy list as it is now. Every read goes through here, so a damaged list is noticed the first time anything
+   * reads it: the board, a say, a world's outward check, and the poll while the Lar runs.
+   */
+  private privacyNow(): PrivacyLoad {
+    const load = this.privacy.current();
+    this.watchPrivacy(load);
+    return load;
+  }
+
+  /**
+   * One episode of damage: the first read that finds the list unreadable keeps a note in the river, and the summoner is
+   * told once in their own place. The episode ends when the list reads again, so a later damage is told again.
+   */
+  private watchPrivacy(load: PrivacyLoad): void {
+    if (load.problem === undefined) {
+      if (this.state.privacyDamage !== undefined) {
+        this.state.privacyDamage = undefined;
+        this.saveState();
+      }
+      return;
+    }
+    if (this.state.privacyDamage !== undefined) return;
+    this.state.privacyDamage = { told: false };
+    this.river.append({
+      thread: "self",
+      kind: "note",
+      source: "body",
+      text: `The privacy list cannot be read (${load.problem}). Outward acts are held until it is fixed.`,
+      atMs: this.nowMs(),
+    });
+    this.saveState();
+    this.tellSummonerOfPrivacy();
+  }
+
+  /** Sends the summoner the damage notice, once per episode, when a place for them is known. */
+  private tellSummonerOfPrivacy(): void {
+    const damage = this.state.privacyDamage;
+    const place = this.state.summonerPlace;
+    if (damage === undefined || damage.told || place === undefined) return;
+    damage.told = true;
+    this.saveState();
+    const problem = this.privacy.current().problem ?? "the file could not be read";
+    this.queueOutbox(async () => {
+      await this.sayTo(place, `${SUMMONER_PREFIX}${PRIVACY_UNREADABLE_REASON} What is wrong: ${problem}.`);
+    });
+  }
+
+  /**
+   * Holds words that contain a term from the owner's privacy list, or every outward say while the list cannot be read.
+   * Logs the category, never the words.
+   */
+  private privacyHold(place: string, texts: string[], thread: string): Receipt | undefined {
+    const hold = outwardHold(this.privacyNow(), texts);
+    if (hold === undefined) return undefined;
+    if (hold.kind === "unreadable") {
+      this.river.append({
+        thread,
+        kind: "note",
+        source: "body",
+        place,
+        text: `Held back a say to ${place}: the privacy list cannot be read. Nothing was sent.`,
+        data: { held: "privacy_unreadable", place },
+        atMs: this.nowMs(),
+      });
+      return {
+        ok: false,
+        summary: "I held that back: your summoner's privacy list cannot be read, so nothing was sent.",
+        refused: { code: "privacy_unreadable", reason: PRIVACY_UNREADABLE_REASON },
+      };
+    }
+    const hit = hold;
     this.river.append({
       thread,
       kind: "note",

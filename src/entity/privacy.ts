@@ -7,8 +7,11 @@
 // the problem is kept so the now board can say so; nothing crashes.
 
 import { readFileSync, statSync } from "node:fs";
+import type { OutwardHold } from "../contracts.js";
 
 export const PRIVACY_FILE = "privacy.json";
+/** What the summoner and the Lar are told when the list cannot be read: every exit is refused until it is fixed. */
+export const PRIVACY_UNREADABLE_REASON = "Your summoner's privacy list cannot be read, so nothing leaves until it is fixed.";
 
 const ROOT_KEYS = ["terms", "categories"] as const;
 const TERM_KEYS = ["term", "category"] as const;
@@ -65,8 +68,9 @@ export function readPrivacyFile(path: string): PrivacyLoad {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch (err) {
-    return { list: EMPTY_PRIVACY_LIST, problem: `the file is not valid JSON (${messageOf(err)})` };
+  } catch {
+    // The parser's message can quote the file, and the file holds the list, so only the fact is kept.
+    return { list: EMPTY_PRIVACY_LIST, problem: "the file is not valid JSON" };
   }
   try {
     return { list: parsePrivacyList(parsed) };
@@ -122,6 +126,34 @@ export function privacyHit(text: string, list: PrivacyList): PrivacyTerm | undef
     if (pattern.test(haystack)) return entry;
   }
   return undefined;
+}
+
+/**
+ * The body's check of outward texts: a listed term in any of them holds the act, and a list that cannot be read holds
+ * every text. Undefined when nothing holds. The first text and term that match are the ones named.
+ */
+export function outwardHold(load: PrivacyLoad, texts: readonly string[]): OutwardHold | undefined {
+  if (load.problem !== undefined) return { kind: "unreadable", problem: load.problem };
+  for (const text of texts) {
+    const hit = privacyHit(text, load.list);
+    if (hit !== undefined) return { kind: "term", term: hit.term, category: hit.category };
+  }
+  return undefined;
+}
+
+/**
+ * The plain words a world puts in its receipt for a held outward act. `what` names the act's words ("the request",
+ * "the command"). The word itself is never named: the receipt goes to the Lar, and the Lar never sees the list.
+ */
+export function outwardHoldWords(hold: OutwardHold, what: string): { code: string; summary: string; reason: string } {
+  if (hold.kind === "unreadable") {
+    return { code: "privacy_unreadable", summary: "The privacy list cannot be read, so nothing was sent or run.", reason: PRIVACY_UNREADABLE_REASON };
+  }
+  return {
+    code: "held_privacy",
+    summary: "Held back: a word on your summoner's privacy list, so nothing was sent or run.",
+    reason: `A word on your summoner's privacy list (${hold.category}) was in ${what}. Nothing was sent or run. Leave that word out, or do nothing.`,
+  };
 }
 
 /** The categories shown to the entity: the listed ones first, then any that only a term names. No terms are shown. */

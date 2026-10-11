@@ -8,6 +8,7 @@ import {
   parsePrivacyList,
   privacyCategories,
   privacyHit,
+  outwardHold,
   readPrivacyFile,
   type PrivacyList,
 } from "./privacy.js";
@@ -154,5 +155,29 @@ describe("the watch on privacy.json", () => {
     writeFileSync(file, JSON.stringify({ terms: [] }), "utf8");
     utimesSync(file, new Date(Date.now() + 60_000), new Date(Date.now() + 60_000));
     expect(watch.current().problem).toBeUndefined();
+  });
+});
+
+describe("outwardHold", () => {
+  it("holds a text that carries a listed term, and names its category", () => {
+    const hold = outwardHold({ list: LIST }, ["https://example.org/?q=fine", "the lantern yard gate"]);
+    expect(hold).toEqual({ kind: "term", term: "Lantern Yard", category: "home" });
+  });
+
+  it("holds nothing when no text carries a listed term", () => {
+    expect(outwardHold({ list: LIST }, ["https://example.org/", "a plain body"])).toBeUndefined();
+    expect(outwardHold({ list: EMPTY_PRIVACY_LIST }, ["Tomas"])).toBeUndefined();
+  });
+
+  it("holds every outward text while the list cannot be read, and says why", () => {
+    const hold = outwardHold({ list: EMPTY_PRIVACY_LIST, problem: "the file is not valid JSON" }, ["a plain body"]);
+    expect(hold).toEqual({ kind: "unreadable", problem: "the file is not valid JSON" });
+  });
+
+  it("does not say the words of a damaged file in its problem text", () => {
+    writeFileSync(file, `{ "terms": [{ "term": "Lantern Yard", "category": "home" }`, "utf8");
+    const { problem } = readPrivacyFile(file);
+    expect(problem).toMatch(/not valid JSON/);
+    expect(problem).not.toContain("Lantern");
   });
 });

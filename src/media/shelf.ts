@@ -158,13 +158,21 @@ export function openShelf(dir: string): Shelf {
   return shelf;
 }
 
-/** The body's way for worlds to keep a picture: the shelf, with the clock of the Lar. */
-export function shelfBody(shelf: Shelf, nowMs: () => number): WorldBody {
+/**
+ * The body's way for worlds to keep a picture: the shelf, with the clock of the Lar. `outward` is the body's check of
+ * outward words; without one every outward check holds, so a body that was not given the privacy list sends nothing.
+ */
+export function shelfBody(
+  shelf: Shelf,
+  nowMs: () => number,
+  outward: WorldBody["outwardHold"] = () => ({ kind: "unreadable", problem: "no privacy check is wired" }),
+): WorldBody {
   return {
     keepPicture(input) {
       const meta = shelf.keep({ bytes: input.bytes, name: input.name, from: input.from, atMs: nowMs() });
       return { id: meta.id, mime: meta.mime, bytes: meta.bytes, name: meta.name };
     },
+    outwardHold: outward,
   };
 }
 

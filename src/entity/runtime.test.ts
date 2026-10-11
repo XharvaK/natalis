@@ -31,6 +31,7 @@ import type { EntityConfig } from "./config.js";
 import { forgetInStateFile, openEntity, STATE_FILE, type Entity, type OpenEntityOptions } from "./runtime.js";
 import { COMMITMENTS_STUB, HOUSEHOLD_PATH, OLD_COMMITMENTS_STUB } from "./commitments.js";
 import { isStopOn } from "./stop.js";
+import { PRIVACY_UNREADABLE_REASON } from "./privacy.js";
 
 // The fake credential is built from parts at run time, so no token-shaped literal sits in the source.
 const FAKE_KEY = ["sk", "proj", "abcdefghijklmnopqrstuvwxyz0123"].join("-");
@@ -801,7 +802,7 @@ describe("the owner's privacy list", () => {
     expect(system).toContain("You are someone, not a service.");
   });
 
-  it("treats a privacy file that is not JSON as empty, and says so on the now board", async () => {
+  it("treats a privacy file that is not JSON as damaged, and says so on the now board", async () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "privacy.json"), "{ not json", "utf8");
     const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
@@ -811,8 +812,75 @@ describe("the owner's privacy list", () => {
     await entity.idle();
 
     const system = systemTextOf(model.requests[0]);
-    expect(system).toContain("Body note: the privacy list could not be read");
+    expect(system).toContain("Body note: your summoner's privacy list cannot be read, so nothing leaves until it is fixed");
     expect(system).toContain("No categories are on the list right now.");
+  });
+
+  it("holds every outward say while the privacy list is damaged, and still lets the Lar answer its summoner", async () => {
+    const room = fakeWorld("fake");
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("say", { place: "fake:room", text: "Hello there." })] }),
+      reply({ toolCalls: [call("end_turn")] }),
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I am here." })] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli, said } = await open(model, {}, [room.world]);
+    await entity.start();
+    writeFileSync(join(dir, "privacy.json"), "{ not json", "utf8");
+
+    cli.send("Are you there?");
+    await entity.idle();
+    expect(room.said).toEqual([]);
+    expect(receiptsShownIn(model.requests[1]).find((item) => item["ok"] === false)).toMatchObject({
+      refused: { code: "privacy_unreadable", reason: PRIVACY_UNREADABLE_REASON },
+    });
+
+    cli.send("Still there?");
+    await entity.idle();
+    expect(said.map((item) => item.text)).toContain("I am here.");
+  });
+
+  it("tells the summoner once when the privacy list turns damaged, and again only after it is fixed and breaks again", async () => {
+    const model = new ScriptedModel(Array.from({ length: 6 }, () => reply({ toolCalls: [call("end_turn")] })));
+    const { entity, cli, said } = await open(model);
+    await entity.start();
+    const file = join(dir, "privacy.json");
+    const notices = (): string[] => said.map((item) => item.text).filter((text) => text.includes("cannot be read"));
+
+    cli.send("Hello?");
+    await entity.idle();
+    writeFileSync(file, "{ not json", "utf8");
+    utimesSync(file, later(60_000), later(60_000));
+    cli.send("Still there?");
+    await entity.idle();
+    expect(notices()).toEqual([`[natalis] ${PRIVACY_UNREADABLE_REASON} What is wrong: the file is not valid JSON.`]);
+
+    cli.send("And now?");
+    await entity.idle();
+    expect(notices()).toHaveLength(1);
+
+    writeFileSync(file, JSON.stringify({ terms: [] }), "utf8");
+    utimesSync(file, later(120_000), later(120_000));
+    cli.send("Fixed?");
+    await entity.idle();
+    writeFileSync(file, "{ broken", "utf8");
+    utimesSync(file, later(180_000), later(180_000));
+    cli.send("Broken again?");
+    await entity.idle();
+    expect(notices()).toHaveLength(2);
+  });
+
+  it("lets an outward say through when the privacy list was never created", async () => {
+    const room = fakeWorld("fake");
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("say", { place: "fake:room", text: "Hello there." })] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model, {}, [room.world]);
+    await entity.start();
+    cli.send("Say hello.");
+    await entity.idle();
+    expect(room.said).toEqual(["Hello there."]);
   });
 
   it("reloads the list when the file changes while the Lar runs", async () => {
