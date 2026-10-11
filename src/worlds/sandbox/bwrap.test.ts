@@ -44,7 +44,7 @@ describe("buildBwrapArgs", () => {
       "/home/lar",
       "--setenv",
       "PATH",
-      "/usr/local/bin:/usr/bin:/bin",
+      "/home/lar/.local/bin:/usr/local/bin:/usr/bin:/bin",
       "--setenv",
       "HOME",
       "/home/lar",
@@ -54,6 +54,9 @@ describe("buildBwrapArgs", () => {
       "--setenv",
       "TERM",
       "dumb",
+      "--setenv",
+      "NPM_CONFIG_PREFIX",
+      "/home/lar/.local",
       "bash",
       "-lc",
       "echo hi",
@@ -74,10 +77,10 @@ describe("buildBwrapArgs", () => {
       expect(args.some((arg) => arg.includes(forbidden))).toBe(false);
     }
     // The only /home path inside the sandbox is the Lar's own home: the bind target, the cwd and HOME.
-    expect(args.filter((arg) => arg.startsWith("/home"))).toEqual([SANDBOX_HOME, SANDBOX_HOME, SANDBOX_HOME]);
+    expect(args.filter((arg) => arg.startsWith("/home"))).toEqual([SANDBOX_HOME, SANDBOX_HOME, SANDBOX_PATH, SANDBOX_HOME, `${SANDBOX_HOME}/.local`]);
   });
 
-  it("clears the environment before setting the four variables, and sets no others", () => {
+  it("clears the environment before setting the five variables, and sets no others", () => {
     const args = buildBwrapArgs({ homeDir: HOME, command: "env" });
     const clear = args.indexOf("--clearenv");
     expect(clear).toBeGreaterThan(-1);
@@ -91,8 +94,9 @@ describe("buildBwrapArgs", () => {
       ["HOME", SANDBOX_HOME],
       ["LANG", "C.UTF-8"],
       ["TERM", "dumb"],
+      ["NPM_CONFIG_PREFIX", "/home/lar/.local"],
     ]);
-    expect(SANDBOX_PATH).toBe("/usr/local/bin:/usr/bin:/bin");
+    expect(SANDBOX_PATH).toBe("/home/lar/.local/bin:/usr/local/bin:/usr/bin:/bin");
   });
 
   it("passes the command as one argument, so nothing in it is split or quoted by the body", () => {

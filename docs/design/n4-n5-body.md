@@ -67,7 +67,8 @@ Linux only; on other systems the world refuses to start with a plain error. Need
 - read-only `/etc` pieces the network and tools need, each with `--ro-bind-try`: `resolv.conf`, `hosts`,
   `nsswitch.conf`, `ssl`, `ca-certificates`, `alternatives`, `localtime`
 - `<entity>/home` bound read-write at `/home/lar` (created on first use); cwd `/home/lar`
-- env: `PATH=/usr/local/bin:/usr/bin:/bin`, `HOME=/home/lar`, `LANG=C.UTF-8`, `TERM=dumb`
+- env: `PATH=/home/lar/.local/bin:/usr/local/bin:/usr/bin:/bin`, `HOME=/home/lar`, `LANG=C.UTF-8`, `TERM=dumb`,
+  `NPM_CONFIG_PREFIX=/home/lar/.local` (what the Lar installs runs by name)
 - never bound: the entity folder itself, the vault, any env file, the host's home
 
 Network is on; installs go to her home (`pip install --user`, `npm` prefix in home). Timeout default 120 s,

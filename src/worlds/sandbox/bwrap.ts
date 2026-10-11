@@ -4,8 +4,8 @@
 /** Where the Lar's home folder appears inside the sandbox. */
 export const SANDBOX_HOME = "/home/lar";
 
-/** The PATH the sandbox's commands see. */
-export const SANDBOX_PATH = "/usr/local/bin:/usr/bin:/bin";
+/** The PATH the sandbox's commands see. What the Lar installs (pip --user, npm -g) lands in ~/.local/bin, first. */
+export const SANDBOX_PATH = "/home/lar/.local/bin:/usr/local/bin:/usr/bin:/bin";
 
 /** Read-only pieces of /etc that networking and common tools need. Each is bound only when it exists on the host. */
 export const ETC_PIECES = ["resolv.conf", "hosts", "nsswitch.conf", "ssl", "ca-certificates", "alternatives", "localtime"];
@@ -68,6 +68,10 @@ export function buildBwrapArgs(input: BwrapInput): string[] {
     "--setenv",
     "TERM",
     "dumb",
+    // npm -g installs into the home too, beside pip --user.
+    "--setenv",
+    "NPM_CONFIG_PREFIX",
+    `${SANDBOX_HOME}/.local`,
     "bash",
     "-lc",
     input.command,
