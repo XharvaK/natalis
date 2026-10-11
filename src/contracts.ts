@@ -281,6 +281,13 @@ export type WorldEvent = {
   atMs?: number;
   /** Whether this event wakes its thread. Defaults to true. */
   wake?: boolean;
+  /**
+   * A full view of the world's state, named by a key that is the same for every event of one kind of view on a thread.
+   * A turn shows only the newest row of each key in full; every older row with the key shows its brief instead.
+   */
+  view?: string;
+  /** The short text an older row with the same view key shows in its place. "An earlier view." when there is none. */
+  brief?: string;
 };
 
 export type SayResult = Receipt;

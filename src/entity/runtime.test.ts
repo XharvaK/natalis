@@ -2195,3 +2195,99 @@ describe("no preset rhythm", () => {
     expect(readStateFile().wakes).toEqual([]);
   });
 });
+
+describe("views shrink to briefs", () => {
+  /** A world that emits events as a full-view world does: each may name a view key and a brief. */
+  function viewWorld(id: string): { world: World; emit(event: WorldEvent): void } {
+    let emitter: ((event: WorldEvent) => void) | undefined;
+    return {
+      world: {
+        id,
+        async start(next) {
+          emitter = next;
+        },
+        async stop() {
+          emitter = undefined;
+        },
+        async say(): Promise<Receipt> {
+          return { ok: true, summary: "Delivered." };
+        },
+        tools: () => [],
+        now: () => `${id} is open.`,
+      },
+      emit(event) {
+        if (emitter === undefined) throw new Error("the view world is not started");
+        emitter(event);
+      },
+    };
+  }
+
+  const VIEW_PLACE = "fake:game";
+
+  it("shows only the newest view of a key in full, and the older ones by their brief", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const game = viewWorld("fake");
+    const { entity } = await open(model, {}, [game.world]);
+    await entity.start();
+
+    game.emit({ world: "fake", place: VIEW_PLACE, source: "outside", text: "Full text one.", view: "game", brief: "Brief one.", wake: false });
+    game.emit({ world: "fake", place: VIEW_PLACE, source: "outside", text: "Full text two.", view: "game", brief: "Brief two.", wake: false });
+    game.emit({ world: "fake", place: VIEW_PLACE, source: "outside", text: "Full text three.", view: "game", brief: "Brief three.", wake: false });
+    game.emit({ world: "fake", place: VIEW_PLACE, source: "outside", text: "A plain line." });
+    await entity.idle();
+
+    expect(model.requests).toHaveLength(1);
+    const fresh = userTextOf(model.requests[0]).split("New:")[1] ?? "";
+    expect(fresh).toContain("Brief one.");
+    expect(fresh).toContain("Brief two.");
+    expect(fresh).not.toContain("Full text one.");
+    expect(fresh).not.toContain("Full text two.");
+    expect(fresh).toContain("Full text three.");
+    expect(fresh).not.toContain("Brief three.");
+    expect(fresh).toContain("A plain line.");
+  });
+
+  it("keeps the shrinking across a restart, for views in the recent transcript", async () => {
+    const first = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const game = viewWorld("fake");
+    const a = await open(first, {}, [game.world]);
+    await a.entity.start();
+    game.emit({ world: "fake", place: VIEW_PLACE, source: "outside", text: "Full text one.", view: "game", brief: "Brief one.", wake: false });
+    game.emit({ world: "fake", place: VIEW_PLACE, source: "outside", text: "Full text two.", view: "game", brief: "Brief two.", wake: false });
+    game.emit({ world: "fake", place: VIEW_PLACE, source: "outside", text: "A plain line." });
+    await a.entity.idle();
+    await a.entity.stop();
+
+    const second = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const restarted = viewWorld("fake");
+    const b = await open(second, {}, [restarted.world]);
+    await b.entity.start();
+    restarted.emit({ world: "fake", place: VIEW_PLACE, source: "outside", text: "Full text three.", view: "game", brief: "Brief three." });
+    await b.entity.idle();
+
+    expect(second.requests).toHaveLength(1);
+    const [recent = "", fresh = ""] = userTextOf(second.requests[0]).split("New:");
+    expect(recent).toContain("Brief one.");
+    expect(recent).toContain("Brief two.");
+    expect(recent).not.toContain("Full text one.");
+    expect(recent).not.toContain("Full text two.");
+    expect(fresh).toContain("Full text three.");
+    expect(fresh).not.toContain("Brief three.");
+  });
+
+  it("says an earlier view with no brief as An earlier view, never its full text", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const game = viewWorld("fake");
+    const { entity } = await open(model, {}, [game.world]);
+    await entity.start();
+    game.emit({ world: "fake", place: VIEW_PLACE, source: "outside", text: "Full text one.", view: "game", wake: false });
+    game.emit({ world: "fake", place: VIEW_PLACE, source: "outside", text: "Full text two.", view: "game", wake: false });
+    game.emit({ world: "fake", place: VIEW_PLACE, source: "outside", text: "A plain line." });
+    await entity.idle();
+
+    const fresh = userTextOf(model.requests[0]).split("New:")[1] ?? "";
+    expect(fresh).toContain("An earlier view.");
+    expect(fresh).not.toContain("Full text one.");
+    expect(fresh).toContain("Full text two.");
+  });
+});

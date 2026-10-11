@@ -719,6 +719,7 @@ class Runtime implements Entity {
         return;
       }
     }
+    const data = eventData(event);
     const row = this.river.append({
       kind: "event",
       thread,
@@ -726,7 +727,7 @@ class Runtime implements Entity {
       ...(actor === undefined ? {} : { actor }),
       source: event.source,
       ...(event.text === undefined ? {} : { text: event.text }),
-      ...(event.data === undefined ? {} : { data: event.data }),
+      ...(data === undefined ? {} : { data }),
       atMs,
     });
     if (event.source === "owner") {
@@ -804,12 +805,14 @@ class Runtime implements Entity {
     const done = this.doneBeforeCut(thread, seen);
     this.countTurn(nowMs);
     const { text: system, sizes } = this.systemText(thread, fresh, shown, nowMs, snapshot);
+    // Among the rows shown, an older view of a key shows its brief; the newest of each key shows its full text.
+    const briefed = olderViewRows([...recent, ...fresh]);
     const event = [
       "Recent here:",
-      ...(recent.length === 0 ? ["(nothing yet)"] : recent.map((row) => this.lineFor(row))),
+      ...(recent.length === 0 ? ["(nothing yet)"] : recent.map((row) => this.lineFor(row, briefed.has(row.seq)))),
       "",
       "New:",
-      ...fresh.map((row) => this.lineFor(row)),
+      ...fresh.map((row) => this.lineFor(row, briefed.has(row.seq))),
       ...(done.length === 0
         ? []
         : [
@@ -1478,7 +1481,7 @@ class Runtime implements Entity {
     return [...found.values()]
       .sort((a, b) => b.score - a.score || b.row.seq - a.row.seq)
       .slice(0, RECALL_LIMIT)
-      .map(({ row }) => `[${this.stamp(row.atMs)} ${row.thread} ${who(row)}] ${clip(row.text ?? "", RECALL_CLIP)}`)
+      .map(({ row }) => `[${this.stamp(row.atMs)} ${row.thread} ${who(row)}] ${clip(viewKeyOf(row) === undefined ? row.text ?? "" : briefOf(row), RECALL_CLIP)}`)
       .join("\n");
   }
 
@@ -1506,9 +1509,10 @@ class Runtime implements Entity {
       .reverse();
   }
 
-  private lineFor(row: RiverRow): string {
+  /** One row as one line. A row shown by its brief (an older view, see olderViewRows) gives the brief in place of its text. */
+  private lineFor(row: RiverRow, brief = false): string {
     const outside = row.source === "outside" ? " (outside)" : "";
-    return `[${this.clock(row.atMs)} ${who(row)}${outside}] ${row.text ?? ""}`;
+    return `[${this.clock(row.atMs)} ${who(row)}${outside}] ${brief ? briefOf(row) : row.text ?? ""}`;
   }
 
   private clock(atMs: number): string {
@@ -2173,6 +2177,45 @@ function pictureAbility(vision: boolean): string {
   return vision
     ? "You can see pictures: look shows one picture from your shelf to you, once, on your next call. You can also keep and send them."
     : "You cannot see pictures with your current model; you can keep and send them.";
+}
+
+/** The view key an event row carries (see WorldEvent.view), or undefined for a row that is not a view. */
+function viewKeyOf(row: RiverRow): string | undefined {
+  const view = row.data?.["view"];
+  return typeof view === "string" ? view : undefined;
+}
+
+/** The data the row keeps: the event's own data, with its view key and brief; undefined when there is neither. */
+function eventData(event: WorldEvent): Record<string, unknown> | undefined {
+  const extra: Record<string, unknown> = {};
+  if (event.view !== undefined) extra.view = event.view;
+  if (event.brief !== undefined) extra.brief = event.brief;
+  if (event.data === undefined && Object.keys(extra).length === 0) return undefined;
+  return { ...(event.data ?? {}), ...extra };
+}
+
+/** The text an older view shows in place of its full text. */
+function briefOf(row: RiverRow): string {
+  const brief = row.data?.["brief"];
+  return typeof brief === "string" ? brief : "An earlier view.";
+}
+
+/**
+ * The seqs of the rows that show their brief: for each view key, every row with that key except the newest one of it.
+ * Rows without a view key are never in the set.
+ */
+function olderViewRows(rows: readonly RiverRow[]): Set<number> {
+  const newest = new Map<string, number>();
+  for (const row of rows) {
+    const view = viewKeyOf(row);
+    if (view !== undefined) newest.set(view, Math.max(newest.get(view) ?? 0, row.seq));
+  }
+  const older = new Set<number>();
+  for (const row of rows) {
+    const view = viewKeyOf(row);
+    if (view !== undefined && newest.get(view) !== row.seq) older.add(row.seq);
+  }
+  return older;
 }
 
 function who(row: RiverRow): string {
