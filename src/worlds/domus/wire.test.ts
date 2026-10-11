@@ -84,13 +84,33 @@ describe("observations (v1)", () => {
     expect(refusal(() => parseObservation(view({ day: { big: "x".repeat(17000) } }), NOW)).code).toBe("invalid_body");
   });
 
-  it("keeps the option table up to 32 objects and 8 KiB, and refuses more", () => {
+  it("keeps the option table up to 160 objects and 32 KiB, and refuses more", () => {
     const options = [{ object: "Test kettle", object_id: "obj-1", acts: [{ ref: "a1", guid64: "123", text: "Boil water" }] }];
     const parsed = parseObservation(view({ options }), NOW);
     expect(parsed.options).toEqual(options);
     expect(refusal(() => parseObservation(view({ options: ["not an object"] }), NOW)).code).toBe("invalid_body");
-    const heavy = [{ object: "x", object_id: "y", acts: [], note: "z".repeat(9000) }];
+    const many = Array.from({ length: 161 }, (_, index) => ({ object: `Test object ${index}`, object_id: `obj-${index}`, acts: [] }));
+    expect(refusal(() => parseObservation(view({ options: many }), NOW)).code).toBe("invalid_body");
+    expect(parseObservation(view({ options: many.slice(0, 160) }), NOW).options).toHaveLength(160);
+    const heavy = [{ object: "x", object_id: "y", acts: [], note: "z".repeat(33_000) }];
     expect(refusal(() => parseObservation(view({ options: heavy }), NOW)).code).toBe("invalid_body");
+  });
+
+  it("reads a room and a near flag on an option object, and refuses one of the wrong kind", () => {
+    const options = [{ object: "Test mailbox", object_id: "obj-2", room: "Test hall", near: false, acts: [{ ref: "a2", guid64: "124", text: "Check the mail" }] }];
+    expect(parseObservation(view({ options }), NOW).options).toEqual(options);
+    expect(refusal(() => parseObservation(view({ options: [{ object: "x", object_id: "y", acts: [], room: "r".repeat(65) }] }), NOW)).code).toBe("invalid_body");
+    expect(refusal(() => parseObservation(view({ options: [{ object: "x", object_id: "y", acts: [], near: "yes" }] }), NOW)).code).toBe("invalid_body");
+  });
+
+  it("keeps options_cut as the count and the rooms left out, and refuses a malformed one", () => {
+    expect(parseObservation(view(), NOW).optionsCut).toBeUndefined();
+    const parsed = parseObservation(view({ options_cut: { objects: 12, rooms: ["Test attic", "Test garden"] } }), NOW);
+    expect(parsed.optionsCut).toEqual({ objects: 12, rooms: ["Test attic", "Test garden"] });
+    expect(parsed.normalized.options_cut).toEqual({ objects: 12, rooms: ["Test attic", "Test garden"] });
+    expect(refusal(() => parseObservation(view({ options_cut: { objects: -1, rooms: [] } }), NOW)).code).toBe("invalid_body");
+    expect(refusal(() => parseObservation(view({ options_cut: { objects: 1, rooms: [3] } }), NOW)).code).toBe("invalid_body");
+    expect(refusal(() => parseObservation(view({ options_cut: { objects: 1, rooms: [], extra: true } }), NOW)).code).toBe("invalid_body");
   });
 
   it("digests the same content the same way whatever order its keys came in", () => {

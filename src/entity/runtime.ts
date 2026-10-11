@@ -496,6 +496,8 @@ class Runtime implements Entity {
   private readonly oversized = new Map<string, number>();
   /** The river seq each running turn started from, by turn id. A say reads it to see which asks the turn saw. */
   private readonly turnSnapshots = new Map<string, number>();
+  /** When each running turn began, by turn id: a say held because another thread spoke meanwhile compares with it. */
+  private readonly turnStarts = new Map<string, number>();
   private readonly wakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Threads held back by the daily turn limit. They wait for the next local day; idle does not wait for them. */
   private readonly limited = new Set<string>();
@@ -818,6 +820,7 @@ class Runtime implements Entity {
     ].join("\n");
 
     this.turnSnapshots.set(turnId, snapshot);
+    this.turnStarts.set(turnId, nowMs);
     // A world with a model of its own runs its turns on that model. A place is named for its world ("domus:...").
     const world = this.worldFor(thread)?.id ?? "";
     const worldModel = this.worldModels[world];
@@ -836,7 +839,10 @@ class Runtime implements Entity {
       turnId,
       signal: this.abort.signal,
       ...(effort === undefined ? {} : { effort }),
-    }).finally(() => this.turnSnapshots.delete(turnId));
+    }).finally(() => {
+      this.turnSnapshots.delete(turnId);
+      this.turnStarts.delete(turnId);
+    });
 
     if (result.endedBy === "aborted") {
       // Stopping: the events were not handled, so the cursor stays and they are taken again next start.
@@ -1533,7 +1539,7 @@ class Runtime implements Entity {
         {
           name: "say",
           description:
-            "Say words to a place. Give the place as it was named to you, for example discord:room:general. Before anything is sent the words are checked: secrets, your summoner's privacy list, and claims your own record contradicts are held back, and the receipt says why. Set knowingly to true only to send words your record contradicts exactly as they are; it skips that one check, never the others.",
+            "Say words to a place. Give the place as it was named to you, for example discord:room:general. Before anything is sent the words are checked: secrets, your summoner's privacy list, and claims your own record contradicts are held back, and the receipt says why. If another of your threads said something in that place after this turn began, the say is held and the receipt says what was said and when. Set knowingly to true only to send words your record contradicts exactly as they are, or to send words anyway after a held say; it skips the honesty check and the check for another thread's words, never the others.",
           parameters: {
             type: "object",
             properties: {
@@ -1548,7 +1554,7 @@ class Runtime implements Entity {
               },
               knowingly: {
                 type: "boolean",
-                description: "Optional. True sends words your record contradicts, as they are. Leave it out otherwise.",
+                description: "Optional. True sends words your record contradicts, or words held because another thread spoke there meanwhile, as they are. Leave it out otherwise.",
               },
             },
             required: ["place", "text"],
@@ -1696,6 +1702,10 @@ class Runtime implements Entity {
     }
     // The check may have taken a while, and the stop can turn on in that time: it is checked again before the words go.
     if (!ownerPlace && this.stopIsOn()) return refuse("stopped", STOPPED_TEXT, STOPPED_TEXT);
+    if (!knowingly) {
+      const meanwhile = this.spokenMeanwhile(place.value, context.thread, context.turnId);
+      if (meanwhile !== undefined) return meanwhile;
+    }
 
     const { files, ids } = pictures.value;
     const options = {
@@ -1970,6 +1980,23 @@ class Runtime implements Entity {
     const age = nowMs - claim.atMs;
     if (claim.thread === thread || age > CLAIM_WINDOW_MS) return undefined;
     return { thread: claim.thread, agoSeconds: Math.max(0, Math.round(age / 1000)) };
+  }
+
+  /**
+   * Another thread spoke in this place after this turn began: the say is held, so the Lar does not answer twice. The
+   * receipt says what was said and how long ago; she sends with knowingly: true if she still wants to. Information, not a rule.
+   */
+  private spokenMeanwhile(place: string, thread: string, turnId: string): Receipt | undefined {
+    const started = this.turnStarts.get(turnId);
+    if (started === undefined || !Object.hasOwn(this.state.placeClaims, place)) return undefined;
+    const claim = this.state.placeClaims[place] as PlaceClaim;
+    if (claim.thread === thread || claim.atMs < started) return undefined;
+    const seconds = Math.max(0, Math.round((this.nowMs() - claim.atMs) / 1000));
+    return refuse(
+      "spoken_meanwhile",
+      `Nothing was sent to ${place}: ${claim.thread} said this there ${seconds} s ago, while this turn was running.`,
+      `Thread ${claim.thread} said "${claim.text}" in ${place} ${seconds} s ago, after this turn began. Nothing was sent. Say it again with knowingly: true if you still want to send your words.`,
+    );
   }
 
   /** One line per place another thread spoke in lately, newest first. */

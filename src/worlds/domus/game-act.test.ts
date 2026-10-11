@@ -33,7 +33,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "domus-tool-"));
   db = openDomusDb(dir);
   seq = 0;
-  open = { db, nowMs: () => T0, attachedSession: () => HELPER };
+  open = { db, nowMs: () => T0, attachedSession: () => HELPER, lastAttachedMs: () => T0 };
   tool = gameActTool(() => open);
 });
 
@@ -92,7 +92,7 @@ describe("game_act: where it works", () => {
 describe("game_act: a view from an earlier helper session", () => {
   it("refuses a choice from a view the game sent before it restarted, and requests nothing", async () => {
     view(VIEW);
-    open = { db, nowMs: () => T0, attachedSession: () => "helper-2" };
+    open = { db, nowMs: () => T0, attachedSession: () => "helper-2", lastAttachedMs: () => T0 };
     const receipt = await run({ option: "a1" });
     expect(receipt).toMatchObject({ ok: false, refused: { code: "view_from_earlier_session" } });
     expect(receipt.refused?.reason).toContain("The game restarted since that view, and its new view has not arrived yet.");
@@ -101,7 +101,7 @@ describe("game_act: a view from an earlier helper session", () => {
 
   it("requests the choice when the attached session is the one that sent the view", async () => {
     view(VIEW);
-    expect(await run({ option: "a1" })).toMatchObject({ ok: true, data: { attached: true } });
+    expect(await run({ option: "a1" })).toMatchObject({ ok: true });
     expect(acts()).toHaveLength(1);
   });
 });
@@ -144,7 +144,7 @@ describe("game_act: requests", () => {
     expect(receipt.summary.startsWith("Requested: Boil water (Test kettle) (a1).")).toBe(true);
     expect(receipt.summary).toContain("Then, each after the one before completes: a3 (Sit down (Test bench)).");
     expect(receipt.summary).not.toMatch(/^Done/);
-    expect(receipt.data).toMatchObject({ option: "a1", label: "Boil water (Test kettle)", forSummoner: false, then: ["a3"], attached: true });
+    expect(receipt.data).toMatchObject({ option: "a1", label: "Boil water (Test kettle)", forSummoner: false, then: ["a3"] });
     const rows = acts();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ thread: THREAD, attachment: HELPER, option_ref: "a1", object_id: "obj-kettle", guid64: "111", state: "requested" });
@@ -158,12 +158,22 @@ describe("game_act: requests", () => {
     expect(acts()[0]).toMatchObject({ for_summoner: 1 });
   });
 
-  it("says the game is not attached, and that the request may expire, when it is not", async () => {
+  it("refuses at once with not_attached when the game is not attached, queues nothing, and says when it was last attached", async () => {
     view(VIEW);
-    open = { db, nowMs: () => T0, attachedSession: () => undefined };
+    open = { db, nowMs: () => T0, attachedSession: () => undefined, lastAttachedMs: () => T0 - 120_000 };
     const receipt = await run({ option: "a1" });
-    expect(receipt.summary).toContain("The game is not attached right now");
-    expect(receipt.data).toMatchObject({ attached: false });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "not_attached" } });
+    expect(receipt.refused?.reason).toContain(`It was last attached at ${new Date(T0 - 120_000).toISOString()}.`);
+    expect(acts()).toEqual([]);
+  });
+
+  it("says it has never been attached when no attachment was ever seen", async () => {
+    view(VIEW);
+    open = { db, nowMs: () => T0, attachedSession: () => undefined, lastAttachedMs: () => undefined };
+    const receipt = await run({ option: "a1" });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "not_attached" } });
+    expect(receipt.refused?.reason).toContain("It has not been attached since this world started.");
+    expect(acts()).toEqual([]);
   });
 
   it("refuses a plan with an unknown step, and requests nothing", async () => {
@@ -201,5 +211,51 @@ describe("game_act: requests", () => {
     const receipt = await run({ option: "a1", answer: { rows: [{ option: "a1" }] } });
     expect(receipt).toMatchObject({ ok: false, refused: { code: "not_a_dialog" } });
     expect(acts()).toEqual([]);
+  });
+});
+
+describe("game_act: the words she read still name the ref", () => {
+  it("requests the act when the ref names the words she read, in any case and with spaces around them", async () => {
+    view(VIEW);
+    expect(await run({ option: "a1", expect: "  boil WATER " })).toMatchObject({ ok: true });
+    expect(acts()).toHaveLength(1);
+  });
+
+  it("refuses with ref_changed when the ref now names something else, says what it names, and requests nothing", async () => {
+    view(VIEW);
+    const receipt = await run({ option: "a1", expect: "Tidy up" });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "ref_changed" } });
+    expect(receipt.refused?.reason).toContain("a1 now names: Boil water (Test kettle).");
+    expect(receipt.refused?.reason).toContain('You expected "Tidy up".');
+    expect(acts()).toEqual([]);
+  });
+
+  it("checks each then ref against expect_then, by its place in the list, and names the then ref that changed", async () => {
+    view(VIEW);
+    const receipt = await run({ option: "a1", then: ["a3", "a4"], expect_then: ["sit down", "Sit"] });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "ref_changed" } });
+    expect(receipt.refused?.reason).toContain("a4 (in then) now names: Stand up (Test bench).");
+    expect(acts()).toEqual([]);
+  });
+
+  it("checks only the then refs that expect_then names when it is shorter", async () => {
+    view(VIEW);
+    expect(await run({ option: "a1", then: ["a3", "a4"], expect_then: ["sit down"] })).toMatchObject({ ok: true });
+  });
+
+  it("refuses a malformed expect or expect_then as bad_args", async () => {
+    view(VIEW);
+    expect(await run({ option: "a1", expect: 5 })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await run({ option: "a1", expect: "x".repeat(201) })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await run({ option: "a1", then: ["a3"], expect_then: "Sit" })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await run({ option: "a1", then: ["a3"], expect_then: ["x".repeat(201)] })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await run({ option: "a1", then: ["a3"], expect_then: ["a", "b", "c"] })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(acts()).toEqual([]);
+  });
+
+  it("describes expect and expect_then in the tool's parameters", () => {
+    const properties = tool.spec.parameters.properties as Record<string, { description?: string }>;
+    expect(properties["expect"]?.description).toContain("as you read them");
+    expect(properties["expect_then"]?.description).toContain("then");
   });
 });

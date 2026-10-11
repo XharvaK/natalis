@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { OptionObject } from "./answers.js";
-import { findOption, labelOf, optionsOf, refsOf, renderView, VIEW_TEXT_MAX } from "./options.js";
+import { choicesSignature, findOption, labelOf, optionsOf, refsOf, renderView, VIEW_TEXT_MAX } from "./options.js";
 
 const TABLE: OptionObject[] = [
   { object: "Test kettle", object_id: "obj-kettle", where: "here, 2.0 m", acts: [
@@ -40,10 +40,59 @@ describe("rendering a view", () => {
       options: TABLE,
     });
     expect(text).toContain("The game (slot3) shows:");
-    expect(text).toContain("- sim arrives: subject Pim Dorrow, count 2");
     expect(text).toContain("Choices you can name with game_act, by ref:");
     expect(text).toContain("- Test kettle (here, 2.0 m): a1 Boil water; a2 Tidy up [a screen only you can use]");
     expect(text).toContain("- Test bench [no way to get there from here]: a3 Sit down");
+  });
+
+  it("says each percept kind in plain words, with the game's own names humanised and no numbers for needs or rooms", () => {
+    const text = renderView({
+      world: "slot3",
+      percepts: [
+        { kind: "need", salience: 0.6, facts: { subject: "social", band: "distress", value: 5 } },
+        { kind: "need", salience: 0.6, facts: { subject: "hunger", band: "ok", value: 61 } },
+        { kind: "need", salience: 0.6, facts: { subject: "fun", band: "full", value: 99 } },
+        { kind: "need", salience: 0.6, facts: { subject: "energy", band: "critical", value: 2 } },
+        { kind: "moodlet", salience: 0.7, facts: { subject: "mood", from: "Mood_Sad", to: "Mood_Flirty" } },
+        { kind: "interaction", salience: 0.5, facts: {
+          subject: "sim", bucket: "started", affordance_text: "<class 'sims4.tuning.instances.mirror_GussyUp'>", origin: "her_choice",
+        } },
+        { kind: "interaction", salience: 0.5, facts: {
+          subject: "sim", bucket: "ended", affordance_text: "<class 'sims4.tuning.instances.sim-stand'>", origin: "game", code: "finished", detail: "ok",
+        } },
+        { kind: "interaction", salience: 0.5, facts: { subject: "sim", bucket: "started", affordance_text: "<class 'x.y'>", origin: "native_reaction" } },
+        { kind: "presence", salience: 0.5, facts: {
+          subject: "1", bucket: "arrived", name: "Mara Quill", distance_m: "49.2", doing: "<class 'sims4.tuning.instances.sim-stand'>", role: "guest",
+        } },
+        { kind: "presence", salience: 0.5, facts: { subject: "2", bucket: "left", name: "Tobin Ash" } },
+        { kind: "env", salience: 0.4, facts: { subject: "self", object: "9", bucket: "room", from_room: "4" } },
+        { kind: "posture", salience: 0.4, facts: { subject: "self", bucket: "Sitting" } },
+        { kind: "sleep_onset", salience: 1, facts: { onset_minute: 1320 } },
+        { kind: "gap", salience: 1, facts: { subject: "session", lost: "3" } },
+      ],
+      options: [],
+    });
+    expect(text).toContain("- Social: very low.");
+    expect(text).toContain("- Hunger: fine.");
+    expect(text).toContain("- Fun: full.");
+    expect(text).toContain("- Energy: critical.");
+    expect(text).toContain("- Mood: flirty now (was sad).");
+    expect(text).toContain("- Started: mirror gussy up (your act).");
+    expect(text).toContain("- Ended: sim stand (the game). Result code finished, detail ok.");
+    expect(text).toContain("- Started: y (the game, on its own).");
+    expect(text).toContain("- Mara Quill arrived, 49 m away, sim stand (guest).");
+    expect(text).toContain("- Tobin Ash left.");
+    expect(text).toContain("- She moved rooms.");
+    expect(text).toContain("- Posture: sitting.");
+    expect(text).toContain("- She fell asleep.");
+    expect(text).toContain("- Part of the game's feed was missed.");
+    expect(text).not.toContain("subject");
+    expect(text).not.toContain("value");
+  });
+
+  it("keeps the old line for a kind it does not know", () => {
+    const text = renderView({ world: "slot3", percepts: [{ kind: "sim_arrives", salience: 0.9, facts: { subject: "Pim Dorrow", count: 2 } }], options: [] });
+    expect(text).toContain("- sim arrives: subject Pim Dorrow, count 2");
   });
 
   it("says so when the view offers no choices, and states answer rules in plain words", () => {
@@ -62,9 +111,65 @@ describe("rendering a view", () => {
 
   it("keeps the view within its size, and says how many percepts it left out", () => {
     const long = "z".repeat(80);
-    const percepts = Array.from({ length: 32 }, (_, index) => ({ kind: `kind_${index}`, salience: 0.5, facts: { a: long, b: long, c: long } }));
+    const percepts = Array.from({ length: 100 }, (_, index) => ({ kind: `kind_${index}`, salience: 0.5, facts: { a: long, b: long, c: long } }));
     const text = renderView({ world: "slot3", percepts, options: [] });
     expect(text.length).toBeLessThanOrEqual(VIEW_TEXT_MAX + 200);
     expect(text).toMatch(/more not shown\)/);
+  });
+});
+
+describe("rendering the choices of a whole lot", () => {
+  const LOT: OptionObject[] = [
+    { object: "Test fridge", object_id: "o1", where: "here, 1.0 m", near: true, acts: [{ ref: "a1", guid64: "1", text: "Cook" }] },
+    { object: "Test mailbox", object_id: "o2", room: "Test hall", acts: [{ ref: "a2", guid64: "2", text: "Check the mail" }] },
+    { object: "Test lamp", object_id: "o3", room: "Test attic", acts: [{ ref: "a3", guid64: "3", text: "All lights on" }] },
+    { object: "Test door", object_id: "o4", acts: [{ ref: "a4", guid64: "4", text: "Open" }] },
+  ];
+
+  it("lists the near objects first, then the rest grouped by room, and says what the game left out", () => {
+    const text = renderView({ world: "slot3", percepts: [], options: LOT, optionsCut: { objects: 3, rooms: ["Test garden"] } });
+    const near = text.indexOf("- Test fridge (here, 1.0 m): a1 Cook");
+    const elsewhere = text.indexOf("Elsewhere on the lot:");
+    expect(near).toBeGreaterThan(-1);
+    expect(near).toBeLessThan(elsewhere);
+    expect(text).toContain("Test hall:\n- Test mailbox: a2 Check the mail");
+    expect(text).toContain("Test attic:\n- Test lamp: a3 All lights on");
+    expect(text).toContain("Other rooms:\n- Test door: a4 Open");
+    expect(text.indexOf("Test hall:")).toBeLessThan(text.indexOf("Test attic:"));
+    expect(text.endsWith("The game left out 3 more choice object(s) on the lot, in Test garden.")).toBe(true);
+  });
+
+  it("says the rooms it left out as not named when the game named none", () => {
+    const text = renderView({ world: "slot3", percepts: [], options: LOT, optionsCut: { objects: 2, rooms: [] } });
+    expect(text).toContain("The game left out 2 more choice object(s) on the lot, in rooms it did not name.");
+  });
+
+  it("gives the choices in full only when they differ from the last view on the thread, ignoring distances", () => {
+    const sig = choicesSignature(LOT);
+    const moved = LOT.map((object) => ({ ...object, where: object.where ? "9 m" : object.where }));
+    const same = renderView({ world: "slot3", percepts: [], options: moved, lastChoices: sig, optionsCut: { objects: 1, rooms: ["Test garden"] } });
+    expect(same).toContain("Choices: the same as in the last view.");
+    expect(same).not.toContain("Test mailbox");
+    expect(same.endsWith("The game left out 1 more choice object(s) on the lot, in Test garden.")).toBe(true);
+    const grown = renderView({
+      world: "slot3", percepts: [], options: [...LOT, { object: "Test rug", object_id: "o5", acts: [{ ref: "a5", guid64: "5", text: "Sit" }] }], lastChoices: sig,
+    });
+    expect(grown).toContain("Test rug");
+    expect(grown).not.toContain("the same as in the last view");
+    expect(renderView({ world: "slot3", percepts: [], options: LOT })).toContain("Test mailbox");
+  });
+
+  it("counts a change in a choice's words, its no-way or its opens as a change", () => {
+    const sig = choicesSignature(LOT);
+    const opens = LOT.map((object) => (object.object === "Test door" ? { ...object, acts: [{ ...object.acts[0]!, opens: "a screen only you can use" }] } : object));
+    expect(choicesSignature(opens)).not.toBe(sig);
+    const worded = LOT.map((object) => (object.object === "Test door" ? { ...object, acts: [{ ...object.acts[0]!, text: "Close" }] } : object));
+    expect(choicesSignature(worded)).not.toBe(sig);
+    expect(choicesSignature(LOT.map((object) => ({ ...object, where: "3 m" })))).toBe(sig);
+    expect(choicesSignature([])).toBe("");
+  });
+
+  it("names the view's size as twenty thousand characters", () => {
+    expect(VIEW_TEXT_MAX).toBe(20_000);
   });
 });

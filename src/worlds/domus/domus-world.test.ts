@@ -111,6 +111,7 @@ function gameAct(args: Record<string, unknown>, turnId: string): Promise<Receipt
 
 describe("forget", () => {
   it("erases the words from the game store while the world runs, so the newest view offers no choices", async () => {
+    await attach();
     await call("/domus/observation", viewBody({ observation_id: "helper-1.f1", seq: 600 }));
     expect((await gameAct({ option: "a1" }, "t-before")).ok).toBe(true);
     expect(world!.forget(["PIM", "dorrow"])).toBe(1);
@@ -158,6 +159,13 @@ describe("auth", () => {
 });
 
 describe("observations", () => {
+  it("starts the view with her body now, from the portrait the helper sent with it", async () => {
+    await attach();
+    await call("/domus/observation", viewBody({ portrait: { zone: { room_label: "Test kitchen" }, paused: true, mood: "Flirty" } }));
+    expect(events).toHaveLength(1);
+    expect(events[0]?.text?.startsWith("Your body now:\nThe game is attached.\nThe game is paused.\nRoom: Test kitchen.\nMood: flirty.\n\nThe game (slot3) shows:\n")).toBe(true);
+  });
+
   it("admits a new view with 202, and emits one outside event on the game thread with its refs", async () => {
     const reply = await call("/domus/observation", viewBody());
     expect(reply.status).toBe(202);
@@ -236,6 +244,7 @@ describe("heartbeats", () => {
 
 describe("acts: the Lar asks, the helper pulls, the game reports", () => {
   beforeEach(async () => {
+    await attach();
     await call("/domus/observation", viewBody());
     events = [];
   });
@@ -297,6 +306,7 @@ describe("acts: the Lar asks, the helper pulls, the game reports", () => {
   });
 
   it("withdraws a waiting act and its plan when the summoner's stop goes on after the request", async () => {
+    await attach();
     await gameAct({ option: "a1", then: ["a3"] }, "t-5");
     writeStop(dir, "test");
     const sync = await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [] });
@@ -329,6 +339,7 @@ describe("snapshot, feed and undo", () => {
   });
 
   it("undoes the views after the time, writes one body row saying the game went back, and drops the undone view from the choices", async () => {
+    await attach();
     const ghost = [{ object: "Ghost", object_id: "obj-ghost", acts: [{ ref: "a8", guid64: "808", text: "Haunt" }] }];
     // The view before the undone one, which stands after the undo.
     await call("/domus/observation", viewBody({ observation_id: "helper-1.before", seq: 499, source_time_ms: clock - 1000 }));
@@ -348,6 +359,7 @@ describe("snapshot, feed and undo", () => {
   });
 
   it("withdraws the requested act and the waiting plan steps chosen on the undone view, with notes that do not wake", async () => {
+    await attach();
     const ghost = [{ object: "Ghost", object_id: "obj-ghost", acts: [
       { ref: "a8", guid64: "808", text: "Haunt" },
       { ref: "a9", guid64: "909", text: "Vanish" },
@@ -512,5 +524,71 @@ describe("the world's surface", () => {
     const idle = make();
     expect(idle.now()).toBe("Domus: not running.");
     expect(idle.listeningAddress()).toBeNull();
+  });
+});
+
+describe("the game's attachment, in the views and on the game thread", () => {
+  const heartbeat = (attached: boolean, sentAt: number) => ({
+    v: 1, helper_session: "helper-1", sent_at_ms: sentAt, attached, world: "slot3",
+  });
+
+  it("starts a view with 'The game is attached.' while its helper is attached", async () => {
+    await call("/domus/heartbeat", heartbeat(true, T0));
+    await call("/domus/observation", viewBody());
+    expect(events[0]?.text?.startsWith("Your body now:\nThe game is attached.\n\nThe game (slot3) shows:\n")).toBe(true);
+  });
+
+  it("says the game is not attached, and when it was last seen, in a view that arrives after the helper went quiet", async () => {
+    await call("/domus/heartbeat", heartbeat(true, T0));
+    clock = T0 + 240_000;
+    await call("/domus/observation", viewBody());
+    expect(events[0]?.text?.startsWith("Your body now:\nThe game is not attached (last seen 4 minutes ago).\n")).toBe(true);
+  });
+
+  it("tells the game thread once when the helper says the game is no longer attached, and again only after a new attach", async () => {
+    await call("/domus/heartbeat", heartbeat(true, T0));
+    clock = T0 + 1_000;
+    await call("/domus/heartbeat", heartbeat(false, clock));
+    clock = T0 + 2_000;
+    await call("/domus/heartbeat", heartbeat(false, clock));
+    const notices = events.filter((event) => event.text === "The game is no longer attached.");
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ thread: "domus:slot3", place: "domus:slot3", wake: false, atMs: T0 + 1_000 });
+    clock = T0 + 3_000;
+    await call("/domus/heartbeat", heartbeat(true, clock));
+    clock = T0 + 4_000;
+    await call("/domus/heartbeat", heartbeat(false, clock));
+    expect(events.filter((event) => event.text === "The game is no longer attached.")).toHaveLength(2);
+  });
+
+  it("tells the game thread when the helper goes quiet, found by the timed pass", async () => {
+    await call("/domus/heartbeat", heartbeat(true, T0));
+    clock = T0 + 300_000;
+    await new Promise((resolve) => setTimeout(resolve, 5_500));
+    expect(events.filter((event) => event.text === "The game is no longer attached.")).toHaveLength(1);
+  }, 15_000);
+});
+
+describe("views of a whole lot: the choices, and what the game left out", () => {
+  it("says the choices are the same as in the last view when the next view on the thread offers the same ones", async () => {
+    await attach();
+    await call("/domus/observation", viewBody());
+    await call("/domus/observation", viewBody());
+    expect(events).toHaveLength(2);
+    expect(events[0]?.text).toContain("Choices you can name with game_act, by ref:");
+    expect(events[1]?.text).toContain("Choices: the same as in the last view.");
+    expect(events[1]?.text).not.toContain("Choices you can name");
+  });
+
+  it("lists the choices in full again when the choices changed, and says what the game left out", async () => {
+    await attach();
+    await call("/domus/observation", viewBody());
+    await call("/domus/observation", viewBody({
+      options: [{ object: "Test rug", object_id: "obj-rug", acts: [{ ref: "a7", guid64: "777", text: "Sit" }] }],
+      options_cut: { objects: 2, rooms: ["Test garden"] },
+    }));
+    expect(events[1]?.text).toContain("- Test rug: a7 Sit");
+    expect(events[1]?.text?.endsWith("The game left out 2 more choice object(s) on the lot, in Test garden.")).toBe(true);
+    expect(events[1]?.data).toMatchObject({ optionsCut: { objects: 2, rooms: ["Test garden"] } });
   });
 });
