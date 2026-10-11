@@ -1,0 +1,23 @@
+# A Natalis Lar as a systemd user service. The instance name (%i) is the Lar's folder name under ~/lares/.
+# Install: copy this file to ~/.config/systemd/user/, then systemctl --user daemon-reload. See deploy/README.md.
+# The checkout is assumed at ~/natalis. Edit the ExecStart path if it lives elsewhere.
+
+[Unit]
+Description=Natalis Lar %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# The Lar's keys: one file per Lar, beside its folder, chmod 600. Never in the repository and never in a backup.
+EnvironmentFile=%h/lares/%i.env
+ExecStart=/usr/bin/env node %h/natalis/dist/bin/natalis.js run --dir %h/lares/%i
+Restart=on-failure
+RestartSec=20
+# SIGTERM makes the Lar finish its turn, then close its river and notebook cleanly.
+KillSignal=SIGTERM
+TimeoutStopSec=300
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

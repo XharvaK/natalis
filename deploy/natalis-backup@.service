@@ -1,0 +1,10 @@
+# One backup of the Natalis Lar %i: a dated folder under ~/lar-backups/, keeping the newest 14.
+# It runs while the Lar may be running; the river is copied as a consistent snapshot. Started by natalis-backup@.timer.
+
+[Unit]
+Description=Backup of the Natalis Lar %i
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env node %h/natalis/dist/bin/natalis.js backup --dir %h/lares/%i --out %h/lar-backups --keep 14
+NoNewPrivileges=yes
