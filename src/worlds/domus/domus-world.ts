@@ -11,6 +11,7 @@ import { attentionLine, type AttentionContext, currentAttention, gameAttentionTo
 import { gameActTool, type GameActContext } from "./game-act.js";
 import { hasDayRecord } from "./day-record.js";
 import { gameLookTool, type LookContext } from "./look.js";
+import { gameOverlaySayTool, type OverlayContext, overlayItems } from "./overlay.js";
 import { isStopOn } from "../../entity/stop.js";
 import { expireDue, pendingCounts, syncActs, type ThreadNote, withdrawUndone, withholdForStop } from "./acts.js";
 import { choicesSignature, optionsOf, renderView, viewBrief } from "./options.js";
@@ -264,6 +265,14 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     };
   };
 
+  /** What the game_overlay_say tool reads on each call: null while the world is not running (the body is kept from start). */
+  const openOverlay = (): OverlayContext => {
+    const current = db;
+    const shelf = keeper;
+    if (!current || !shelf) return null;
+    return { db: current, nowMs, stopped: () => isStopOn(options.dir), outwardHold: (texts) => shelf.outwardHold(texts) };
+  };
+
   /** What the game_attention tool reads on each call: null while the world is not running. */
   const openAttention = (): AttentionContext => {
     const current = db;
@@ -447,7 +456,8 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
         case "/domus/undo": return undoRoute(body, res);
         case "/domus/feed": {
           parseFeed(body);
-          send(res, 200, { status: "ok", items: [], marks: [] });
+          // The overlay's lines since the last clear; nothing while the summoner's stop is on.
+          send(res, 200, { status: "ok", items: overlayItems(requireDb(), isStopOn(options.dir)), marks: [] });
           return;
         }
         case "/domus/snapshot": return snapshotRoute(body, res);
@@ -567,7 +577,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     },
 
     tools() {
-      return [gameActTool(open), gameSnapshotTool(openSnapshot), gameAttentionTool(openAttention), gameLookTool(openLook)];
+      return [gameActTool(open), gameSnapshotTool(openSnapshot), gameAttentionTool(openAttention), gameLookTool(openLook), gameOverlaySayTool(openOverlay)];
     },
 
     about() {

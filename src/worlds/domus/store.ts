@@ -117,6 +117,12 @@ CREATE TABLE IF NOT EXISTS looks (
   owed INTEGER NOT NULL,
   last_handed_ms INTEGER
 );
+CREATE TABLE IF NOT EXISTS overlay_lines (
+  line_id TEXT PRIMARY KEY,
+  at_ms INTEGER NOT NULL,
+  thread TEXT NOT NULL,
+  line TEXT
+);
 `;
 
 /** How the game's changes reach the Lar's turns. A quiet mode reverts to resumeMode when quietUntilMs passes. */
@@ -264,6 +270,7 @@ const FORGET_TABLES: ReadonlyArray<{ table: string; columns: readonly ForgetColu
   { table: "act_events", columns: [{ name: "detail_json", json: true, erased: "{}" }] },
   { table: "plan_steps", columns: [{ name: "label", json: false, erased: FORGOTTEN_LINE }] },
   { table: "undos", columns: [{ name: "reason", json: false, erased: FORGOTTEN_LINE }] },
+  { table: "overlay_lines", columns: [{ name: "line", json: false, erased: FORGOTTEN_LINE }] },
 ];
 
 /** The form words are compared in: NFKC and lower case, as the notebook and the river fold them. */

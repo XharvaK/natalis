@@ -38,7 +38,8 @@ function make(token = TOKEN, others: string[] = [BOT]): DomusWorld {
 async function startWorld(): Promise<DomusWorld> {
   const next = make();
   shelf = openShelf(join(dir, "media"));
-  await next.start((event) => events.push(event), shelfBody(shelf, () => clock));
+  // The privacy check is empty here (the body's default holds every outward text); the privacy hold has its own tests.
+  await next.start((event) => events.push(event), shelfBody(shelf, () => clock, () => undefined));
   world = next;
   return next;
 }
@@ -533,8 +534,8 @@ describe("game pictures: the Lar asks, the helper takes, the shelf keeps", () =>
 describe("the world's surface", () => {
   it("offers one game tool, says what it is about, and refuses words", async () => {
     expect(world?.id).toBe("domus");
-    expect(world?.tools().map((item) => item.spec.name)).toEqual(["game_act", "game_snapshot", "game_attention", "game_look"]);
-    expect(world?.tools().map((item) => item.spec.safeWhenStopped)).toEqual([undefined, undefined, undefined, undefined]);
+    expect(world?.tools().map((item) => item.spec.name)).toEqual(["game_act", "game_snapshot", "game_attention", "game_look", "game_overlay_say"]);
+    expect(world?.tools().map((item) => item.spec.safeWhenStopped)).toEqual([undefined, undefined, undefined, undefined, undefined]);
     expect(world?.about?.()).toBe("The Sims 4 (Domus): your household's game, at domus:<world>, while your summoner's helper is attached.");
     expect(await world?.say("domus:slot3", "hello")).toMatchObject({ ok: false, refused: { code: "no_words" } });
   });
@@ -745,5 +746,30 @@ describe("a fresh look: she asks, the helper answers on its sync, and the answer
     } as ToolContext);
     await call("/domus/observation", viewBody({ percepts: [{ kind: "look", salience: 0, facts: { bucket: "asked" } }] }));
     expect(events[0]).toMatchObject({ wake: true, view: "domus" });
+  });
+});
+
+describe("the game overlay: her line reaches the helper's feed", () => {
+  const sayOnOverlay = (args: Record<string, unknown>): Promise<Receipt> =>
+    tool("game_overlay_say").run(args, { thread: "domus:slot3", turnId: "t-overlay", nowMs: clock } as ToolContext);
+
+  it("answers the feed with her line, stamped chosen, and nothing after she clears it", async () => {
+    expect(await call("/domus/feed", { v: 1, helper_session: "helper-1" })).toEqual({ status: 200, body: { status: "ok", items: [], marks: [] } });
+    expect(await sayOnOverlay({ text: "Test line for the viewers." })).toMatchObject({ ok: true });
+    const feed = await call("/domus/feed", { v: 1, helper_session: "helper-1" });
+    expect(feed.body.items).toEqual([expect.objectContaining({ inputs: "chosen", at_ms: clock, line: "Test line for the viewers.", regime: {} })]);
+    await sayOnOverlay({ clear: true });
+    expect((await call("/domus/feed", { v: 1, helper_session: "helper-1" })).body.items).toEqual([]);
+  });
+
+  it("answers the feed with nothing while the summoner's stop is on, and refuses her new lines", async () => {
+    await sayOnOverlay({ text: "Shown before the stop." });
+    writeStop(dir, "test");
+    expect((await call("/domus/feed", { v: 1, helper_session: "helper-1" })).body.items).toEqual([]);
+    expect(await sayOnOverlay({ text: "Refused while stopped." })).toMatchObject({ ok: false, refused: { code: "stopped" } });
+  });
+
+  it("refuses the feed's body that is not a feed, as before", async () => {
+    expect(await call("/domus/feed", { v: 1 })).toEqual({ status: 400, body: { error: "invalid_body" } });
   });
 });
