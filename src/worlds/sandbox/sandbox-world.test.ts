@@ -26,11 +26,14 @@ type Harness = {
 };
 
 let dir: string;
+/** The checkout folder the body bind points at in these tests: a folder of the test's own, under the entity folder. */
+let checkout: string;
 let harness: Harness;
 
 function makeHarness(
   overrides: Partial<{
-    config: { timeoutSeconds: number; maxTimeoutSeconds: number; bwrapPath?: string };
+    config: { timeoutSeconds: number; maxTimeoutSeconds: number; bwrapPath?: string; body?: boolean };
+    bodyDir: string;
     platform: NodeJS.Platform;
     spawnThrows: boolean;
     locate: (configured: string | undefined) => string | undefined;
@@ -48,6 +51,8 @@ function makeHarness(
   const world = createSandboxWorld({
     dir,
     config: overrides.config ?? { timeoutSeconds: 120, maxTimeoutSeconds: 900 },
+    // A checkout folder of the test's own, so the body bind never depends on the real repository.
+    bodyDir: overrides.bodyDir ?? checkout,
     spawn: spawn as unknown as SpawnFn,
     platform: overrides.platform ?? "linux",
     locateBwrap: overrides.locate ?? (() => "/usr/bin/bwrap"),
@@ -76,6 +81,8 @@ async function started(overrides: Parameters<typeof makeHarness>[0] = {}): Promi
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "natalis-sandbox-test-"));
+  checkout = join(dir, "checkout");
+  mkdirSync(checkout);
 });
 
 afterEach(() => {
@@ -112,7 +119,7 @@ describe("run: the command and the sandbox it runs in", () => {
     expect(harness.spawn).toHaveBeenCalledTimes(1);
     const [bwrap, args, options] = harness.spawn.mock.calls[0] as [string, string[], SpawnOptions];
     expect(bwrap).toBe("/usr/bin/bwrap");
-    expect(args).toEqual(buildBwrapArgs({ homeDir: resolve(dir, "home"), command: "echo hi" }));
+    expect(args).toEqual(buildBwrapArgs({ homeDir: resolve(dir, "home"), command: "echo hi", bodyDir: checkout }));
     expect(options).toMatchObject({ detached: true, env: {} });
     expect(existsSync(join(dir, "home"))).toBe(true);
     // The entity folder itself is never an argument; only its home is.
@@ -365,5 +372,55 @@ describe("measureHome and formatBytes", () => {
     expect(formatBytes(12)).toBe("12 bytes");
     expect(formatBytes(2_048)).toBe("2.0 KB");
     expect(formatBytes(5 * 1024 * 1024)).toBe("5.0 MB");
+  });
+});
+
+describe("the body: the checkout bound read-only at /body", () => {
+  it("binds the checkout read-only at /body, and never writable", async () => {
+    harness = await started();
+    const pending = runTool(harness.world).run({ command: "ls /body" }, context());
+    const [, args] = harness.spawn.mock.calls[0] as [string, string[], SpawnOptions];
+    const at = args.indexOf(checkout);
+    expect(at).toBeGreaterThan(0);
+    expect(args[at - 1]).toBe("--ro-bind");
+    expect(args[at + 1]).toBe("/body");
+    expect(args.some((arg, index) => arg === "--bind" && args[index + 1] === checkout)).toBe(false);
+    (harness.children[0] as FakeChild).emit("close", 0, null);
+    await pending;
+  });
+
+  it("leaves /body out of the sandbox when sandbox.json says body false", async () => {
+    harness = await started({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, body: false } });
+    const pending = runTool(harness.world).run({ command: "true" }, context());
+    const [, args] = harness.spawn.mock.calls[0] as [string, string[], SpawnOptions];
+    expect(args).not.toContain("/body");
+    expect(args).not.toContain(checkout);
+    expect(harness.world.about()).not.toContain("/body");
+    (harness.children[0] as FakeChild).emit("close", 0, null);
+    await pending;
+  });
+
+  it("says in about() where the source is, and that it is read-only, when it is bound", async () => {
+    harness = await started();
+    expect(harness.world.about()).toContain("Your own source is at /body, read-only.");
+  });
+
+  it("refuses to start, and names the file, when the checkout holds an env file", async () => {
+    writeFileSync(join(checkout, "prod.env"), "placeholder\n");
+    harness = makeHarness();
+    await expect(harness.world.start(() => undefined)).rejects.toThrow(/holds prod\.env/);
+    expect(harness.spawn).not.toHaveBeenCalled();
+  });
+
+  it("refuses to start when the checkout holds a vault folder", async () => {
+    mkdirSync(join(checkout, "vault"));
+    harness = makeHarness();
+    await expect(harness.world.start(() => undefined)).rejects.toThrow(/vault folder/);
+  });
+
+  it("starts when the checkout holds an env file but the body is off", async () => {
+    writeFileSync(join(checkout, ".env"), "placeholder\n");
+    harness = makeHarness({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, body: false } });
+    await expect(harness.world.start(() => undefined)).resolves.toBeUndefined();
   });
 });

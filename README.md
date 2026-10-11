@@ -55,6 +55,8 @@ Each takes `--dir <entity folder>` (the Lar's own folder) unless noted.
 - `restore`: rebuild a Lar from a backup (`--from <backup folder>`, `--dir <new folder>`).
 - `unseal`: open one sealed package into a backup folder (`--from <file.natalisbak>`, `--to <new folder>`,
   `--key-env <NAME>`). The key is read from that environment variable and is never a flag value.
+- `proposals`: the weekly digest of what the Lar wrote under `proposals/` in its notebook (`--since <YYYY-MM-DD>`,
+  seven days ago by default). It only reads the notebook's history, and every value the body holds is redacted.
 
 To run a Lar as a service on a host, see [deploy/README.md](deploy/README.md).
 

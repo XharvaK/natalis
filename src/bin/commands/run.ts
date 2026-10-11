@@ -12,44 +12,14 @@ import { modelFromConfig } from "../../model/from-config.js";
 import { createSecretScanner } from "../../secrets/index.js";
 import { createDiscordWorld } from "../../worlds/discord/index.js";
 import { createDomusWorld, DOMUS_FILE, parseDomusFile } from "../../worlds/domus/index.js";
-import { createSandboxWorld, parseSandboxFile, SANDBOX_FILE } from "../../worlds/sandbox/index.js";
+import { bodyRefusal, createSandboxWorld, defaultBodyRoot, parseSandboxFile, SANDBOX_FILE } from "../../worlds/sandbox/index.js";
 import { createWebWorld, loadWebFile, WEB_FILE } from "../../worlds/web/index.js";
 import { flagValue } from "./args.js";
+import { DISCORD_FILE, parseDiscordFile } from "./discord-file.js";
+import { heldValues, knownValueList } from "./known-values.js";
 
 export const RUN_USAGE = "Usage: natalis run --dir <entity folder>";
-export const DISCORD_FILE = "discord.json";
-
-export type DiscordFile = {
-  /** Name of the environment variable holding the bot token. */
-  tokenEnv: string;
-  ownerUserId: string;
-  /** Channel ids the Lar lives in. DMs with known people need no listing. */
-  rooms: string[];
-};
-
-/** Checks an already-parsed discord.json. Throws a plain error naming the first wrong field. */
-export function parseDiscordFile(value: unknown): DiscordFile {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${DISCORD_FILE} must be an object.`);
-  const root = value as Record<string, unknown>;
-  for (const key of Object.keys(root)) {
-    if (!["tokenEnv", "ownerUserId", "rooms"].includes(key)) {
-      throw new Error(`Unknown field "${key}" in ${DISCORD_FILE}. Allowed: tokenEnv, ownerUserId, rooms.`);
-    }
-  }
-  const tokenEnv = root["tokenEnv"];
-  if (typeof tokenEnv !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokenEnv)) {
-    throw new Error(`${DISCORD_FILE}: tokenEnv must be the name of an environment variable.`);
-  }
-  const ownerUserId = root["ownerUserId"];
-  if (typeof ownerUserId !== "string" || !/^\d+$/.test(ownerUserId)) {
-    throw new Error(`${DISCORD_FILE}: ownerUserId must be the owner's Discord user id, digits only.`);
-  }
-  const rooms = root["rooms"] ?? [];
-  if (!Array.isArray(rooms) || !rooms.every((room) => typeof room === "string" && /^\d+$/.test(room))) {
-    throw new Error(`${DISCORD_FILE}: rooms must be a list of channel ids, digits only.`);
-  }
-  return { tokenEnv, ownerUserId, rooms: rooms as string[] };
-}
+export { DISCORD_FILE, parseDiscordFile, type DiscordFile } from "./discord-file.js";
 
 /** Runs until a stop signal. Returns the exit code. */
 export async function runCommand(args: readonly string[], out: (line: string) => void, err: (line: string) => void): Promise<number> {
@@ -61,27 +31,20 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
   const dir = resolve(dirArg);
   const config = loadEntityConfig(dir);
 
-  // Every key the body holds is registered with the scanner, so none can reach the model or a say.
-  const known: string[] = [];
-  const keyName = config.model.apiKeyEnv;
-  const modelKey = keyName === undefined ? undefined : process.env[keyName];
-  if (modelKey !== undefined && modelKey.length >= 8) known.push(modelKey);
-  // Created before the worlds, so a world can register its own secrets (the web's vault values) as it starts.
-  const scanner = createSecretScanner({ knownValues: known });
+  // Every key the body holds is registered with the scanner, so none can reach the model or a say. Created before the
+  // worlds, so a world can register its own secrets (the web's vault values) as it starts.
+  const held = heldValues(dir, config);
+  const scanner = createSecretScanner({ knownValues: knownValueList(held) });
 
   const worlds: World[] = [];
-  // Every token the body holds, so the game helper's token can be checked to differ from each.
-  const held: string[] = [...known];
   const discordPath = join(dir, DISCORD_FILE);
   if (existsSync(discordPath)) {
     const discord = parseDiscordFile(JSON.parse(readFileSync(discordPath, "utf8")) as unknown);
-    const token = process.env[discord.tokenEnv];
-    if (token === undefined || token === "") {
+    const token = held.discord;
+    if (token === undefined) {
       err(`${DISCORD_FILE} names ${discord.tokenEnv} for the bot token, but it is not set.`);
       return 1;
     }
-    scanner.addKnownValue(token);
-    held.push(token);
     worlds.push(
       createDiscordWorld({
         token,
@@ -95,6 +58,12 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
   const sandboxPath = join(dir, SANDBOX_FILE);
   if (existsSync(sandboxPath)) {
     const sandbox = parseSandboxFile(JSON.parse(readFileSync(sandboxPath, "utf8")) as unknown);
+    // The checkout is bound at /body unless sandbox.json says "body": false. A checkout that holds a secret stops the run here.
+    const bodyRefused = sandbox.body === false ? undefined : bodyRefusal(defaultBodyRoot());
+    if (bodyRefused !== undefined) {
+      err(bodyRefused);
+      return 1;
+    }
     worlds.push(createSandboxWorld({ dir, config: sandbox }));
   }
   if (existsSync(join(dir, WEB_FILE))) {
@@ -109,14 +78,15 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
   const domusPath = join(dir, DOMUS_FILE);
   if (existsSync(domusPath)) {
     const domus = parseDomusFile(JSON.parse(readFileSync(domusPath, "utf8")) as unknown);
-    const token = process.env[domus.tokenEnv];
-    if (token === undefined || token === "") {
+    const token = held.domus;
+    if (token === undefined) {
       err(`${DOMUS_FILE} names ${domus.tokenEnv} for the helper token, but it is not set.`);
       return 1;
     }
+    // The helper's token must differ from every other token the body holds: the model key and the bot token.
+    const otherTokens = knownValueList({ model: held.model, discord: held.discord, vault: [] });
     worlds.push(createDomusWorld({ dir, token, ...(domus.host !== undefined ? { host: domus.host } : {}),
-      ...(domus.port !== undefined ? { port: domus.port } : {}), otherTokens: [...held] }));
-    scanner.addKnownValue(token);
+      ...(domus.port !== undefined ? { port: domus.port } : {}), otherTokens }));
   }
   if (worlds.length === 0) {
     err(`No worlds to run in: add ${DISCORD_FILE} to ${dir}, or use natalis chat for the terminal.`);

@@ -6,6 +6,7 @@ import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:c
 import { existsSync, lstatSync, mkdirSync, readdirSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { Receipt, Tool, ToolContext, World } from "../../contracts.js";
+import { BODY_MOUNT, bodyRefusal, defaultBodyRoot } from "./body.js";
 import { buildBwrapArgs, SANDBOX_HOME } from "./bwrap.js";
 import type { SandboxSettings } from "./config.js";
 import { OUTPUT_CAP_BYTES, OutputCollector } from "./output.js";
@@ -36,6 +37,11 @@ export type SandboxWorldOptions = {
   locateBwrap?: (configuredPath: string | undefined) => string | undefined;
   /** Signals a whole process group. Injected in tests, so no real process is ever signalled by a test. */
   killGroup?: (pid: number, signal: NodeJS.Signals) => void;
+  /**
+   * The Natalis checkout bound read-only at /body, unless config.body is false. Defaults to the package root this code
+   * runs from. Injected in tests.
+   */
+  bodyDir?: string;
 };
 
 type Status = "idle" | "ready" | "stopped";
@@ -127,9 +133,13 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
   const nowMs = options.nowMs ?? (() => Date.now());
   const locate = options.locateBwrap ?? findBwrap;
   const killGroup = options.killGroup ?? defaultKillGroup;
+  const bodyRoot = options.bodyDir ?? defaultBodyRoot();
+  // The default root is looked up once here; the refusal is checked at start, when the bind is decided.
 
   let status: Status = "idle";
   let bwrapPath: string | undefined;
+  /** The checkout bound at /body for this run of the world, when it is bound. */
+  let bodyPath: string | undefined;
   /** Commands in flight, each with the function that ends it. */
   const running = new Map<ChildProcess, (stoppedBy: StoppedBy) => void>();
 
@@ -286,7 +296,7 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
     } catch (err) {
       return refusal("home_unavailable", "Your home folder could not be made, so the command did not run.", errorText(err));
     }
-    const argv = buildBwrapArgs({ homeDir, command });
+    const argv = buildBwrapArgs({ homeDir, command, ...(bodyPath === undefined ? {} : { bodyDir: bodyPath }) });
     return execute(bwrapPath, argv, timeoutSeconds, context.signal);
   }
 
@@ -332,6 +342,12 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
           `The sandbox needs bwrap (Bubblewrap), and it was not found ${where}. Install it (on Debian or Ubuntu: sudo apt install bubblewrap) or set bwrapPath in sandbox.json.`,
         );
       }
+      if (config.body !== false) {
+        // The body is bound only when its folder holds nothing secret; otherwise the world refuses to start, plainly.
+        const refusal = bodyRefusal(bodyRoot);
+        if (refusal !== undefined) throw new Error(refusal);
+        bodyPath = bodyRoot;
+      }
       bwrapPath = found;
       status = "ready";
     },
@@ -350,7 +366,8 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
     },
 
     about() {
-      return `A Linux shell of your own, with network access, run with the run tool. Your home folder at ${SANDBOX_HOME} keeps what you make; installs go there.`;
+      const body = bodyPath === undefined ? "" : ` Your own source is at ${BODY_MOUNT}, read-only.`;
+      return `A Linux shell of your own, with network access, run with the run tool. Your home folder at ${SANDBOX_HOME} keeps what you make; installs go there.${body}`;
     },
 
     now() {

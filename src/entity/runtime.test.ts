@@ -1298,3 +1298,112 @@ describe("the daily turn limit", () => {
     expect(model.requests).toHaveLength(4);
   });
 });
+
+describe("repeating wakes", () => {
+  const NOW = Date.parse("2026-10-11T10:00:00Z");
+  type StoredWake = { id: string; atMs: number; why: string; repeat?: string; clock?: string };
+
+  /** Writes wakes into a stopped Lar's state.json, the way an older or a damaged state file would hold them. */
+  function writeWakes(wakes: unknown[]): void {
+    const state = readStateFile() as unknown as Record<string, unknown>;
+    state["wakes"] = wakes;
+    writeFileSync(join(dir, "state.json"), JSON.stringify(state, null, 2));
+  }
+
+  it("sets a daily wake at its local clock, shows the rhythm on the board, and keeps it in state.json", async () => {
+    const model = new ScriptedModel([
+      reply({
+        toolCalls: [
+          call("schedule_wake", { at_iso: "2026-10-12T09:00:00Z", why: "look at the garden", repeat: "daily" }, "w1"),
+        ],
+      }),
+      reply({ toolCalls: [call("end_turn")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model, { nowMs: () => NOW });
+    await entity.start();
+    cli.send("Wake yourself every morning.");
+    await entity.idle();
+
+    const stored = readStateFile().wakes as StoredWake[];
+    expect(stored).toEqual([expect.objectContaining({ repeat: "daily", clock: "09:00", why: "look at the garden" })]);
+    // The board is read at the start of each turn, so the rhythm shows on the next one.
+    cli.send("Anything else today?");
+    await entity.idle();
+    expect(systemTextOf(model.requests[2])).toContain("Next wakes: 09:00 daily (next 2026-10-12 09:00): look at the garden.");
+  });
+
+  it("ends a series when cancel_wake names its id", async () => {
+    const { entity } = await open(new ScriptedModel([]), { nowMs: () => NOW });
+    await entity.start();
+    await entity.stop();
+    opened.length = 0;
+    writeWakes([{ id: "series01", atMs: Date.parse("2026-10-12T09:00:00Z"), why: "water", scheduledIn: "summoner", repeat: "daily", clock: "09:00" }]);
+
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("cancel_wake", { id: "series01" }, "c1")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const reopened = await open(model, { nowMs: () => NOW });
+    await reopened.entity.start();
+    reopened.cli.send("Stop the watering.");
+    await reopened.entity.idle();
+
+    expect(readStateFile().wakes).toEqual([]);
+  });
+
+  it("fires a repeating wake once after a long downtime, then keeps the series at its next future occurrence", async () => {
+    const { entity } = await open(new ScriptedModel([]), { nowMs: () => NOW });
+    await entity.stop();
+    opened.length = 0;
+    writeWakes([{ id: "down0001", atMs: Date.parse("2026-10-01T09:00:00Z"), why: "check the plants", scheduledIn: "summoner", repeat: "daily", clock: "09:00" }]);
+
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const reopened = await open(model, { nowMs: () => NOW });
+    await reopened.entity.start();
+    // A wake that is already due fires on a zero-length timer, so wait for its event before the turn settles.
+    await waitFor(() => allRows(reopened.entity).some((row) => row.thread === "self" && row.text === "Your wake: check the plants"));
+    await reopened.entity.idle();
+
+    const fired = allRows(reopened.entity).filter((row) => row.thread === "self" && row.text === "Your wake: check the plants");
+    expect(fired).toHaveLength(1);
+    expect(readStateFile().wakes).toEqual([
+      expect.objectContaining({ id: "down0001", atMs: Date.parse("2026-10-12T09:00:00Z"), repeat: "daily", clock: "09:00" }),
+    ]);
+  });
+
+  it("refuses a state file whose repeat is neither daily nor weekly", async () => {
+    const { entity } = await open(new ScriptedModel([]), { nowMs: () => NOW });
+    await entity.stop();
+    opened.length = 0;
+    writeWakes([{ id: "bad00001", atMs: NOW + 60_000, why: "x", scheduledIn: "summoner", repeat: "hourly", clock: "09:00" }]);
+
+    await expect(open(new ScriptedModel([]), { nowMs: () => NOW })).rejects.toThrow(/repeat/);
+  });
+
+  it("refuses a 101st wake, names the count and how to cancel one", async () => {
+    const { entity } = await open(new ScriptedModel([]), { nowMs: () => NOW });
+    await entity.stop();
+    opened.length = 0;
+    const full = Array.from({ length: 100 }, (_, index) => ({
+      id: `held${String(index).padStart(4, "0")}`,
+      atMs: NOW + (index + 1) * 60_000,
+      why: "held",
+      scheduledIn: "summoner",
+    }));
+    writeWakes(full);
+
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("schedule_wake", { in_minutes: 5, why: "one more" }, "w1")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const reopened = await open(model, { nowMs: () => NOW });
+    await reopened.entity.start();
+    reopened.cli.send("Wake me once more.");
+    await reopened.entity.idle();
+
+    const receipts = allRows(reopened.entity).filter((row) => row.kind === "receipt");
+    expect(JSON.stringify(receipts)).toContain("You already hold 100 wakes");
+    expect(readStateFile().wakes).toHaveLength(100);
+  });
+});
