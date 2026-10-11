@@ -149,6 +149,16 @@ export function perceptSentence(percept: Percept): string | undefined {
       const posture = textOrUndefined(facts.bucket);
       return posture ? `Posture: ${plainName(posture)}.` : undefined;
     }
+    case "social": {
+      // SS4-v3: the helper's sentence for what was said to her; without one, who is talking to her and the act.
+      // A number is never shown: an id the helper did not name is "Someone".
+      const text = sentence(facts.sentence);
+      if (text !== undefined) return text;
+      const by = textOrUndefined(facts.by);
+      const who = by === undefined || /^\d+$/.test(by) ? "Someone" : capitalised(by);
+      const interaction = textOrUndefined(facts.interaction);
+      return interaction ? `${who} is talking to you (${plainName(interaction)}).` : `${who} is talking to you.`;
+    }
     case "env":
       return facts.from_room !== undefined ? "She moved rooms." : undefined;
     case "sleep_onset":

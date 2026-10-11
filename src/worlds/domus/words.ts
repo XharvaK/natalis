@@ -18,6 +18,16 @@ export function plainName(text: string): string {
   return last.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+/** A sentence the game or the helper sent, with a full stop at its end unless it has . ! or ? already. */
+export function withStop(text: string): string {
+  return /[.!?]$/.test(text) ? text : `${text}.`;
+}
+
+/** A sentence without its final . ! or ?, for a sentence inside a list of clauses. */
+export function withoutStop(text: string): string {
+  return text.replace(/[.!?]+$/, "");
+}
+
 export function capitalised(text: string): string {
   return text.length === 0 ? text : `${text[0]!.toUpperCase()}${text.slice(1)}`;
 }
