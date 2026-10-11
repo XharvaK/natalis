@@ -72,6 +72,7 @@ Linux only; on other systems the world refuses to start with a plain error. Need
 - read-only `/etc` pieces the network and tools need, each with `--ro-bind-try`: `resolv.conf`, `hosts`,
   `nsswitch.conf`, `ssl`, `ca-certificates`, `alternatives`, `localtime`
 - `<entity>/home` bound read-write at `/home/lar` (created on first use); cwd `/home/lar`
+- the Natalis checkout bound read-only at `/body` (root found from the code's own location; `"body": false` in `sandbox.json` leaves it out; refused at start if the root holds an env file or a `vault/` folder)
 - env: `PATH=/home/lar/.local/bin:/usr/local/bin:/usr/bin:/bin`, `HOME=/home/lar`, `LANG=C.UTF-8`, `TERM=dumb`,
   `NPM_CONFIG_PREFIX=/home/lar/.local` (what the Lar installs runs by name)
 - never bound: the entity folder itself, the vault, any env file, the host's home

@@ -1,6 +1,6 @@
 // A real Bubblewrap smoke test. It runs only on a Linux host with bwrap installed, and only when
 // NATALIS_BWRAP_TEST is "1". Everything else in the sandbox is tested with a fake spawn.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -11,6 +11,7 @@ const enabled = process.env["NATALIS_BWRAP_TEST"] === "1";
 
 describe.skipIf(!enabled)("sandbox with real bwrap", () => {
   let dir: string;
+  let checkout: string;
   let world: World;
   let run: Tool;
 
@@ -21,7 +22,11 @@ describe.skipIf(!enabled)("sandbox with real bwrap", () => {
     dir = mkdtempSync(join(tmpdir(), "natalis-bwrap-"));
     // A file in the entity folder, which the sandbox must not see.
     writeFileSync(join(dir, "secret-probe.txt"), "not for the sandbox");
-    world = createSandboxWorld({ dir, config: { timeoutSeconds: 30, maxTimeoutSeconds: 60 } });
+    // A stand-in checkout for the body: one file the sandbox may read at /body and never write.
+    checkout = join(dir, "checkout");
+    mkdirSync(checkout);
+    writeFileSync(join(checkout, "body-probe.txt"), "the checkout is here\n");
+    world = createSandboxWorld({ dir, config: { timeoutSeconds: 30, maxTimeoutSeconds: 60 }, bodyDir: checkout });
     await world.start(() => undefined);
     run = world.tools().find((tool) => tool.spec.name === "run") as Tool;
   });
@@ -50,6 +55,14 @@ describe.skipIf(!enabled)("sandbox with real bwrap", () => {
     expect(visibility).toBe("absent");
     // clearenv leaves only the four variables the design sets, plus whatever bash adds itself.
     expect(Number(count)).toBeLessThanOrEqual(8);
+  });
+
+  it("reads the checkout at /body, and cannot write to it", async () => {
+    const receipt = await call({ command: "cat /body/body-probe.txt; echo written > /body/new.txt 2>/dev/null; echo $?" });
+    const [text, writeCode] = String(receipt.data?.["stdout"]).trim().split("\n");
+    expect(text).toBe("the checkout is here");
+    expect(writeCode).not.toBe("0");
+    expect(existsSync(join(checkout, "new.txt"))).toBe(false);
   });
 
   it("stops a command that runs past its timeout", async () => {

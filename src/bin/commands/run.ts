@@ -12,7 +12,7 @@ import { modelFromConfig } from "../../model/from-config.js";
 import { createSecretScanner } from "../../secrets/index.js";
 import { createDiscordWorld } from "../../worlds/discord/index.js";
 import { createDomusWorld, DOMUS_FILE, parseDomusFile } from "../../worlds/domus/index.js";
-import { createSandboxWorld, parseSandboxFile, SANDBOX_FILE } from "../../worlds/sandbox/index.js";
+import { bodyRefusal, createSandboxWorld, defaultBodyRoot, parseSandboxFile, SANDBOX_FILE } from "../../worlds/sandbox/index.js";
 import { createWebWorld, loadWebFile, WEB_FILE } from "../../worlds/web/index.js";
 import { flagValue } from "./args.js";
 
@@ -95,6 +95,12 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
   const sandboxPath = join(dir, SANDBOX_FILE);
   if (existsSync(sandboxPath)) {
     const sandbox = parseSandboxFile(JSON.parse(readFileSync(sandboxPath, "utf8")) as unknown);
+    // The checkout is bound at /body unless sandbox.json says "body": false. A checkout that holds a secret stops the run here.
+    const bodyRefused = sandbox.body === false ? undefined : bodyRefusal(defaultBodyRoot());
+    if (bodyRefused !== undefined) {
+      err(bodyRefused);
+      return 1;
+    }
     worlds.push(createSandboxWorld({ dir, config: sandbox }));
   }
   if (existsSync(join(dir, WEB_FILE))) {

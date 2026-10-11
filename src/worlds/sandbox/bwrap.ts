@@ -1,5 +1,8 @@
-// The Bubblewrap argument list for the sandbox. A pure function. The only host path it binds is the Lar's home
-// folder, so the entity folder, the vault and every env file stay out of the sandbox by construction.
+// The Bubblewrap argument list for the sandbox. A pure function. The host paths it binds are the Lar's home folder
+// (read-write) and, when given, the Natalis checkout (read-only, at /body). The entity folder, the vault and every env
+// file stay out of the sandbox by construction.
+
+import { BODY_MOUNT } from "./body.js";
 
 /** Where the Lar's home folder appears inside the sandbox. */
 export const SANDBOX_HOME = "/home/lar";
@@ -15,6 +18,8 @@ export type BwrapInput = {
   homeDir: string;
   /** The shell command, run as `bash -lc <command>`. */
   command: string;
+  /** The Natalis checkout, bound read-only at /body. Left out, nothing of the checkout is in the sandbox. */
+  bodyDir?: string;
 };
 
 /** The full argument list for `bwrap`, ending with the shell and its command. */
@@ -54,6 +59,8 @@ export function buildBwrapArgs(input: BwrapInput): string[] {
     "--bind",
     input.homeDir,
     SANDBOX_HOME,
+    // The Lar's own checkout, read-only: it can read its source and docs, and a write fails at the filesystem.
+    ...(input.bodyDir === undefined ? [] : ["--ro-bind", input.bodyDir, BODY_MOUNT]),
     "--chdir",
     SANDBOX_HOME,
     "--setenv",

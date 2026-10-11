@@ -3,7 +3,7 @@ import { parseSandboxFile, SANDBOX_DEFAULT_MAX_TIMEOUT_S, SANDBOX_DEFAULT_TIMEOU
 
 describe("sandbox.json", () => {
   it("fills in the defaults from the design", () => {
-    expect(parseSandboxFile({})).toEqual({ timeoutSeconds: 120, maxTimeoutSeconds: 900 });
+    expect(parseSandboxFile({})).toEqual({ timeoutSeconds: 120, maxTimeoutSeconds: 900, body: true });
     expect(SANDBOX_DEFAULT_TIMEOUT_S).toBe(120);
     expect(SANDBOX_DEFAULT_MAX_TIMEOUT_S).toBe(900);
   });
@@ -12,16 +12,24 @@ describe("sandbox.json", () => {
     expect(parseSandboxFile({ timeoutSeconds: 120, maxTimeoutSeconds: 900 })).toEqual({
       timeoutSeconds: 120,
       maxTimeoutSeconds: 900,
+      body: true,
     });
     expect(parseSandboxFile({ bwrapPath: "  /opt/bin/bwrap " })).toEqual({
       timeoutSeconds: 120,
       maxTimeoutSeconds: 900,
       bwrapPath: "/opt/bin/bwrap",
+      body: true,
     });
   });
 
   it("keeps the default timeout within a lower maximum when only the maximum is set", () => {
-    expect(parseSandboxFile({ maxTimeoutSeconds: 60 })).toEqual({ timeoutSeconds: 60, maxTimeoutSeconds: 60 });
+    expect(parseSandboxFile({ maxTimeoutSeconds: 60 })).toEqual({ timeoutSeconds: 60, maxTimeoutSeconds: 60, body: true });
+  });
+
+  it("turns the body off only when it says false, and refuses anything but true or false", () => {
+    expect(parseSandboxFile({ body: false })).toMatchObject({ body: false });
+    expect(parseSandboxFile({ body: true })).toMatchObject({ body: true });
+    expect(() => parseSandboxFile({ body: "no" })).toThrow(/body must be true or false/);
   });
 
   it("refuses unknown fields, a non-object root, and a timeout above its maximum", () => {

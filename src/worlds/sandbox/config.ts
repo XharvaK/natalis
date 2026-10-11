@@ -7,7 +7,7 @@ export const SANDBOX_DEFAULT_MAX_TIMEOUT_S = 900;
 /** The largest number of seconds any timeout may be set to in the file. */
 export const SANDBOX_TIMEOUT_LIMIT_S = 3600;
 
-const ALLOWED = ["timeoutSeconds", "maxTimeoutSeconds", "bwrapPath"];
+const ALLOWED = ["timeoutSeconds", "maxTimeoutSeconds", "bwrapPath", "body"];
 
 export type SandboxSettings = {
   /** The default timeout for a command, in seconds. */
@@ -16,6 +16,8 @@ export type SandboxSettings = {
   maxTimeoutSeconds: number;
   /** Where to find bwrap. Left out, bwrap is looked for on PATH. */
   bwrapPath?: string;
+  /** Whether the Natalis checkout is bound read-only at /body. Set in the file as "body": false to leave it out. */
+  body?: boolean;
 };
 
 /** Checks an already-parsed sandbox.json and fills in the defaults. Throws a plain error naming the first wrong field. */
@@ -35,12 +37,14 @@ export function parseSandboxFile(value: unknown): SandboxSettings {
       `${SANDBOX_FILE}: timeoutSeconds (${timeoutSeconds}) cannot be more than maxTimeoutSeconds (${maxTimeoutSeconds}).`,
     );
   }
+  const body = root["body"] ?? true;
+  if (typeof body !== "boolean") throw new Error(`${SANDBOX_FILE}: body must be true or false.`);
   const bwrap = root["bwrapPath"];
-  if (bwrap === undefined) return { timeoutSeconds, maxTimeoutSeconds };
+  if (bwrap === undefined) return { timeoutSeconds, maxTimeoutSeconds, body };
   if (typeof bwrap !== "string" || bwrap.trim() === "" || bwrap.includes("\0")) {
     throw new Error(`${SANDBOX_FILE}: bwrapPath must be the path to the bwrap program, as text.`);
   }
-  return { timeoutSeconds, maxTimeoutSeconds, bwrapPath: bwrap.trim() };
+  return { timeoutSeconds, maxTimeoutSeconds, bwrapPath: bwrap.trim(), body };
 }
 
 function wholeSeconds(root: Record<string, unknown>, key: string): number | undefined {

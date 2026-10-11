@@ -105,3 +105,30 @@ describe("buildBwrapArgs", () => {
     expect(args.slice(-3)).toEqual(["bash", "-lc", command]);
   });
 });
+
+describe("buildBwrapArgs: the body", () => {
+  // An invented checkout folder, away from the entity folder.
+  const CHECKOUT = "/opt/natalis-checkout";
+
+  it("binds the checkout read-only at /body, right after the home folder", () => {
+    const args = buildBwrapArgs({ homeDir: HOME, command: "true", bodyDir: CHECKOUT });
+    const at = args.indexOf(CHECKOUT);
+    expect(args.slice(at - 1, at + 2)).toEqual(["--ro-bind", CHECKOUT, "/body"]);
+    expect(args.slice(at - 4, at - 3)).toEqual(["--bind"]);
+    expect(args.slice(at - 3, at - 1)).toEqual([HOME, SANDBOX_HOME]);
+  });
+
+  it("never binds the checkout writable", () => {
+    const args = buildBwrapArgs({ homeDir: HOME, command: "true", bodyDir: CHECKOUT });
+    expect(args.some((arg, index) => arg === "--bind" && args[index + 1] === CHECKOUT)).toBe(false);
+    expect(args.filter((arg) => arg === "/body")).toEqual(["/body"]);
+  });
+
+  it("adds nothing for the body when no checkout is given, and the rest of the list is unchanged", () => {
+    const without = buildBwrapArgs({ homeDir: HOME, command: "true" });
+    expect(without).not.toContain("/body");
+    const withBody = buildBwrapArgs({ homeDir: HOME, command: "true", bodyDir: CHECKOUT });
+    const at = withBody.indexOf(CHECKOUT);
+    expect([...withBody.slice(0, at - 1), ...withBody.slice(at + 2)]).toEqual(without);
+  });
+});
