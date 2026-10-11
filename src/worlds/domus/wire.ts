@@ -265,7 +265,7 @@ export function parseActSync(body: unknown): { helperSession: string; events: Sy
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Snapshot (validated here; no picture is requested in this world, so every well-formed one is unknown).
+// Snapshot (validated here; the world then matches the id to a picture it asked for).
 
 const SNAPSHOT_KEYS = new Set(["v", "helper_session", "snapshot_id", "png_base64", "failed"]);
 

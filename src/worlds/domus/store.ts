@@ -260,6 +260,27 @@ function collectStrings(value: unknown, parts: string[]): void {
 }
 
 /**
+ * What was still waiting to go to the game does not go once its words are forgotten: a requested act is withdrawn (kept
+ * as expired, code FORGOTTEN) with the waiting steps of its plan, and a waiting plan step is dropped. The game never
+ * receives an act whose words were erased, nor one stripped of its answer.
+ */
+function withdrawForgotten(db: DatabaseSync, table: string, rowid: number, nowMs: number): void {
+  if (table === "acts") {
+    const act = db.prepare("SELECT act_id FROM acts WHERE rowid = ? AND state = 'requested'").get(rowid) as Row | undefined;
+    if (!act) return;
+    const actId = String(act.act_id);
+    db.prepare("UPDATE acts SET state = 'expired', updated_at_ms = ? WHERE act_id = ?").run(nowMs, actId);
+    db.prepare("INSERT OR IGNORE INTO act_events (act_id, phase, at_ms, received_at_ms, detail_json) VALUES (?, 'expired', ?, ?, ?)")
+      .run(actId, nowMs, nowMs, JSON.stringify({ code: "FORGOTTEN" }));
+    db.prepare("UPDATE plan_steps SET state = 'dropped', reason = 'forgotten', updated_at_ms = ? WHERE plan_id = ? AND state = 'planned'")
+      .run(nowMs, actId);
+  } else if (table === "plan_steps") {
+    db.prepare("UPDATE plan_steps SET state = 'dropped', reason = 'forgotten', updated_at_ms = ? WHERE rowid = ? AND state = 'planned'")
+      .run(nowMs, rowid);
+  }
+}
+
+/**
  * Forgets words in the game's store. In every table that keeps game or Lar text, each row whose live text holds all the
  * words (case and form aside) has that text replaced: a marker for plain text, an empty object for JSON. Rows already
  * forgotten are not counted again. Returns how many rows were erased; the file is then vacuumed.
@@ -279,6 +300,7 @@ export function forgetText(db: DatabaseSync, words: readonly string[]): number {
         if (!wanted.every((word) => haystack.includes(word))) continue;
         const sets = live.map((column) => `${column.name} = ?`).join(", ");
         db.prepare(`UPDATE ${spec.table} SET ${sets} WHERE rowid = ?`).run(...live.map((column) => column.erased), row.rid as number);
+        withdrawForgotten(db, spec.table, row.rid as number, Date.now());
         erased += 1;
       }
     }

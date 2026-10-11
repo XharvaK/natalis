@@ -554,7 +554,17 @@ class Runtime implements Entity {
         if (match.text !== undefined) {
           this.forgetInState(match.text);
           const words = queryWords(match.text);
-          for (const world of this.worlds) world.forget?.(words);
+          // Every world's store is tried; one that fails does not keep the words in the others. The first failure is
+          // still raised, so the Lar's receipt says the forget did not finish.
+          let failure: unknown;
+          for (const world of this.worlds) {
+            try {
+              world.forget?.(words);
+            } catch (error) {
+              failure ??= error;
+            }
+          }
+          if (failure !== undefined) throw failure;
         }
         return erased;
       },

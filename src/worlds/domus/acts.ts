@@ -72,6 +72,7 @@ const DROP_REASON: Readonly<Record<string, string>> = {
   after_cut_short: "the act before it was cut short",
   stopped: "your summoner's stop is on",
   undone: "the game went back before the view it was chosen from",
+  forgotten: "its words were forgotten",
 };
 
 function insertAct(db: DatabaseSync, row: {
@@ -184,6 +185,7 @@ function phaseSentence(phase: DomusActPhase, detail: Record<string, unknown>, la
     case "expired":
       if (detail.code === "STOPPED") return "it was withdrawn before the game picked it up, because your summoner's stop is on";
       if (detail.code === "UNDONE") return "it was withdrawn, because the game went back before the view you chose it from";
+      if (detail.code === "FORGOTTEN") return "it was withdrawn before the game picked it up, because its words were forgotten";
       return late ? "it expired" : "it expired before the game picked it up";
   }
 }

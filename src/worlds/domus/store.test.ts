@@ -168,6 +168,27 @@ describe("forgetText: the game's own words", () => {
     expect(db.prepare("SELECT reason FROM undos").get()).toEqual({ reason: FORGOTTEN_LINE });
   });
 
+  it("withdraws a requested act whose words it erased, with its waiting steps, and leaves the other waiting act", () => {
+    db = openDomusDb(dir);
+    seedGameText(db);
+    db.prepare("UPDATE acts SET state = 'requested'").run();
+    db.prepare(`INSERT INTO plan_steps (plan_id, step, thread, attachment, option_ref, object_id, guid64, label, for_summoner, state,
+      reason, act_id, planned_at_ms, updated_at_ms) VALUES ('act-1', 1, ?, 'helper-1', 'a3', 'obj', '113', 'Sit on the bench', 0, 'planned', NULL, NULL, ?, ?)`)
+      .run(THREAD_NAME, NOW, NOW);
+    forgetText(db, ["lantern", "yard"]);
+
+    expect(db.prepare("SELECT act_id, state FROM acts ORDER BY act_id").all()).toEqual([
+      { act_id: "act-1", state: "expired" },
+      { act_id: "act-2", state: "requested" },
+    ]);
+    expect(db.prepare("SELECT detail_json FROM act_events WHERE act_id = 'act-1' AND phase = 'expired'").get())
+      .toEqual({ detail_json: JSON.stringify({ code: "FORGOTTEN" }) });
+    expect(db.prepare("SELECT plan_id, label, state, reason FROM plan_steps ORDER BY plan_id").all()).toEqual([
+      { plan_id: "act-1", label: "Sit on the bench", state: "dropped", reason: "forgotten" },
+      { plan_id: "act-2", label: FORGOTTEN_LINE, state: "dropped", reason: "forgotten" },
+    ]);
+  });
+
   it("counts a second forget of the same words as nothing, and forgets nothing for no words", () => {
     db = openDomusDb(dir);
     seedGameText(db);
