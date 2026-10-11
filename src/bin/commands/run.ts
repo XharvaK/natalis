@@ -11,6 +11,7 @@ import { openEntity } from "../../entity/runtime.js";
 import { modelFromConfig } from "../../model/from-config.js";
 import { createSecretScanner } from "../../secrets/index.js";
 import { createDiscordWorld } from "../../worlds/discord/index.js";
+import { createSandboxWorld, parseSandboxFile, SANDBOX_FILE } from "../../worlds/sandbox/index.js";
 import { flagValue } from "./args.js";
 
 export const RUN_USAGE = "Usage: natalis run --dir <entity folder>";
@@ -83,6 +84,11 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
         aliasesPath: join(dir, "discord-aliases.json"),
       }),
     );
+  }
+  const sandboxPath = join(dir, SANDBOX_FILE);
+  if (existsSync(sandboxPath)) {
+    const sandbox = parseSandboxFile(JSON.parse(readFileSync(sandboxPath, "utf8")) as unknown);
+    worlds.push(createSandboxWorld({ dir, config: sandbox }));
   }
   if (worlds.length === 0) {
     err(`No worlds to run in: add ${DISCORD_FILE} to ${dir}, or use natalis chat for the terminal.`);
