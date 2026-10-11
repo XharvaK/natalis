@@ -96,13 +96,17 @@ export type RiverRowInput = {
   atMs?: number;
 };
 
-export type RiverRow = RiverRowInput & { seq: number; atMs: number };
+/** `forgotten` is true when the text and data were erased; the row itself stays. */
+export type RiverRow = RiverRowInput & { seq: number; atMs: number; forgotten?: boolean };
 
 export type RiverQuery = {
   thread?: string;
   kinds?: RiverKind[];
+  /** Rows after this seq (exclusive): "what is new since I last looked". */
   sinceSeq?: number;
+  /** Rows up to and including this seq. */
   untilSeq?: number;
+  /** Rows at or after this time. */
   sinceMs?: number;
   limit?: number;
   /** Newest first when true. */
@@ -227,4 +231,42 @@ export interface SecretScanner {
   scan(text: string): SecretHit[];
   /** Replace every hit and every known vault value with a placeholder. */
   redact(text: string): string;
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Worlds: where the entity lives (Discord, a game, the command line). A world sends events in and offers
+// tools out. It never filters events for relevance; what matters is the mind's judgment.
+
+/**
+ * Places are world-prefixed aliases, never platform ids: "discord:dm:owner", "discord:room:general",
+ * "cli:owner", "domus:home". The thread of an event is its place unless the world says otherwise.
+ */
+export type WorldEvent = {
+  world: string;
+  place: string;
+  /** Defaults to `place`. */
+  thread?: string;
+  /** Alias of who it came from: "owner", a person's alias, "game". Never a platform id. */
+  actor?: string;
+  source: RiverSource;
+  text?: string;
+  data?: Record<string, unknown>;
+  atMs?: number;
+  /** Whether this event wakes its thread. Defaults to true. */
+  wake?: boolean;
+};
+
+export type SayResult = Receipt;
+
+export interface World {
+  readonly id: string;
+  /** Connect and start sending events. Resolves once the world is ready. */
+  start(emit: (event: WorldEvent) => void): Promise<void>;
+  stop(): Promise<void>;
+  /** Deliver words to a place in this world. The receipt says delivered, or why not. */
+  say(place: string, text: string, options?: { replyTo?: string }): Promise<SayResult>;
+  /** Extra tools this world offers (react, act_in_game, ...). */
+  tools(): Tool[];
+  /** One or two plain lines for the now board: connected or not, places open. */
+  now(): string;
 }

@@ -122,7 +122,7 @@ describe("read", () => {
     seed(river);
     expect(river.read({ thread: "room:lantern" }).map((r) => r.seq)).toEqual([2, 5]);
     expect(river.read({ kinds: ["say", "turn"] }).map((r) => r.seq)).toEqual([3, 4, 5]);
-    expect(river.read({ sinceSeq: 3, untilSeq: 4 }).map((r) => r.seq)).toEqual([3, 4]);
+    expect(river.read({ sinceSeq: 2, untilSeq: 4 }).map((r) => r.seq)).toEqual([3, 4]);
     expect(river.read({ thread: "dm:owner", kinds: ["say"], newestFirst: true }).map((r) => r.seq)).toEqual([3]);
     clock += 10_000;
     river.append({ thread: "dm:owner", kind: "event", source: "owner", text: "late" });
@@ -249,7 +249,7 @@ describe.each(modes)("forget ($label)", ({ forceNoFts }) => {
     expect(count).toBe(1);
     expect(river.lastSeq()).toBe(5);
 
-    const erased = river.read({ sinceSeq: 1, untilSeq: 1 })[0];
+    const erased = river.read({ sinceSeq: 0, untilSeq: 1 })[0];
     const tomb = river.read({ kinds: ["tombstone"] })[0];
     expect(erased).toMatchObject({ seq: 1, thread: "dm:owner", kind: "event", actor: "Mira", forgotten: true });
     expect(erased?.text).toBeUndefined();
@@ -294,12 +294,12 @@ describe.each(modes)("forget ($label)", ({ forceNoFts }) => {
     expect(JSON.stringify(tomb)).not.toContain("555 0100");
   });
 
-  it("does not count rows that are already forgotten, and writes a tombstone anyway", () => {
+  it("does not count rows that are already forgotten, and writes no tombstone when nothing was erased", () => {
     const river = seeded();
     expect(river.forget({ seqs: [1] }, "owner", "first")).toBe(1);
     expect(river.forget({ seqs: [1] }, "owner", "again")).toBe(0);
     expect(river.forget({ text: "no such words" }, "self", "nothing here")).toBe(0);
-    expect(river.read({ kinds: ["tombstone"] })).toHaveLength(3);
+    expect(river.read({ kinds: ["tombstone"] })).toHaveLength(1);
   });
 
   it("refuses to forget a tombstone, and changes nothing when it does", () => {
@@ -309,7 +309,7 @@ describe.each(modes)("forget ($label)", ({ forceNoFts }) => {
     const before = river.lastSeq();
     expect(() => river.forget({ seqs: [2, tombSeq] }, "owner", "try")).toThrow(RiverError);
     expect(river.lastSeq()).toBe(before);
-    expect(river.read({ sinceSeq: 2, untilSeq: 2 })[0]?.text).toBe("I will keep the lamp lit.");
+    expect(river.read({ sinceSeq: 1, untilSeq: 2 })[0]?.text).toBe("I will keep the lamp lit.");
   });
 
   it("refuses an empty match, a blank reason, or an unknown owner", () => {

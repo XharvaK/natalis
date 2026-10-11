@@ -225,7 +225,7 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
           }
           if (query.sinceSeq !== undefined) {
             checkInteger(query.sinceSeq, "sinceSeq");
-            where.push("seq >= ?");
+            where.push("seq > ?");
             params.push(query.sinceSeq);
           }
           if (query.untilSeq !== undefined) {
@@ -338,6 +338,7 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
             }
 
             const erased = [...targets].sort((a, b) => a - b);
+            if (erased.length === 0) return 0;
             for (const seq of erased) {
               eraseStmt.run(seq);
               if (ftsDelete) ftsDelete.run(seq);
