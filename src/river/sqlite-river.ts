@@ -16,10 +16,23 @@ export type StoredRiverRow = RiverRow & { forgotten: boolean };
 
 export type StoredRiverHit = { row: StoredRiverRow; score: number };
 
+export type TombstoneInput = {
+  atMs: number;
+  /** Who forgot it: the owner, the entity itself, or the body. */
+  by: "owner" | "self" | "body";
+  /** Plain fields only (reason, count, what). Never forgotten text. */
+  data: Record<string, unknown>;
+};
+
 export interface SqliteRiver extends River {
   append(row: RiverRowInput): StoredRiverRow;
   read(query: RiverQuery): StoredRiverRow[];
   search(text: string, options?: { limit?: number; thread?: string }): StoredRiverHit[];
+  /**
+   * Writes one tombstone row with an explicit time, for an importer that carries forgets over from another
+   * system. The row has no text; its data says what was forgotten. Ordinary code uses forget(), not this.
+   */
+  appendTombstone(row: TombstoneInput): StoredRiverRow;
   /** "fts5": ranked by bm25 over an FTS5 index. "like": case-insensitive substring match, newest first. */
   readonly searchMode: "fts5" | "like";
   readonly path: string;
@@ -204,6 +217,15 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
           ensureOpen();
           const checked = checkInput(row, nowMs);
           return inTransaction(() => insertChecked(checked));
+        },
+
+        appendTombstone(row: TombstoneInput): StoredRiverRow {
+          ensureOpen();
+          checkTombstone(row);
+          const dataJson = JSON.stringify(row.data);
+          return inTransaction(() =>
+            insertChecked({ atMs: row.atMs, thread: "body", kind: "tombstone", source: row.by, dataJson }),
+          );
         },
 
         read(query: RiverQuery): StoredRiverRow[] {
@@ -435,6 +457,22 @@ function checkKind(value: unknown): asserts value is RiverKind {
 
 function checkSource(value: unknown): asserts value is RiverSource {
   if (typeof value !== "string" || !SOURCE_SET.has(value)) throw new RiverError(`unknown source: ${String(value)}`);
+}
+
+function checkTombstone(row: TombstoneInput): void {
+  if (typeof row !== "object" || row === null) throw new RiverError("tombstone must be an object");
+  checkInteger(row.atMs, "atMs");
+  if (row.by !== "owner" && row.by !== "self" && row.by !== "body") {
+    throw new RiverError('tombstone: "by" must be "owner", "self" or "body"');
+  }
+  if (typeof row.data !== "object" || row.data === null || Array.isArray(row.data)) {
+    throw new RiverError("tombstone: data must be an object");
+  }
+  try {
+    JSON.stringify(row.data);
+  } catch {
+    throw new RiverError("tombstone: data must be JSON-serializable");
+  }
 }
 
 function checkNow(nowMs: () => number): number {
