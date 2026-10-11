@@ -11,6 +11,7 @@ import { openEntity } from "../../entity/runtime.js";
 import { modelFromConfig } from "../../model/from-config.js";
 import { createSecretScanner } from "../../secrets/index.js";
 import { createDiscordWorld } from "../../worlds/discord/index.js";
+import { createDomusWorld, DOMUS_FILE, parseDomusFile } from "../../worlds/domus/index.js";
 import { flagValue } from "./args.js";
 
 export const RUN_USAGE = "Usage: natalis run --dir <entity folder>";
@@ -83,6 +84,18 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
         aliasesPath: join(dir, "discord-aliases.json"),
       }),
     );
+  }
+  const domusPath = join(dir, DOMUS_FILE);
+  if (existsSync(domusPath)) {
+    const domus = parseDomusFile(JSON.parse(readFileSync(domusPath, "utf8")) as unknown);
+    const token = process.env[domus.tokenEnv];
+    if (token === undefined || token === "") {
+      err(`${DOMUS_FILE} names ${domus.tokenEnv} for the helper token, but it is not set.`);
+      return 1;
+    }
+    worlds.push(createDomusWorld({ dir, token, ...(domus.host !== undefined ? { host: domus.host } : {}),
+      ...(domus.port !== undefined ? { port: domus.port } : {}), otherTokens: [...known] }));
+    known.push(token);
   }
   if (worlds.length === 0) {
     err(`No worlds to run in: add ${DISCORD_FILE} to ${dir}, or use natalis chat for the terminal.`);

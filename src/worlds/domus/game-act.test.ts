@@ -1,0 +1,188 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Receipt, Tool, ToolContext } from "../../contracts.js";
+import type { OptionObject } from "./answers.js";
+import { gameActTool, type GameActContext } from "./game-act.js";
+import { admitObservation, markSpanUndone, openDomusDb } from "./store.js";
+
+const T0 = 1_800_000_000_000;
+const THREAD = "domus:slot3";
+const HELPER = "helper-1";
+
+const VIEW: OptionObject[] = [
+  { object: "Test kettle", object_id: "obj-kettle", where: "here, 2.0 m", acts: [
+    { ref: "a1", guid64: "111", text: "Boil water" },
+    { ref: "a2", guid64: "112", text: "Tidy up" },
+  ] },
+  { object: "Test bench", object_id: "obj-bench", acts: [
+    { ref: "a3", guid64: "211", text: "Sit down" },
+    { ref: "a4", guid64: "212", text: "Stand up" },
+  ] },
+];
+
+let dir: string;
+let db: DatabaseSync;
+let open: GameActContext;
+let tool: Tool;
+let seq: number;
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "domus-tool-"));
+  db = openDomusDb(dir);
+  seq = 0;
+  open = { db, nowMs: () => T0, attachedAt: () => true };
+  tool = gameActTool(() => open);
+});
+
+afterEach(() => {
+  db.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+/** Admits a view of the test thread with the given options (an invented view). */
+function view(options: OptionObject[] | undefined, sourceTimeMs = T0 - 1000): string {
+  seq += 1;
+  const observationId = `helper-1.${seq}`;
+  admitObservation(db, {
+    observationId,
+    digest: `digest-${observationId}`,
+    thread: THREAD,
+    world: "slot3",
+    branch: "branch-1",
+    session: "telemetry-1",
+    attachment: HELPER,
+    body: "sim-9",
+    snapshot: "7",
+    seq,
+    sourceTimeMs,
+    expiresAtMs: sourceTimeMs + 30_000,
+    receiptTimeMs: T0,
+    lineageClass: "LIVE",
+    payloadJson: JSON.stringify({ percepts: [], ...(options ? { options } : {}) }),
+  });
+  return observationId;
+}
+
+let turn = 0;
+function run(args: Record<string, unknown>, thread = THREAD, turnId?: string): Promise<Receipt> {
+  turn += 1;
+  return tool.run(args, { thread, turnId: turnId ?? `turn-${turn}`, nowMs: T0 } as ToolContext);
+}
+
+function acts(): Array<Record<string, unknown>> {
+  return db.prepare("SELECT * FROM acts").all() as Array<Record<string, unknown>>;
+}
+
+describe("game_act: where it works", () => {
+  it("is refused outside a game thread, and while the world is not running", async () => {
+    view(VIEW);
+    expect(await run({ option: "a1" }, "discord:dm:owner")).toMatchObject({ ok: false, refused: { code: "not_a_game_thread" } });
+    open = null;
+    expect(await run({ option: "a1" })).toMatchObject({ ok: false, refused: { code: "not_running" } });
+  });
+
+  it("is refused while the game has shown no view of its thread", async () => {
+    expect(await run({ option: "a1" })).toMatchObject({ ok: false, refused: { code: "no_view" } });
+  });
+});
+
+describe("game_act: refs", () => {
+  it("resolves a ref against the newest view only, and refuses an unknown one with the refs that exist", async () => {
+    view(VIEW);
+    const receipt = await run({ option: "a9" });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "unknown_option" } });
+    expect(receipt.refused?.reason).toContain("The refs you can name now are: a1, a2, a3, a4.");
+    expect(acts()).toEqual([]);
+  });
+
+  it("does not look at an older view that offered a ref the newest one does not", async () => {
+    view([{ object: "Old thing", object_id: "obj-old", acts: [{ ref: "a7", guid64: "700", text: "Old act" }] }]);
+    view(VIEW);
+    expect(await run({ option: "a7" })).toMatchObject({ ok: false, refused: { code: "unknown_option" } });
+  });
+
+  it("skips a view that was undone, and resolves against the view before it", async () => {
+    view([{ object: "Old thing", object_id: "obj-old", acts: [{ ref: "a7", guid64: "700", text: "Old act" }] }], T0 - 5000);
+    view(VIEW, T0 - 1000);
+    markSpanUndone(db, { thread: THREAD, world: "slot3", branch: "branch-1", session: "telemetry-1", afterSourceTimeMs: T0 - 2000, reason: "HELPER_UNDO" }, T0);
+    const receipt = await run({ option: "a7" });
+    expect(receipt).toMatchObject({ ok: true, data: { option: "a7", label: "Old act (Old thing)" } });
+  });
+
+  it("says the newest view offers no choices when it has none", async () => {
+    view(undefined);
+    const receipt = await run({ option: "a1" });
+    expect(receipt.refused?.reason).toContain("The newest view of this game offers no choices.");
+  });
+});
+
+describe("game_act: requests", () => {
+  it("requests the chosen act, says requested rather than done, and keeps the plan's steps in order", async () => {
+    view(VIEW);
+    const receipt = await run({ option: "a1", then: ["a3"] });
+    expect(receipt.ok).toBe(true);
+    expect(receipt.summary.startsWith("Requested: Boil water (Test kettle) (a1).")).toBe(true);
+    expect(receipt.summary).toContain("Then, each after the one before completes: a3 (Sit down (Test bench)).");
+    expect(receipt.summary).not.toMatch(/^Done/);
+    expect(receipt.data).toMatchObject({ option: "a1", label: "Boil water (Test kettle)", forSummoner: false, then: ["a3"], attached: true });
+    const rows = acts();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ thread: THREAD, attachment: HELPER, option_ref: "a1", object_id: "obj-kettle", guid64: "111", state: "requested" });
+    expect(db.prepare("SELECT step, option_ref, state FROM plan_steps").all()).toEqual([{ step: 1, option_ref: "a3", state: "planned" }]);
+  });
+
+  it("marks the act for the summoner when asked to", async () => {
+    view(VIEW);
+    const receipt = await run({ option: "a2", for_summoner: true });
+    expect(receipt.data).toMatchObject({ forSummoner: true });
+    expect(acts()[0]).toMatchObject({ for_summoner: 1 });
+  });
+
+  it("says the game is not attached, and that the request may expire, when it is not", async () => {
+    view(VIEW);
+    open = { db, nowMs: () => T0, attachedAt: () => false };
+    const receipt = await run({ option: "a1" });
+    expect(receipt.summary).toContain("The game is not attached right now");
+    expect(receipt.data).toMatchObject({ attached: false });
+  });
+
+  it("refuses a plan with an unknown step, and requests nothing", async () => {
+    view(VIEW);
+    const receipt = await run({ option: "a1", then: ["a9"] });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "unknown_option" } });
+    expect(acts()).toEqual([]);
+  });
+
+  it("allows at most two steps after the first", async () => {
+    view(VIEW);
+    expect(await run({ option: "a1", then: ["a2", "a3", "a4"] })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(acts()).toEqual([]);
+  });
+
+  it("refuses a second choice in the same turn", async () => {
+    view(VIEW);
+    expect((await run({ option: "a1" }, THREAD, "one-turn")).ok).toBe(true);
+    expect(await run({ option: "a2" }, THREAD, "one-turn")).toMatchObject({ ok: false, refused: { code: "one_act_per_turn" } });
+    expect(acts()).toHaveLength(1);
+  });
+
+  it("refuses arguments it does not know, and malformed ones, before anything is requested", async () => {
+    view(VIEW);
+    expect(await run({ option: "a1", extra: true })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await run({ option: "a 1" })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await run({})).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await run({ option: "a1", for_summoner: "yes" })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await run({ option: "a1", answer: {} })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(acts()).toEqual([]);
+  });
+
+  it("refuses an answer given to something that is not a game question, and says why", async () => {
+    view(VIEW);
+    const receipt = await run({ option: "a1", answer: { rows: [{ option: "a1" }] } });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "not_a_dialog" } });
+    expect(acts()).toEqual([]);
+  });
+});
