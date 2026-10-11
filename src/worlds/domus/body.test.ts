@@ -116,3 +116,25 @@ describe("the view starts with her body", () => {
     expect(without.startsWith("The game (slot3) shows:")).toBe(true);
   });
 });
+
+describe("her attention, the first line of the block", () => {
+  it("is the first line, before the attachment and the portrait", () => {
+    const lines = bodyLines({ paused: true }, { attached: true }, "Your attention: every change.");
+    expect(lines).toEqual(["Your attention: every change.", "The game is attached.", "The game is paused."]);
+  });
+
+  it("is shown on its own when the game is not attached and no portrait came", () => {
+    expect(bodyLines(undefined, undefined, "Your attention: quiet until 14:30.")).toEqual(["Your attention: quiet until 14:30."]);
+  });
+
+  it("leads the view's body block", () => {
+    const text = renderView({
+      world: "slot3",
+      portrait: { paused: true },
+      percepts: [{ kind: "gap", salience: 1, facts: {} }],
+      options: [],
+      attention: "Your attention: when something calls you.",
+    });
+    expect(text.startsWith("Your body now:\nYour attention: when something calls you.\nThe game is paused.\n\nThe game (slot3) shows:\n")).toBe(true);
+  });
+});

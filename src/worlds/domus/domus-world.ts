@@ -7,16 +7,19 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { DatabaseSync } from "node:sqlite";
 import type { World, WorldBody, WorldEvent } from "../../contracts.js";
 import type { AttachmentNow } from "./body.js";
+import { attentionLine, type AttentionContext, currentAttention, gameAttentionTool, reviewAttention, wakesFor } from "./attention.js";
 import { gameActTool, type GameActContext } from "./game-act.js";
+import { gameLookTool, type LookContext } from "./look.js";
 import { isStopOn } from "../../entity/stop.js";
 import { expireDue, pendingCounts, syncActs, type ThreadNote, withdrawUndone, withholdForStop } from "./acts.js";
-import { choicesSignature, optionsOf, renderView } from "./options.js";
+import { choicesSignature, optionsOf, renderView, viewBrief } from "./options.js";
 import {
   checkSnapshot, expireSnapshots, gameSnapshotTool, openSnapshots, SNAPSHOT_PICTURE_NAME, SNAPSHOT_STATUS, settleFailed,
   settleTaken, type SnapshotContext, withdrawSnapshots,
 } from "./snapshot.js";
 import {
   admitObservation, forgetInDomusFile, forgetText, HeartbeatBook, inTransaction, markSpanUndoneIn, openDomusDb, pruneObservations,
+  takeLook, writeAttention,
 } from "./store.js";
 import {
   BODY_LIMIT, canonicalJson, DOMUS_WORLD_ID, gameThreadOf, MIN_TOKEN_BYTES, observationDigest, parseActSync, parseFeed,
@@ -42,6 +45,8 @@ export type DomusWorldOptions = {
   nowMs?: () => number;
   /** Every other token the body holds (the bot token, the model key). The helper's token must differ from each. */
   otherTokens?: readonly string[];
+  /** The Lar's zone: a quiet's time without an offset is read in it, and shown in it. The host's zone when not given. */
+  timeZone?: string;
 };
 
 export interface DomusWorld extends World {
@@ -114,8 +119,16 @@ function listen(server: Server, host: string, port: number): Promise<void> {
   });
 }
 
-/** An admitted view becomes one event on its game thread: outside text (the game's), with the choices and their refs. */
-function observationEvent(parsed: ParsedObservation, attachment: AttachmentNow, lastChoices: string | undefined): WorldEvent {
+/** The view key of every game view (WorldEvent.view): an older one on a game thread shows its brief in her turn. */
+export const GAME_VIEW = "domus";
+
+/**
+ * An admitted view becomes one event on its game thread: outside text (the game's), with the choices and their refs.
+ * It wakes her only when her attention says so (wake); the body block starts with her attention line.
+ */
+function observationEvent(
+  parsed: ParsedObservation, attachment: AttachmentNow, lastChoices: string | undefined, attention: { line: string; wake: boolean },
+): WorldEvent {
   const thread = gameThreadOf(parsed.fields.world);
   const alias = thread.slice(DOMUS_WORLD_ID.length + 1);
   const options = optionsOf(parsed.options ?? []);
@@ -136,10 +149,13 @@ function observationEvent(parsed: ParsedObservation, attachment: AttachmentNow, 
     source: "outside",
     text: renderView({
       world: alias, percepts: parsed.percepts, options, portrait: parsed.normalized.portrait, attachment, lastChoices, optionsCut: parsed.optionsCut,
+      attention: attention.line,
     }),
     data,
     atMs: parsed.fields.sourceTimeMs,
-    wake: true,
+    wake: attention.wake,
+    view: GAME_VIEW,
+    brief: viewBrief(parsed.percepts),
   };
 }
 
@@ -234,6 +250,43 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     return { db: current, nowMs, attachedSession: (at: number) => heartbeats.attachedSession(at) };
   };
 
+  /** What the game_look tool reads on each call: null while the world is not running. */
+  const openLook = (): LookContext => {
+    const current = db;
+    const heartbeats = book;
+    if (!current || !heartbeats) return null;
+    return {
+      db: current,
+      nowMs,
+      attachedSession: (at: number) => heartbeats.attachedSession(at),
+      lastAttachedMs: () => heartbeats.lastAttachedAt(),
+    };
+  };
+
+  /** What the game_attention tool reads on each call: null while the world is not running. */
+  const openAttention = (): AttentionContext => {
+    const current = db;
+    if (!current) return null;
+    return { db: current, nowMs, timeZone: options.timeZone };
+  };
+
+  /**
+   * Her attention for an admitted view: whether it wakes her, and the line her body block starts with. The thread
+   * keeps the view's helper session and the time it last woke her, so the first view after attach is known.
+   */
+  function attendView(thread: string, parsed: ParsedObservation, now: number): { line: string; wake: boolean } {
+    const current = requireDb();
+    const row = currentAttention(current, thread, now);
+    const wake = wakesFor(row.mode, {
+      percepts: parsed.percepts,
+      portrait: parsed.normalized.portrait,
+      dayRecord: parsed.normalized.day !== undefined,
+      firstAfterAttach: row.viewedSession !== parsed.fields.attachment,
+    });
+    writeAttention(current, { ...row, viewedSession: parsed.fields.attachment, lastWakeMs: wake ? now : row.lastWakeMs });
+    return { line: attentionLine(row, now, options.timeZone), wake };
+  }
+
   function observationRoute(body: unknown, res: ServerResponse): void {
     const now = nowMs();
     const parsed = parseObservation(body, now);
@@ -266,7 +319,8 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     if (result.status === "admitted") {
       lastWorld = parsed.fields.world;
       const thread = gameThreadOf(parsed.fields.world);
-      deliver(observationEvent(parsed, attachmentAt(now), choicesShown.get(thread)));
+      const attention = attendView(thread, parsed, now);
+      deliver(observationEvent(parsed, attachmentAt(now), choicesShown.get(thread), attention));
       choicesShown.set(thread, choicesSignature(optionsOf(parsed.options ?? [])));
     }
   }
@@ -293,9 +347,13 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     const pictures = stopped ? withdrawSnapshots(requireDb(), now) : expireSnapshots(requireDb(), now);
     const result = syncActs(requireDb(), { attachment: parsed.helperSession, events: parsed.events, nowMs: now });
     const snapshots = stopped ? [] : openSnapshots(requireDb(), { helperSession: parsed.helperSession, nowMs: now });
+    reviewAttention(requireDb(), now, requireBook().attachedSession(now));
+    const look = stopped ? false : takeLook(requireDb(), parsed.helperSession, now);
     for (const note of withheld) deliver(noteEvent(note, now));
     for (const note of pictures) deliver(noteEvent(note, now));
-    send(res, 200, { status: "ok", applied: result.applied, acts: result.acts, planned: result.planned, snapshots });
+    send(res, 200, {
+      status: "ok", applied: result.applied, acts: result.acts, planned: result.planned, snapshots, ...(look ? { look: true } : {}),
+    });
     for (const note of result.notes) deliver(noteEvent(note, now));
   }
 
@@ -431,6 +489,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       if (isStopOn(options.dir)) for (const note of withholdForStop(db, now)) deliver(noteEvent(note, now));
       for (const note of expireDue(db, now)) deliver(noteEvent(note, now));
       for (const note of isStopOn(options.dir) ? withdrawSnapshots(db, now) : expireSnapshots(db, now)) deliver(noteEvent(note, now));
+      reviewAttention(db, now, book?.attachedSession(now));
       if (now - lastPruneMs >= PRUNE_MS) {
         lastPruneMs = now;
         pruneObservations(db, now);
@@ -507,7 +566,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     },
 
     tools() {
-      return [gameActTool(open), gameSnapshotTool(openSnapshot)];
+      return [gameActTool(open), gameSnapshotTool(openSnapshot), gameAttentionTool(openAttention), gameLookTool(openLook)];
     },
 
     about() {

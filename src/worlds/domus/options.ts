@@ -10,6 +10,8 @@ import { BAND_WORDS, capitalised, plainName, textOrUndefined } from "./words.js"
 
 /** The longest the rendered view may be, in characters. The rest is said as a count. */
 export const VIEW_TEXT_MAX = 20_000;
+/** The longest an older view's brief may be, in characters. The rest is said as a count. */
+export const BRIEF_MAX = 1_000;
 const FACT_MAX = 80;
 
 function clip(text: string, max: number): string {
@@ -152,26 +154,51 @@ export function perceptSentence(percept: Percept): string | undefined {
   }
 }
 
+/** One percept's line in a view: its plain sentence, or the old "kind: facts" line for a kind it does not know. */
+export function perceptLine(percept: Percept): string {
+  const sentence = perceptSentence(percept);
+  const label = percept.kind.replace(/_/g, " ");
+  const facts = factsText(percept.facts);
+  return sentence !== undefined ? `- ${sentence}` : `- ${label}${facts ? `: ${facts}` : ""}`;
+}
+
+/**
+ * The brief of an older view, kept in its row: the percept lines only, in the words the view shows them. No body and
+ * no choices. "An earlier view." when there are no percept lines.
+ */
+export function viewBrief(percepts: readonly Percept[]): string {
+  if (percepts.length === 0) return "An earlier view.";
+  const lines: string[] = [];
+  let used = 0;
+  for (const percept of percepts) {
+    const line = perceptLine(percept);
+    if (used + line.length > BRIEF_MAX) break;
+    lines.push(line);
+    used += line.length + 1;
+  }
+  if (lines.length < percepts.length) lines.push(`- (${percepts.length - lines.length} more not shown)`);
+  return lines.join("\n");
+}
+
 /**
  * The plain text of a game view for the Lar: what the game shows, then the choices it offers, each with its ref.
  * Shows the ref and the game's words only; no id, no matcher hint, no advice.
  */
 export function renderView(input: {
   world: string; percepts: readonly Percept[]; options: readonly OptionObject[]; portrait?: unknown; attachment?: AttachmentNow;
+  /** Her attention, the first line of the body block (see attentionLine). */
+  attention?: string;
   /** The choices of the last view rendered on this thread (see choicesSignature), or undefined when there was none. */
   lastChoices?: string;
   optionsCut?: OptionsCut;
 }): string {
-  const body = bodyLines(input.portrait, input.attachment);
+  const body = bodyLines(input.portrait, input.attachment, input.attention);
   const head = [...(body.length ? ["Your body now:", ...body, ""] : []), `The game (${input.world}) shows:`];
   const lines: string[] = [...head];
   let shown = 0;
   let used = head.reduce((sum, line) => sum + line.length + 1, 0);
   for (const percept of input.percepts) {
-    const sentence = perceptSentence(percept);
-    const label = percept.kind.replace(/_/g, " ");
-    const facts = factsText(percept.facts);
-    const line = sentence !== undefined ? `- ${sentence}` : `- ${label}${facts ? `: ${facts}` : ""}`;
+    const line = perceptLine(percept);
     if (used + line.length > VIEW_TEXT_MAX) break;
     lines.push(line);
     used += line.length;

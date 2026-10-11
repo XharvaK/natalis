@@ -92,7 +92,8 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
       return 1;
     }
     worlds.push(createDomusWorld({ dir, token, ...(domus.host !== undefined ? { host: domus.host } : {}),
-      ...(domus.port !== undefined ? { port: domus.port } : {}), otherTokens }));
+      ...(domus.port !== undefined ? { port: domus.port } : {}), otherTokens,
+      ...(config.timeZone !== undefined ? { timeZone: config.timeZone } : {}) }));
   }
   if (worlds.length === 0) {
     err(`No worlds to run in: add ${DISCORD_FILE} to ${dir}, or use natalis chat for the terminal.`);

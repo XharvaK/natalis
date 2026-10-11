@@ -70,7 +70,7 @@ import {
   type SummonerDesk,
 } from "./summoner.js";
 import { isStopOn, readStop } from "./stop.js";
-import { clockOf, firstDailyOccurrence, instantOfLocal, isWakeRepeat, nextOccurrence, parseClock, WAKE_LIMIT, type WakeRepeat } from "./wake-schedule.js";
+import { clockOf, firstDailyOccurrence, instantOfLocal, isWakeRepeat, nextOccurrence, parseAtIso, parseClock, WAKE_LIMIT, type WakeRepeat } from "./wake-schedule.js";
 import { DEFAULT_RHYTHM } from "./config.js";
 
 export const STATE_FILE = "state.json";
@@ -719,6 +719,7 @@ class Runtime implements Entity {
         return;
       }
     }
+    const data = eventData(event);
     const row = this.river.append({
       kind: "event",
       thread,
@@ -726,7 +727,7 @@ class Runtime implements Entity {
       ...(actor === undefined ? {} : { actor }),
       source: event.source,
       ...(event.text === undefined ? {} : { text: event.text }),
-      ...(event.data === undefined ? {} : { data: event.data }),
+      ...(data === undefined ? {} : { data }),
       atMs,
     });
     if (event.source === "owner") {
@@ -804,12 +805,14 @@ class Runtime implements Entity {
     const done = this.doneBeforeCut(thread, seen);
     this.countTurn(nowMs);
     const { text: system, sizes } = this.systemText(thread, fresh, shown, nowMs, snapshot);
+    // Among the rows shown, an older view of a key shows its brief; the newest of each key shows its full text.
+    const briefed = olderViewRows([...recent, ...fresh]);
     const event = [
       "Recent here:",
-      ...(recent.length === 0 ? ["(nothing yet)"] : recent.map((row) => this.lineFor(row))),
+      ...(recent.length === 0 ? ["(nothing yet)"] : recent.map((row) => this.lineFor(row, briefed.has(row.seq)))),
       "",
       "New:",
-      ...fresh.map((row) => this.lineFor(row)),
+      ...fresh.map((row) => this.lineFor(row, briefed.has(row.seq))),
       ...(done.length === 0
         ? []
         : [
@@ -1478,7 +1481,7 @@ class Runtime implements Entity {
     return [...found.values()]
       .sort((a, b) => b.score - a.score || b.row.seq - a.row.seq)
       .slice(0, RECALL_LIMIT)
-      .map(({ row }) => `[${this.stamp(row.atMs)} ${row.thread} ${who(row)}] ${clip(row.text ?? "", RECALL_CLIP)}`)
+      .map(({ row }) => `[${this.stamp(row.atMs)} ${row.thread} ${who(row)}] ${clip(viewKeyOf(row) === undefined ? row.text ?? "" : briefOf(row), RECALL_CLIP)}`)
       .join("\n");
   }
 
@@ -1506,9 +1509,10 @@ class Runtime implements Entity {
       .reverse();
   }
 
-  private lineFor(row: RiverRow): string {
+  /** One row as one line. A row shown by its brief (an older view, see olderViewRows) gives the brief in place of its text. */
+  private lineFor(row: RiverRow, brief = false): string {
     const outside = row.source === "outside" ? " (outside)" : "";
-    return `[${this.clock(row.atMs)} ${who(row)}${outside}] ${row.text ?? ""}`;
+    return `[${this.clock(row.atMs)} ${who(row)}${outside}] ${brief ? briefOf(row) : row.text ?? ""}`;
   }
 
   private clock(atMs: number): string {
@@ -2175,6 +2179,45 @@ function pictureAbility(vision: boolean): string {
     : "You cannot see pictures with your current model; you can keep and send them.";
 }
 
+/** The view key an event row carries (see WorldEvent.view), or undefined for a row that is not a view. */
+function viewKeyOf(row: RiverRow): string | undefined {
+  const view = row.data?.["view"];
+  return typeof view === "string" ? view : undefined;
+}
+
+/** The data the row keeps: the event's own data, with its view key and brief; undefined when there is neither. */
+function eventData(event: WorldEvent): Record<string, unknown> | undefined {
+  const extra: Record<string, unknown> = {};
+  if (event.view !== undefined) extra.view = event.view;
+  if (event.brief !== undefined) extra.brief = event.brief;
+  if (event.data === undefined && Object.keys(extra).length === 0) return undefined;
+  return { ...(event.data ?? {}), ...extra };
+}
+
+/** The text an older view shows in place of its full text. */
+function briefOf(row: RiverRow): string {
+  const brief = row.data?.["brief"];
+  return typeof brief === "string" ? brief : "An earlier view.";
+}
+
+/**
+ * The seqs of the rows that show their brief: for each view key, every row with that key except the newest one of it.
+ * Rows without a view key are never in the set.
+ */
+function olderViewRows(rows: readonly RiverRow[]): Set<number> {
+  const newest = new Map<string, number>();
+  for (const row of rows) {
+    const view = viewKeyOf(row);
+    if (view !== undefined) newest.set(view, Math.max(newest.get(view) ?? 0, row.seq));
+  }
+  const older = new Set<number>();
+  for (const row of rows) {
+    const view = viewKeyOf(row);
+    if (view !== undefined && newest.get(view) !== row.seq) older.add(row.seq);
+  }
+  return older;
+}
+
 function who(row: RiverRow): string {
   if (row.kind === "say" && row.source === "self") return "you";
   return row.actor ?? row.source;
@@ -2275,30 +2318,6 @@ export function forgetInStateFile(statePath: string, query: string): number {
  */
 function isOversized(message: string): boolean {
   return /rejected the request/i.test(message) && /context|too (large|long|many)|maximum .*tokens/i.test(message);
-}
-
-/** A date, with an optional time (T or a space between), and no offset. */
-const LOCAL_ISO = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?)?$/;
-
-/**
- * The instant an at_iso names. A date and time with no offset is read in the Lar's own zone, the zone its clock and its
- * repeating wakes use; one with an offset or Z is read as it is. NaN when the text is not a date and time.
- */
-function parseAtIso(text: string, timeZone: string | undefined): number {
-  const match = LOCAL_ISO.exec(text.trim());
-  if (match === null) return Date.parse(text);
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const hour = Number(match[4] ?? 0);
-  const minute = Number(match[5] ?? 0);
-  const second = Number(match[6] ?? 0);
-  // Date.UTC rolls an impossible day (such as February 30) over; a round trip that does not match is refused.
-  const calendar = new Date(Date.UTC(year, month - 1, day));
-  const real = calendar.getUTCFullYear() === year && calendar.getUTCMonth() === month - 1 && calendar.getUTCDate() === day;
-  if (!real || hour > 23 || minute > 59 || second > 59) return Number.NaN;
-  const clock = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
-  return instantOfLocal({ year, month, day }, clock, timeZone) + second * 1000;
 }
 
 function messageOf(err: unknown): string {
