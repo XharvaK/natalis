@@ -40,6 +40,13 @@ describe("the command-line world", () => {
     expect(receipt.refused?.code).toBe("world_error");
   });
 
+  it("counts only its own command-line place as the owner place", () => {
+    const cli = createCliWorld({ onSay: () => {} });
+    expect(cli.isOwnerPlace?.(CLI_PLACE)).toBe(true);
+    expect(cli.isOwnerPlace?.("cli:someone-else")).toBe(false);
+    expect(cli.isOwnerPlace?.("discord:dm:owner")).toBe(false);
+  });
+
   it("offers no tools and a fixed now line", () => {
     const cli = createCliWorld({ onSay: () => {} });
     expect(cli.tools()).toEqual([]);

@@ -49,6 +49,10 @@ export function createCliWorld(options: CliWorldOptions): CliWorld {
       return { ok: true, summary: "Shown on the command line.", data: { place } };
     },
 
+    isOwnerPlace(place: string): boolean {
+      return place === CLI_PLACE;
+    },
+
     tools() {
       return [];
     },

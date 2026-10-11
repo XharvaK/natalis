@@ -258,6 +258,14 @@ describe("list and firstLine", () => {
   it("an empty or missing folder lists as nothing", () => {
     expect(nb.list("nowhere")).toEqual([]);
   });
+
+  it("shows the new first line once a file has changed", async () => {
+    await nb.write("people/a.md", "Ana\n", "Note on Ana", "body");
+    expect(nb.list("people")[0]?.firstLine).toBe("Ana");
+
+    await nb.write("people/a.md", "Bea is the new name here\n", "Rename the note", "body");
+    expect(nb.list("people")[0]?.firstLine).toBe("Bea is the new name here");
+  });
 });
 
 describe("search", () => {

@@ -181,6 +181,8 @@ function byPath(a: { path: string }, b: { path: string }): number {
 class GitNotebook implements Notebook {
   readonly root: string;
   private tail: Promise<void> = Promise.resolve();
+  /** First lines by path, with the size and modification time they were read at. */
+  private readonly firstLines = new Map<string, { size: number; mtimeMs: number; firstLine: string }>();
 
   constructor(root: string) {
     this.root = root;
@@ -314,22 +316,38 @@ class GitNotebook implements Notebook {
   list(dir?: string): NotebookEntry[] {
     const dirRel = normalizePath(dir ?? "", true);
     const entries: NotebookEntry[] = [];
+    const walked = new Set<string>();
     for (const path of this.filePaths(dirRel)) {
       const file = toAbsolute(this.root, path);
+      walked.add(path);
       try {
         const stat = statSync(file);
         entries.push({
           path,
           bytes: stat.size,
           modifiedMs: Math.round(stat.mtimeMs),
-          firstLine: firstLineOf(readFileSync(file, "utf8")),
+          firstLine: this.firstLineCached(path, file, stat),
         });
       } catch (err) {
         // A file moved between the walk and the stat is not part of the listing any more.
         if (codeOf(err) !== "ENOENT") throw err;
+        this.firstLines.delete(path);
       }
     }
+    // A full listing sees every file, so a cache entry it did not walk belongs to a file that is gone.
+    if (dirRel === "") {
+      for (const path of [...this.firstLines.keys()]) if (!walked.has(path)) this.firstLines.delete(path);
+    }
     return entries.sort(byPath);
+  }
+
+  /** The first line of a file, read again only when its size or modification time has changed since last time. */
+  private firstLineCached(path: string, file: string, stat: { size: number; mtimeMs: number }): string {
+    const known = this.firstLines.get(path);
+    if (known && known.size === stat.size && known.mtimeMs === stat.mtimeMs) return known.firstLine;
+    const firstLine = firstLineOf(readFileSync(file, "utf8"));
+    this.firstLines.set(path, { size: stat.size, mtimeMs: stat.mtimeMs, firstLine });
+    return firstLine;
   }
 
   search(text: string, limit = 50): Array<{ path: string; line: number; text: string }> {

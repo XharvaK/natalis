@@ -28,7 +28,11 @@ export type ChatMessage =
 /** JSON Schema object describing a tool's arguments. */
 export type JsonSchema = Record<string, unknown>;
 
-export type ToolSpec = { name: string; description: string; parameters: JsonSchema };
+/**
+ * `safeWhenStopped` is body-only: it lets a world tool run while the owner's emergency stop is on. It is never
+ * sent to the model; the runtime strips it from the spec it shows.
+ */
+export type ToolSpec = { name: string; description: string; parameters: JsonSchema; safeWhenStopped?: boolean };
 
 export type ModelRequest = {
   messages: ChatMessage[];
@@ -275,6 +279,8 @@ export interface World {
   stop(): Promise<void>;
   /** Deliver words to a place in this world. The receipt says delivered, or why not. */
   say(place: string, text: string, options?: { replyTo?: string }): Promise<SayResult>;
+  /** True when a place is the owner's own place in this world (the owner's DM, the command line). Default: not. */
+  isOwnerPlace?(place: string): boolean;
   /** Extra tools this world offers (react, act_in_game, ...). */
   tools(): Tool[];
   /** One or two plain lines for the now board: connected or not, places open. */
