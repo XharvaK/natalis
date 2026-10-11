@@ -52,7 +52,7 @@ import {
 } from "./commitments.js";
 import { dayKey, hostZone, msUntilNextDay, startOfDayMs } from "./day.js";
 import { FLOOR_TEXT } from "./floor.js";
-import { chosenName, NAME_NOTE, whoYouAre } from "./identity.js";
+import { chosenName, NAME_NOTE, whoYouAre, type Thinking } from "./identity.js";
 import { readNature } from "./nature.js";
 import { HONESTY_SYSTEM, type HonestyVerdict, parseHonestyReply } from "./honesty.js";
 import {
@@ -878,7 +878,13 @@ class Runtime implements Entity {
     const shown = new Set<number>([...recent, ...fresh].map((row) => row.seq));
     const done = this.doneBeforeCut(thread, seen);
     this.countTurn(nowMs);
-    const { text: system, sizes } = this.systemText(thread, fresh, shown, nowMs, snapshot);
+    // A world with a model of its own runs its turns on that model. A place is named for its world ("domus:...").
+    const world = this.worldFor(thread)?.id ?? "";
+    const worldModel = this.worldModels[world];
+    const effort = worldModel === undefined ? this.config.effort : (this.config.worldModels?.[world]?.effort ?? this.config.effort);
+    const turnModel = worldModel ?? this.model;
+    const mainName = worldModel === undefined ? this.config.model.model : (this.config.worldModels?.[world]?.model ?? turnModel.info.id);
+    const { text: system, sizes } = this.systemText(thread, fresh, shown, nowMs, snapshot, this.thinkingOf(turnModel, mainName, effort));
     // Among the rows shown, an older view of a key shows its brief; the newest of each key shows its full text.
     const briefed = olderViewRows([...recent, ...fresh]);
     const event = [
@@ -899,12 +905,8 @@ class Runtime implements Entity {
 
     this.turnSnapshots.set(turnId, snapshot);
     this.turnStarts.set(turnId, nowMs);
-    // A world with a model of its own runs its turns on that model. A place is named for its world ("domus:...").
-    const world = this.worldFor(thread)?.id ?? "";
-    const worldModel = this.worldModels[world];
-    const effort = worldModel === undefined ? this.config.effort : (this.config.worldModels?.[world]?.effort ?? this.config.effort);
     const { result } = await runTurnWithMessages({
-      model: worldModel ?? this.model,
+      model: turnModel,
       tools: this.tools,
       system: this.scanner.redact(system),
       history: [],
@@ -1503,19 +1505,35 @@ class Runtime implements Entity {
 
   // --- what the Lar sees --------------------------------------------------------------------------
 
+  /**
+   * The model and effort a turn is thought with, as it starts. A port with a backup says whether the backup takes the
+   * calls now; a fallback in the middle of a turn is named by the river's backup note and the turn's end row.
+   */
+  private thinkingOf(port: ModelPort, main: string, effort: string | undefined): Thinking {
+    const routing = port.routing?.();
+    const thinking: Thinking = { main, onBackup: routing?.onBackup === true, ...(effort === undefined ? {} : { effort }) };
+    if (routing === undefined) return thinking;
+    const backupEffort = routing.backupEffort ?? effort;
+    return {
+      ...thinking,
+      backup: { model: routing.backup, ...(backupEffort === undefined ? {} : { effort: backupEffort }) },
+    };
+  }
+
   private systemText(
     thread: string,
     fresh: RiverRow[],
     shown: Set<number>,
     nowMs: number,
     snapshot: number,
+    thinking: Thinking,
   ): { text: string; sizes: string } {
     const wakes = this.state.wakes.map((wake) => ({ atMs: wake.atMs, why: wake.why, repeat: wake.repeat, clock: wake.clock }));
     // What stays the same from turn to turn comes first, so the provider can reuse it; what changes comes last.
     // The nature is the default unless the Lar's folder has a nature.md: its text replaces the default, and an empty one leaves the section out.
     const nature = readNature(this.dir).text;
     const sections: ContextSection[] = [
-      { name: "who you are", text: this.identityText(nowMs), priority: 100, core: true },
+      { name: "who you are", text: this.identityText(nowMs, thinking), priority: 100, core: true },
       ...(nature === undefined ? [] : [{ name: "a lar's nature", text: nature, priority: 100, core: true }]),
       { name: "how you act", text: HOW_YOU_ACT, priority: 100, core: true },
       { name: "pictures", text: pictureAbility(this.config.model.vision === true), priority: 100, core: true },
@@ -1541,11 +1559,11 @@ class Runtime implements Entity {
     };
   }
 
-  private identityText(nowMs: number): string {
+  private identityText(nowMs: number, thinking: Thinking): string {
     const character = this.notebook.read("self/character.md");
     return whoYouAre({
       name: this.config.name ?? chosenName(this.notebook.read(NAME_NOTE)),
-      engine: this.config.model.model,
+      thinking,
       bornMs: this.state.bornMs ?? nowMs,
       nowMs,
       timeZone: this.config.timeZone,

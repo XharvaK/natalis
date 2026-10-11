@@ -2716,3 +2716,49 @@ describe("what a turn says it leaves out", () => {
     expect(user).not.toContain("tovan (outside) (bot)");
   });
 });
+
+describe("who is thinking", () => {
+  it("names the model and the effort a turn is thought with, in who you are", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const room = fakeWorld("room");
+    const { entity } = await open(model, { config: { ...CONFIG, effort: "high" } }, [room.world]);
+    await entity.start();
+    room.push("room:hall", "Anyone home?");
+    await entity.idle();
+    expect(systemTextOf(model.requests[0])).toContain("You are thinking with scripted at high effort.");
+  });
+
+  it("names the backup and says it is the backup while the main model is held out", async () => {
+    const main = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const port = Object.assign(main, {
+      routing: () => ({ onBackup: true, backup: "backup-model", backupEffort: "low" as const }),
+    });
+    const room = fakeWorld("room");
+    const { entity } = await open(port, { config: { ...CONFIG, effort: "high" } }, [room.world]);
+    await entity.start();
+    room.push("room:hall", "Anyone home?");
+    await entity.idle();
+    expect(systemTextOf(main.requests[0])).toContain(
+      "Your main model, scripted, is not answering, so you are thinking with your backup model, backup-model, at low effort: the backup, not your main model.",
+    );
+  });
+
+  it("names a world's own model and its effort for that world's turns", async () => {
+    const main = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const gameModel = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const game = fakeWorld("game");
+    const room = fakeWorld("room");
+    const { entity } = await open(
+      main,
+      { config: { ...CONFIG, effort: "high", worldModels: { game: { model: "fast", effort: "low" } } }, worldModels: { game: gameModel } },
+      [game.world, room.world],
+    );
+    await entity.start();
+    game.push("game:slot1", "The kettle is boiling.");
+    await entity.idle();
+    room.push("room:hall", "Anyone home?");
+    await entity.idle();
+    expect(systemTextOf(gameModel.requests[0])).toContain("You are thinking with fast at low effort.");
+    expect(systemTextOf(main.requests[0])).toContain("You are thinking with scripted at high effort.");
+  });
+});
