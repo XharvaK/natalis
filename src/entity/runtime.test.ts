@@ -1441,6 +1441,70 @@ describe("the daily turn limit", () => {
     expect(systemTextOf(model.requests[1])).toContain("Turns today: 1 of 1.");
   });
 
+  it("tells only the summoner's own places about the limit, never a room where a message waits", async () => {
+    const now = Date.parse("2026-10-11T10:00:00Z");
+    let emitRoom: ((event: WorldEvent) => void) | undefined;
+    const roomSaid: string[] = [];
+    const room: World = {
+      id: "fake",
+      async start(next) {
+        emitRoom = next;
+      },
+      async stop() {
+        emitRoom = undefined;
+      },
+      async say(_place, text): Promise<Receipt> {
+        roomSaid.push(text);
+        return { ok: true, summary: "Delivered." };
+      },
+      tools: () => [],
+      now: () => "fake is open.",
+    };
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli, said } = await open(
+      model,
+      { config: { ...CONFIG, limits: { turnsPerDay: 1 } }, nowMs: () => now },
+      [room],
+    );
+    await entity.start();
+
+    emitRoom?.({ world: "fake", place: "fake:room", actor: "owner", source: "owner", text: "Room hello." });
+    await entity.idle();
+    cli.send("Second.");
+    await entity.idle();
+
+    expect(roomSaid).toEqual([]);
+    expect(said.map((item) => item.text)).toEqual([
+      "[natalis] Your Lar has reached today's limit of 1 turn and will see this after midnight (UTC).",
+    ]);
+  });
+
+  it("tells no place about the limit while the emergency stop is on, and tells once the stop is off", async () => {
+    let now = Date.parse("2026-10-11T10:00:00Z");
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli, said } = await open(model, {
+      config: { ...CONFIG, limits: { turnsPerDay: 1 } },
+      nowMs: () => now,
+    });
+    await entity.start();
+
+    cli.send("First.");
+    await entity.idle();
+    writeFileSync(join(dir, "STOP"), "", "utf8");
+    now += 60_000;
+    cli.send("Second.");
+    await entity.idle();
+    expect(said).toEqual([]);
+
+    rmSync(join(dir, "STOP"));
+    now += 60_000;
+    cli.send("Third.");
+    await entity.idle();
+    expect(said.map((item) => item.text)).toEqual([
+      "[natalis] Your Lar has reached today's limit of 1 turn and will see this after midnight (UTC).",
+    ]);
+  });
+
   it("holds a wake that comes due during the limit, and runs it with the next day's turns", async () => {
     let now = Date.parse("2026-10-11T10:00:00Z");
     const model = new ScriptedModel([

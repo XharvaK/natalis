@@ -950,12 +950,16 @@ class Runtime implements Entity {
 
   /** Each place with a waiting summoner message is told once a day that the Lar will see it after midnight. */
   private noticeLimit(): void {
+    // Only the summoner's own places are told, and no notice goes out while the emergency stop is on.
+    if (this.stopIsOn()) return;
     const day = this.dayOf(this.nowMs());
     const notices = this.state.limitNotices;
     const current: { day: string; places: string[] } =
       notices !== undefined && notices.day === day ? notices : { day, places: [] };
     const told = new Set(current.places);
-    const places = [...new Set(this.state.asks.map((ask) => ask.place))].filter((place) => !told.has(place));
+    const places = [...new Set(this.state.asks.map((ask) => ask.place))].filter(
+      (place) => this.isOwnerPlace(place) && !told.has(place),
+    );
     if (places.length === 0) return;
     this.state.limitNotices = { day, places: [...current.places, ...places] };
     this.saveState();
@@ -964,7 +968,7 @@ class Runtime implements Entity {
 
   private async sayLimit(place: string): Promise<void> {
     const limit = this.config.limits?.turnsPerDay;
-    if (limit === undefined) return;
+    if (limit === undefined || this.stopIsOn()) return;
     const zone = this.config.timeZone ?? hostZone();
     const turns = limit === 1 ? "turn" : "turns";
     await this.sayTo(
