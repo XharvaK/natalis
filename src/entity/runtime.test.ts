@@ -252,6 +252,34 @@ describe("a conversation", () => {
     expect(userTextOf(model.requests[0])).toContain("owner] Are you there?");
   });
 
+  it("takes a room's message again on the next start when a stop cut its turn, not only the summoner's asks", async () => {
+    let entered: () => void = () => {};
+    const inTurn = new Promise<void>((resolve) => (entered = resolve));
+    const hanging: ModelPort = {
+      info: { id: "hanging", contextTokens: 32_000, nativeTools: true },
+      complete: (_request, signal) =>
+        new Promise((_resolve, reject) => {
+          entered();
+          signal?.addEventListener("abort", () => reject(new ModelError("stopped", "aborted", 1)));
+        }),
+    };
+    const roomA = fakeWorld("fake");
+    const a = await open(hanging, {}, [roomA.world]);
+    await a.entity.start();
+    roomA.push("fake:room", "Are you there, room?");
+    await inTurn;
+    await a.entity.stop();
+
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const roomB = fakeWorld("fake");
+    const b = await open(model, {}, [roomB.world]);
+    await b.entity.start();
+    await b.entity.idle();
+
+    expect(model.requests).toHaveLength(1);
+    expect(userTextOf(model.requests[0])).toContain("Are you there, room?");
+  });
+
   it("keeps memory across a restart: the notebook and the river survive", async () => {
     const first = new ScriptedModel([
       reply({
@@ -1063,6 +1091,21 @@ function readStateJson(): Record<string, any> {
 }
 
 describe("the stop reaching the worlds", () => {
+  it("does not start a turn on restart for a stop notice or a summoner act alone", async () => {
+    const first = await open(new ScriptedModel([]));
+    await first.entity.start();
+    first.cli.send("!stop");
+    await first.entity.idle();
+    await first.entity.stop();
+
+    const model = new ScriptedModel([]);
+    const second = await open(model);
+    await second.entity.start();
+    await second.entity.idle();
+
+    expect(model.requests).toHaveLength(0);
+  });
+
   it("notices the stop file within a poll and calls each world's onStop once each time it turns on", async () => {
     const room = fakeWorld("fake");
     let stops = 0;

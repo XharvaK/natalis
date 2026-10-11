@@ -550,18 +550,21 @@ class Runtime implements Entity {
       await this.stop();
       throw err;
     }
-    this.resumeOpenAsks();
+    this.resumeUnseen();
   }
 
   /**
-   * A turn cut by a stop leaves its thread's cursor where it was. The summoner's open asks whose message that cursor
-   * has not passed are taken again now, so a restart never leaves the summoner waiting with no turn coming.
+   * A turn cut by a stop or a failure leaves its thread's cursor where it was. Every thread with a river event above its
+   * cursor is taken again now, so a restart never leaves a message with no turn coming. Body notes that were never
+   * owed a turn (the stop turning on, the summoner's acts) do not count; a wake does.
    */
-  private resumeOpenAsks(): void {
-    for (const ask of this.state.asks) {
-      const row = this.river.read({ sinceSeq: ask.seq - 1, untilSeq: ask.seq, limit: 1 })[0];
-      if (row === undefined || row.kind !== "event") continue;
-      if (ask.seq > this.threadState(row.thread).seenSeq) this.due.add(row.thread);
+  private resumeUnseen(): void {
+    // Every thread that has a river event has a cursor entry (intake makes one), so the lowest cursor is where to read from.
+    const cursors = Object.values(this.state.threads).map((entry) => entry.seenSeq);
+    const floor = cursors.length === 0 ? 0 : Math.min(...cursors);
+    for (const row of this.river.read({ kinds: ["event"], sinceSeq: floor, limit: ALL_ROWS })) {
+      if (row.source === "body" && row.data?.["wakeId"] === undefined) continue;
+      if (row.seq > this.threadState(row.thread).seenSeq) this.due.add(row.thread);
     }
     this.pump();
   }
@@ -619,6 +622,8 @@ class Runtime implements Entity {
     const atMs = event.atMs ?? this.nowMs();
     const thread = event.thread ?? event.place;
     const actor = event.actor ?? (event.source === "owner" ? this.config.owner.alias : undefined);
+    // Every thread with an event gets a cursor entry, so a restart knows where its events begin.
+    this.threadState(thread);
     if (event.source === "owner" && this.isOwnerPlace(event.place)) {
       // The summoner's own place. The welcome notice goes first, then a "!" line is a body command: it is never a turn
       // and opens no ask. Everything else is an ordinary message.
