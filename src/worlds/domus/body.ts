@@ -210,6 +210,44 @@ function lifeLines(life: unknown): string[] {
   return lines;
 }
 
+/** Her aspiration, its objectives in the order given; a line needs its name. */
+function aspirationLine(aspiration: unknown): string | undefined {
+  const a = record(aspiration);
+  const name = a ? wordOf(a.name) : undefined;
+  if (!a || name === undefined) return undefined;
+  const objectives = records(a.objectives).map((item) => {
+    const text = wordOf(item.text);
+    return text === undefined ? undefined : `${text}${item.done === true ? " (done)" : ""}`;
+  }).filter((item): item is string => item !== undefined);
+  return `Aspiration: ${name}${objectives.length ? `; now: ${objectives.join(", ")}` : ""}.`;
+}
+
+/** What she owes, whether the bills came in the mail, and whether they are late; none owed is said as such. */
+function billsLine(bills: unknown): string | undefined {
+  const b = record(bills);
+  const owed = b ? wholeOf(b.owed) : undefined;
+  if (!b || owed === undefined || owed < 0) return undefined;
+  const late = b.late === true;
+  if (owed === 0 && !late) return "No bills owed.";
+  const parts = [
+    `§${grouped(owed)} owed`,
+    b.delivered === true ? "they came in the mail" : undefined,
+    late ? "late" : undefined,
+  ].filter((part): part is string => part !== undefined);
+  return `Bills: ${parts.join("; ")}.`;
+}
+
+/** What she carries; a count is said only when it is more than one. */
+function carryLine(inventory: unknown): string | undefined {
+  const items = records(inventory).map((item) => {
+    const name = wordOf(item.item);
+    const count = wholeOf(item.count);
+    if (name === undefined || count === undefined || count < 1) return undefined;
+    return count > 1 ? `${count} × ${name}` : name;
+  }).filter((item): item is string => item !== undefined);
+  return items.length ? `You carry: ${items.join(", ")}.` : undefined;
+}
+
 /** The "You" section from the helper's portrait of her Sim: each part is skipped when absent or malformed. */
 function youLines(self: unknown): string[] {
   const s = record(self);
@@ -221,6 +259,9 @@ function youLines(self: unknown): string[] {
     ...jobLines(s.jobs),
     ...wantsLines(s.wants),
     ...lifeLines(s.life),
+    aspirationLine(s.aspiration),
+    billsLine(s.bills),
+    carryLine(s.inventory),
   ].filter((item): item is string => item !== undefined);
 }
 

@@ -219,3 +219,60 @@ describe("the You section is only in the full view", () => {
     expect(renderView({ world: "slot3", percepts: [], options: [], portrait: { self: SELF } })).toContain("You are Cheerful, Loyal.");
   });
 });
+
+describe("the You section: her aspiration, her bills and what she carries", () => {
+  it("says her aspiration, its objectives in the order given, and which are done", () => {
+    const aspiration = { name: "Cheerful Cook", objectives: [{ text: "Make soup", done: true }, { text: "Bake bread", done: false }] };
+    expect(bodyLines({ self: { aspiration } })).toEqual(["Aspiration: Cheerful Cook; now: Make soup (done), Bake bread."]);
+  });
+
+  it("skips an objective with no text, and says the aspiration alone when no objective is left", () => {
+    expect(bodyLines({ self: { aspiration: { name: "Cheerful Cook", objectives: [{ text: null, done: false }, { text: "Bake bread", done: false }] } } }))
+      .toEqual(["Aspiration: Cheerful Cook; now: Bake bread."]);
+    expect(bodyLines({ self: { aspiration: { name: "Cheerful Cook", objectives: [{ text: null, done: true }] } } }))
+      .toEqual(["Aspiration: Cheerful Cook."]);
+    expect(bodyLines({ self: { aspiration: { name: "Cheerful Cook", objectives: [] } } })).toEqual(["Aspiration: Cheerful Cook."]);
+  });
+
+  it("says nothing of an aspiration with no name, or one that is malformed", () => {
+    expect(bodyLines({ self: { aspiration: { name: null, objectives: [{ text: "Bake bread", done: false }] } } })).toEqual([]);
+    expect(bodyLines({ self: { aspiration: "Cheerful Cook" } })).toEqual([]);
+  });
+
+  it("says the bills owed, whether they came in the mail, and whether they are late, in words", () => {
+    expect(bodyLines({ self: { bills: { owed: 320, delivered: true, late: false } } })).toEqual(["Bills: §320 owed; they came in the mail."]);
+    expect(bodyLines({ self: { bills: { owed: 320, delivered: false, late: false } } })).toEqual(["Bills: §320 owed."]);
+    expect(bodyLines({ self: { bills: { owed: 320, delivered: true, late: true } } })).toEqual(["Bills: §320 owed; they came in the mail; late."]);
+    expect(bodyLines({ self: { bills: { owed: 320, delivered: false, late: true } } })).toEqual(["Bills: §320 owed; late."]);
+    expect(bodyLines({ self: { bills: { owed: 1234567, delivered: false, late: false } } })).toEqual(["Bills: §1,234,567 owed."]);
+  });
+
+  it("says No bills owed. when nothing is owed and nothing is late", () => {
+    expect(bodyLines({ self: { bills: { owed: 0, delivered: true, late: false } } })).toEqual(["No bills owed."]);
+    expect(bodyLines({ self: { bills: { owed: 0, delivered: false, late: false } } })).toEqual(["No bills owed."]);
+    expect(bodyLines({ self: { bills: { owed: 0, delivered: false, late: true } } })).toEqual(["Bills: §0 owed; late."]);
+  });
+
+  it("skips bills that are malformed, and never throws", () => {
+    expect(bodyLines({ self: { bills: { owed: null, delivered: true, late: false } } })).toEqual([]);
+    expect(bodyLines({ self: { bills: { owed: "320", delivered: true, late: false } } })).toEqual([]);
+    expect(bodyLines({ self: { bills: "320" } })).toEqual([]);
+  });
+
+  it("says what she carries, with a count only when there is more than one", () => {
+    expect(bodyLines({ self: { inventory: [{ item: "phone", count: 1 }, { item: "apple", count: 2 }] } }))
+      .toEqual(["You carry: phone, 2 × apple."]);
+    expect(bodyLines({ self: { inventory: [] } })).toEqual([]);
+  });
+
+  it("skips what she carries that is malformed, and keeps the rest", () => {
+    expect(bodyLines({ self: { inventory: [{ item: "phone", count: 1 }, { item: "apple" }, { item: "pen", count: 0 }, null, { count: 2 }] } }))
+      .toEqual(["You carry: phone."]);
+    expect(bodyLines({ self: { inventory: "phone" } })).toEqual([]);
+  });
+
+  it("comes after the rest of her You section, in the order the spec gives", () => {
+    const lines = bodyLines({ self: { traits: ["Cheerful"], bills: { owed: 0, delivered: false, late: false }, inventory: [{ item: "phone", count: 1 }] } });
+    expect(lines).toEqual(["You are Cheerful.", "No bills owed.", "You carry: phone."]);
+  });
+});
