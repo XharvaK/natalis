@@ -69,7 +69,8 @@ export function parseEntityConfig(value: unknown): EntityConfig {
   return config;
 }
 
-function parseModel(value: unknown): ModelConfig {
+/** Validates a model block (the `model` part of entity.json). Also used for the judge's config file. */
+export function parseModel(value: unknown): ModelConfig {
   const block = objectOf(value, "model");
   onlyKeys(block, ["baseUrl", "model", "apiKeyEnv", "contextTokens", "nativeTools", "effortParam", "timeoutMs"], "model");
 

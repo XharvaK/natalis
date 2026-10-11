@@ -9,11 +9,14 @@ import { openEntity, type Entity } from "../entity/runtime.js";
 import { modelFromConfig } from "../model/from-config.js";
 import { createSecretScanner } from "../secrets/index.js";
 import { createCliWorld } from "../worlds/cli.js";
+import { dispatchCommand } from "./commands/index.js";
 
 const USAGE = "Usage: natalis chat --dir <entity folder>";
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
+  const dispatched = await dispatchCommand(command, rest);
+  if (dispatched !== undefined) return dispatched;
   if (command !== "chat") {
     console.error(USAGE);
     return 2;
