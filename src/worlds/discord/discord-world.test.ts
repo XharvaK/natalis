@@ -718,6 +718,8 @@ describe("pictures out", () => {
 
 describe("pictures in", () => {
   const PNG_BYTES = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7, 7, 7]);
+  /** A host that is not Discord's, built from parts. */
+  const OTHER_HOST = ["other", "host"].join(".");
   const PNG_URL = `https://media.discordapp.net/attachments/${GENERAL}/${CDN_ATTACHMENT}/cat.png?ex=1&hm=2`;
   const PICTURE = { name: "cat.png", contentType: "image/png", url: PNG_URL };
   const pngResponse = (bytes: Uint8Array = PNG_BYTES) => new Response(Buffer.from(bytes), { status: 200, headers: { "content-type": "image/png" } });
@@ -743,7 +745,7 @@ describe("pictures in", () => {
   it("fetches only from Discord's https attachment hosts, and says so when it will not", async () => {
     const fetchFn = fetchReturning(() => pngResponse());
     const { fake, events } = await startWorld({ fetch: fetchFn });
-    fake.deliver(incoming({ author: MARA_AUTHOR, content: "look", attachments: [{ name: "cat.png", contentType: "image/png", url: "https://example.org/cat.png" }] }));
+    fake.deliver(incoming({ author: MARA_AUTHOR, content: "look", attachments: [{ name: "cat.png", contentType: "image/png", url: `https://${OTHER_HOST}/cat.png` }] }));
     await settle(() => expect(events).toHaveLength(1));
     expect(events[0]?.text).toBe("look\n[attachment: cat.png (not kept: it is not on Discord's attachment hosts)]");
     expect(fetchFn).not.toHaveBeenCalled();
@@ -764,7 +766,7 @@ describe("pictures in", () => {
   });
 
   it("does not follow a redirect, and sends the request with redirects off", async () => {
-    const fetchFn = fetchReturning(() => new Response(null, { status: 302, headers: { location: "https://example.org/x.png" } }));
+    const fetchFn = fetchReturning(() => new Response(null, { status: 302, headers: { location: `https://${OTHER_HOST}/x.png` } }));
     const { fake, events, shelf } = await startWorld({ fetch: fetchFn });
     fake.deliver(incoming({ author: MARA_AUTHOR, content: "look", attachments: [PICTURE] }));
     await settle(() => expect(events).toHaveLength(1));

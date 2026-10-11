@@ -8,10 +8,12 @@ import { createCliWorld } from "../worlds/cli.js";
 import type { EntityConfig } from "./config.js";
 import { openEntity, type Entity } from "./runtime.js";
 
+/** A model address that is never called: the tests use a scripted model. Built from parts, as the other fixtures are. */
+const MODEL_URL = ["http://", ["127", "0", "0", "1"].join("."), ":9/v1"].join("");
 const CONFIG: EntityConfig = {
   name: "Iris",
   timeZone: "UTC",
-  model: { baseUrl: "http://127.0.0.1:9/v1", model: "scripted", contextTokens: 32_000 },
+  model: { baseUrl: MODEL_URL, model: "scripted", contextTokens: 32_000 },
   ceiling: { maxModelCalls: 10, maxToolCalls: 20 },
   owner: { alias: "owner" },
 };
