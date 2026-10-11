@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Ceiling } from "../contracts.js";
-import type { FallbackModelConfig, ModelConfig } from "../model/from-config.js";
+import type { FallbackModelConfig, ModelConfig, ModelPrice } from "../model/from-config.js";
 import { parseClock } from "./wake-schedule.js";
 
 export const EFFORTS = ["low", "medium", "high", "xhigh"] as const;
@@ -162,7 +162,7 @@ export function parseModel(value: unknown): ModelConfig {
   const block = objectOf(value, "model");
   onlyKeys(
     block,
-    ["baseUrl", "model", "apiKeyEnv", "contextTokens", "nativeTools", "effortParam", "timeoutMs", "vision", "fallback"],
+    ["baseUrl", "model", "apiKeyEnv", "contextTokens", "nativeTools", "effortParam", "timeoutMs", "vision", "fallback", "price"],
     "model",
   );
 
@@ -194,14 +194,16 @@ export function parseModel(value: unknown): ModelConfig {
   if (block["timeoutMs"] !== undefined) model.timeoutMs = positiveInt(block["timeoutMs"], "model.timeoutMs");
   if (block["vision"] !== undefined) model.vision = flagOf(block["vision"], "model.vision");
   if (block["fallback"] !== undefined) model.fallback = parseFallback(block["fallback"]);
+  if (block["price"] !== undefined) model.price = priceOf(block["price"], "model.price");
   return model;
 }
 
 /** The backup model block: the same service, key and timeout as the main model, so only its own settings are given. */
 function parseFallback(value: unknown): FallbackModelConfig {
   const block = objectOf(value, "model.fallback");
-  onlyKeys(block, ["model", "effortParam", "vision", "effort", "contextTokens"], "model.fallback");
+  onlyKeys(block, ["model", "effortParam", "vision", "effort", "contextTokens", "price"], "model.fallback");
   const fallback: FallbackModelConfig = { model: textOf(block["model"], "model.fallback.model") };
+  if (block["price"] !== undefined) fallback.price = priceOf(block["price"], "model.fallback.price");
   if (block["effortParam"] !== undefined) {
     fallback.effortParam = effortParamOf(block["effortParam"], "model.fallback.effortParam");
   }
@@ -214,6 +216,23 @@ function parseFallback(value: unknown): FallbackModelConfig {
     fallback.contextTokens = positiveInt(block["contextTokens"], "model.fallback.contextTokens");
   }
   return fallback;
+}
+
+/** A model's price per million tokens, input and output. Both are numbers, 0 or more. Absent unless the summoner sets it. */
+function priceOf(value: unknown, where: string): ModelPrice {
+  const block = objectOf(value, where);
+  onlyKeys(block, ["inputPerMillion", "outputPerMillion"], where);
+  return {
+    inputPerMillion: priceNumber(block["inputPerMillion"], `${where}.inputPerMillion`),
+    outputPerMillion: priceNumber(block["outputPerMillion"], `${where}.outputPerMillion`),
+  };
+}
+
+function priceNumber(value: unknown, where: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`${where} must be a number, 0 or more.`);
+  }
+  return value;
 }
 
 function flagOf(value: unknown, where: string): boolean {

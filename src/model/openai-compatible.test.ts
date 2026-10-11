@@ -199,6 +199,23 @@ describe("reply mapping", () => {
     expect(reply.latencyMs).toBeGreaterThanOrEqual(0);
   });
 
+  it("keeps the provider's reported total tokens, and leaves out any count it did not report", async () => {
+    const { port } = harness([
+      ok({
+        choices: [{ message: { content: "done" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 },
+      }),
+      ok({
+        choices: [{ message: { content: "done" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 7 },
+      }),
+    ]);
+    const first = await port.complete(asks([{ role: "user", content: "hi" }]));
+    expect(first.usage).toEqual({ inputTokens: 12, outputTokens: 3, totalTokens: 15 });
+    const second = await port.complete(asks([{ role: "user", content: "hi" }]));
+    expect(second.usage).toEqual({ inputTokens: 7 });
+  });
+
   it("maps finish reasons and treats unknown ones as stop", async () => {
     const cases: Array<[string | null, string]> = [
       ["length", "length"],

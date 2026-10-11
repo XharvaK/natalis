@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dayKey, msUntilNextDay } from "./day.js";
+import { dayKey, msUntilNextDay, startOfDayMs } from "./day.js";
 
 describe("dayKey", () => {
   it("names the local calendar day of a moment, in the zone it is given", () => {
@@ -27,5 +27,14 @@ describe("msUntilNextDay", () => {
 
   it("never returns less than one second", () => {
     expect(msUntilNextDay(Date.parse("2026-10-11T23:59:59.999Z"), "UTC")).toBeGreaterThanOrEqual(1000);
+  });
+});
+
+describe("startOfDayMs", () => {
+  it("is the local midnight that began the day of a moment, in the zone given", () => {
+    // 21:30 UTC is already 00:30 the next day in Istanbul, so that day began three hours and thirty minutes earlier.
+    const late = Date.parse("2026-10-11T21:30:00Z");
+    expect(startOfDayMs(late, "UTC")).toBe(Date.parse("2026-10-11T00:00:00Z"));
+    expect(startOfDayMs(late, "Europe/Istanbul")).toBe(Date.parse("2026-10-11T21:00:00Z"));
   });
 });

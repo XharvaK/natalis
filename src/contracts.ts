@@ -52,7 +52,8 @@ export type ModelResponse = {
   content: string | null;
   toolCalls: ToolCall[];
   finish: FinishReason;
-  usage?: { inputTokens?: number; outputTokens?: number };
+  /** The token counts the provider reported for this call. Each count is absent when the provider did not send it. */
+  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
   /** Milliseconds from request to full response. */
   latencyMs: number;
   /** The readable summary of the model's reasoning, when the provider sends one. */
@@ -219,6 +220,9 @@ export interface Tool {
 
 export type TurnEndReason = "end_turn" | "no_tool_call" | "ceiling" | "model_error" | "aborted";
 
+/** Token counts as the provider reported them, summed over a turn's calls. A count nobody reported is absent. */
+export type TokenCount = { prompt?: number; completion?: number; total?: number };
+
 export type TurnResult = {
   turnId: string;
   thread: string;
@@ -229,6 +233,15 @@ export type TurnResult = {
   /** Free text the model wrote outside tool calls (the Lar's thinking aloud); kept, never sent anywhere. */
   thoughts: string[];
   error?: string;
+  /** The model port's id, and the effort asked for, as the turn's end row records them. */
+  model: string;
+  effort?: NonNullable<ModelRequest["effort"]>;
+  /** Tokens for every call of the turn that reported any. Absent when no call reported any. */
+  tokens?: TokenCount;
+  /** The part of `tokens` that the backup model answered. Absent when the backup answered no call that reported any. */
+  backupTokens?: TokenCount;
+  /** True when the backup model answered at least one call of the turn. */
+  backupUsed: boolean;
 };
 
 export type Ceiling = {

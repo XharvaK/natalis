@@ -18,15 +18,22 @@ export type ModelConfig = {
   /** True when the model can see pictures. Only then is the look tool offered to the Lar. Never assumed. */
   vision?: boolean;
   /**
-   * A backup for when the main model cannot answer (rate limited, unavailable, unreachable or no reply in time). It
-   * uses the same baseUrl, key, context size, timeout and tool setting as the main model.
+   * A backup for when the main model cannot answer (rate limited, out of credit, unavailable, unreachable or no reply in
+   * time). It uses the same baseUrl, key, context size, timeout and tool setting as the main model.
    */
   fallback?: FallbackModelConfig;
+  /** What the provider charges for this model, for the cost on the now board. Absent by default: no cost is shown. */
+  price?: ModelPrice;
 };
+
+/** A price per million tokens, in whatever currency the summoner uses. Only the summoner sets it. */
+export type ModelPrice = { inputPerMillion: number; outputPerMillion: number };
 
 export type FallbackModelConfig = {
   /** The backup's model name. */
   model: string;
+  /** What the backup's provider charges for it, per million tokens. Absent by default: its tokens are not priced. */
+  price?: ModelPrice;
   /** The effort field the backup gets effort in. Left out, the main model's effortParam is used. */
   effortParam?: "reasoning_effort" | null;
   /** True when the backup can see pictures. Otherwise it gets the request without them, and a plain line in their place. */

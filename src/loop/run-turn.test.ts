@@ -132,6 +132,33 @@ describe("runTurn: the two-turn tool loop", () => {
     expect(sent).toMatchObject({ role: "assistant", providerState: state });
   });
 
+  it("records the model, its effort and the tokens the provider reported on the turn's end row", async () => {
+    const { input, river } = await setup({
+      effort: "high",
+      steps: [
+        { ...reply({ toolCalls: [call("read_note", { path: "people/mara.md" })] }), usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 } },
+        // The backup answers this call: its tokens are counted in the turn and also on their own.
+        { ...reply({ toolCalls: [call("end_turn")] }), usage: { inputTokens: 5 }, servedBy: "backup-model" },
+      ],
+    });
+    await runTurn(input);
+    const end = rowsOf(river).find((row) => row.kind === "turn" && row.data?.["phase"] === "end");
+    expect(end?.data).toMatchObject({
+      model: "scripted:test-model",
+      effort: "high",
+      tokens: { prompt: 15, completion: 4, total: 14 },
+      backupTokens: { prompt: 5 },
+    });
+  });
+
+  it("leaves the token counts off the end row when no call reported any", async () => {
+    const { input, river } = await setup({ steps: [reply({ toolCalls: [call("end_turn")] })] });
+    await runTurn(input);
+    const end = rowsOf(river).find((row) => row.kind === "turn" && row.data?.["phase"] === "end");
+    expect(end?.data?.["tokens"]).toBeUndefined();
+    expect(end?.data?.["backupTokens"]).toBeUndefined();
+  });
+
   it("writes every river row in order: start, thought, call, receipt, call, receipt, end", async () => {
     const { input, river } = await setup({
       steps: [
@@ -148,7 +175,7 @@ describe("runTurn: the two-turn tool loop", () => {
     expect(rows[0]?.data).toEqual({ phase: "start", turnId: "turn-1" });
     expect(rows[2]).toMatchObject({ text: "read_note", data: { args: JSON.stringify({ path: "people/mara.md" }), turnId: "turn-1", callId: "c1" } });
     expect(rows[3]).toMatchObject({ text: "Read people/mara.md.", data: { tool: "read_note", ok: true, turnId: "turn-1", callId: "c1" } });
-    expect(rows[6]?.data).toEqual({ phase: "end", endedBy: "end_turn", turnId: "turn-1", modelCalls: 2, toolCalls: 2 });
+    expect(rows[6]?.data).toEqual({ phase: "end", endedBy: "end_turn", turnId: "turn-1", modelCalls: 2, toolCalls: 2, model: "scripted:test-model" });
     expect(rows.every((r) => r.thread === THREAD && r.atMs === CLOCK_MS)).toBe(true);
   });
 

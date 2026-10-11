@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { assembleSystem, formatDuration, timeFacts } from "../context/index.js";
-import { runTurnWithMessages } from "../loop/index.js";
+import { addTokens, runTurnWithMessages } from "../loop/index.js";
 import { openNotebook, seedNotebook } from "../notebook/index.js";
 import { FORGOTTEN_LINE, lineHoldsWords, queryWords } from "../notebook/forget.js";
 import { ModelError } from "../contracts.js";
@@ -32,6 +32,7 @@ import type {
   RiverSource,
   SayFile,
   SecretScanner,
+  TokenCount,
   Tool,
   ToolContext,
   ToolSpec,
@@ -47,7 +48,7 @@ import {
   HOUSEHOLD_STUB,
   OLD_COMMITMENTS_STUB,
 } from "./commitments.js";
-import { dayKey, hostZone, msUntilNextDay } from "./day.js";
+import { dayKey, hostZone, msUntilNextDay, startOfDayMs } from "./day.js";
 import { FLOOR_TEXT } from "./floor.js";
 import { chosenName, NAME_NOTE, whoYouAre } from "./identity.js";
 import { LAR_NATURE } from "./nature.js";
@@ -130,6 +131,14 @@ const WAKE_WHY_MAX = 500;
 /** Context-size rejections in a row after which a thread waits for a new event instead of trying the same words again. */
 const OVERSIZE_TRIES = 3;
 const WAKE_LIMIT_MINUTES = 60 * 24 * 365 * 10;
+/** The shortest a wake may be set: a minute from now. */
+const WAKE_MIN_MS = 60_000;
+/**
+ * After this many turns in a row woken only by her own wakes, with nothing from outside between them, a wake she sets
+ * fires no sooner than WAKE_CHAIN_HOLD_MS after it was set. The count is a meter's ceiling, not a judgment of the wake.
+ */
+const WAKE_CHAIN_LIMIT = 6;
+const WAKE_CHAIN_HOLD_MS = 15 * 60_000;
 /** The reason a rhythm wake carries. It names nothing about what the wake is for. */
 const RHYTHM_WHY = "Your daily rhythm.";
 const TIMER_LIMIT_MS = 2_147_483_647;
@@ -272,6 +281,8 @@ type EntityState = {
   actsSeenSeq: number;
   /** Set once the body has given the Lar its daily rhythm of wakes (its first start). Never given again. */
   rhythmGiven?: boolean;
+  /** Turns in a row woken only by her own wakes, with nothing from outside or the summoner between them. */
+  selfWakeRun?: number;
 };
 
 function emptyState(): EntityState {
@@ -421,6 +432,11 @@ function checkState(value: unknown): EntityState {
   if (rhythmGiven !== undefined) {
     if (typeof rhythmGiven !== "boolean") bad("rhythmGiven");
     state.rhythmGiven = rhythmGiven as boolean;
+  }
+  const selfWakeRun = root["selfWakeRun"];
+  if (selfWakeRun !== undefined) {
+    if (typeof selfWakeRun !== "number" || !Number.isSafeInteger(selfWakeRun) || selfWakeRun < 0) bad("selfWakeRun");
+    state.selfWakeRun = selfWakeRun as number;
   }
   return state;
 }
@@ -703,6 +719,8 @@ class Runtime implements Entity {
     const atMs = event.atMs ?? this.nowMs();
     const thread = event.thread ?? event.place;
     const actor = event.actor ?? (event.source === "owner" ? this.config.owner.alias : undefined);
+    // Words from outside or from the summoner end a run of turns woken only by her own wakes.
+    if (event.source === "owner" || event.source === "outside") this.state.selfWakeRun = 0;
     // Every thread with an event gets a cursor entry, so a restart knows where its events begin.
     this.threadState(thread);
     // A new event is a new chance for a thread the model kept rejecting as too large.
@@ -796,6 +814,7 @@ class Runtime implements Entity {
       .read({ thread, kinds: ["event"], sinceSeq: seen, untilSeq: snapshot, limit: ALL_ROWS })
       .filter((row) => !this.hiddenHere(row, thread));
     if (fresh.length === 0) return;
+    this.noteWakeRun(fresh);
 
     const turnId = randomUUID();
     const nowMs = this.nowMs();
@@ -947,6 +966,16 @@ class Runtime implements Entity {
       this.pump();
     }, delay);
     this.retries.set(thread, timer);
+  }
+
+  /**
+   * Counts the turns in a row woken only by the Lar's own wakes. A turn that its own wakes woke, and nothing from outside
+   * or the summoner, adds one; any other turn starts the count again at zero. A retried turn counts again, which only
+   * makes the limit come sooner for a turn that keeps failing.
+   */
+  private noteWakeRun(fresh: RiverRow[]): void {
+    const woken = fresh.some(isWakeRow) && !fresh.some(isOutsideRow);
+    this.state.selfWakeRun = woken ? (this.state.selfWakeRun ?? 0) + 1 : 0;
   }
 
   private cancelRetry(thread: string): void {
@@ -1214,6 +1243,7 @@ class Runtime implements Entity {
         this.state.proposals = next;
       },
       record: (text) => {
+        this.state.selfWakeRun = 0;
         this.river.append({
           thread: "self",
           kind: "event",
@@ -1435,6 +1465,7 @@ class Runtime implements Entity {
     lines.push(`Your mood: ${this.state.mood ?? "not set"}.`);
     const limit = this.config.limits?.turnsPerDay;
     if (limit !== undefined) lines.push(`Turns today: ${this.turnsToday(nowMs)} of ${limit}.`);
+    lines.push(...this.tokenLines(nowMs));
     if (this.state.proposals.length > 0) {
       lines.push("", "Commitments you proposed, waiting for your summoner:");
       for (const item of this.state.proposals) lines.push(`- ${item.id}: ${firstChars(item.text, PROPOSAL_SHOW)}`);
@@ -1446,6 +1477,51 @@ class Runtime implements Entity {
       lines.push(`Next wakes: ${wakes.map((wake) => `${this.wakeWhen(wake)}: ${wake.why}`).join("; ")}.`);
     }
     return lines.join("\n");
+  }
+
+  /**
+   * Today's tokens, as the provider reported them over the turns that ended today in the Lar's zone, and the cost at the
+   * prices the summoner set in the model config. Only the main model's turns and its backup's calls are priced: a world's
+   * own model has no price in the config, so its tokens are counted but not priced.
+   */
+  private tokenLines(nowMs: number): string[] {
+    const ends = this.river
+      .read({ kinds: ["turn"], sinceMs: startOfDayMs(nowMs, this.config.timeZone), limit: ALL_ROWS })
+      .filter((row) => row.data?.["phase"] === "end");
+    let all: TokenCount | undefined;
+    for (const row of ends) all = addTokens(all, tokenCountOf(row.data?.["tokens"]));
+    const lines: string[] = [];
+    if (all === undefined) {
+      lines.push("Tokens today: none reported by the provider.");
+    } else {
+      const head = all.total === undefined ? "no total reported" : `${all.total} in total`;
+      lines.push(
+        `Tokens today: ${head}, as the provider reported them (prompt ${all.prompt ?? "not reported"}, completion ${all.completion ?? "not reported"}).`,
+      );
+    }
+
+    const price = this.config.model.price;
+    if (price === undefined) return lines;
+    const backupPrice = this.config.model.fallback?.price;
+    let cost = 0;
+    let backupUnpriced = false;
+    for (const row of ends) {
+      if (row.data?.["model"] !== this.model.info.id) continue;
+      const counted = tokenCountOf(row.data?.["tokens"]);
+      const backup = tokenCountOf(row.data?.["backupTokens"]);
+      const prompt = (counted.prompt ?? 0) - (backup.prompt ?? 0);
+      const completion = (counted.completion ?? 0) - (backup.completion ?? 0);
+      cost += (prompt * price.inputPerMillion + completion * price.outputPerMillion) / 1_000_000;
+      if (backup.prompt === undefined && backup.completion === undefined) continue;
+      if (backupPrice === undefined) backupUnpriced = true;
+      else {
+        cost += ((backup.prompt ?? 0) * backupPrice.inputPerMillion + (backup.completion ?? 0) * backupPrice.outputPerMillion) / 1_000_000;
+      }
+    }
+    lines.push(
+      `Cost today: ${cost.toFixed(4)} at the prices in your model config.${backupUnpriced ? " The backup's tokens are not priced: no price is set for the backup." : ""}`,
+    );
+    return lines;
   }
 
   private indexText(): string {
@@ -1566,11 +1642,11 @@ class Runtime implements Entity {
         {
           name: "schedule_wake",
           description:
-            "Wake yourself later, in a thread of your own, with a reason you will read then. Give in_minutes (from now) or at_iso (a date and time; with no zone it is in your own zone). Give repeat as daily or weekly to keep the rhythm at the same local time; leave it out for a wake that fires once.",
+            "Wake yourself later, in a thread of your own, with a reason you will read then. Give in_minutes (from now, at least 1) or at_iso (a date and time at least a minute ahead; with no zone it is in your own zone). Give repeat as daily or weekly to keep the rhythm at the same local time; leave it out for a wake that fires once.",
           parameters: {
             type: "object",
             properties: {
-              in_minutes: { type: "number", minimum: 0, description: "Minutes from now." },
+              in_minutes: { type: "number", minimum: 1, description: "Minutes from now, at least 1." },
               at_iso: { type: "string", description: "A date and time, such as 2026-10-12T09:00:00+03:00." },
               why: { type: "string", description: "Why you are waking, in your own words. At most 500 characters." },
               repeat: {
@@ -2029,12 +2105,14 @@ class Runtime implements Entity {
       return refuse("bad_arguments", "Give either in_minutes or at_iso, not both.", "in_minutes or at_iso, exactly one");
     }
 
+    const tooSoon = "A wake must be at least 1 minute from now. Give a later time.";
     let atMs: number;
     if (hasMinutes) {
       const minutes = args["in_minutes"];
-      if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes < 0 || minutes > WAKE_LIMIT_MINUTES) {
-        return refuse("bad_arguments", "in_minutes must be a number of minutes from 0 up to ten years.", "in_minutes out of range");
+      if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes > WAKE_LIMIT_MINUTES) {
+        return refuse("bad_arguments", "in_minutes must be a number of minutes from 1 up to ten years.", "in_minutes out of range");
       }
+      if (minutes < 1) return refuse("bad_arguments", `${tooSoon} Give in_minutes of 1 or more.`, "in_minutes is less than 1 minute");
       atMs = Math.round(this.nowMs() + minutes * 60_000);
     } else {
       const iso = requireText(args, "at_iso", "The date and time");
@@ -2043,6 +2121,7 @@ class Runtime implements Entity {
       if (Number.isNaN(parsed)) {
         return refuse("bad_arguments", "at_iso must be a date and time, such as 2026-10-12T09:00:00+03:00.", "at_iso did not parse");
       }
+      if (parsed < this.nowMs() + WAKE_MIN_MS) return refuse("bad_arguments", tooSoon, "at_iso is less than 1 minute from now");
       atMs = parsed;
     }
 
@@ -2058,6 +2137,11 @@ class Runtime implements Entity {
       );
     }
 
+    // The chain limit: a run of turns woken only by her own wakes holds a new wake to HOLD_MS from now, and the receipt says so.
+    const run = this.state.selfWakeRun ?? 0;
+    const held = run >= WAKE_CHAIN_LIMIT && atMs < this.nowMs() + WAKE_CHAIN_HOLD_MS;
+    if (held) atMs = this.nowMs() + WAKE_CHAIN_HOLD_MS;
+
     const zone = this.config.timeZone;
     const wake: Wake = { id: randomUUID().slice(0, 8), atMs, why: why.value, scheduledIn: context.thread };
     if (repeat !== undefined && isWakeRepeat(repeat)) {
@@ -2069,10 +2153,13 @@ class Runtime implements Entity {
     this.saveState();
     this.armWake(wake);
     const rhythm = wake.repeat === undefined || wake.clock === undefined ? "" : `, ${wake.repeat} at ${wake.clock}`;
+    const hold = held
+      ? `, held to at least ${WAKE_CHAIN_HOLD_MS / 60_000} minutes from now because you have woken yourself ${run} times in a row with nothing from outside`
+      : "";
     return {
       ok: true,
-      summary: `Wake ${wake.id} set for ${this.stamp(atMs)}${rhythm}.`,
-      data: { id: wake.id, atMs },
+      summary: `Wake ${wake.id} set for ${this.stamp(atMs)}${rhythm}${hold}.`,
+      data: { id: wake.id, atMs, ...(held ? { held: true } : {}) },
     };
   }
 
@@ -2178,6 +2265,31 @@ function pictureAbility(vision: boolean): string {
 function who(row: RiverRow): string {
   if (row.kind === "say" && row.source === "self") return "you";
   return row.actor ?? row.source;
+}
+
+/** A row that one of the Lar's own wakes put in its thread. */
+function isWakeRow(row: RiverRow): boolean {
+  return row.source === "body" && row.data?.["wakeId"] !== undefined;
+}
+
+/** A row from outside the Lar, or one of the summoner's acts: either ends a run of turns woken only by her own wakes. */
+function isOutsideRow(row: RiverRow): boolean {
+  return row.source === "owner" || row.source === "outside" || row.data?.["summonerAct"] === true;
+}
+
+/** The token counts a turn's end row holds, read back from the river. Anything that is not a number is left out. */
+function tokenCountOf(value: unknown): TokenCount {
+  if (typeof value !== "object" || value === null) return {};
+  const row = value as Record<string, unknown>;
+  const count = (key: string): number | undefined => (typeof row[key] === "number" ? (row[key] as number) : undefined);
+  const prompt = count("prompt");
+  const completion = count("completion");
+  const total = count("total");
+  return {
+    ...(prompt === undefined ? {} : { prompt }),
+    ...(completion === undefined ? {} : { completion }),
+    ...(total === undefined ? {} : { total }),
+  };
 }
 
 function checkWorlds(worlds: World[]): void {

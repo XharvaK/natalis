@@ -19,6 +19,7 @@ import {
   type ToolCall,
   type ToolContext,
   type ToolSpec,
+  type TokenCount,
   type TurnEndReason,
   type TurnResult,
 } from "../contracts.js";
@@ -107,6 +108,9 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
   let thrown: { error: unknown } | undefined;
   // The backup model answers for one turn at most; the river says so once, not once per call.
   let backupNoted = false;
+  // Tokens the provider reported, summed over the turn's calls; the backup's share is kept apart for the cost.
+  let tokens: TokenCount | undefined;
+  let backupTokens: TokenCount | undefined;
 
   const write = (row: Omit<RiverRowInput, "thread" | "atMs">): void => {
     river.append({ ...row, thread, atMs: nowMs() });
@@ -213,6 +217,11 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
         break;
       }
 
+      if (response.usage !== undefined) {
+        const counted = countOf(response.usage);
+        tokens = addTokens(tokens, counted);
+        if (response.servedBy !== undefined) backupTokens = addTokens(backupTokens, counted);
+      }
       if (response.servedBy !== undefined && !backupNoted) {
         backupNoted = true;
         write({
@@ -275,10 +284,17 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
       data: { turnId, ...(skipped.length > 0 ? { skipped } : {}) },
     });
   }
+  // The meter: the model's id, the effort asked for, and the tokens the provider reported. Only what was reported is written.
+  const meter = {
+    model: model.info.id,
+    ...(effort === undefined ? {} : { effort }),
+    ...(tokens === undefined ? {} : { tokens }),
+    ...(backupTokens === undefined ? {} : { backupTokens }),
+  };
   write({
     kind: "turn",
     source: "body",
-    data: { phase: "end", endedBy: finalReason, turnId, modelCalls, toolCalls },
+    data: { phase: "end", endedBy: finalReason, turnId, modelCalls, toolCalls, ...meter },
   });
   if (thrown !== undefined) throw thrown.error;
 
@@ -290,9 +306,33 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
     toolCalls,
     receipts,
     thoughts,
+    ...meter,
+    backupUsed: backupNoted,
     ...(error === undefined ? {} : { error }),
   };
   return { result, messages };
+}
+
+/** A call's reported counts, under the names a turn's meter uses. */
+export function countOf(usage: NonNullable<ModelResponse["usage"]>): TokenCount {
+  return {
+    ...(usage.inputTokens === undefined ? {} : { prompt: usage.inputTokens }),
+    ...(usage.outputTokens === undefined ? {} : { completion: usage.outputTokens }),
+    ...(usage.totalTokens === undefined ? {} : { total: usage.totalTokens }),
+  };
+}
+
+/**
+ * Adds one call's counts to a turn's. A count that nobody reported stays absent, and is not counted as zero: a call that
+ * reported nothing leaves the sum as it was, even when the sum is still absent.
+ */
+export function addTokens(sum: TokenCount | undefined, counted: TokenCount): TokenCount | undefined {
+  if (counted.prompt === undefined && counted.completion === undefined && counted.total === undefined) return sum;
+  const next: TokenCount = { ...sum };
+  if (counted.prompt !== undefined) next.prompt = (next.prompt ?? 0) + counted.prompt;
+  if (counted.completion !== undefined) next.completion = (next.completion ?? 0) + counted.completion;
+  if (counted.total !== undefined) next.total = (next.total ?? 0) + counted.total;
+  return next;
 }
 
 /** The one call that carries pictures the tools handed over: they are not added to the messages kept for the turn. */

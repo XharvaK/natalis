@@ -66,13 +66,19 @@ The file in the Lar's folder. Its blocks:
 
 - `model`: the main model. `baseUrl` (http or https), `model` (its name), `contextTokens`, and optionally `apiKeyEnv`
   (the name of the environment variable holding the key, never the key), `nativeTools`, `effortParam`
-  (`"reasoning_effort"` or `null`), `timeoutMs` and `vision` (true only when the model can see pictures).
+  (`"reasoning_effort"` or `null`), `timeoutMs`, `vision` (true only when the model can see pictures) and `price`.
+  `price` is optional and absent by default: `{ "inputPerMillion": 2, "outputPerMillion": 4 }`, what the provider charges
+  per million input and output tokens, in the currency you use. With it, the now board shows the day's cost next to the
+  day's tokens; without it, the board shows only the tokens the provider reported.
 - `model.fallback`: an optional backup model, the same service and key. It answers only when the main model cannot: a rate
   limit, an unavailable or unreachable service, or no reply in time. A refused key or request is never sent to it. Its
   fields: `model` (required), `effort` (`low`, `medium`, `high` or `xhigh`; left out, the main model's), `effortParam`
-  (left out, the main model's), `vision` (false by default: it gets no pictures, only a plain line in their place), and
-  `contextTokens` (a request estimated larger than this is not sent to it; the river says why). When it answers, the
-  river says so for that turn.
+  (left out, the main model's), `vision` (false by default: it gets no pictures, only a plain line in their place),
+  `contextTokens` (a request estimated larger than this is not sent to it; the river says why) and `price` (as for the
+  main model; its tokens are not priced without it). When it answers, the river says so for that turn.
+  Before you set a backup, the summoner names its provider, its tier, and whether that provider keeps or trains on what it
+  is sent, in the household note (`self/household.md` in the notebook). The body does not know these and does not check
+  them. A backup on the same service as the main model shares its quota, so it does not help when that quota is spent.
 - `holds`: body checks on what the Lar says. `honesty` (true or false) runs one model call that asks whether the words
   contradict the Lar's own life record. It is **off** unless `"holds": { "honesty": true }` is written.
 

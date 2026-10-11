@@ -279,10 +279,11 @@ function parseReply(
     response.providerState = { reasoning_details: message.reasoning_details };
   }
   if (isRecord(parsed.usage)) {
-    const usage: { inputTokens?: number; outputTokens?: number } = {};
+    const usage: NonNullable<ModelResponse["usage"]> = {};
     if (typeof parsed.usage.prompt_tokens === "number") usage.inputTokens = parsed.usage.prompt_tokens;
     if (typeof parsed.usage.completion_tokens === "number") usage.outputTokens = parsed.usage.completion_tokens;
-    if (usage.inputTokens !== undefined || usage.outputTokens !== undefined) response.usage = usage;
+    if (typeof parsed.usage.total_tokens === "number") usage.totalTokens = parsed.usage.total_tokens;
+    if (Object.keys(usage).length > 0) response.usage = usage;
   }
   return response;
 }
