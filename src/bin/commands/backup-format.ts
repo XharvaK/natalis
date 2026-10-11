@@ -1,7 +1,7 @@
 // The shape of a Lar backup, shared by `natalis backup` and `natalis restore`: the files a backup holds, the manifest
 // that lists them with sizes and hashes, and the two checks both commands make (the manifest, and the river's last
-// seq). A backup holds only the files named here, plus the worlds' own folders: the vault (kept 0600), the sandbox
-// home, the game's folder and the shelf of pictures. Nothing with "env" in its name is ever in the list (in the home, a file or folder with
+// seq). A backup holds only the files named here, plus the worlds' own folders: the sandbox home, the game's folder and
+// the shelf of pictures. The vault (kept 0600) is in a sealed package only, never in a plain backup folder. Nothing with "env" in its name is ever in the list (in the home, a file or folder with
 // "env" in its name is left out), and the emergency stop file is not either: a restored Lar starts with its stop off.
 
 import { execFile } from "node:child_process";

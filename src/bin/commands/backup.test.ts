@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -10,6 +10,8 @@ import { createCliWorld } from "../../worlds/cli.js";
 import { ScriptedModel } from "../../testing/scripted-model.js";
 import { BUNDLE_FILE, MANIFEST_FILE, readRiverLastSeq, sha256File, type Manifest } from "./backup-format.js";
 import { backupCommand, backupEntity, parseKeep } from "./backup.js";
+import { unsealEntity } from "./unseal.js";
+import { restoreEntity } from "./restore.js";
 
 const T0 = Date.UTC(2026, 9, 11, 9, 0, 0);
 const CONFIG: EntityConfig = {
@@ -99,6 +101,48 @@ describe("natalis backup", () => {
     const heads = execFileSync("git", ["bundle", "list-heads", bundle], { encoding: "utf8" });
     expect(heads).toContain(result.manifest.notebookHead);
     expect(entity.notebook.read("notes/first.md")).toBe("The first note.\n");
+  }, 60_000);
+
+  it("a plain backup leaves the vault out, in its folder and in its manifest", async () => {
+    const lar = join(root, "iris");
+    await startLar(lar);
+    mkdirSync(join(lar, "vault"), { recursive: true });
+    writeFileSync(join(lar, "vault", "site_key.json"), `${JSON.stringify({ host: "example.org", value: "fixture-value-0001" })}
+`);
+
+    const result = await backupEntity({ dir: lar, out: join(root, "backups"), say: () => {} });
+
+    expect(existsSync(join(result.folder, "vault"))).toBe(false);
+    expect(result.manifest.files.map((file) => file.name)).not.toContain("vault/site_key.json");
+  }, 60_000);
+
+  it("a sealed backup keeps the vault: the package opens to a folder whose manifest lists it and restores it at 0600", async () => {
+    const lar = join(root, "iris");
+    await startLar(lar);
+    mkdirSync(join(lar, "vault"), { recursive: true });
+    writeFileSync(join(lar, "vault", "site_key.json"), `${JSON.stringify({ host: "example.org", value: "fixture-value-0001" })}
+`);
+    const key = Buffer.alloc(32, 7);
+    const sealDir = join(root, "sealed");
+
+    const result = await backupEntity({ dir: lar, out: join(root, "backups"), say: () => {}, seal: { dir: sealDir, key } });
+    expect(result.sealed).toBeDefined();
+
+    const opened = join(root, "opened");
+    unsealEntity({ from: result.sealed!.file, to: opened, key, say: () => {} });
+    const packed = JSON.parse(readFileSync(join(opened, MANIFEST_FILE), "utf8")) as Manifest;
+    const vault = packed.files.find((file) => file.name === "vault/site_key.json");
+    expect(vault).toBeDefined();
+    expect(vault?.sha256).toBe(sha256File(join(opened, "vault", "site_key.json")));
+    // The plain folder's own manifest is unchanged: it still leaves the vault out.
+    expect(result.manifest.files.map((file) => file.name)).not.toContain("vault/site_key.json");
+
+    const target = join(root, "restored", "iris");
+    await restoreEntity({ from: opened, dir: target, say: () => {} });
+    expect(readFileSync(join(target, "vault", "site_key.json"), "utf8")).toBe(readFileSync(join(lar, "vault", "site_key.json"), "utf8"));
+    if (process.platform !== "win32") {
+      expect(statSync(join(target, "vault", "site_key.json")).mode & 0o777).toBe(0o600);
+    }
   }, 60_000);
 
   it("keeps the newest backups of this Lar and removes only folders named like its backups", async () => {

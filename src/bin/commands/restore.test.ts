@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -113,10 +113,8 @@ describe("natalis restore", () => {
     running.length = 0;
   }, 60_000);
 
-  it("carries the worlds' things: world files, the vault (0600), the home without caches or env names, the game's database", async () => {
+  it("carries the worlds' things: world files, the home without caches or env names, the game's database", async () => {
     const lar = join(root, "iris");
-    mkdirSync(join(lar, "vault"), { recursive: true });
-    writeFileSync(join(lar, "vault", "site_key.json"), `${JSON.stringify({ host: "example.org", value: "fixture" })}\n`, { mode: 0o600 });
     mkdirSync(join(lar, "home", "notes"), { recursive: true });
     mkdirSync(join(lar, "home", ".cache", "pip"), { recursive: true });
     mkdirSync(join(lar, "home", "venv"), { recursive: true });
@@ -139,7 +137,7 @@ describe("natalis restore", () => {
     const manifest = JSON.parse(readFileSync(join(backup, MANIFEST_FILE), "utf8")) as Manifest;
     const names = manifest.files.map((file) => file.name);
     expect(names).toEqual(expect.arrayContaining([
-      "web.json", "contacts.json", "nature.md", "sandbox.json", "domus.json", "domus/domus.sqlite", "domus/state.json", "vault/site_key.json", "home/notes/plan.md",
+      "web.json", "contacts.json", "nature.md", "sandbox.json", "domus.json", "domus/domus.sqlite", "domus/state.json", "home/notes/plan.md",
     ]));
     expect(names.some((name) => name.includes(".cache") || name.includes("venv") || name === "home/.env")).toBe(false);
 
@@ -149,9 +147,21 @@ describe("natalis restore", () => {
     const restoredGame = new DatabaseSync(join(target, "domus", "domus.sqlite"), { readOnly: true });
     expect(restoredGame.prepare("SELECT id FROM acts").all()).toEqual([{ id: "a1" }]);
     restoredGame.close();
-    if (process.platform !== "win32") {
-      expect(statSync(join(target, "vault", "site_key.json")).mode & 0o777).toBe(0o600);
-    }
+    // A plain backup holds no vault, so the restored Lar has none either.
+    expect(names.some((name) => name.startsWith("vault/"))).toBe(false);
+    expect(existsSync(join(target, "vault"))).toBe(false);
+  }, 60_000);
+
+  it("never touches a folder that already holds a vault: a restore into it is refused and the vault stays as it was", async () => {
+    const lar = join(root, "iris");
+    mkdirSync(join(lar, "home"), { recursive: true });
+    const backup = await backupOf(lar);
+    const target = join(root, "restored", "iris");
+    mkdirSync(join(target, "vault"), { recursive: true });
+    writeFileSync(join(target, "vault", "site_key.json"), '{"host":"example.org"}\n');
+
+    await expect(restoreEntity({ from: backup, dir: target, say: () => {} })).rejects.toThrow(/not empty/);
+    expect(readFileSync(join(target, "vault", "site_key.json"), "utf8")).toBe('{"host":"example.org"}\n');
   }, 60_000);
 
   it("lets a manifest name only known files, vault entries and plain paths inside the home", () => {
