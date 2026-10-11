@@ -338,3 +338,46 @@ describe("forget", () => {
     expect(await run("forget", { query: "boat" })).toMatchObject({ ok: false, refused: { code: "bad_arguments" } });
   });
 });
+
+describe("the notes only the body writes", () => {
+  const HOUSEHOLD = "self/household.md";
+  const COMMITMENTS = "self/constitution.md";
+
+  it("refuses write, edit, append and trash on the household and commitments notes, with a plain reason", async () => {
+    const { notebook, run } = await fixture();
+    await notebook.write(HOUSEHOLD, "# Household\n- Mara grows beans.\n", "fixture", "test");
+    await notebook.write(COMMITMENTS, "# My commitments\n", "fixture", "test");
+
+    const refusals = [
+      await run("write_note", { path: HOUSEHOLD, text: "Changed.", why: "Try." }),
+      await run("edit_note", { path: HOUSEHOLD, find: "Mara", replace: "Tomas", why: "Try." }),
+      await run("append_note", { path: COMMITMENTS, text: "Mine.", why: "Try." }),
+      await run("trash_note", { path: COMMITMENTS, why: "Try." }),
+    ];
+    for (const receipt of refusals) {
+      expect(receipt.ok).toBe(false);
+      expect(receipt.refused?.code).toBe("protected");
+    }
+    expect(refusals[0]?.refused?.reason).toBe("Your summoner writes your household part.");
+    expect(refusals[2]?.refused?.reason).toBe("Your commitments change through propose_commitment.");
+    expect(notebook.read(HOUSEHOLD)).toBe("# Household\n- Mara grows beans.\n");
+    expect(notebook.read(COMMITMENTS)).toBe("# My commitments\n");
+  });
+
+  it("refuses the same notes under another spelling of the path", async () => {
+    const { notebook, run } = await fixture();
+    await notebook.write(HOUSEHOLD, "# Household\n", "fixture", "test");
+    expect(await run("write_note", { path: "./SELF//Household.md", text: "x", why: "Try." })).toMatchObject({
+      refused: { code: "protected" },
+    });
+  });
+
+  it("still lets the Lar read them, and write its other notes", async () => {
+    const { notebook, run } = await fixture();
+    await notebook.write(HOUSEHOLD, "# Household\n", "fixture", "test");
+    expect(await run("read_note", { path: HOUSEHOLD })).toMatchObject({ ok: true });
+    expect(await run("write_note", { path: "self/character.md", text: "Quiet.\n", why: "Mine." })).toMatchObject({
+      ok: true,
+    });
+  });
+});
