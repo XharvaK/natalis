@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { assembleSystem, formatDuration, timeFacts } from "../context/index.js";
 import { runTurnWithMessages } from "../loop/index.js";
 import { openNotebook, seedNotebook } from "../notebook/index.js";
+import { FORGOTTEN_LINE, lineHoldsWords, queryWords } from "../notebook/forget.js";
 import { ModelError } from "../contracts.js";
 import { openRiver } from "../river/index.js";
 import { checkRiver } from "../river/integrity.js";
@@ -455,6 +456,8 @@ class Runtime implements Entity {
   private readonly state: EntityState;
   private readonly shelf: Shelf;
   private readonly body: WorldBody;
+  /** The river as the Lar's tools see it: a forget of words also scrubs them from the state the body keeps. */
+  private readonly larRiver: River;
   private readonly ceiling: Ceiling;
   private readonly tools: Tool[];
   private readonly clockFormat: Intl.DateTimeFormat;
@@ -505,6 +508,7 @@ class Runtime implements Entity {
     this.body = shelfBody(init.shelf, init.nowMs);
     this.ceiling = init.config.ceiling ?? DEFAULT_CEILING;
     this.river = init.river;
+    this.larRiver = this.riverForLar(init.river);
     this.notebook = init.notebook;
     this.clockFormat = new Intl.DateTimeFormat("en-GB", {
       timeZone: init.config.timeZone,
@@ -530,6 +534,29 @@ class Runtime implements Entity {
       if (names.has(tool.spec.name)) throw new Error(`Two tools share the name "${tool.spec.name}".`);
       names.add(tool.spec.name);
     }
+  }
+
+  /** The river the Lar's tools get. Every method is the river's own, except forget, which also scrubs the state. */
+  private riverForLar(river: River): River {
+    return {
+      append: (row) => river.append(row),
+      read: (query) => river.read(query),
+      search: (text, options) => river.search(text, options),
+      forget: (match, by, reason) => {
+        const erased = river.forget(match, by, reason);
+        if (match.text !== undefined) this.forgetInState(match.text);
+        return erased;
+      },
+      lastSeq: () => river.lastSeq(),
+      close: () => river.close(),
+    };
+  }
+
+  /** Scrubs the words from the free text the state keeps. Returns how many fields held them. */
+  private forgetInState(query: string): number {
+    const count = scrubState(this.state, queryWords(query));
+    if (count > 0) this.saveState();
+    return count;
   }
 
   // --- lifecycle --------------------------------------------------------------------------------
@@ -742,7 +769,7 @@ class Runtime implements Entity {
       history: [],
       event: this.scanner.redact(event),
       thread,
-      river: this.river,
+      river: this.larRiver,
       notebook: this.notebook,
       ceiling: this.ceiling,
       nowMs: () => this.nowMs(),
@@ -1048,7 +1075,7 @@ class Runtime implements Entity {
   private async answerCommand(place: string, text: string): Promise<void> {
     const reply = await answerSummoner(text, this.summonerDesk());
     this.saveState();
-    await this.sayTo(place, `${SUMMONER_PREFIX}${reply}`);
+    await this.sayTo(place, `${SUMMONER_PREFIX}${this.scanner.redact(reply)}`);
   }
 
   /** What the summoner's commands may do to the Lar's state. Each act is plain; the commands decide nothing. */
@@ -1121,6 +1148,8 @@ class Runtime implements Entity {
         "a proposal field is too long",
       );
     }
+    const secret = this.secretHold(`${line}\n${reason}`, "nothing was kept");
+    if (secret !== undefined) return secret;
     if (this.state.proposals.length >= PROPOSAL_LIMIT) {
       return refuse(
         "full",
@@ -1518,20 +1547,8 @@ class Runtime implements Entity {
 
     if (!ownerPlace && this.stopIsOn()) return refuse("stopped", STOPPED_TEXT, STOPPED_TEXT);
 
-    const hits = this.scanner.scan(text.value);
-    if (hits.length > 0) {
-      const kinds = [...new Set(hits.map((hit) => hit.kind))].map((kind) =>
-        kind === KNOWN_VALUE_KIND ? "a value kept private" : "a credential-like string",
-      );
-      return {
-        ok: false,
-        summary: "I held that back: it looked like it holds a secret, so nothing was sent. Say it again without it.",
-        refused: {
-          code: "held_secret",
-          reason: `The words held ${kinds.join(" and ")}, so nothing was sent.`,
-        },
-      };
-    }
+    const secret = this.secretHold(text.value, "nothing was sent");
+    if (secret !== undefined) return secret;
 
     if (!ownerPlace) {
       const held = this.privacyHold(place.value, text.value, context.thread);
@@ -1581,7 +1598,11 @@ class Runtime implements Entity {
     // Only the asks the turn saw are answered: a message that came in during the turn is still waiting.
     const seenUpTo = this.turnSnapshots.get(context.turnId) ?? 0;
     this.state.asks = this.state.asks.filter((ask) => ask.place !== place.value || ask.seq > seenUpTo);
-    this.state.placeClaims[place.value] = { thread: context.thread, atMs: nowMs, text: clip(oneLine(text.value), SAY_CLIP) };
+    this.state.placeClaims[place.value] = {
+      thread: context.thread,
+      atMs: nowMs,
+      text: this.scanner.redact(clip(oneLine(text.value), SAY_CLIP)),
+    };
     this.saveState();
     return {
       ok: true,
@@ -1631,6 +1652,23 @@ class Runtime implements Entity {
   }
 
   // --- holds ------------------------------------------------------------------------------------
+
+  /**
+   * Holds words that carry a secret, before anything is sent or kept. The receipt says what was held, and that
+   * `outcome` followed. Undefined when the scanner finds nothing.
+   */
+  private secretHold(text: string, outcome: string): Receipt | undefined {
+    const hits = this.scanner.scan(text);
+    if (hits.length === 0) return undefined;
+    const kinds = [...new Set(hits.map((hit) => hit.kind))].map((kind) =>
+      kind === KNOWN_VALUE_KIND ? "a value kept private" : "a credential-like string",
+    );
+    return {
+      ok: false,
+      summary: `I held that back: it looked like it holds a secret, so ${outcome}. Say it again without it.`,
+      refused: { code: "held_secret", reason: `The words held ${kinds.join(" and ")}, so ${outcome}.` },
+    };
+  }
 
   /** The emergency stop as it is now. Notices a change once: it is written to the river as a row of the self thread. */
   private stopIsOn(): boolean {
@@ -1819,6 +1857,8 @@ class Runtime implements Entity {
   private async scheduleWake(args: Args, context: ToolContext): Promise<Receipt> {
     const why = requireText(args, "why", "The reason");
     if (!why.ok) return why.receipt;
+    const secret = this.secretHold(why.value, "nothing was kept");
+    if (secret !== undefined) return secret;
     const hasMinutes = args["in_minutes"] !== undefined;
     const hasAt = args["at_iso"] !== undefined;
     if (hasMinutes === hasAt) {
@@ -1889,6 +1929,8 @@ class Runtime implements Entity {
     if (text.value.length > MOOD_LIMIT || /[\r\n]/.test(text.value)) {
       return refuse("bad_arguments", `Keep the mood to one line of at most ${MOOD_LIMIT} characters.`, "mood too long or multi-line");
     }
+    const secret = this.secretHold(text.value, "nothing was kept");
+    if (secret !== undefined) return secret;
     this.state.mood = text.value;
     this.saveState();
     this.river.append({
@@ -2015,6 +2057,52 @@ function clip(text: string, max: number): string {
 function firstChars(text: string, max: number): string {
   const chars = Array.from(text);
   return chars.length <= max ? text : `${chars.slice(0, max).join("")}...`;
+}
+
+/**
+ * Replaces the words, in every free-text field the state keeps (place claims, wake reasons, proposals, the mood), with
+ * the forgotten marker, or clears the mood. A field is matched when it holds every word. Returns how many fields held them.
+ */
+function scrubState(state: EntityState, words: readonly string[]): number {
+  if (words.length === 0) return 0;
+  let count = 0;
+  for (const claim of Object.values(state.placeClaims)) {
+    if (!lineHoldsWords(claim.text, words)) continue;
+    claim.text = FORGOTTEN_LINE;
+    count += 1;
+  }
+  for (const wake of state.wakes) {
+    if (!lineHoldsWords(wake.why, words)) continue;
+    wake.why = FORGOTTEN_LINE;
+    count += 1;
+  }
+  for (const item of state.proposals) {
+    if (lineHoldsWords(item.text, words)) {
+      item.text = FORGOTTEN_LINE;
+      count += 1;
+    }
+    if (lineHoldsWords(item.why, words)) {
+      item.why = FORGOTTEN_LINE;
+      count += 1;
+    }
+  }
+  if (state.mood !== null && lineHoldsWords(state.mood, words)) {
+    state.mood = null;
+    count += 1;
+  }
+  return count;
+}
+
+/**
+ * The summoner's forget of words, for a state file when no runtime is running: the same fields are scrubbed, and the file
+ * is written back when one changed. Returns how many fields held the words.
+ */
+export function forgetInStateFile(statePath: string, query: string): number {
+  if (!existsSync(statePath)) return 0;
+  const state = checkState(JSON.parse(readFileSync(statePath, "utf8")));
+  const count = scrubState(state, queryWords(query));
+  if (count > 0) writeStateFile(statePath, state);
+  return count;
 }
 
 function messageOf(err: unknown): string {

@@ -28,7 +28,7 @@ import { createSecretScanner } from "../secrets/index.js";
 import { ScriptedModel, call, reply } from "../testing/scripted-model.js";
 import { createCliWorld, type CliWorld } from "../worlds/cli.js";
 import type { EntityConfig } from "./config.js";
-import { openEntity, type Entity, type OpenEntityOptions } from "./runtime.js";
+import { forgetInStateFile, openEntity, STATE_FILE, type Entity, type OpenEntityOptions } from "./runtime.js";
 import { COMMITMENTS_STUB, HOUSEHOLD_PATH, OLD_COMMITMENTS_STUB } from "./commitments.js";
 import { isStopOn } from "./stop.js";
 
@@ -1152,6 +1152,99 @@ describe("the stop reaching the worlds", () => {
     cli.send("!stop");
     await entity.idle();
     expect(stops).toBe(2);
+  });
+});
+
+describe("what the state file keeps", () => {
+  it("holds a mood, a proposal or a wake reason that carries a credential, and keeps none of it", async () => {
+    const model = new ScriptedModel([
+      reply({
+        toolCalls: [
+          call("set_mood", { text: `calm ${FAKE_KEY}` }, "m1"),
+          call("propose_commitment", { text: `Use ${FAKE_KEY}`, why: "Because." }, "p1"),
+          call("schedule_wake", { in_minutes: 60, why: `check ${FAKE_KEY}` }, "w1"),
+        ],
+      }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    cli.send("Go.");
+    await entity.idle();
+
+    const state = readStateJson();
+    expect(state.mood).toBeNull();
+    expect(state.proposals).toEqual([]);
+    expect(state.wakes).toEqual([]);
+    expect(receiptsShownIn(model.requests[1]).map((item) => (item["refused"] as { code?: string } | undefined)?.code)).toEqual([
+      "held_secret",
+      "held_secret",
+      "held_secret",
+    ]);
+  });
+
+  it("scans the reply to !proposals, so a value the body holds now never reaches the summoner", async () => {
+    const first = await open(
+      new ScriptedModel([
+        reply({ toolCalls: [call("propose_commitment", { text: "Visit the quarry on Lane 12", why: "It is near." })] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ]),
+    );
+    await first.entity.start();
+    first.cli.send("Any ideas?");
+    await first.entity.idle();
+    await first.entity.stop();
+
+    const scanner = createSecretScanner({ knownValues: ["quarry on Lane 12"] });
+    const second = await open(new ScriptedModel([]), { scanner });
+    await second.entity.start();
+    second.cli.send("!proposals");
+    await second.entity.idle();
+
+    const answer = second.said.map((item) => item.text).join("\n");
+    expect(answer).toContain("Waiting for an answer:");
+    expect(answer).not.toContain("quarry on Lane 12");
+  });
+
+  it("forgets the same words from the mood, the wake reasons, the proposals and the place claims when the Lar forgets them", async () => {
+    const model = new ScriptedModel([
+      reply({
+        toolCalls: [
+          call("say", { place: "cli:summoner", text: "The bakery is open." }, "s1"),
+          call("set_mood", { text: "happy about the bakery" }, "m1"),
+          call("schedule_wake", { in_minutes: 600, why: "buy bread at the bakery" }, "w1"),
+          call("propose_commitment", { text: "Visit the bakery weekly", why: "Good bread." }, "p1"),
+          call("forget", { query: "bakery", why: "Not mine to keep." }, "f1"),
+        ],
+      }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    cli.send("Go.");
+    await entity.idle();
+
+    const state = readStateJson();
+    expect(state.mood).toBeNull();
+    expect(state.wakes).toEqual([expect.objectContaining({ why: "[forgotten by the summoner]" })]);
+    expect(state.proposals).toEqual([expect.objectContaining({ text: "[forgotten by the summoner]", why: "Good bread." })]);
+    expect(state.placeClaims["cli:summoner"]).toMatchObject({ text: "[forgotten by the summoner]" });
+  });
+
+  it("scrubs the same words from the state file when the summoner forgets with no runtime running", async () => {
+    const first = await open(
+      new ScriptedModel([
+        reply({ toolCalls: [call("set_mood", { text: "happy about the bakery" }), call("end_turn")] }),
+      ]),
+    );
+    await first.entity.start();
+    first.cli.send("Go.");
+    await first.entity.idle();
+    await first.entity.stop();
+
+    expect(forgetInStateFile(join(dir, STATE_FILE), "bakery")).toBe(1);
+    expect(readStateJson().mood).toBeNull();
+    expect(forgetInStateFile(join(dir, STATE_FILE), "bakery")).toBe(0);
   });
 });
 
