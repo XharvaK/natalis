@@ -499,6 +499,20 @@ class Runtime implements Entity {
       await this.stop();
       throw err;
     }
+    this.resumeOpenAsks();
+  }
+
+  /**
+   * A turn cut by a stop leaves its thread's cursor where it was. The summoner's open asks whose message that cursor
+   * has not passed are taken again now, so a restart never leaves the summoner waiting with no turn coming.
+   */
+  private resumeOpenAsks(): void {
+    for (const ask of this.state.asks) {
+      const row = this.river.read({ sinceSeq: ask.seq - 1, untilSeq: ask.seq, limit: 1 })[0];
+      if (row === undefined || row.kind !== "event") continue;
+      if (ask.seq > this.threadState(row.thread).seenSeq) this.due.add(row.thread);
+    }
+    this.pump();
   }
 
   stop(): Promise<void> {

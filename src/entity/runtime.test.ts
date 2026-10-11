@@ -223,6 +223,35 @@ describe("a conversation", () => {
     expect(readStateFile().lastSeq).toBeGreaterThan(0);
   });
 
+  it("takes the summoner's message again on the next start when a stop cut its turn", async () => {
+    let entered: () => void = () => {};
+    const inTurn = new Promise<void>((resolve) => (entered = resolve));
+    const hanging: ModelPort = {
+      info: { id: "hanging", contextTokens: 32_000, nativeTools: true },
+      complete: (_request, signal) =>
+        new Promise((_resolve, reject) => {
+          entered();
+          signal?.addEventListener("abort", () => reject(new ModelError("stopped", "aborted", 1)));
+        }),
+    };
+    const a = await open(hanging);
+    await a.entity.start();
+    a.cli.send("Are you there?");
+    await inTurn;
+    await a.entity.stop();
+
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "Here." })] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const b = await open(model);
+    await b.entity.start();
+    await b.entity.idle();
+
+    expect(b.said).toEqual([{ place: "cli:summoner", text: "Here." }]);
+    expect(userTextOf(model.requests[0])).toContain("owner] Are you there?");
+  });
+
   it("keeps memory across a restart: the notebook and the river survive", async () => {
     const first = new ScriptedModel([
       reply({
