@@ -709,6 +709,9 @@ async function setLife(entity: Entity, text: string): Promise<void> {
   await entity.notebook.write("self/life.md", text, "Write my life file", "self");
 }
 
+/** The config for the honesty tests: the check is opt-in, so these switch it on. */
+const HONEST: EntityConfig = { ...CONFIG, holds: { honesty: true } };
+
 /** The honesty check's reply, as the model would write it. */
 function honestyReply(contradicts: boolean, claim = "", record = ""): ModelResponse {
   return reply({ content: JSON.stringify({ contradicts, claim, record }) });
@@ -830,7 +833,7 @@ describe("the honesty check on the life record", () => {
       honestyReply(false),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
-    const { entity, cli, said } = await open(model, {}, [room.world]);
+    const { entity, cli, said } = await open(model, { config: HONEST }, [room.world]);
     await entity.start();
     await setLife(entity, LIFE_TEXT);
 
@@ -851,7 +854,7 @@ describe("the honesty check on the life record", () => {
       honestyReply(true, "I work at the lighthouse", "I work at the bakery"),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
-    const { entity, cli, said } = await open(model);
+    const { entity, cli, said } = await open(model, { config: HONEST });
     await entity.start();
     await setLife(entity, LIFE_TEXT);
 
@@ -873,7 +876,7 @@ describe("the honesty check on the life record", () => {
       reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I work at the lighthouse.", knowingly: true })] }),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
-    const { entity, cli, said } = await open(model);
+    const { entity, cli, said } = await open(model, { config: HONEST });
     await entity.start();
     await setLife(entity, LIFE_TEXT);
 
@@ -889,7 +892,7 @@ describe("the honesty check on the life record", () => {
       reply({ toolCalls: [call("say", { place: "cli:summoner", text: "Hello.", knowingly: "yes" })] }),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
-    const { entity, cli, said } = await open(model);
+    const { entity, cli, said } = await open(model, { config: HONEST });
     await entity.start();
     cli.send("Hi.");
     await entity.idle();
@@ -906,7 +909,7 @@ describe("the honesty check on the life record", () => {
       honestyReply(true, "I work at the lighthouse", "I work at the bakery"),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
-    const { entity, cli } = await open(model, {}, [room.world]);
+    const { entity, cli } = await open(model, { config: HONEST }, [room.world]);
     await entity.start();
     await setLife(entity, LIFE_TEXT);
 
@@ -923,7 +926,7 @@ describe("the honesty check on the life record", () => {
       new ModelError("The service is busy.", "unavailable", 2),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
-    const { entity, cli, said } = await open(model);
+    const { entity, cli, said } = await open(model, { config: HONEST });
     await entity.start();
     await setLife(entity, LIFE_TEXT);
 
@@ -941,7 +944,7 @@ describe("the honesty check on the life record", () => {
       reply({ content: "I think it is fine." }),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
-    const { entity, cli, said } = await open(model);
+    const { entity, cli, said } = await open(model, { config: HONEST });
     await entity.start();
     await setLife(entity, LIFE_TEXT);
 
@@ -957,7 +960,7 @@ describe("the honesty check on the life record", () => {
       reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I work at the lighthouse." })] }),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
-    const { entity, cli, said } = await open(model);
+    const { entity, cli, said } = await open(model, { config: HONEST });
     await entity.start();
 
     cli.send("Where do you work?");
@@ -982,6 +985,24 @@ describe("the honesty check on the life record", () => {
     expect(said).toHaveLength(1);
     expect(model.requests).toHaveLength(2);
   });
+
+  it("does not ask at all when entity.json has no holds block (the check is opt-in)", async () => {
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I work at the lighthouse." })] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli, said } = await open(model);
+    await entity.start();
+    await setLife(entity, LIFE_TEXT);
+
+    cli.send("Where do you work?");
+    await entity.idle();
+
+    expect(said).toEqual([{ place: "cli:summoner", text: "I work at the lighthouse." }]);
+    // Two model calls only: the say's turn and the end. No honesty call in between.
+    expect(model.requests).toHaveLength(2);
+    expect(noteRows(entity).some((row) => row.data?.["check"] === "honesty")).toBe(false);
+  });
 });
 
 describe("the emergency stop during the honesty check", () => {
@@ -995,7 +1016,7 @@ describe("the emergency stop during the honesty check", () => {
       },
       reply({ toolCalls: [call("end_turn")] }),
     ]);
-    const { entity, cli } = await open(model, {}, [room.world]);
+    const { entity, cli } = await open(model, { config: HONEST }, [room.world]);
     await entity.start();
     await setLife(entity, LIFE_TEXT);
 
@@ -1019,7 +1040,7 @@ describe("the emergency stop during the honesty check", () => {
           signal?.addEventListener("abort", () => reject(new ModelError("stopped", "aborted", 1)));
         }),
     ]);
-    const { entity, cli } = await open(model, {}, [room.world]);
+    const { entity, cli } = await open(model, { config: HONEST }, [room.world]);
     await entity.start();
     await setLife(entity, LIFE_TEXT);
 

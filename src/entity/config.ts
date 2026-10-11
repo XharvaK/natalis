@@ -23,7 +23,7 @@ export type EntityConfig = {
   ceiling?: Ceiling;
   /** The summoner: the alias they appear under. Written as "summoner" in entity.json ("owner" is still read). */
   owner: { alias: string };
-  /** Body checks on what the Lar says. Each one is on unless the block says false. */
+  /** Body checks on what the Lar says. Each one is off unless the block says true. */
   holds?: { honesty?: boolean };
   /** Daily limits. Left out, there is none. */
   limits?: { turnsPerDay?: number };

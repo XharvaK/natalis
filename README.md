@@ -60,6 +60,18 @@ Each takes `--dir <entity folder>` (the Lar's own folder) unless noted.
 
 To run a Lar as a service on a host, see [deploy/README.md](deploy/README.md).
 
+## entity.json
+
+The file in the Lar's folder. Its blocks:
+
+- `model`: the main model. `baseUrl` (http or https), `model` (its name), `contextTokens`, and optionally `apiKeyEnv`
+  (the name of the environment variable holding the key, never the key), `nativeTools`, `effortParam`
+  (`"reasoning_effort"` or `null`), `timeoutMs` and `vision` (true only when the model can see pictures).
+- `holds`: body checks on what the Lar says. `honesty` (true or false) runs one model call that asks whether the words
+  contradict the Lar's own life record. It is **off** unless `"holds": { "honesty": true }` is written.
+
+Unknown fields are refused, and each error names the field that is wrong.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
