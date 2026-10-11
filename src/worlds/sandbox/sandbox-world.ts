@@ -47,7 +47,7 @@ export type SandboxWorldOptions = {
 type Status = "idle" | "ready" | "stopped";
 
 /** Why a command was stopped by the body, if it was. */
-type StoppedBy = "timeout" | "output" | "turn" | "world";
+type StoppedBy = "timeout" | "output" | "turn" | "world" | "stop";
 
 const defaultSpawn: SpawnFn = (command, args, options) => nodeSpawn(command, args, options);
 
@@ -199,6 +199,7 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
         else if (stoppedBy === "output") summary = `The command printed more than ${OUTPUT_CAP_BYTES / (1024 * 1024)} MB and was stopped.`;
         else if (stoppedBy === "turn") summary = "The command was stopped because the turn ended.";
         else if (stoppedBy === "world") summary = "The command was stopped because the sandbox closed.";
+        else if (stoppedBy === "stop") summary = "The command was ended by your summoner's emergency stop.";
         else if (exitCode === 0) summary = `The command finished in ${seconds} s with exit code 0.`;
         else {
           const by = signalName === null ? "" : ` (ended by ${signalName})`;
@@ -355,6 +356,11 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
     async stop(): Promise<void> {
       status = "stopped";
       for (const end of [...running.values()]) end("world");
+    },
+
+    /** The summoner's emergency stop turned on: every command still running is ended now. */
+    onStop(): void {
+      for (const end of [...running.values()]) end("stop");
     },
 
     async say(place: string): Promise<Receipt> {

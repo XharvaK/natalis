@@ -28,7 +28,7 @@ import { createSecretScanner } from "../secrets/index.js";
 import { ScriptedModel, call, reply } from "../testing/scripted-model.js";
 import { createCliWorld, type CliWorld } from "../worlds/cli.js";
 import type { EntityConfig } from "./config.js";
-import { openEntity, type Entity, type OpenEntityOptions } from "./runtime.js";
+import { forgetInStateFile, openEntity, STATE_FILE, type Entity, type OpenEntityOptions } from "./runtime.js";
 import { COMMITMENTS_STUB, HOUSEHOLD_PATH, OLD_COMMITMENTS_STUB } from "./commitments.js";
 import { isStopOn } from "./stop.js";
 
@@ -252,6 +252,64 @@ describe("a conversation", () => {
     expect(userTextOf(model.requests[0])).toContain("owner] Are you there?");
   });
 
+  it("writes a world's event that arrives after shutdown began as a river row, so the next start takes it", async () => {
+    let emitLate: ((event: WorldEvent) => void) | undefined;
+    const late: World = {
+      id: "fake",
+      async start(next) {
+        emitLate = next;
+      },
+      async stop() {
+        emitLate?.({ world: "fake", place: "fake:room", actor: "mara", source: "outside", text: "Sent as you stopped." });
+        emitLate = undefined;
+      },
+      async say(): Promise<Receipt> {
+        return { ok: true, summary: "Delivered." };
+      },
+      tools: () => [],
+      now: () => "fake is open.",
+    };
+    const a = await open(new ScriptedModel([]), {}, [late]);
+    await a.entity.start();
+    await a.entity.stop();
+
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const b = await open(model, {}, [fakeWorld("fake").world]);
+    await b.entity.start();
+    await b.entity.idle();
+
+    expect(model.requests).toHaveLength(1);
+    expect(userTextOf(model.requests[0])).toContain("Sent as you stopped.");
+  });
+
+  it("takes a room's message again on the next start when a stop cut its turn, not only the summoner's asks", async () => {
+    let entered: () => void = () => {};
+    const inTurn = new Promise<void>((resolve) => (entered = resolve));
+    const hanging: ModelPort = {
+      info: { id: "hanging", contextTokens: 32_000, nativeTools: true },
+      complete: (_request, signal) =>
+        new Promise((_resolve, reject) => {
+          entered();
+          signal?.addEventListener("abort", () => reject(new ModelError("stopped", "aborted", 1)));
+        }),
+    };
+    const roomA = fakeWorld("fake");
+    const a = await open(hanging, {}, [roomA.world]);
+    await a.entity.start();
+    roomA.push("fake:room", "Are you there, room?");
+    await inTurn;
+    await a.entity.stop();
+
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const roomB = fakeWorld("fake");
+    const b = await open(model, {}, [roomB.world]);
+    await b.entity.start();
+    await b.entity.idle();
+
+    expect(model.requests).toHaveLength(1);
+    expect(userTextOf(model.requests[0])).toContain("Are you there, room?");
+  });
+
   it("keeps memory across a restart: the notebook and the river survive", async () => {
     const first = new ScriptedModel([
       reply({
@@ -420,6 +478,28 @@ describe("the owner's asks", () => {
     expect(said).toHaveLength(1);
     expect(readStateFile().asks).toHaveLength(0);
   });
+
+  it("is cleared by a say only up to the messages the turn saw, so a message that came during the turn stays open", async () => {
+    let sendLater: (text: string) => void = () => {};
+    const model = new ScriptedModel([
+      () => {
+        sendLater("And one more thing?");
+        return reply({ toolCalls: [call("say", { place: "cli:summoner", text: "Yes, I am here." })] });
+      },
+      reply({ toolCalls: [call("end_turn")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli, said } = await open(model);
+    sendLater = (text) => cli.send(text);
+    await entity.start();
+    cli.send("Are you there?");
+    await entity.idle();
+
+    expect(said).toHaveLength(1);
+    expect(readStateFile().asks).toEqual([expect.objectContaining({ place: "cli:summoner" })]);
+    expect(model.requests).toHaveLength(3);
+    expect(userTextOf(model.requests[2])).toContain("And one more thing?");
+  });
 });
 
 describe("failures", () => {
@@ -447,6 +527,54 @@ describe("failures", () => {
     expect(model.requests).toHaveLength(3);
     // The retry saw the same new event again.
     expect(userTextOf(model.requests[1])).toContain("owner] Are you there?");
+  });
+
+  it("stops retrying a turn the model rejects as too large after three tries, says what was too large, and tries again on a new message", async () => {
+    const tooLarge = (): ModelError =>
+      new ModelError("model service rejected the request (HTTP 400): This model's maximum context length is 32768 tokens.", "bad_request", 1);
+    const model = new ScriptedModel([tooLarge(), tooLarge(), tooLarge(), reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model, { retryDelaysMs: [5] });
+    await entity.start();
+
+    cli.send("Hello?");
+    await entity.idle();
+    expect(model.requests).toHaveLength(3);
+    const notes = allRows(entity).filter((row) => row.kind === "note").map((row) => row.text ?? "");
+    const sizeNote = notes.filter((text) => text.includes("too large")).at(-1) ?? "";
+    expect(sizeNote).toContain("constitution");
+    expect(sizeNote).toContain("characters");
+    expect(sizeNote).toContain("will not be tried again");
+
+    cli.send("Still there?");
+    await entity.idle();
+    expect(model.requests).toHaveLength(4);
+    expect(userTextOf(model.requests[3])).toContain("Still there?");
+  });
+
+  it("shows a retried turn the say and the wake its cut attempt already made, so it does not repeat them", async () => {
+    const model = new ScriptedModel([
+      reply({
+        toolCalls: [
+          call("say", { place: "cli:summoner", text: "On my way." }, "call_say"),
+          call("schedule_wake", { in_minutes: 60, why: "check the kettle" }, "call_wake"),
+        ],
+      }),
+      new ModelError("The model service is down.", "unavailable", 1),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli, said } = await open(model, { retryDelaysMs: [5] });
+    await entity.start();
+
+    cli.send("Are you coming?");
+    await entity.idle();
+
+    expect(said).toEqual([{ place: "cli:summoner", text: "On my way." }]);
+    expect(readStateFile().wakes).toHaveLength(1);
+    const retry = userTextOf(model.requests[2]);
+    expect(retry).toContain("Already done");
+    expect(retry).toContain("On my way.");
+    expect(retry).toContain("check the kettle");
+    expect(retry).toContain("owner] Are you coming?");
   });
 });
 
@@ -856,6 +984,55 @@ describe("the honesty check on the life record", () => {
   });
 });
 
+describe("the emergency stop during the honesty check", () => {
+  it("refuses a say when the stop turns on while the check runs, and sends nothing", async () => {
+    const room = fakeWorld("fake");
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("say", { place: "fake:room", text: "I work at the bakery." }, "call_say")] }),
+      () => {
+        writeFileSync(join(dir, "STOP"), "", "utf8");
+        return honestyReply(false);
+      },
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model, {}, [room.world]);
+    await entity.start();
+    await setLife(entity, LIFE_TEXT);
+
+    cli.send("Where do you work?");
+    await entity.idle();
+
+    expect(room.said).toEqual([]);
+    const refused = receiptsShownIn(model.requests[2]).find((item) => item["ok"] === false);
+    expect(refused).toMatchObject({ refused: { code: "stopped" } });
+  });
+
+  it("refuses a say whose honesty check the shutdown cut short, and never sends it", async () => {
+    const room = fakeWorld("fake");
+    let entered: () => void = () => {};
+    const inCheck = new Promise<void>((resolve) => (entered = resolve));
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("say", { place: "fake:room", text: "I work at the bakery." })] }),
+      (_request, signal) =>
+        new Promise<ModelResponse>((_resolve, reject) => {
+          entered();
+          signal?.addEventListener("abort", () => reject(new ModelError("stopped", "aborted", 1)));
+        }),
+    ]);
+    const { entity, cli } = await open(model, {}, [room.world]);
+    await entity.start();
+    await setLife(entity, LIFE_TEXT);
+
+    cli.send("Where do you work?");
+    await inCheck;
+    await entity.stop();
+
+    expect(room.said).toEqual([]);
+    const later = await open(new ScriptedModel([]));
+    expect(allRows(later.entity).filter((row) => row.kind === "say")).toEqual([]);
+  });
+});
+
 describe("place claims", () => {
   it("shows the place another thread spoke in lately, and treats a say into it as information only", async () => {
     const room = fakeWorld("fake");
@@ -987,6 +1164,142 @@ function readStateJson(): Record<string, any> {
   return JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
 }
 
+describe("the stop reaching the worlds", () => {
+  it("does not start a turn on restart for a stop notice or a summoner act alone", async () => {
+    const first = await open(new ScriptedModel([]));
+    await first.entity.start();
+    first.cli.send("!stop");
+    await first.entity.idle();
+    await first.entity.stop();
+
+    const model = new ScriptedModel([]);
+    const second = await open(model);
+    await second.entity.start();
+    await second.entity.idle();
+
+    expect(model.requests).toHaveLength(0);
+  });
+
+  it("notices the stop file within a poll and calls each world's onStop once each time it turns on", async () => {
+    const room = fakeWorld("fake");
+    let stops = 0;
+    const watched: World = {
+      ...room.world,
+      onStop: () => {
+        stops += 1;
+      },
+    };
+    const { entity, cli } = await open(new ScriptedModel([]), { stopPollMs: 5 }, [watched]);
+    await entity.start();
+
+    writeFileSync(join(dir, "STOP"), "", "utf8");
+    await waitFor(() => stops === 1);
+    writeFileSync(join(dir, "STOP"), "still on", "utf8");
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(stops).toBe(1);
+    expect(allRows(entity).filter((row) => row.data?.["emergencyStop"] === true)).toHaveLength(1);
+
+    rmSync(join(dir, "STOP"));
+    await waitFor(() => allRows(entity).some((row) => row.data?.["emergencyStop"] === false));
+    cli.send("!stop");
+    await entity.idle();
+    expect(stops).toBe(2);
+  });
+});
+
+describe("what the state file keeps", () => {
+  it("holds a mood, a proposal or a wake reason that carries a credential, and keeps none of it", async () => {
+    const model = new ScriptedModel([
+      reply({
+        toolCalls: [
+          call("set_mood", { text: `calm ${FAKE_KEY}` }, "m1"),
+          call("propose_commitment", { text: `Use ${FAKE_KEY}`, why: "Because." }, "p1"),
+          call("schedule_wake", { in_minutes: 60, why: `check ${FAKE_KEY}` }, "w1"),
+        ],
+      }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    cli.send("Go.");
+    await entity.idle();
+
+    const state = readStateJson();
+    expect(state.mood).toBeNull();
+    expect(state.proposals).toEqual([]);
+    expect(state.wakes).toEqual([]);
+    expect(receiptsShownIn(model.requests[1]).map((item) => (item["refused"] as { code?: string } | undefined)?.code)).toEqual([
+      "held_secret",
+      "held_secret",
+      "held_secret",
+    ]);
+  });
+
+  it("scans the reply to !proposals, so a value the body holds now never reaches the summoner", async () => {
+    const first = await open(
+      new ScriptedModel([
+        reply({ toolCalls: [call("propose_commitment", { text: "Visit the quarry on Lane 12", why: "It is near." })] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ]),
+    );
+    await first.entity.start();
+    first.cli.send("Any ideas?");
+    await first.entity.idle();
+    await first.entity.stop();
+
+    const scanner = createSecretScanner({ knownValues: ["quarry on Lane 12"] });
+    const second = await open(new ScriptedModel([]), { scanner });
+    await second.entity.start();
+    second.cli.send("!proposals");
+    await second.entity.idle();
+
+    const answer = second.said.map((item) => item.text).join("\n");
+    expect(answer).toContain("Waiting for an answer:");
+    expect(answer).not.toContain("quarry on Lane 12");
+  });
+
+  it("forgets the same words from the mood, the wake reasons, the proposals and the place claims when the Lar forgets them", async () => {
+    const model = new ScriptedModel([
+      reply({
+        toolCalls: [
+          call("say", { place: "cli:summoner", text: "The bakery is open." }, "s1"),
+          call("set_mood", { text: "happy about the bakery" }, "m1"),
+          call("schedule_wake", { in_minutes: 600, why: "buy bread at the bakery" }, "w1"),
+          call("propose_commitment", { text: "Visit the bakery weekly", why: "Good bread." }, "p1"),
+          call("forget", { query: "bakery", why: "Not mine to keep." }, "f1"),
+        ],
+      }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    cli.send("Go.");
+    await entity.idle();
+
+    const state = readStateJson();
+    expect(state.mood).toBeNull();
+    expect(state.wakes).toEqual([expect.objectContaining({ why: "[forgotten by the summoner]" })]);
+    expect(state.proposals).toEqual([expect.objectContaining({ text: "[forgotten by the summoner]", why: "Good bread." })]);
+    expect(state.placeClaims["cli:summoner"]).toMatchObject({ text: "[forgotten by the summoner]" });
+  });
+
+  it("scrubs the same words from the state file when the summoner forgets with no runtime running", async () => {
+    const first = await open(
+      new ScriptedModel([
+        reply({ toolCalls: [call("set_mood", { text: "happy about the bakery" }), call("end_turn")] }),
+      ]),
+    );
+    await first.entity.start();
+    first.cli.send("Go.");
+    await first.entity.idle();
+    await first.entity.stop();
+
+    expect(forgetInStateFile(join(dir, STATE_FILE), "bakery")).toBe(1);
+    expect(readStateJson().mood).toBeNull();
+    expect(forgetInStateFile(join(dir, STATE_FILE), "bakery")).toBe(0);
+  });
+});
+
 describe("the constitution the Lar sees", () => {
   it("shows the floor, the household part and the Lar's own commitments, in that order", async () => {
     const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
@@ -1102,17 +1415,53 @@ describe("the summoner's commands", () => {
     expect(isStopOn(dir)).toBe(false);
   });
 
-  it("answers an unknown ! word with the plain line and nothing else", async () => {
-    const model = new ScriptedModel([]);
+  it("treats a ! word that is not a command as an ordinary message: the river and the Lar get it", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
     const { entity, cli, said } = await open(model);
     await entity.start();
     cli.send("!dance");
     await entity.idle();
 
-    expect(said.map((item) => item.text)).toEqual(["[natalis] I don't know that command. !help lists them."]);
-    expect(model.requests).toHaveLength(0);
-    expect(readStateJson().asks).toEqual([]);
+    expect(said).toEqual([]);
+    expect(model.requests).toHaveLength(1);
+    expect(userTextOf(model.requests[0])).toContain("owner] !dance");
+    expect(readStateJson().asks).toEqual([expect.objectContaining({ place: "cli:summoner" })]);
     expect(allRows(entity).filter((row) => row.thread === "self")).toEqual([]);
+  });
+
+  it("shows the summoner's acts only in turns of the summoner's own places, and to the first of those turns", async () => {
+    const room = fakeWorld("fake");
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model, {}, [room.world]);
+    await entity.start();
+
+    cli.send("!sites add example.org");
+    await entity.idle();
+    room.push("fake:room", "Hello room.");
+    await entity.idle();
+    expect(model.requests).toHaveLength(1);
+    expect(systemTextOf(model.requests[0])).not.toContain("example.org");
+
+    cli.send("Hello.");
+    await entity.idle();
+    expect(model.requests).toHaveLength(2);
+    expect(systemTextOf(model.requests[1])).toContain("example.org");
+  });
+
+  it("says how many older acts the board left out when more than twenty wait", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+
+    for (let n = 1; n <= 22; n += 1) cli.send(`!vault remove gate-${n}`);
+    await entity.idle();
+    cli.send("Hello.");
+    await entity.idle();
+
+    const system = systemTextOf(model.requests[0]);
+    expect(system).toContain("gate-22");
+    expect(system).not.toContain("gate-1,");
+    expect(system).toContain("- 2 older ones were left out.");
   });
 
   it("writes the household line, and the Lar sees what the summoner did on its next turn, once", async () => {
@@ -1272,6 +1621,70 @@ describe("the daily turn limit", () => {
     expect(systemTextOf(model.requests[1])).toContain("Turns today: 1 of 1.");
   });
 
+  it("tells only the summoner's own places about the limit, never a room where a message waits", async () => {
+    const now = Date.parse("2026-10-11T10:00:00Z");
+    let emitRoom: ((event: WorldEvent) => void) | undefined;
+    const roomSaid: string[] = [];
+    const room: World = {
+      id: "fake",
+      async start(next) {
+        emitRoom = next;
+      },
+      async stop() {
+        emitRoom = undefined;
+      },
+      async say(_place, text): Promise<Receipt> {
+        roomSaid.push(text);
+        return { ok: true, summary: "Delivered." };
+      },
+      tools: () => [],
+      now: () => "fake is open.",
+    };
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli, said } = await open(
+      model,
+      { config: { ...CONFIG, limits: { turnsPerDay: 1 } }, nowMs: () => now },
+      [room],
+    );
+    await entity.start();
+
+    emitRoom?.({ world: "fake", place: "fake:room", actor: "owner", source: "owner", text: "Room hello." });
+    await entity.idle();
+    cli.send("Second.");
+    await entity.idle();
+
+    expect(roomSaid).toEqual([]);
+    expect(said.map((item) => item.text)).toEqual([
+      "[natalis] Your Lar has reached today's limit of 1 turn and will see this after midnight (UTC).",
+    ]);
+  });
+
+  it("tells no place about the limit while the emergency stop is on, and tells once the stop is off", async () => {
+    let now = Date.parse("2026-10-11T10:00:00Z");
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli, said } = await open(model, {
+      config: { ...CONFIG, limits: { turnsPerDay: 1 } },
+      nowMs: () => now,
+    });
+    await entity.start();
+
+    cli.send("First.");
+    await entity.idle();
+    writeFileSync(join(dir, "STOP"), "", "utf8");
+    now += 60_000;
+    cli.send("Second.");
+    await entity.idle();
+    expect(said).toEqual([]);
+
+    rmSync(join(dir, "STOP"));
+    now += 60_000;
+    cli.send("Third.");
+    await entity.idle();
+    expect(said.map((item) => item.text)).toEqual([
+      "[natalis] Your Lar has reached today's limit of 1 turn and will see this after midnight (UTC).",
+    ]);
+  });
+
   it("holds a wake that comes due during the limit, and runs it with the next day's turns", async () => {
     let now = Date.parse("2026-10-11T10:00:00Z");
     const model = new ScriptedModel([
@@ -1379,6 +1792,48 @@ describe("repeating wakes", () => {
     writeWakes([{ id: "bad00001", atMs: NOW + 60_000, why: "x", scheduledIn: "summoner", repeat: "hourly", clock: "09:00" }]);
 
     await expect(open(new ScriptedModel([]), { nowMs: () => NOW })).rejects.toThrow(/repeat/);
+  });
+
+  it("reads a date and time with no offset in the Lar's own zone, and one with an offset as it is", async () => {
+    const model = new ScriptedModel([
+      reply({
+        toolCalls: [
+          call("schedule_wake", { at_iso: "2026-10-12T09:00", why: "breakfast" }, "w1"),
+          call("schedule_wake", { at_iso: "2026-10-12T09:00:00Z", why: "utc" }, "w2"),
+        ],
+      }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model, { config: { ...CONFIG, timeZone: "America/New_York" } });
+    await entity.start();
+    cli.send("Go.");
+    await entity.idle();
+
+    const wakes = readStateJson().wakes as Array<{ why: string; atMs: number }>;
+    expect(wakes.find((wake) => wake.why === "breakfast")?.atMs).toBe(Date.parse("2026-10-12T09:00:00-04:00"));
+    expect(wakes.find((wake) => wake.why === "utc")?.atMs).toBe(Date.parse("2026-10-12T09:00:00Z"));
+  });
+
+  it("refuses a wake reason longer than 500 characters, names the limit, and keeps no wake for it", async () => {
+    const model = new ScriptedModel([
+      reply({
+        toolCalls: [
+          call("schedule_wake", { in_minutes: 60, why: "x".repeat(501) }, "w1"),
+          call("schedule_wake", { in_minutes: 60, why: "y".repeat(500) }, "w2"),
+        ],
+      }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    cli.send("Go.");
+    await entity.idle();
+
+    const receipts = receiptsShownIn(model.requests[1]);
+    expect(receipts[0]).toMatchObject({ ok: false, refused: { code: "bad_arguments" } });
+    expect(String(receipts[0]?.["summary"])).toContain("500 characters");
+    expect(receipts[1]).toMatchObject({ ok: true });
+    expect(readStateJson().wakes).toHaveLength(1);
   });
 
   it("refuses a 101st wake, names the count and how to cancel one", async () => {

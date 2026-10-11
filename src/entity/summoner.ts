@@ -71,9 +71,24 @@ export type SummonerDesk = {
   stopChanged: () => void;
 };
 
-/** True when a summoner message is a body command: "!" and a letter. "!!!" or "! wow" stay ordinary words. */
+/** The words the body answers as commands. Any other "!" line is an ordinary message to the Lar. */
+const COMMAND_WORDS: ReadonlySet<string> = new Set([
+  "stop",
+  "resume",
+  "household",
+  "proposals",
+  "approve",
+  "decline",
+  "sites",
+  "vault",
+  "media",
+  "help",
+]);
+
+/** True when a summoner message is a known body command: "!" and its command word. Other "!" lines are ordinary words. */
 export function isSummonerCommand(text: string | undefined): boolean {
-  return /^![a-zA-Z]/.test((text ?? "").trimStart());
+  const match = /^!([a-zA-Z]+)/.exec((text ?? "").trimStart());
+  return match !== null && COMMAND_WORDS.has((match[1] ?? "").toLowerCase());
 }
 
 /** Runs one summoner command and returns the words to answer with (without the prefix). */
