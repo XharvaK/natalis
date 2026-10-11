@@ -593,14 +593,23 @@ class Runtime implements Entity {
    * owed a turn (the stop turning on, the summoner's acts) do not count; a wake does.
    */
   private resumeUnseen(): void {
-    // Every thread that has a river event has a cursor entry (intake makes one), so the lowest cursor is where to read from.
+    // Every thread that has an event gets a cursor entry before the state is saved (intake makes it), so the lowest
+    // cursor, or the state's last seq when there are none, is where to read from.
     const cursors = Object.values(this.state.threads).map((entry) => entry.seenSeq);
-    const floor = cursors.length === 0 ? 0 : Math.min(...cursors);
+    const floor = cursors.length === 0 ? this.state.lastSeq : Math.min(...cursors);
     for (const row of this.river.read({ kinds: ["event"], sinceSeq: floor, limit: ALL_ROWS })) {
       if (row.source === "body" && row.data?.["wakeId"] === undefined) continue;
-      if (row.seq > this.threadState(row.thread).seenSeq) this.due.add(row.thread);
+      if (row.seq > this.seenSeqOf(row.thread)) this.due.add(row.thread);
     }
     this.pump();
+  }
+
+  /**
+   * The seq a thread has seen up to. A thread with no cursor had no event when the state was last saved, so every row the
+   * state already covers (up to its last seq) was seen some other way, such as an import or a replay's cut.
+   */
+  private seenSeqOf(thread: string): number {
+    return Object.hasOwn(this.state.threads, thread) ? (this.state.threads[thread]?.seenSeq ?? 0) : this.state.lastSeq;
   }
 
   stop(): Promise<void> {
