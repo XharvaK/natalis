@@ -321,4 +321,14 @@ describe("the situations she is in, in plain words, and game tokens kept out of 
     expect(bodyLines({ situations: [...many, {}] })).toEqual(["Situations: named a, named b, named c, named d."]);
   });
 
+  it("drops any game token left in her body's text, so no brace reaches her", () => {
+    const lines = bodyLines({
+      mood: "Happy {0.SimFirstName}",
+      windows: [{ event: "{0.SimFirstName} {1.Number} tasks", ago_min: 2 }],
+      place: { her_home: true, household_here: ["{0.SimFirstName} {1.Number}"] },
+    });
+    expect(lines.join("\n")).not.toMatch(/[{}]/);
+    expect(lines).toContain("Mood: happy.");
+    expect(lines).toContain("Recent windows: tasks, 2 min ago.");
+  });
 });

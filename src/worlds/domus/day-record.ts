@@ -2,7 +2,7 @@
 // carried on a view that sleeps her. It is shown in her full view after her body block, in plain words, as facts only.
 // Nothing here judges an act (no good or bad, no advice), and a part it cannot read is skipped. It never throws.
 
-import { DAY_ORIGIN_WORDS, ORIGIN_WORDS, plainName, textOrUndefined } from "./words.js";
+import { DAY_ORIGIN_WORDS, dropTokens, ORIGIN_WORDS, plainName, textOrUndefined } from "./words.js";
 
 /** The longest the section may be, in characters. The lines past it are said as a count. */
 export const DAY_RECORD_MAX = 4_000;
@@ -56,9 +56,11 @@ function needsWords(needs: unknown): string | undefined {
   return items.length ? items.join(", ") : undefined;
 }
 
-/** A text the game sent, trimmed; anything that is not a non-empty string is undefined (a number is not a name). */
+/** A text the game sent, trimmed and without game tokens; anything that is not a non-empty string is undefined (a number is not a name). */
 function text(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+  if (typeof value !== "string") return undefined;
+  const trimmed = dropTokens(value);
+  return trimmed === "" ? undefined : trimmed;
 }
 
 /** The game's words for a list of names (moodlets, reactions), in plain words; empty when none is readable. */

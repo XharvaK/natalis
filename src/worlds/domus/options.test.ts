@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { OptionObject } from "./answers.js";
-import { BRIEF_MAX, choicesSignature, findOption, labelOf, optionsOf, perceptSentence, refsOf, renderView, VIEW_TEXT_MAX, viewBrief } from "./options.js";
+import { BRIEF_MAX, choicesSignature, findOption, labelOf, optionsOf, perceptLine, perceptSentence, refsOf, renderView, VIEW_TEXT_MAX, viewBrief } from "./options.js";
 
 const TABLE: OptionObject[] = [
   { object: "Test kettle", object_id: "obj-kettle", where: "here, 2.0 m", acts: [
@@ -201,6 +201,17 @@ describe("the game's notices and her own changes, as plain sentences", () => {
     expect(perceptSentence({ kind: "notice", salience: 1, facts: { title: "Bills are due", text: "Pay them soon." } }))
       .toBe("The game says: Bills are due: Pay them soon.");
     expect(perceptSentence({ kind: "notice", salience: 1, facts: { text: "Pay them soon" } })).toBe("The game says: Pay them soon.");
+  });
+
+  it("drops a game token from a notice, from an old-style fact line, and from the words of an act in a view", () => {
+    expect(perceptSentence({ kind: "notice", salience: 1, facts: { title: "Tidy {1.Number}", text: "{0.SimFirstName} tidied up" } }))
+      .toBe("The game says: Tidy: tidied up.");
+    expect(perceptLine({ kind: "mystery", salience: 0, facts: { note: "{0.SimFirstName} came" } })).toBe("- mystery: note came");
+    const view = renderView({
+      world: "slot3", percepts: [], options: [{ object: "Test {0.SimFirstName} kettle", object_id: "obj-k", acts: [{ ref: "a1", guid64: "111", text: "Boil {1.Number} water" }] }],
+    });
+    expect(view).toContain("- Test kettle: a1 Boil water");
+    expect(view).not.toMatch(/[{}]/);
   });
 
   it("says a change to her own self as the text was sent, with a full stop only when it has none", () => {

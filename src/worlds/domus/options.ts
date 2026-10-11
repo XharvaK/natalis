@@ -7,7 +7,7 @@ import { answerRulesOf } from "./answers.js";
 import type { OptionsCut, Percept } from "./wire.js";
 import { type AttachmentNow, bodyLines } from "./body.js";
 import { DAY_BRIEF_LINE, dayRecordLines } from "./day-record.js";
-import { BAND_WORDS, capitalised, ORIGIN_WORDS, plainName, textOrUndefined } from "./words.js";
+import { BAND_WORDS, capitalised, dropTokens, ORIGIN_WORDS, plainName, textOrUndefined } from "./words.js";
 
 /** The longest the rendered view may be, in characters. The rest is said as a count. */
 export const VIEW_TEXT_MAX = 20_000;
@@ -77,7 +77,7 @@ function describeRules(rules: AnswerRules): string {
 function factsText(facts: Record<string, unknown>): string {
   return Object.entries(facts)
     .map(([key, value]) => {
-      const shown = typeof value === "string" ? value
+      const shown = typeof value === "string" ? dropTokens(value)
         : typeof value === "number" || typeof value === "boolean" || value === null ? String(value)
           : JSON.stringify(value) ?? "";
       return `${key} ${clip(shown, FACT_MAX)}`;
@@ -87,7 +87,9 @@ function factsText(facts: Record<string, unknown>): string {
 
 /** A text the game sent, trimmed; anything that is not text, or is empty, is undefined. */
 function said(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+  if (typeof value !== "string") return undefined;
+  const text = dropTokens(value);
+  return text === "" ? undefined : text;
 }
 
 /** A text the game sent as one sentence: a full stop is added only when it has none of its own. */
@@ -283,9 +285,9 @@ function objectLines(object: OptionObject): string[] {
   const noWay = typeof object.noWay === "string" ? ` [${object.noWay}]` : "";
   const acts = object.acts
     .filter((act) => act && typeof act === "object" && typeof act.ref === "string" && typeof act.text === "string")
-    .map((act) => `${act.ref} ${act.text}${typeof act.opens === "string" ? ` [${act.opens}]` : ""}`)
+    .map((act) => `${act.ref} ${dropTokens(act.text)}${typeof act.opens === "string" ? ` [${act.opens}]` : ""}`)
     .join("; ");
-  const lines = [`- ${object.object}${where}${noWay}: ${acts}`];
+  const lines = [`- ${dropTokens(object.object)}${where}${noWay}: ${acts}`];
   const rules = answerRulesOf(object);
   if (rules) lines.push(`  Answer rules: ${describeRules(rules)}.`);
   return lines;
