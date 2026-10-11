@@ -1095,6 +1095,85 @@ describe("place claims", () => {
   });
 });
 
+describe("two threads, one voice", () => {
+  it("holds a say when another thread spoke in that place after this turn began, and sends it only knowingly", async () => {
+    const room = fakeWorld("fake");
+    const hold = deferred();
+    const requests: Array<{ key: string; request: ModelRequest }> = [];
+    const scripts: Record<string, ModelResponse[]> = {
+      summoner: [
+        reply({ toolCalls: [call("say", { place: "fake:room", text: "Hello from the summoner's side." })] }),
+        reply({ toolCalls: [call("say", { place: "fake:room", text: "Hello from the summoner's side.", knowingly: true })] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ],
+      room: [
+        reply({ toolCalls: [call("say", { place: "fake:room", text: "Hello from the room." })] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ],
+    };
+    let heldOnce = false;
+    const model: ModelPort = {
+      info: { id: "routing:test", contextTokens: 32_000, nativeTools: true } satisfies ModelInfo,
+      async complete(request: ModelRequest): Promise<ModelResponse> {
+        const key = userTextOf(request).includes("Say hello in the room.") ? "summoner" : "room";
+        requests.push({ key, request });
+        if (key === "summoner" && !heldOnce) {
+          heldOnce = true;
+          await hold.promise;
+        }
+        return scripts[key]?.shift() ?? reply({ toolCalls: [call("end_turn")] });
+      },
+    };
+    const { entity, cli } = await open(model, {}, [room.world]);
+    await entity.start();
+
+    cli.send("Say hello in the room.");
+    await waitFor(() => requests.some((item) => item.key === "summoner"));
+    room.push("fake:room", "A passer-by asks a question.");
+    await waitFor(() => room.said.length === 1);
+    hold.resolve();
+    await entity.idle();
+
+    expect(room.said).toEqual(["Hello from the room.", "Hello from the summoner's side."]);
+    // The newest request of the summoner's turn carries every receipt that turn got, each once.
+    const receipts = receiptsShownIn(requests.filter((item) => item.key === "summoner").at(-1)?.request);
+    const held = receipts.find((item) => (item["refused"] as { code?: string } | undefined)?.code === "spoken_meanwhile");
+    expect(held).toMatchObject({ ok: false, refused: { code: "spoken_meanwhile" } });
+    expect(String((held?.["refused"] as { reason: string }).reason)).toContain('"Hello from the room."');
+    expect(String((held?.["refused"] as { reason: string }).reason)).toContain("knowingly: true");
+    expect(receipts.filter((item) => (item["refused"] as { code?: string } | undefined)?.code === "spoken_meanwhile")).toHaveLength(1);
+  });
+
+  it("sends a say when the other thread spoke in that place before this turn began", async () => {
+    const room = fakeWorld("fake");
+    const scripts: Record<string, ModelResponse[]> = {
+      summoner: [
+        reply({ toolCalls: [call("say", { place: "fake:room", text: "Hello, I was here after you." })] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ],
+      room: [
+        reply({ toolCalls: [call("say", { place: "fake:room", text: "Hello from the room." })] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ],
+    };
+    const model: ModelPort = {
+      info: { id: "routing:test", contextTokens: 32_000, nativeTools: true } satisfies ModelInfo,
+      async complete(request: ModelRequest): Promise<ModelResponse> {
+        const key = userTextOf(request).includes("Say hello in the room.") ? "summoner" : "room";
+        return scripts[key]?.shift() ?? reply({ toolCalls: [call("end_turn")] });
+      },
+    };
+    const { entity, cli } = await open(model, {}, [room.world]);
+    await entity.start();
+
+    room.push("fake:room", "A passer-by says hello.");
+    await entity.idle();
+    cli.send("Say hello in the room.");
+    await entity.idle();
+    expect(room.said).toEqual(["Hello from the room.", "Hello, I was here after you."]);
+  });
+});
+
 describe("the owner's emergency stop", () => {
   it("refuses outward acts while STOP is there, and still answers the summoner", async () => {
     const room = fakeWorld("fake");
