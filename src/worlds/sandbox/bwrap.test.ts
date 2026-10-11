@@ -111,9 +111,9 @@ describe("buildBwrapArgs: the body", () => {
   const CHECKOUT = "/opt/natalis-checkout";
   const ALLOWED = ["src", "docs", "deploy", "README.md", "AGENTS.md", "package.json", "LICENSE"];
 
-  it("binds only the allow-listed names of the checkout, read-only, each at the same path under /body", () => {
+  it("binds only the allow-listed names of the checkout, read-only, each at the same path under a read-only /body", () => {
     const args = buildBwrapArgs({ homeDir: HOME, command: "true", bodyDir: CHECKOUT });
-    const block = ALLOWED.flatMap((name) => ["--ro-bind-try", `${CHECKOUT}/${name}`, `/body/${name}`]);
+    const block = ["--tmpfs", "/body", ...ALLOWED.flatMap((name) => ["--ro-bind-try", `${CHECKOUT}/${name}`, `/body/${name}`]), "--remount-ro", "/body"];
     const at = args.indexOf("--chdir");
     expect(args.slice(at - block.length, at)).toEqual(block);
     // Nothing of the checkout is bound except those names: no .git, dist, node_modules or other top-level name.
@@ -131,7 +131,7 @@ describe("buildBwrapArgs: the body", () => {
     const without = buildBwrapArgs({ homeDir: HOME, command: "true" });
     expect(without.some((arg) => arg.startsWith("/body"))).toBe(false);
     const withBody = buildBwrapArgs({ homeDir: HOME, command: "true", bodyDir: CHECKOUT });
-    const block = ALLOWED.flatMap((name) => ["--ro-bind-try", `${CHECKOUT}/${name}`, `/body/${name}`]);
+    const block = ["--tmpfs", "/body", ...ALLOWED.flatMap((name) => ["--ro-bind-try", `${CHECKOUT}/${name}`, `/body/${name}`]), "--remount-ro", "/body"];
     const at = without.indexOf("--chdir");
     expect(withBody).toEqual([...without.slice(0, at), ...block, ...without.slice(at)]);
   });

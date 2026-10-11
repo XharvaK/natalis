@@ -22,9 +22,18 @@ export type BwrapInput = {
   bodyDir?: string;
 };
 
-/** The read-only binds of the allow-listed names of the checkout, each at the same path under /body. Absent names are skipped. */
+/**
+ * The read-only binds of the allow-listed names of the checkout, each at the same path under /body. Absent names are
+ * skipped. /body itself is a small tmpfs remounted read-only after the binds, so nothing can be written beside them.
+ */
 function bodyBinds(checkout: string): string[] {
-  return BODY_BINDS.flatMap((name) => ["--ro-bind-try", `${checkout}/${name}`, `${BODY_MOUNT}/${name}`]);
+  return [
+    "--tmpfs",
+    BODY_MOUNT,
+    ...BODY_BINDS.flatMap((name) => ["--ro-bind-try", `${checkout}/${name}`, `${BODY_MOUNT}/${name}`]),
+    "--remount-ro",
+    BODY_MOUNT,
+  ];
 }
 
 /** The full argument list for `bwrap`, ending with the shell and its command. */
