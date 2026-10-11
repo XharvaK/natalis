@@ -2376,8 +2376,9 @@ class Runtime implements Entity {
   }
 
   /**
-   * Another thread spoke in this place after this turn began: the say is held, so the Lar does not answer twice. The
-   * receipt says what was said and how long ago; she sends with knowingly: true if she still wants to. Information, not a rule.
+   * Another thread of hers spoke in this place after this turn began: the say is held, so the Lar does not answer twice.
+   * The receipt says what was said, how long ago, and from which of her threads; she sends with knowingly: true if she
+   * still wants to. Information, not a rule. Every claim is her own say (see the say route), so the earlier speaker is her.
    */
   private spokenMeanwhile(place: string, thread: string, turnId: string): Receipt | undefined {
     const started = this.turnStarts.get(turnId);
@@ -2387,8 +2388,8 @@ class Runtime implements Entity {
     const seconds = Math.max(0, Math.round((this.nowMs() - claim.atMs) / 1000));
     return refuse(
       "spoken_meanwhile",
-      `Nothing was sent to ${place}: ${claim.thread} said this there ${seconds} s ago, while this turn was running.`,
-      `Thread ${claim.thread} said "${claim.text}" in ${place} ${seconds} s ago, after this turn began. Nothing was sent. Say it again with knowingly: true if you still want to send your words.`,
+      `Nothing was sent to ${place}. You said this there ${seconds} s ago from your ${claim.thread} thread, while this turn was running.`,
+      `You said "${claim.text}" in ${place} ${seconds} s ago from your ${claim.thread} thread, after this turn began. Nothing was sent. Say it again with knowingly: true if you still want to send your words.`,
     );
   }
 
