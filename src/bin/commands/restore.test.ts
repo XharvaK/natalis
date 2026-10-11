@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +9,7 @@ import { openEntity, type Entity } from "../../entity/runtime.js";
 import { openRiver } from "../../river/index.js";
 import { ScriptedModel } from "../../testing/scripted-model.js";
 import { createCliWorld } from "../../worlds/cli.js";
-import { BUNDLE_FILE, MANIFEST_FILE, readRiverLastSeq, type Manifest } from "./backup-format.js";
+import { BUNDLE_FILE, isAllowedName, MANIFEST_FILE, readRiverLastSeq, type Manifest } from "./backup-format.js";
 import { backupEntity } from "./backup.js";
 import { restoreCommand, restoreEntity } from "./restore.js";
 
@@ -110,6 +111,55 @@ describe("natalis restore", () => {
     await restored.stop();
     running.length = 0;
   }, 60_000);
+
+  it("carries the worlds' things: world files, the vault (0600), the home without caches or env names, the game's database", async () => {
+    const lar = join(root, "iris");
+    mkdirSync(join(lar, "vault"), { recursive: true });
+    writeFileSync(join(lar, "vault", "site_key.json"), `${JSON.stringify({ host: "example.org", value: "fixture" })}\n`, { mode: 0o600 });
+    mkdirSync(join(lar, "home", "notes"), { recursive: true });
+    mkdirSync(join(lar, "home", ".cache", "pip"), { recursive: true });
+    mkdirSync(join(lar, "home", "venv"), { recursive: true });
+    writeFileSync(join(lar, "home", "notes", "plan.md"), "Mine.\n");
+    writeFileSync(join(lar, "home", ".cache", "pip", "blob"), "cache\n");
+    writeFileSync(join(lar, "home", "venv", "x.py"), "pass\n");
+    writeFileSync(join(lar, "home", ".env"), "NOPE=1\n");
+    writeFileSync(join(lar, "web.json"), `${JSON.stringify({ sites: ["example.org"] })}\n`);
+    writeFileSync(join(lar, "sandbox.json"), "{}\n");
+    writeFileSync(join(lar, "domus.json"), `${JSON.stringify({ tokenEnv: "DOMUS_HELPER_TOKEN" })}\n`);
+    mkdirSync(join(lar, "domus"));
+    const game = new DatabaseSync(join(lar, "domus", "domus.sqlite"));
+    game.exec("CREATE TABLE acts (id TEXT); INSERT INTO acts VALUES ('a1');");
+    game.close();
+    writeFileSync(join(lar, "domus", "state.json"), "{}\n");
+
+    const backup = await backupOf(lar);
+    const manifest = JSON.parse(readFileSync(join(backup, MANIFEST_FILE), "utf8")) as Manifest;
+    const names = manifest.files.map((file) => file.name);
+    expect(names).toEqual(expect.arrayContaining([
+      "web.json", "sandbox.json", "domus.json", "domus/domus.sqlite", "domus/state.json", "vault/site_key.json", "home/notes/plan.md",
+    ]));
+    expect(names.some((name) => name.includes(".cache") || name.includes("venv") || name === "home/.env")).toBe(false);
+
+    const target = join(root, "restored", "iris");
+    await restoreEntity({ from: backup, dir: target, say: () => {} });
+    expect(readFileSync(join(target, "home", "notes", "plan.md"), "utf8")).toBe("Mine.\n");
+    const restoredGame = new DatabaseSync(join(target, "domus", "domus.sqlite"), { readOnly: true });
+    expect(restoredGame.prepare("SELECT id FROM acts").all()).toEqual([{ id: "a1" }]);
+    restoredGame.close();
+    if (process.platform !== "win32") {
+      expect(statSync(join(target, "vault", "site_key.json")).mode & 0o777).toBe(0o600);
+    }
+  }, 60_000);
+
+  it("lets a manifest name only known files, vault entries and plain paths inside the home", () => {
+    for (const name of ["river.db", "web.json", "domus/domus.sqlite", "vault/a_key.json", "home/notes/a.md", "home/.bashrc"]) {
+      expect(isAllowedName(name), name).toBe(true);
+    }
+    for (const name of ["home/../entity.json", "home/./a", "home//a", "../river.db", "/etc/passwd", "home/a/.env", "vault/../x.json",
+      "vault/a/b.json", "notebook/x", "STOP", "home/a\\b", "domus/other.db"]) {
+      expect(isAllowedName(name), name).toBe(false);
+    }
+  });
 
   it("accepts an existing empty folder as the target", async () => {
     const lar = join(root, "iris");

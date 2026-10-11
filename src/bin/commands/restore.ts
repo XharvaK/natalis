@@ -4,12 +4,13 @@
 // folder is put in place. A restored Lar starts with its emergency stop off; the env file that holds its keys is not
 // in the backup and is kept on the host beside the folder.
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmdirSync, rmSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmdirSync, rmSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import { NOTEBOOK_DIR, RIVER_FILE } from "../../import/folder.js";
 import {
   BUNDLE_FILE,
+  VAULT_TREE,
   checkFilesAgainst,
   git,
   readManifest,
@@ -51,9 +52,15 @@ export async function restoreEntity(options: RestoreOptions): Promise<RestoreRes
   try {
     for (const file of manifest.files) {
       if (file.name === BUNDLE_FILE) continue;
-      copyFileSync(join(from, file.name), join(stage, file.name));
-      say(`Restored ${file.name}.`);
+      const target = join(stage, file.name);
+      mkdirSync(dirname(target), { recursive: true });
+      copyFileSync(join(from, file.name), target);
+      if (file.name.startsWith(`${VAULT_TREE}/`)) {
+        chmodSync(dirname(target), 0o700);
+        chmodSync(target, 0o600);
+      }
     }
+    say(`Restored ${manifest.files.length - 1} files.`);
 
     const bundle = join(from, BUNDLE_FILE);
     const notebook = join(stage, NOTEBOOK_DIR);

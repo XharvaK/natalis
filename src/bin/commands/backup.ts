@@ -6,17 +6,23 @@
 // --key-env <NAME>, the checked folder is also sealed into one encrypted package in <dir> (see backup-seal.ts), and
 // --seal-keep n keeps the newest n sealed packages of this Lar.
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { NOTEBOOK_DIR, RIVER_FILE } from "../../import/folder.js";
 import {
   BACKUP_FORMAT,
   BACKUP_VERSION,
   BUNDLE_FILE,
+  DOMUS_DB_PATH,
+  DOMUS_STATE_PATH,
+  HOME_SKIPPED,
+  HOME_TREE,
+  isAllowedName,
   MANIFEST_FILE,
   PLAIN_FILES,
+  VAULT_TREE,
   formatStamp,
   git,
   errorText,
@@ -73,7 +79,8 @@ export async function backupEntity(options: BackupOptions): Promise<BackupResult
   if (existsSync(folder)) throw new Error(`${folder} already exists. Wait a second and try again.`);
   mkdirSync(out, { recursive: true });
   const partial = join(out, `.${name}-${formatStamp(now)}-${randomUUID().slice(0, 8)}.partial`);
-  mkdirSync(partial);
+  // Owner-only: a backup can hold the vault.
+  mkdirSync(partial, { mode: 0o700 });
 
   try {
     const files: ManifestFile[] = [];
@@ -93,6 +100,24 @@ export async function backupEntity(options: BackupOptions): Promise<BackupResult
 
     const riverLastSeq = snapshotRiver(join(dir, RIVER_FILE), riverCopy);
     say(`Copied ${RIVER_FILE} as a consistent snapshot (last seq ${riverLastSeq}).`);
+
+    // The worlds' own things: the game's database (a snapshot, like the river) and heartbeat file, the vault, the home.
+    if (existsSync(join(dir, DOMUS_DB_PATH))) {
+      mkdirSync(join(partial, dirname(DOMUS_DB_PATH)), { recursive: true });
+      snapshotSqlite(join(dir, DOMUS_DB_PATH), join(partial, DOMUS_DB_PATH));
+      plainNames.push(DOMUS_DB_PATH);
+      say(`Copied ${DOMUS_DB_PATH} as a consistent snapshot.`);
+    }
+    if (existsSync(join(dir, DOMUS_STATE_PATH))) {
+      mkdirSync(join(partial, dirname(DOMUS_STATE_PATH)), { recursive: true });
+      copyFileSync(join(dir, DOMUS_STATE_PATH), join(partial, DOMUS_STATE_PATH));
+      plainNames.push(DOMUS_STATE_PATH);
+    }
+    const vaultNames = copyTree(dir, partial, VAULT_TREE, () => true);
+    if (vaultNames.length > 0) say(`Copied the vault (${vaultNames.length} entries).`);
+    const homeNames = copyTree(dir, partial, HOME_TREE, (rel) => !HOME_SKIPPED.has(rel.split("/")[1] ?? ""));
+    if (homeNames.length > 0) say(`Copied the home (${homeNames.length} files).`);
+    plainNames.push(...vaultNames, ...homeNames);
 
     const notebookHead = await notebookHeadOf(notebook);
     await git(notebook, ["bundle", "create", bundle, "--all"]);
@@ -156,15 +181,45 @@ export async function backupEntity(options: BackupOptions): Promise<BackupResult
  * copy's last seq. The source is opened read-only and never written.
  */
 function snapshotRiver(source: string, target: string): number {
+  snapshotSqlite(source, target);
+  return readRiverLastSeq(target);
+}
+
+function snapshotSqlite(source: string, target: string): void {
   const db = new DatabaseSync(source, { readOnly: true });
   try {
     db.prepare("VACUUM INTO ?").run(target);
   } catch (err) {
-    throw new Error(`Could not copy ${RIVER_FILE} (${err instanceof Error ? err.message : String(err)}).`);
+    throw new Error(`Could not copy ${basename(source)} (${err instanceof Error ? err.message : String(err)}).`);
   } finally {
     db.close();
   }
-  return readRiverLastSeq(target);
+}
+
+/**
+ * Copies the regular files of one of the Lar's folders (the vault, the home) into the backup, keeping each file's mode.
+ * Symlinks and anything else that is not a plain file or folder are left out, and so is every name the manifest would
+ * refuse. Returns the copied names, as the manifest lists them ("<tree>/<path>").
+ */
+function copyTree(dir: string, partial: string, tree: string, keep: (rel: string) => boolean): string[] {
+  const root = join(dir, tree);
+  if (!existsSync(root) || !lstatSync(root).isDirectory()) return [];
+  const copied: string[] = [];
+  const walk = (rel: string): void => {
+    for (const entry of readdirSync(join(dir, rel), { withFileTypes: true })) {
+      const child = `${rel}/${entry.name}`;
+      if (!keep(child)) continue;
+      if (entry.isDirectory()) {
+        walk(child);
+      } else if (entry.isFile() && isAllowedName(child)) {
+        mkdirSync(join(partial, rel), { recursive: true });
+        copyFileSync(join(dir, child), join(partial, child));
+        copied.push(child);
+      }
+    }
+  };
+  walk(tree);
+  return copied.sort();
 }
 
 function describeFile(folder: string, name: string): ManifestFile {

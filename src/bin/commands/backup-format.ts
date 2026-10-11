@@ -1,7 +1,8 @@
 // The shape of a Lar backup, shared by `natalis backup` and `natalis restore`: the files a backup holds, the manifest
 // that lists them with sizes and hashes, and the two checks both commands make (the manifest, and the river's last
-// seq). A backup holds only the files named here. Nothing with "env" in its name is ever in the list, and the
-// emergency stop file is not either: a restored Lar starts with its stop off.
+// seq). A backup holds only the files named here, plus the worlds' own folders: the vault (kept 0600), the sandbox
+// home and the game's folder. Nothing with "env" in its name is ever in the list (in the home, a file or folder with
+// "env" in its name is left out), and the emergency stop file is not either: a restored Lar starts with its stop off.
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -24,10 +25,34 @@ export const PLAIN_FILES: readonly string[] = [
   "discord-aliases.refs.json",
   "privacy.json",
   "welcome.md",
+  "web.json",
+  "sandbox.json",
+  "domus.json",
 ];
 
+/** The web world's vault: one file per secret, each copied as it is and restored with mode 0600. */
+export const VAULT_TREE = "vault";
+/** The sandbox world's home: everything the Lar keeps there, except symlinks, caches, and anything named like env. */
+export const HOME_TREE = "home";
+/** Top-level folders of the home that are only caches, left out of a backup. */
+export const HOME_SKIPPED: ReadonlySet<string> = new Set([".cache"]);
+/** The game world's database, copied as a consistent snapshot, and its heartbeat file. */
+export const DOMUS_DB_PATH = "domus/domus.sqlite";
+export const DOMUS_STATE_PATH = "domus/state.json";
+const VAULT_ENTRY = /^vault\/[A-Za-z0-9_.-]{1,48}\.json$/;
+
 /** Every name a manifest may list. Anything else, including any name with "env" in it, is refused. */
-const ALLOWED_NAMES: ReadonlySet<string> = new Set<string>([RIVER_FILE, BUNDLE_FILE, ...PLAIN_FILES]);
+const ALLOWED_NAMES: ReadonlySet<string> = new Set<string>([RIVER_FILE, BUNDLE_FILE, ...PLAIN_FILES, DOMUS_DB_PATH, DOMUS_STATE_PATH]);
+
+/** A name a manifest may list: a known file, a vault entry, or a plain relative path inside the home. */
+export function isAllowedName(name: string): boolean {
+  if (ALLOWED_NAMES.has(name)) return !hasEnvName(name);
+  if (VAULT_ENTRY.test(name)) return true;
+  if (!name.startsWith(`${HOME_TREE}/`)) return false;
+  const parts = name.split("/");
+  return parts.length >= 2 && parts.every((part) => part !== "" && part !== "." && part !== ".." && !/[\\\u0000:]/.test(part))
+    && !parts.slice(1).some(hasEnvName);
+}
 
 export type ManifestFile = { name: string; bytes: number; sha256: string };
 
@@ -69,7 +94,7 @@ export function parseManifest(value: unknown): Manifest {
   const list = (files as unknown[]).map((item): ManifestFile => {
     const file = item as Record<string, unknown>;
     const name = file?.["name"];
-    if (typeof name !== "string" || !ALLOWED_NAMES.has(name) || hasEnvName(name)) bad(`a file name that is not allowed (${String(name)})`);
+    if (typeof name !== "string" || !isAllowedName(name)) bad(`a file name that is not allowed (${String(name)})`);
     if (seen.has(name as string)) bad(`${String(name)} is listed twice`);
     seen.add(name as string);
     const bytes = file["bytes"];
