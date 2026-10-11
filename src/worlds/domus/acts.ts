@@ -70,6 +70,7 @@ const DROP_REASON: Readonly<Record<string, string>> = {
   after_unknown: "nobody knows how the act before it ended",
   after_expired: "the act before it expired before the game picked it up",
   after_cut_short: "the act before it was cut short",
+  stopped: "your summoner's stop is on",
 };
 
 function insertAct(db: DatabaseSync, row: {
@@ -179,7 +180,9 @@ function phaseSentence(phase: DomusActPhase, detail: Record<string, unknown>, la
     }
     case "rejected": return `the game refused it${code}${reason}`;
     case "unknown": return `nothing says how it ended${code}${reason}`;
-    case "expired": return late ? "it expired" : "it expired before the game picked it up";
+    case "expired":
+      if (detail.code === "STOPPED") return "it was withdrawn before the game picked it up, because your summoner's stop is on";
+      return late ? "it expired" : "it expired before the game picked it up";
   }
 }
 
@@ -351,6 +354,34 @@ export function expireDue(db: DatabaseSync, nowMs: number): ThreadNote[] {
   return inTransaction(db, () => {
     const notes = expireRequested(db, nowMs);
     releasePlans(db, { nowMs }, notes);
+    return notes;
+  });
+}
+
+/**
+ * While the summoner's stop is on, nothing more goes to the game: every act still waiting to be picked up is withdrawn
+ * (kept as expired, code STOPPED) and every waiting plan step is dropped. Acts the game already took are its own.
+ */
+export function withholdForStop(db: DatabaseSync, nowMs: number): ThreadNote[] {
+  return inTransaction(db, () => {
+    const notes: ThreadNote[] = [];
+    const waiting = db.prepare("SELECT * FROM acts WHERE state = 'requested'").all() as Row[];
+    for (const row of waiting) {
+      const actId = String(row.act_id);
+      keepEvent(db, actId, "expired", nowMs, nowMs, { code: "STOPPED" });
+      setState(db, actId, "expired", nowMs);
+      notes.push(noteFor(row, "expired", { code: "STOPPED" }, false));
+    }
+    const dropping = db.prepare("SELECT plan_id, step, thread, label FROM plan_steps WHERE state = 'planned' ORDER BY plan_id, step")
+      .all() as Row[];
+    db.prepare("UPDATE plan_steps SET state = 'dropped', reason = 'stopped', updated_at_ms = ? WHERE state = 'planned'").run(nowMs);
+    const seen = new Set<string>();
+    for (const step of dropping) {
+      const planId = String(step.plan_id);
+      if (seen.has(planId)) continue;
+      seen.add(planId);
+      notes.push(planNote(step, "stopped"));
+    }
     return notes;
   });
 }

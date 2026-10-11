@@ -7,7 +7,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { DatabaseSync } from "node:sqlite";
 import type { World, WorldEvent } from "../../contracts.js";
 import { gameActTool, type GameActContext } from "./game-act.js";
-import { expireDue, pendingCounts, syncActs, type ThreadNote } from "./acts.js";
+import { isStopOn } from "../../entity/stop.js";
+import { expireDue, pendingCounts, syncActs, type ThreadNote, withholdForStop } from "./acts.js";
 import { optionsOf, renderView } from "./options.js";
 import { admitObservation, HeartbeatBook, markSpanUndone, openDomusDb, pruneObservations } from "./store.js";
 import {
@@ -211,7 +212,10 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
   function actsSyncRoute(body: unknown, res: ServerResponse): void {
     const parsed = parseActSync(body);
     const now = nowMs();
+    // The summoner's stop reaches the game too: what was requested before it is withdrawn, not handed over.
+    const withheld = isStopOn(options.dir) ? withholdForStop(requireDb(), now) : [];
     const result = syncActs(requireDb(), { attachment: parsed.helperSession, events: parsed.events, nowMs: now });
+    for (const note of withheld) deliver(noteEvent(note, now));
     send(res, 200, { status: "ok", applied: result.applied, acts: result.acts, planned: result.planned, snapshots: [] });
     for (const note of result.notes) deliver(noteEvent(note, now));
   }
@@ -295,6 +299,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     if (!db) return;
     try {
       const now = nowMs();
+      if (isStopOn(options.dir)) for (const note of withholdForStop(db, now)) deliver(noteEvent(note, now));
       for (const note of expireDue(db, now)) deliver(noteEvent(note, now));
       if (now - lastPruneMs >= PRUNE_MS) {
         lastPruneMs = now;

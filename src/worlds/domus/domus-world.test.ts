@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Receipt, Tool, ToolContext, WorldEvent } from "../../contracts.js";
+import { writeStop } from "../../entity/stop.js";
 import { createDomusWorld, type DomusWorld } from "./domus-world.js";
 import { MIN_TOKEN_BYTES } from "./wire.js";
 
@@ -263,6 +264,16 @@ describe("acts: the Lar asks, the helper pulls, the game reports", () => {
     expect(sync.body.acts).toEqual([]);
     expect(events.at(-1)).toMatchObject({ wake: true, source: "body" });
     expect(events.at(-1)?.text).toContain("it expired before the game picked it up");
+  });
+
+  it("withdraws a waiting act and its plan when the summoner's stop goes on after the request", async () => {
+    await gameAct({ option: "a1", then: ["a3"] }, "t-5");
+    writeStop(dir, "test");
+    const sync = await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [] });
+    expect(sync.body).toMatchObject({ acts: [], planned: 0 });
+    const texts = events.map((event) => event.text);
+    expect(texts.some((text) => text.includes("withdrawn before the game picked it up, because your summoner's stop is on"))).toBe(true);
+    expect(texts.some((text) => text.includes("your summoner's stop is on. It was not requested"))).toBe(true);
   });
 
   it("refuses an unknown phase, and a report with a detail over 1024 bytes, as invalid_body", async () => {
