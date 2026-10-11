@@ -277,6 +277,19 @@ describe("the vault", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("never sends a value kept for a subdomain to its parent, by auth or by a redirect", async () => {
+    await seedVault("api.example.org");
+    const direct = await run({ url: "https://example.org/me", auth: { vault: "site_key" } });
+    expect(direct.refused?.code).toBe("vault_host_mismatch");
+    expect(calls).toHaveLength(0);
+
+    queue.push(reply(302, "", { location: "https://example.org/parent" }), reply(200, "ok"));
+    await run({ url: "https://api.example.org/a", auth: { vault: "site_key" } });
+    expect(calls[0]!.headers["authorization"]).toBe(`Bearer ${SECRET}`);
+    expect(calls[1]!.url.hostname).toBe("example.org");
+    expect(calls[1]!.headers["authorization"]).toBeUndefined();
+  });
+
   it("drops auth on a cross-host redirect, and keeps it on a same-site redirect", async () => {
     await seedVault();
     queue.push(reply(302, "", { location: "https://other.example.net/b" }), reply(200, "ok"));
