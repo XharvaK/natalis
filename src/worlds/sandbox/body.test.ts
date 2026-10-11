@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { bodyRefusal, defaultBodyRoot, isEnvFileName, packageRootFrom } from "./body.js";
+import { bodyRefusal, defaultBodyRoot, hasRemoteCredentials, isEnvFileName, packageRootFrom } from "./body.js";
 
 let root: string;
 
@@ -73,5 +73,25 @@ describe("refusing the bind", () => {
     mkdirSync(join(root, "docs"));
     writeFileSync(join(root, "environment.md"), "notes\n");
     expect(bodyRefusal(root)).toBeUndefined();
+  });
+});
+
+describe("git remotes with passwords", () => {
+  // The URLs are built from parts, so no credential-shaped literal sits in the source.
+  const remote = (url: string): string => `[remote "origin"]\n\turl = ${url}\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n`;
+
+  it("refuses a checkout whose remote URL carries a user and password", () => {
+    mkdirSync(join(root, ".git"));
+    writeFileSync(join(root, ".git", "config"), remote(["https://name", "pass@example.org/repo.git"].join(":")));
+    expect(bodyRefusal(root)).toMatch(/user and password/);
+  });
+
+  it("allows plain https, ssh and file remotes, and a checkout with no git config", () => {
+    expect(hasRemoteCredentials(join(root, ".git", "config"))).toBe(false);
+    mkdirSync(join(root, ".git"));
+    for (const url of ["https://example.org/repo.git", "git@example.org:repo.git", "ssh://git@example.org/repo.git", "/tmp/natalis.bundle"]) {
+      writeFileSync(join(root, ".git", "config"), remote(url));
+      expect(hasRemoteCredentials(join(root, ".git", "config")), url).toBe(false);
+    }
   });
 });

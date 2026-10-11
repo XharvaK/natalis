@@ -1,8 +1,9 @@
 // The Lar's body, read-only: the Natalis checkout it runs from, bound at /body inside the sandbox so it can read its own
 // source, docs and git log. The root is found from this code's own location, never from the Lar's folder. The bind is
-// refused when the root holds anything that could be a secret: an env file or a vault folder. Nothing else is checked here.
+// refused when the root holds anything that could be a secret: an env file, a vault folder, or a git remote URL with a
+// password in it. Nothing else is checked here.
 
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -59,5 +60,19 @@ function bodyProblem(root: string): string | undefined {
   if (names.includes("vault")) {
     return `Not binding ${BODY_MOUNT}: ${root} holds a vault folder, and the vault must never be read through the body. Move it out, or set "body": false in sandbox.json.`;
   }
+  if (hasRemoteCredentials(join(root, ".git", "config"))) {
+    return `Not binding ${BODY_MOUNT}: a remote in ${root}'s git config carries a user and password in its URL, which the Lar could read there. Use a credential helper or an ssh remote instead, or set "body": false in sandbox.json.`;
+  }
   return undefined;
+}
+
+/** True when a git config names a remote URL with a password in it, such as https://name:secret@host/repo. */
+export function hasRemoteCredentials(configPath: string): boolean {
+  let text: string;
+  try {
+    text = readFileSync(configPath, "utf8");
+  } catch {
+    return false;
+  }
+  return /^\s*(push)?url\s*=\s*[a-z][a-z0-9+.-]*:\/\/[^/\s@]*:[^/\s@]*@/im.test(text);
 }
