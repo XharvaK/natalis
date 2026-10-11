@@ -344,7 +344,7 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
       }
       if (config.body !== false) {
         // The body is bound only when its folder holds nothing secret; otherwise the world refuses to start, plainly.
-        const refusal = bodyRefusal(bodyRoot);
+        const refusal = bodyRefusal(bodyRoot, options.dir);
         if (refusal !== undefined) throw new Error(refusal);
         bodyPath = bodyRoot;
       }

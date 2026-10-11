@@ -59,7 +59,7 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
   if (existsSync(sandboxPath)) {
     const sandbox = parseSandboxFile(JSON.parse(readFileSync(sandboxPath, "utf8")) as unknown);
     // The checkout is bound at /body unless sandbox.json says "body": false. A checkout that holds a secret stops the run here.
-    const bodyRefused = sandbox.body === false ? undefined : bodyRefusal(defaultBodyRoot());
+    const bodyRefused = sandbox.body === false ? undefined : bodyRefusal(defaultBodyRoot(), dir);
     if (bodyRefused !== undefined) {
       err(bodyRefused);
       return 1;

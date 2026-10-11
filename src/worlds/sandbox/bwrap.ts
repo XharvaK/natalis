@@ -1,8 +1,8 @@
 // The Bubblewrap argument list for the sandbox. A pure function. The host paths it binds are the Lar's home folder
-// (read-write) and, when given, the Natalis checkout (read-only, at /body). The entity folder, the vault and every env
-// file stay out of the sandbox by construction.
+// (read-write) and, when given, the allow-listed parts of the Natalis checkout (read-only, at /body). The entity
+// folder, the vault and every env file stay out of the sandbox by construction.
 
-import { BODY_MOUNT } from "./body.js";
+import { BODY_BINDS, BODY_MOUNT } from "./body.js";
 
 /** Where the Lar's home folder appears inside the sandbox. */
 export const SANDBOX_HOME = "/home/lar";
@@ -18,9 +18,14 @@ export type BwrapInput = {
   homeDir: string;
   /** The shell command, run as `bash -lc <command>`. */
   command: string;
-  /** The Natalis checkout, bound read-only at /body. Left out, nothing of the checkout is in the sandbox. */
+  /** The Natalis checkout: its allow-listed names are bound read-only at /body. Left out, nothing of the checkout is in the sandbox. */
   bodyDir?: string;
 };
+
+/** The read-only binds of the allow-listed names of the checkout, each at the same path under /body. Absent names are skipped. */
+function bodyBinds(checkout: string): string[] {
+  return BODY_BINDS.flatMap((name) => ["--ro-bind-try", `${checkout}/${name}`, `${BODY_MOUNT}/${name}`]);
+}
 
 /** The full argument list for `bwrap`, ending with the shell and its command. */
 export function buildBwrapArgs(input: BwrapInput): string[] {
@@ -59,8 +64,8 @@ export function buildBwrapArgs(input: BwrapInput): string[] {
     "--bind",
     input.homeDir,
     SANDBOX_HOME,
-    // The Lar's own checkout, read-only: it can read its source and docs, and a write fails at the filesystem.
-    ...(input.bodyDir === undefined ? [] : ["--ro-bind", input.bodyDir, BODY_MOUNT]),
+    // The Lar's own source and docs, read-only: only the allow-listed names of the checkout. A write fails at the filesystem.
+    ...(input.bodyDir === undefined ? [] : bodyBinds(input.bodyDir)),
     "--chdir",
     SANDBOX_HOME,
     "--setenv",
