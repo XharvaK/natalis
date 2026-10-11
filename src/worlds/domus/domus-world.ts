@@ -9,13 +9,12 @@ import type { World, WorldBody, WorldEvent } from "../../contracts.js";
 import type { AttachmentNow } from "./body.js";
 import { attentionLine, type AttentionContext, currentAttention, gameAttentionTool, reviewAttention, wakesFor } from "./attention.js";
 import { gameActTool, type GameActContext } from "./game-act.js";
-import { hasDayRecord } from "./day-record.js";
+import { hasDayRecord, localStamp } from "./day-record.js";
 import { gameLookTool, type LookContext } from "./look.js";
 import { gameOverlaySayTool, type OverlayContext, overlayItems } from "./overlay.js";
 import { expireMemory, gameMemoryTool, handMemory, type MemoryContext, settleMemory, withdrawMemory } from "./memory.js";
 import { isStopOn } from "../../entity/stop.js";
 import { expireDue, pendingCounts, syncActs, type ThreadNote, withdrawUndone, withholdForStop } from "./acts.js";
-import { localStamp } from "./day-record.js";
 import { choicesSignature, optionsOf, renderView, viewBrief } from "./options.js";
 import {
   checkSnapshot, expireSnapshots, gameSnapshotTool, openSnapshots, SNAPSHOT_PICTURE_NAME, SNAPSHOT_STATUS, settleFailed,

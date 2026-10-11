@@ -384,7 +384,7 @@ function memoryPerson(item: unknown): Record<string, unknown> {
   for (const key of Object.keys(item)) if (!MEMORY_PERSON_KEYS.has(key)) fail(400, "invalid_body");
   textOf(item.who, 1, 200);
   safeInt(item.acts);
-  safeInt(item.last_at_ms);
+  if ("last_at_ms" in item) safeInt(item.last_at_ms);
   return item;
 }
 

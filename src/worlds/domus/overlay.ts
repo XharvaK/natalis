@@ -66,12 +66,13 @@ export function gameOverlaySayTool(open: () => OverlayContext): Tool {
       name: "game_overlay_say",
       description:
         "Put one line on the game overlay, the panel viewers see on the summoner's screen while the game is shown. " +
-        "Viewers read it. Nothing of yours is on the overlay unless you put it there. clear removes your line.",
+        `Viewers read it. Your newest ${OVERLAY_FEED_MAX} lines show. Nothing of yours is on the overlay unless you put ` +
+        "it there. clear removes your lines.",
       parameters: {
         type: "object",
         properties: {
           text: { type: "string", description: `One line, 1 to ${OVERLAY_LINE_MAX} characters.` },
-          clear: { type: "boolean", description: "true to remove your line from the overlay." },
+          clear: { type: "boolean", description: "true to remove your lines from the overlay." },
         },
       },
     },
@@ -97,9 +98,9 @@ function gameOverlaySay(open: () => OverlayContext, args: Record<string, unknown
   const nowMs = overlay.nowMs();
   if (hasClear) {
     insertLine(overlay.db, null, context.thread, nowMs);
-    return { ok: true, summary: "Cleared your line on the game overlay.", data: { cleared: true } };
+    return { ok: true, summary: "Cleared your lines on the game overlay.", data: { cleared: true } };
   }
-  const text = typeof args.text === "string" ? args.text.trim() : "";
+  const text = typeof args.text === "string" ? args.text.replace(/\s+/g, " ").trim() : "";
   if (text === "" || text.length > OVERLAY_LINE_MAX) {
     return refused("bad_args", `text must be one line of 1 to ${OVERLAY_LINE_MAX} characters.`);
   }

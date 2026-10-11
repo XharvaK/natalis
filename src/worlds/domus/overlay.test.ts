@@ -86,7 +86,7 @@ describe("game_overlay_say: her line on the overlay", () => {
   it("clears her line with clear: true, and that is always allowed", async () => {
     await say({ text: "First." });
     const cleared = await say({ clear: true });
-    expect(cleared).toMatchObject({ ok: true, summary: "Cleared your line on the game overlay." });
+    expect(cleared).toMatchObject({ ok: true, summary: "Cleared your lines on the game overlay." });
     expect(db.prepare("SELECT line FROM overlay_lines ORDER BY rowid").all()).toEqual([{ line: "First." }, { line: null }]);
   });
 
