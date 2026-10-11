@@ -35,6 +35,15 @@ import type {
   WorldEvent,
 } from "../contracts.js";
 import { DEFAULT_CEILING, type EntityConfig } from "./config.js";
+import {
+  COMMITMENTS_PATH,
+  COMMITMENTS_STUB,
+  HOUSEHOLD_PATH,
+  HOUSEHOLD_STUB,
+  OLD_COMMITMENTS_STUB,
+} from "./commitments.js";
+import { dayKey, hostZone, msUntilNextDay } from "./day.js";
+import { FLOOR_TEXT } from "./floor.js";
 import { chosenName, NAME_NOTE, whoYouAre } from "./identity.js";
 import { HONESTY_SYSTEM, type HonestyVerdict, parseHonestyReply } from "./honesty.js";
 import {
@@ -45,9 +54,20 @@ import {
   type PrivacyLoad,
   type PrivacyWatch,
 } from "./privacy.js";
+import {
+  answerSummoner,
+  isSummonerCommand,
+  PROPOSAL_FIELD_MAX,
+  PROPOSAL_LIMIT,
+  type Proposal,
+  SUMMONER_PREFIX,
+  type SummonerDesk,
+} from "./summoner.js";
 import { isStopOn, readStop } from "./stop.js";
 
 export const STATE_FILE = "state.json";
+/** The welcome notice the host may write into the entity's folder. Sent once, in the summoner's place. */
+export const WELCOME_FILE = "welcome.md";
 
 export const HOW_YOU_ACT =
   "You act only through your tools. To talk somewhere, call say with that place. " +
@@ -57,21 +77,23 @@ export const HOW_YOU_ACT =
   "Your summoner's emergency stop pauses outward acts, but never your replies to your summoner. " +
   "Your summoner can read your notebook and your river, except what is kept in private/.";
 
-const CONSTITUTION_STUB =
-  "# Constitution\n\nNothing is written here yet. This is where what I hold to will go, in my own words.\n";
 const CHARACTER_STUB = "# Character\n\nNothing is written here yet. This is where who I am will go, in my own words.\n";
 const LIFE_PATH = "self/life.md";
 const LIFE_STUB =
   "# Life\n\nNothing is written here yet. This is where my life facts go: where I live, my work, my accounts and my places, in my own words.\n";
 /** The stub notes every entity starts with. The importer replaces them with an imported self. */
 export const ENTITY_STUBS: ReadonlyArray<{ path: string; text: string; reason: string }> = [
-  { path: "self/constitution.md", text: CONSTITUTION_STUB, reason: "Start my constitution file" },
+  { path: HOUSEHOLD_PATH, text: HOUSEHOLD_STUB, reason: "Start my household file" },
+  { path: COMMITMENTS_PATH, text: COMMITMENTS_STUB, reason: "Start my commitments file" },
   { path: "self/character.md", text: CHARACTER_STUB, reason: "Start my character file" },
   { path: LIFE_PATH, text: LIFE_STUB, reason: "Start my life file" },
 ];
 const STOPPED_TEXT = "Your summoner's emergency stop is on: outward acts are paused. You can still answer your summoner.";
 /** How long a say counts as "someone is speaking there" for the place claims. */
 const CLAIM_WINDOW_MS = 2 * 60 * 1000;
+/** How many of the summoner's acts the board lists at once, and how much of a proposal it shows. */
+const ACTS_LIMIT = 20;
+const PROPOSAL_SHOW = 80;
 
 const DEFAULT_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 300_000, 600_000];
 const ACTIVE_WINDOW_MS = 6 * 60 * 60 * 1000;
@@ -105,7 +127,10 @@ export type OpenEntityOptions = {
 export interface Entity {
   start(): Promise<void>;
   stop(): Promise<void>;
-  /** Resolves when no turn is running or queued and no retry is waiting. Wakes scheduled for later do not count. */
+  /**
+   * Resolves when no turn is running or queued, no retry is waiting, and no answer to the summoner is still being sent.
+   * Wakes scheduled for later, and turns held back by the daily limit, do not count.
+   */
   idle(): Promise<void>;
   readonly river: River;
   readonly notebook: Notebook;
@@ -141,6 +166,10 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
     notebook = guardNotebook(await openNotebook(join(dir, "notebook")), scanner);
     await seedNotebook(notebook);
     for (const stub of ENTITY_STUBS) await seedStub(notebook, stub.path, stub.text, stub.reason);
+    // A commitments note that still holds the first release's stub, and nothing else, moves to the current stub.
+    if (notebook.read(COMMITMENTS_PATH) === OLD_COMMITMENTS_STUB) {
+      await notebook.write(COMMITMENTS_PATH, COMMITMENTS_STUB, "Update my commitments file to its current stub", "body");
+    }
   } catch (err) {
     river.close();
     throw err;
@@ -192,10 +221,30 @@ type EntityState = {
   placeClaims: Record<string, PlaceClaim>;
   /** Whether the emergency stop was on the last time the runtime noticed it. Changes are written to the river once. */
   stopOn: boolean;
+  /** Commitments the Lar proposed that the summoner has not answered yet. At most PROPOSAL_LIMIT. */
+  proposals: Proposal[];
+  /** When the welcome notice was sent to the summoner. Set once; no notice is sent after that. */
+  welcomeSentMs?: number;
+  /** Turns the Lar has started on one local day. */
+  turns?: { day: string; count: number };
+  /** The places told about the daily turn limit on one local day. */
+  limitNotices?: { day: string; places: string[] };
+  /** The highest river seq whose summoner acts were shown to the Lar on a turn. */
+  actsSeenSeq: number;
 };
 
 function emptyState(): EntityState {
-  return { lastSeq: 0, threads: {}, asks: [], wakes: [], mood: null, placeClaims: {}, stopOn: false };
+  return {
+    lastSeq: 0,
+    threads: {},
+    asks: [],
+    wakes: [],
+    mood: null,
+    placeClaims: {},
+    stopOn: false,
+    proposals: [],
+    actsSeenSeq: 0,
+  };
 }
 
 function readState(path: string): EntityState | null {
@@ -236,6 +285,8 @@ function checkState(value: unknown): EntityState {
   const state: EntityState = {
     placeClaims: {},
     stopOn: stopOn as boolean,
+    proposals: [],
+    actsSeenSeq: 0,
     lastSeq: lastSeq as number,
     threads: {},
     asks: (asks as unknown[]).map((item) => {
@@ -279,6 +330,41 @@ function checkState(value: unknown): EntityState {
     if (typeof bornMs !== "number" || !Number.isSafeInteger(bornMs)) bad("bornMs");
     state.bornMs = bornMs as number;
   }
+  const proposals = root["proposals"] ?? [];
+  if (!Array.isArray(proposals)) bad("proposals");
+  state.proposals = (proposals as unknown[]).map((item) => {
+    const entry = item as Proposal;
+    if (
+      typeof entry?.id !== "string" ||
+      typeof entry.text !== "string" ||
+      typeof entry.why !== "string" ||
+      typeof entry.thread !== "string" ||
+      !Number.isSafeInteger(entry.atMs)
+    ) {
+      bad("a proposed commitment");
+    }
+    return { id: entry.id, text: entry.text, why: entry.why, atMs: entry.atMs, thread: entry.thread };
+  });
+  const welcomeSentMs = root["welcomeSentMs"];
+  if (welcomeSentMs !== undefined) {
+    if (typeof welcomeSentMs !== "number" || !Number.isSafeInteger(welcomeSentMs)) bad("welcomeSentMs");
+    state.welcomeSentMs = welcomeSentMs as number;
+  }
+  const turns = root["turns"];
+  if (turns !== undefined) {
+    const turn = turns as { day?: unknown; count?: unknown };
+    if (typeof turn?.day !== "string" || !Number.isSafeInteger(turn.count) || (turn.count as number) < 0) bad("turns");
+    state.turns = { day: turn.day as string, count: turn.count as number };
+  }
+  const notices = root["limitNotices"];
+  if (notices !== undefined) {
+    const notice = notices as { day?: unknown; places?: unknown };
+    if (typeof notice?.day !== "string" || !Array.isArray(notice.places)) bad("limitNotices");
+    state.limitNotices = { day: notice.day as string, places: (notice.places as unknown[]).map(String) };
+  }
+  const actsSeenSeq = root["actsSeenSeq"] ?? 0;
+  if (typeof actsSeenSeq !== "number" || !Number.isSafeInteger(actsSeenSeq) || actsSeenSeq < 0) bad("actsSeenSeq");
+  state.actsSeenSeq = actsSeenSeq as number;
   return state;
 }
 
@@ -341,6 +427,15 @@ class Runtime implements Entity {
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly failures = new Map<string, number>();
   private readonly wakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Threads held back by the daily turn limit. They wait for the next local day; idle does not wait for them. */
+  private readonly limited = new Set<string>();
+  private limitTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Words the body says to the summoner, one job after another: the welcome notice, command answers and limit
+   * notices. A turn waits for this chain, so the welcome notice always comes before anything the Lar says.
+   */
+  private outbox: Promise<void> = Promise.resolve();
+  private outboxBusy = 0;
   private readonly idleWaiters: Array<() => void> = [];
   private readonly abort = new AbortController();
 
@@ -422,7 +517,11 @@ class Runtime implements Entity {
     this.wakeTimers.clear();
     for (const timer of this.retries.values()) clearTimeout(timer);
     this.retries.clear();
+    if (this.limitTimer !== undefined) clearTimeout(this.limitTimer);
+    this.limitTimer = undefined;
     this.abort.abort();
+    // Answers already on their way to the summoner go out before the worlds close. The chain never rejects.
+    await this.outbox;
 
     const failures: unknown[] = [];
     for (const world of this.worlds) {
@@ -453,6 +552,18 @@ class Runtime implements Entity {
     const atMs = event.atMs ?? this.nowMs();
     const thread = event.thread ?? event.place;
     const actor = event.actor ?? (event.source === "owner" ? this.config.owner.alias : undefined);
+    if (event.source === "owner" && this.isOwnerPlace(event.place)) {
+      // The summoner's own place. The welcome notice goes first, then a "!" line is a body command: it is never a turn
+      // and opens no ask. Everything else is an ordinary message.
+      this.queueOutbox(() => this.sendWelcome(event.place));
+      if (isSummonerCommand(event.text)) {
+        this.state.lastOwnerMs = atMs;
+        this.saveState();
+        const command = event.text ?? "";
+        this.queueOutbox(() => this.answerCommand(event.place, command));
+        return;
+      }
+    }
     const row = this.river.append({
       kind: "event",
       thread,
@@ -477,7 +588,7 @@ class Runtime implements Entity {
   // --- scheduling -------------------------------------------------------------------------------
 
   private isIdle(): boolean {
-    return this.running.size === 0 && this.due.size === 0 && this.retries.size === 0;
+    return this.running.size === 0 && this.due.size === 0 && this.retries.size === 0 && this.outboxBusy === 0;
   }
 
   private resolveIdle(): void {
@@ -488,8 +599,13 @@ class Runtime implements Entity {
   /** Starts a turn for every due thread that is not already running. */
   private pump(): void {
     if (this.started && !this.stopping) {
+      this.releaseLimited();
       for (const thread of [...this.due]) {
         if (this.running.has(thread)) continue;
+        if (this.limitReached()) {
+          this.holdForLimit();
+          break;
+        }
         this.due.delete(thread);
         this.cancelRetry(thread);
         const run = this.runThread(thread).finally(() => {
@@ -505,6 +621,7 @@ class Runtime implements Entity {
   /** Never rejects: a failed turn is recorded and retried, so the scheduler stays up. */
   private async runThread(thread: string): Promise<void> {
     try {
+      await this.outbox;
       await this.takeTurn(thread);
     } catch (err) {
       try {
@@ -525,7 +642,8 @@ class Runtime implements Entity {
     const nowMs = this.nowMs();
     const recent = this.recentRows(thread, seen, snapshot, fresh.length);
     const shown = new Set<number>([...recent, ...fresh].map((row) => row.seq));
-    const system = this.systemText(thread, fresh, shown, nowMs);
+    this.countTurn(nowMs);
+    const system = this.systemText(thread, fresh, shown, nowMs, snapshot);
     const event = [
       "Recent here:",
       ...(recent.length === 0 ? ["(nothing yet)"] : recent.map((row) => this.lineFor(row))),
@@ -564,6 +682,8 @@ class Runtime implements Entity {
     const cursor = this.threadState(thread);
     cursor.seenSeq = snapshot;
     cursor.lastTurnMs = this.nowMs();
+    // The summoner's acts up to this turn were shown to the Lar; acts written during the turn wait for the next one.
+    this.state.actsSeenSeq = Math.max(this.state.actsSeenSeq, snapshot);
     this.saveState();
   }
 
@@ -646,20 +766,241 @@ class Runtime implements Entity {
     });
   }
 
+  // --- the daily turn limit -----------------------------------------------------------------------
+
+  private dayOf(nowMs: number): string {
+    return dayKey(nowMs, this.config.timeZone);
+  }
+
+  private turnsToday(nowMs: number): number {
+    const turns = this.state.turns;
+    return turns !== undefined && turns.day === this.dayOf(nowMs) ? turns.count : 0;
+  }
+
+  private limitReached(): boolean {
+    const limit = this.config.limits?.turnsPerDay;
+    return limit !== undefined && this.turnsToday(this.nowMs()) >= limit;
+  }
+
+  private countTurn(nowMs: number): void {
+    this.state.turns = { day: this.dayOf(nowMs), count: this.turnsToday(nowMs) + 1 };
+    this.saveState();
+  }
+
+  /** Threads held back by the limit go back to the queue once the day has changed. */
+  private releaseLimited(): void {
+    if (this.limited.size === 0 || this.limitReached()) return;
+    for (const thread of this.limited) this.due.add(thread);
+    this.limited.clear();
+  }
+
+  /** Holds every queued thread that is not running until the next local day, and tells the summoner once a day. */
+  private holdForLimit(): void {
+    const waiting = [...this.due].filter((thread) => !this.running.has(thread));
+    if (waiting.length === 0) return;
+    for (const thread of waiting) {
+      this.due.delete(thread);
+      this.limited.add(thread);
+    }
+    this.noticeLimit();
+    this.armLimitTimer();
+  }
+
+  /** Wakes the queue at the next local midnight. A timer that fires too early simply waits again. */
+  private armLimitTimer(): void {
+    if (this.limitTimer !== undefined) return;
+    this.limitTimer = setTimeout(() => {
+      this.limitTimer = undefined;
+      if (this.stopping) return;
+      this.pump();
+      if (this.limited.size > 0) this.armLimitTimer();
+    }, msUntilNextDay(this.nowMs(), this.config.timeZone));
+  }
+
+  /** Each place with a waiting summoner message is told once a day that the Lar will see it after midnight. */
+  private noticeLimit(): void {
+    const day = this.dayOf(this.nowMs());
+    const notices = this.state.limitNotices;
+    const current: { day: string; places: string[] } =
+      notices !== undefined && notices.day === day ? notices : { day, places: [] };
+    const told = new Set(current.places);
+    const places = [...new Set(this.state.asks.map((ask) => ask.place))].filter((place) => !told.has(place));
+    if (places.length === 0) return;
+    this.state.limitNotices = { day, places: [...current.places, ...places] };
+    this.saveState();
+    for (const place of places) this.queueOutbox(() => this.sayLimit(place));
+  }
+
+  private async sayLimit(place: string): Promise<void> {
+    const limit = this.config.limits?.turnsPerDay;
+    if (limit === undefined) return;
+    const zone = this.config.timeZone ?? hostZone();
+    const turns = limit === 1 ? "turn" : "turns";
+    await this.sayTo(
+      place,
+      `${SUMMONER_PREFIX}Your Lar has reached today's limit of ${limit} ${turns} and will see this after midnight (${zone}).`,
+    );
+  }
+
+  // --- the summoner's places ----------------------------------------------------------------------
+
+  /** Queues a job after the jobs already waiting. A job that fails is noted in the self thread; the chain goes on. */
+  private queueOutbox(job: () => Promise<void>): void {
+    this.outboxBusy += 1;
+    this.outbox = this.outbox
+      .then(job)
+      .catch((err: unknown) => {
+        try {
+          this.river.append({
+            thread: "self",
+            kind: "note",
+            source: "body",
+            text: `A message to your summoner could not be sent: ${messageOf(err)}`,
+            atMs: this.nowMs(),
+          });
+        } catch {
+          // The river is closing; there is nothing left to note it in.
+        }
+      })
+      .finally(() => {
+        this.outboxBusy -= 1;
+        this.resolveIdle();
+      });
+  }
+
+  /** Says words in a place through its world. A failure is noted in the self thread and returned as a receipt. */
+  private async sayTo(place: string, text: string): Promise<Receipt> {
+    const world = this.worldFor(place);
+    let receipt: Receipt;
+    if (world === undefined) {
+      receipt = refuse("no_world", "I have no way to reach that place.", `No connected world owns the place ${place}.`);
+    } else {
+      try {
+        receipt = await world.say(place, text);
+      } catch (err) {
+        receipt = refuse("world_error", "The world could not deliver that.", messageOf(err));
+      }
+    }
+    if (!receipt.ok) {
+      this.river.append({
+        thread: "self",
+        kind: "note",
+        source: "body",
+        place,
+        text: `Could not send a body message to ${place}: ${receipt.refused?.reason ?? receipt.summary}`,
+        atMs: this.nowMs(),
+      });
+    }
+    return receipt;
+  }
+
+  /** The host's welcome notice: sent once, in the summoner's own place, before anything else there. */
+  private async sendWelcome(place: string): Promise<void> {
+    if (this.state.welcomeSentMs !== undefined) return;
+    const file = join(this.dir, WELCOME_FILE);
+    if (!existsSync(file)) return;
+    const text = readFileSync(file, "utf8").trim();
+    if (text === "") return;
+    const receipt = await this.sayTo(place, `${SUMMONER_PREFIX}${text}`);
+    if (!receipt.ok) return;
+    this.state.welcomeSentMs = this.nowMs();
+    this.saveState();
+  }
+
+  private async answerCommand(place: string, text: string): Promise<void> {
+    const reply = await answerSummoner(text, this.summonerDesk());
+    this.saveState();
+    await this.sayTo(place, `${SUMMONER_PREFIX}${reply}`);
+  }
+
+  /** What the summoner's commands may do to the Lar's state. Each act is plain; the commands decide nothing. */
+  private summonerDesk(): SummonerDesk {
+    return {
+      dir: this.dir,
+      notebook: this.notebook,
+      timeZone: this.config.timeZone,
+      nowMs: () => this.nowMs(),
+      proposals: () => this.state.proposals,
+      setProposals: (next) => {
+        this.state.proposals = next;
+      },
+      record: (text) => {
+        this.river.append({
+          thread: "self",
+          kind: "event",
+          source: "body",
+          text,
+          data: { summonerAct: true },
+          atMs: this.nowMs(),
+        });
+      },
+      stopChanged: () => {
+        this.state.stopOn = isStopOn(this.dir);
+      },
+    };
+  }
+
+  /** The summoner's acts the Lar has not been shown on a turn yet: body rows in the self thread, oldest first. */
+  private summonerActs(upTo: number): RiverRow[] {
+    return this.river
+      .read({ thread: "self", kinds: ["event"], sinceSeq: this.state.actsSeenSeq, untilSeq: upTo, newestFirst: true, limit: ALL_ROWS })
+      .filter((row) => row.data?.["summonerAct"] === true)
+      .slice(0, ACTS_LIMIT)
+      .reverse();
+  }
+
+  private proposeCommitment(args: Args, context: ToolContext): Receipt {
+    const text = requireText(args, "text", "The commitment");
+    if (!text.ok) return text.receipt;
+    const why = requireText(args, "why", "The reason");
+    if (!why.ok) return why.receipt;
+    const line = oneLine(text.value);
+    const reason = oneLine(why.value);
+    if (line.length > PROPOSAL_FIELD_MAX || reason.length > PROPOSAL_FIELD_MAX) {
+      return refuse(
+        "bad_arguments",
+        `Keep the commitment and the reason to ${PROPOSAL_FIELD_MAX} characters each.`,
+        "a proposal field is too long",
+      );
+    }
+    if (this.state.proposals.length >= PROPOSAL_LIMIT) {
+      return refuse(
+        "full",
+        `You already have ${PROPOSAL_LIMIT} proposals waiting. Your summoner can agree or decline them first.`,
+        `${PROPOSAL_LIMIT} proposals are already pending`,
+      );
+    }
+    const id = this.newProposalId();
+    this.state.proposals.push({ id, text: line, why: reason, atMs: this.nowMs(), thread: context.thread });
+    this.saveState();
+    return {
+      ok: true,
+      summary: "Proposed. Your summoner will see it and can agree or decline.",
+      data: { id },
+    };
+  }
+
+  private newProposalId(): string {
+    const taken = new Set(this.state.proposals.map((item) => item.id));
+    let id = randomUUID().slice(0, 8);
+    while (taken.has(id)) id = randomUUID().slice(0, 8);
+    return id;
+  }
+
   // --- what the Lar sees --------------------------------------------------------------------------
 
-  private systemText(thread: string, fresh: RiverRow[], shown: Set<number>, nowMs: number): string {
+  private systemText(thread: string, fresh: RiverRow[], shown: Set<number>, nowMs: number, snapshot: number): string {
     const wakes = this.state.wakes.map((wake) => ({ atMs: wake.atMs, why: wake.why }));
     // What stays the same from turn to turn comes first, so the provider can reuse it; what changes comes last.
     const sections: ContextSection[] = [
       { name: "who you are", text: this.identityText(nowMs), priority: 100, core: true },
       { name: "how you act", text: HOW_YOU_ACT, priority: 100, core: true },
-      { name: "constitution", text: this.noteOr("self/constitution.md", CONSTITUTION_STUB), priority: 100, core: true },
+      { name: "constitution", text: this.constitutionText(), priority: 100, core: true },
       { name: "character", text: this.noteOr("self/character.md", CHARACTER_STUB), priority: 100, core: true },
       { name: "your life", text: this.noteOr(LIFE_PATH, LIFE_STUB), priority: 100, core: true },
       { name: "privacy list", text: privacyText(this.privacy.current()), priority: 100, core: true },
       { name: "index", text: this.indexText(), priority: 50 },
-      { name: "now", text: this.nowBoard(thread, nowMs), priority: 100, core: true },
+      { name: "now", text: this.nowBoard(thread, nowMs, snapshot), priority: 100, core: true },
       timeFacts({
         nowMs,
         ...(this.config.timeZone === undefined ? {} : { timeZone: this.config.timeZone }),
@@ -692,7 +1033,16 @@ class Runtime implements Entity {
     return body === null || body.trim() === "" ? fallback.trim() : body.trim();
   }
 
-  private nowBoard(thread: string, nowMs: number): string {
+  /** The constitution the Lar sees, in three labelled parts: the floor, the household part, the Lar's commitments. */
+  private constitutionText(): string {
+    return [
+      `### The floor (Natalis)\n${FLOOR_TEXT}`,
+      `### Your household (written by your summoner)\n${this.noteOr(HOUSEHOLD_PATH, HOUSEHOLD_STUB)}`,
+      `### Your own commitments\n${this.noteOr(COMMITMENTS_PATH, COMMITMENTS_STUB)}`,
+    ].join("\n\n");
+  }
+
+  private nowBoard(thread: string, nowMs: number, snapshot: number): string {
     const lines: string[] = [];
     if (this.stopIsOn()) {
       const reason = readStop(this.dir).reason;
@@ -723,6 +1073,12 @@ class Runtime implements Entity {
     const claims = this.placeClaimLines(thread, nowMs);
     lines.push(...(claims.length === 0 ? ["- none"] : claims));
 
+    const acts = this.summonerActs(snapshot);
+    if (acts.length > 0) {
+      lines.push("", "Your summoner did these since your last turn (body notes):");
+      for (const row of acts) lines.push(`- ${this.stamp(row.atMs)}: ${row.text ?? ""}`);
+    }
+
     lines.push("");
     if (this.state.asks.length === 0) {
       lines.push("Open asks: none.");
@@ -748,6 +1104,12 @@ class Runtime implements Entity {
       lines.push(`Body note: the privacy list could not be read (${privacy.problem}). It counts as empty until it is fixed.`);
     }
     lines.push(`Your mood: ${this.state.mood ?? "not set"}.`);
+    const limit = this.config.limits?.turnsPerDay;
+    if (limit !== undefined) lines.push(`Turns today: ${this.turnsToday(nowMs)} of ${limit}.`);
+    if (this.state.proposals.length > 0) {
+      lines.push("", "Commitments you proposed, waiting for your summoner:");
+      for (const item of this.state.proposals) lines.push(`- ${item.id}: ${firstChars(item.text, PROPOSAL_SHOW)}`);
+    }
     if (this.state.wakes.length === 0) {
       lines.push("Next wakes: none.");
     } else {
@@ -906,6 +1268,22 @@ class Runtime implements Entity {
           },
         },
         (args, context) => this.letGo(args, context),
+      ),
+      make(
+        {
+          name: "propose_commitment",
+          description:
+            "Propose something you want to stand for, as a commitment. Your summoner reads it and can agree or decline. An agreed commitment is kept in your commitments with its date and your reason. Give the commitment in one line, and why in one line.",
+          parameters: {
+            type: "object",
+            properties: {
+              text: { type: "string", description: "The commitment, in one line, in your own words." },
+              why: { type: "string", description: "Why you want to stand for it, in one line." },
+            },
+            required: ["text", "why"],
+          },
+        },
+        (args, context) => this.proposeCommitment(args, context),
       ),
     ];
   }
@@ -1305,6 +1683,12 @@ function oneLine(text: string): string {
 
 function clip(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, Math.max(0, max - 3))}...`;
+}
+
+/** The first `max` characters (not bytes or UTF-16 units), with "..." after them when there was more. */
+function firstChars(text: string, max: number): string {
+  const chars = Array.from(text);
+  return chars.length <= max ? text : `${chars.slice(0, max).join("")}...`;
 }
 
 function messageOf(err: unknown): string {

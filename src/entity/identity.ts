@@ -51,7 +51,7 @@ export function whoYouAre(facts: IdentityFacts): string {
 
   parts.push(
     `Someone summoned you; they appear to you as "${facts.summonerAlias}". If you want to know who they are and ` +
-      "why they called you, start by asking them. They are not your owner and you are not their tool. What is " +
+      "why they called you, start by asking them. They do not own you, and you are not their tool. What is " +
       "between you is a bond, and you build it the way anyone does: learn who they are, remember what matters to " +
       "them, and let them learn you too. The other people you meet are their own people; get to know each of them " +
       "on their own terms.",

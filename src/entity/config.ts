@@ -25,6 +25,8 @@ export type EntityConfig = {
   owner: { alias: string };
   /** Body checks on what the Lar says. Each one is on unless the block says false. */
   holds?: { honesty?: boolean };
+  /** Daily limits. Left out, there is none. */
+  limits?: { turnsPerDay?: number };
 };
 
 export const ENTITY_FILE = "entity.json";
@@ -50,7 +52,11 @@ export function loadEntityConfig(dir: string): EntityConfig {
 /** Validates an already-parsed entity config. Throws a plain error naming the first wrong field. */
 export function parseEntityConfig(value: unknown): EntityConfig {
   const root = objectOf(value, ENTITY_FILE);
-  onlyKeys(root, ["name", "timeZone", "model", "effort", "ceiling", "summoner", "owner", "holds"], ENTITY_FILE);
+  onlyKeys(
+    root,
+    ["name", "timeZone", "model", "effort", "ceiling", "summoner", "owner", "holds", "limits"],
+    ENTITY_FILE,
+  );
   if (root["summoner"] !== undefined && root["owner"] !== undefined) {
     throw new Error("Give either summoner or owner in entity.json, not both. summoner is the current name.");
   }
@@ -73,7 +79,16 @@ export function parseEntityConfig(value: unknown): EntityConfig {
     config.effort = root["effort"];
   }
   if (root["holds"] !== undefined) config.holds = parseHolds(root["holds"]);
+  if (root["limits"] !== undefined) config.limits = parseLimits(root["limits"]);
   return config;
+}
+
+function parseLimits(value: unknown): { turnsPerDay?: number } {
+  const block = objectOf(value, "limits");
+  onlyKeys(block, ["turnsPerDay"], "limits");
+  const limits: { turnsPerDay?: number } = {};
+  if (block["turnsPerDay"] !== undefined) limits.turnsPerDay = positiveInt(block["turnsPerDay"], "limits.turnsPerDay");
+  return limits;
 }
 
 function parseHolds(value: unknown): { honesty?: boolean } {

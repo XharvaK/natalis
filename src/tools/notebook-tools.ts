@@ -3,6 +3,7 @@
 // Notebook writes are attributed to "thread:<thread>" with the reason you gave.
 
 import { NotebookError, type Notebook, type Receipt, type Tool, type ToolContext } from "../contracts.js";
+import { protectedNoteReason } from "../entity/commitments.js";
 
 const READ_LIMIT = 20_000;
 const RECALL_DEFAULT = 10;
@@ -74,6 +75,8 @@ const writeNote: Tool = {
   async run(args, context) {
     const path = requireText(args, "path", "The note path", { trim: true });
     if (!path.ok) return path.receipt;
+    const held = protectedRefusal(path.value);
+    if (held !== undefined) return held;
     const text = requireText(args, "text", "The note text", { allowEmpty: true });
     if (!text.ok) return text.receipt;
     const why = requireText(args, "why", "The reason");
@@ -104,6 +107,8 @@ const editNote: Tool = {
   async run(args, context) {
     const path = requireText(args, "path", "The note path", { trim: true });
     if (!path.ok) return path.receipt;
+    const held = protectedRefusal(path.value);
+    if (held !== undefined) return held;
     const find = requireText(args, "find", "The text to find");
     if (!find.ok) return find.receipt;
     const replace = requireText(args, "replace", "The replacement text", { allowEmpty: true });
@@ -140,6 +145,8 @@ const appendNote: Tool = {
   async run(args, context) {
     const path = requireText(args, "path", "The note path", { trim: true });
     if (!path.ok) return path.receipt;
+    const held = protectedRefusal(path.value);
+    if (held !== undefined) return held;
     const text = requireText(args, "text", "The text to add", { allowEmpty: true });
     if (!text.ok) return text.receipt;
     const why = requireText(args, "why", "The reason");
@@ -201,6 +208,8 @@ const trashNote: Tool = {
   async run(args, context) {
     const path = requireText(args, "path", "The note path", { trim: true });
     if (!path.ok) return path.receipt;
+    const held = protectedRefusal(path.value);
+    if (held !== undefined) return held;
     const why = requireText(args, "why", "The reason");
     if (!why.ok) return why.receipt;
     return guarded(async () => {
@@ -354,6 +363,12 @@ const forget: Tool = {
 
 function authorOf(context: ToolContext): string {
   return `thread:${context.thread}`;
+}
+
+/** The refusal for a note only the body may change, or undefined when the Lar may change it. */
+function protectedRefusal(path: string): Receipt | undefined {
+  const reason = protectedNoteReason(path);
+  return reason === undefined ? undefined : refuse("protected", reason, reason);
 }
 
 function refuse(code: string, summary: string, reason: string = summary): Receipt {

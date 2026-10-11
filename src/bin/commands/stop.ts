@@ -36,6 +36,6 @@ export function stopCommand(args: readonly string[], out: (line: string) => void
   const wasOn = isStopOn(dir);
   writeStop(dir, reason);
   const why = reason === undefined ? "" : ` Reason: ${reason.trim()}`;
-  out(`${wasOn ? "Emergency stop was already on" : "Emergency stop is on"}. Outward acts are paused; replies to the owner still go.${why}`);
+  out(`${wasOn ? "Emergency stop was already on" : "Emergency stop is on"}. Outward acts are paused; the Lar can still answer the summoner.${why}`);
   return 0;
 }

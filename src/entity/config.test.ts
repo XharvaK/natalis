@@ -135,3 +135,27 @@ describe("loadEntityConfig", () => {
     expect(() => loadEntityConfig(dir)).toThrow(/entity.json is not valid JSON/);
   });
 });
+
+describe("the daily turn limit", () => {
+  it("is left out unless the entity names one", () => {
+    expect(parseEntityConfig(MINIMAL).limits).toBeUndefined();
+  });
+
+  it("reads a whole number of turns per day", () => {
+    expect(parseEntityConfig({ ...MINIMAL, limits: { turnsPerDay: 20 } }).limits).toEqual({ turnsPerDay: 20 });
+  });
+
+  it("refuses a limit that is not a whole number of at least one, and names the field", () => {
+    for (const turnsPerDay of [0, -3, 1.5, "20", null]) {
+      expect(() => parseEntityConfig({ ...MINIMAL, limits: { turnsPerDay } })).toThrow(/limits\.turnsPerDay/);
+    }
+  });
+
+  it("refuses an unknown field in the limits block", () => {
+    expect(() => parseEntityConfig({ ...MINIMAL, limits: { perHour: 3 } })).toThrow(/Unknown field "perHour" in limits/);
+  });
+
+  it("refuses limits that are not an object", () => {
+    expect(() => parseEntityConfig({ ...MINIMAL, limits: 20 })).toThrow(/limits must be an object/);
+  });
+});
