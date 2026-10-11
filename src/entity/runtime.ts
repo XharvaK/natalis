@@ -18,6 +18,7 @@ import { openRiver } from "../river/index.js";
 import { checkRiver } from "../river/integrity.js";
 import { createSecretScanner, guardModel, guardNotebook, guardRiver, KNOWN_VALUE_KIND } from "../secrets/index.js";
 import { notebookTools } from "../tools/index.js";
+import { MEDIA_FOLDER, openShelf, shelfBody, type Shelf } from "../media/shelf.js";
 import type {
   Ceiling,
   ContextSection,
@@ -32,6 +33,7 @@ import type {
   ToolContext,
   ToolSpec,
   World,
+  WorldBody,
   WorldEvent,
 } from "../contracts.js";
 import { DEFAULT_CEILING, type EntityConfig } from "./config.js";
@@ -182,6 +184,8 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
 
   const privacy = createPrivacyWatch(join(dir, PRIVACY_FILE));
   privacy.current();
+  // The shelf of pictures lives beside the notebook. Worlds keep pictures through the body, never by writing the folder.
+  const shelf = openShelf(join(dir, MEDIA_FOLDER));
 
   const runtime = new Runtime({
     config,
@@ -196,6 +200,7 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
     river,
     notebook,
     state,
+    shelf,
   });
   runtime.saveState();
   return runtime;
@@ -397,6 +402,7 @@ type RuntimeInit = {
   river: River;
   notebook: Notebook;
   state: EntityState;
+  shelf: Shelf;
 };
 
 class Runtime implements Entity {
@@ -414,6 +420,8 @@ class Runtime implements Entity {
   private readonly dir: string;
   private readonly privacy: PrivacyWatch;
   private readonly state: EntityState;
+  private readonly shelf: Shelf;
+  private readonly body: WorldBody;
   private readonly ceiling: Ceiling;
   private readonly tools: Tool[];
   private readonly clockFormat: Intl.DateTimeFormat;
@@ -455,6 +463,8 @@ class Runtime implements Entity {
     this.dir = init.dir;
     this.privacy = init.privacy;
     this.state = init.state;
+    this.shelf = init.shelf;
+    this.body = shelfBody(init.shelf, init.nowMs);
     this.ceiling = init.config.ceiling ?? DEFAULT_CEILING;
     this.river = init.river;
     this.notebook = init.notebook;
@@ -493,7 +503,7 @@ class Runtime implements Entity {
     for (const wake of this.state.wakes) this.armWake(wake);
     try {
       for (const world of this.worlds) {
-        await world.start((event) => this.intake(event));
+        await world.start((event) => this.intake(event), this.body);
       }
     } catch (err) {
       await this.stop();

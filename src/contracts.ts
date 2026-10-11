@@ -13,9 +13,12 @@ export type ToolCall = {
   arguments: string;
 };
 
+/** A picture the model sees: sent as an image part with its message. Bytes are base64, never a file path. */
+export type ImagePart = { type: "image"; mime: string; dataBase64: string };
+
 export type ChatMessage =
   | { role: "system"; content: string }
-  | { role: "user"; content: string; images?: string[] }
+  | { role: "user"; content: string; images?: ImagePart[] }
   | {
       role: "assistant";
       content: string | null;
@@ -184,6 +187,11 @@ export type Receipt = {
   data?: Record<string, unknown>;
   /** Present when the body refused or held the act; the reason is plain words. */
   refused?: { reason: string; code: string };
+  /**
+   * Pictures the model should see on its next call, once. The loop sends them and never writes them to the record
+   * or back into the tool message.
+   */
+  images?: ImagePart[];
 };
 
 export type ToolContext = {
@@ -272,13 +280,26 @@ export type WorldEvent = {
 
 export type SayResult = Receipt;
 
+/** A picture to send with words: a file the body holds on its shelf, named as the Lar named it. */
+export type SayFile = { path: string; name: string; mime: string };
+
+export type PictureRef = { id: string; mime: string; bytes: number; name: string };
+
+/** What a world gets from the body: its own way to put a picture on the Lar's shelf. Worlds never write the folder. */
+export type WorldBody = {
+  keepPicture(input: { bytes: Uint8Array; name: string; from: { world: string; place: string } }): PictureRef;
+};
+
 export interface World {
   readonly id: string;
-  /** Connect and start sending events. Resolves once the world is ready. */
-  start(emit: (event: WorldEvent) => void): Promise<void>;
+  /** Connect and start sending events; `body` is how a world keeps pictures. Resolves once the world is ready. */
+  start(emit: (event: WorldEvent) => void, body: WorldBody): Promise<void>;
   stop(): Promise<void>;
-  /** Deliver words to a place in this world. The receipt says delivered, or why not. */
-  say(place: string, text: string, options?: { replyTo?: string }): Promise<SayResult>;
+  /**
+   * Deliver words to a place in this world. Pictures in `files` go with the words; a world that cannot carry them
+   * refuses the whole say. The receipt says delivered, or why not.
+   */
+  say(place: string, text: string, options?: { replyTo?: string; files?: SayFile[] }): Promise<SayResult>;
   /** True when a place is the owner's own place in this world (the owner's DM, the command line). Default: not. */
   isOwnerPlace?(place: string): boolean;
   /** Extra tools this world offers (react, act_in_game, ...). */
