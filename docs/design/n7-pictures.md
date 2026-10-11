@@ -9,9 +9,9 @@ Facts that shape it:
   `acts/sync` answer, and the helper posts a PNG (or why it could not) to `/domus/snapshot`. Natalis parses that
   route already (`src/worlds/domus/wire.ts`) and answers 404 because nothing is ever requested.
 - The Discord world already shows attachments as handles (`attachment:a1`) with the URL kept by the world.
-- Probed 2026-10-11: the Command Code provider drops image parts (an image request reports 28 prompt tokens and
-  the model guesses). So a Lar on that provider cannot see pictures; another provider may. Seeing is a property of
-  the model, declared in `entity.json`, never assumed.
+- Probed 2026-10-11: Command Code Muse sees images sent as `image_url` data URLs (a 512×512 PNG costs about 360
+  prompt tokens and is read correctly). A very small image (32×32) is dropped by the provider without an error, and
+  the model guesses. Seeing is a property of the model, declared in `entity.json`, never assumed.
 
 ## 1. The shelf (body)
 
