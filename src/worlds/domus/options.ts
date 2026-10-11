@@ -166,6 +166,8 @@ export function perceptSentence(percept: Percept): string | undefined {
     }
     case "self":
       return sentence(facts.text);
+    case "look":
+      return "This is the look you asked for.";
     case "gap":
       return "Part of the game's feed was missed.";
     default:

@@ -242,3 +242,10 @@ describe("the game's notices and her own changes, as plain sentences", () => {
     expect(viewBrief(percepts)).toBe("- The game says: Bills are due: Pay them soon.\n- New want: Learn to cook.");
   });
 });
+
+describe("the look she asked for", () => {
+  it("says it is the look she asked for, whatever its facts say", () => {
+    expect(perceptSentence({ kind: "look", salience: 1, facts: { subject: "self", object: "", bucket: "asked" } })).toBe("This is the look you asked for.");
+    expect(perceptSentence({ kind: "look", salience: 1, facts: {} })).toBe("This is the look you asked for.");
+  });
+});
