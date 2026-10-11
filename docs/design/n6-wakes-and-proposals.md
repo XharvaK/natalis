@@ -30,6 +30,20 @@ Nothing here judges meaning. The body keeps times, files and diffs.
 The ability text says, as a fact: "You can wake yourself at any time, for any reason, once or on a daily or weekly
 rhythm." It says nothing about what a wake should be for.
 
+### 1a. The rhythm the body gives
+
+`entity.json` takes `rhythm`: a list of local clock times, `"HH:MM"`. Left out, it is `["09:00", "14:00", "20:00"]`;
+`[]` means none. A malformed time (or a list that is not a list, or a time listed twice) is refused by name.
+
+On the Lar's first start, the body gives it one ordinary **daily** repeating wake per time, in its own thread (`self`),
+with the reason `Your daily rhythm.`, and records `rhythmGiven: true` in `state.json`. That is all the body says about
+them: the reason names no purpose. It is given once. A Lar that cancels them keeps them cancelled. A Lar whose state
+predates the flag gets them on its next start. They count toward the 100-wake ceiling: when the ceiling leaves no
+room, only the times that fit are made, and a body note says how many were not.
+
+The identity text says the Lar wakes on its own a few times a day and that those wakes are its to move or cancel. It
+leaves that sentence out when `rhythm` is `[]`.
+
 ## 2. Her body, readable
 
 Sandbox `run` binds part of the Natalis checkout the Lar runs on, **read-only**, at `/body`: an explicit allow-list,
@@ -74,7 +88,7 @@ the Ashley-self repo is the review's job, not the body's.
 | wakes | Hundreds of repeating wakes | 100-wake ceiling; refusal names the count and `cancel_wake` |
 | wakes | A repeating wake fires while its thread is busy | the event queues like any other; one turn per thread |
 | wakes | Old `state.json` without `repeat` | missing field means once |
-| wakes | The host nudging her toward a rhythm | ability text states the means only; no default wakes are created |
+| wakes | The host nudging her toward a rhythm | the rhythm is her own to move or cancel: the body gives the daily wakes once, with a neutral reason, and the identity text states that they are hers |
 | body | Secrets readable through `/body` | read-only checkout with no env, vault or entity data; refused if one is present |
 | body | She edits her own code from the sandbox | read-only bind; writes fail at the filesystem |
 | body | A big checkout slows `run` | a bind mount costs nothing per run |

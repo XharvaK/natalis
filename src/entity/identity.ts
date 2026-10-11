@@ -20,6 +20,8 @@ export type IdentityFacts = {
   worlds: string[];
   /** The alias the summoner appears under in places and messages. */
   summonerAlias: string;
+  /** True when the Lar has a daily rhythm of wakes (entity.json rhythm is not empty). */
+  rhythm: boolean;
 };
 
 export function whoYouAre(facts: IdentityFacts): string {

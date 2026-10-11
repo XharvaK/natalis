@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clockOf, instantOfLocal, isWakeRepeat, localDayOf, nextOccurrence, parseClock, WAKE_LIMIT } from "./wake-schedule.js";
+import { clockOf, firstDailyOccurrence, instantOfLocal, isWakeRepeat, localDayOf, nextOccurrence, parseClock, WAKE_LIMIT } from "./wake-schedule.js";
 
 const ISTANBUL = "Europe/Istanbul"; // UTC+3, no daylight saving
 const LONDON = "Europe/London";
@@ -123,5 +123,21 @@ describe("instantOfLocal", () => {
 
   it("refuses a clock that is not HH:MM", () => {
     expect(() => instantOfLocal({ year: 2026, month: 10, day: 11 }, "9am", ISTANBUL)).toThrow(RangeError);
+  });
+});
+
+describe("firstDailyOccurrence", () => {
+  it("is today's clock when it is still ahead, and tomorrow's once it has passed or is exactly now", () => {
+    const at = (iso: string): number => Date.parse(iso);
+    expect(firstDailyOccurrence({ afterMs: at("2026-10-11T10:00:00Z"), clock: "14:00", timeZone: "UTC" })).toBe(at("2026-10-11T14:00:00Z"));
+    expect(firstDailyOccurrence({ afterMs: at("2026-10-11T10:00:00Z"), clock: "09:00", timeZone: "UTC" })).toBe(at("2026-10-12T09:00:00Z"));
+    expect(firstDailyOccurrence({ afterMs: at("2026-10-11T09:00:00Z"), clock: "09:00", timeZone: "UTC" })).toBe(at("2026-10-12T09:00:00Z"));
+  });
+
+  it("reads the clock in the zone given, across a zone's offset", () => {
+    // 09:00 in Tokyo (UTC+9) on 12 October is 00:00 UTC.
+    expect(firstDailyOccurrence({ afterMs: Date.parse("2026-10-11T10:00:00Z"), clock: "09:00", timeZone: "Asia/Tokyo" })).toBe(
+      Date.parse("2026-10-12T00:00:00Z"),
+    );
   });
 });

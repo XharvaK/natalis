@@ -62,6 +62,20 @@ export function nextOccurrence(input: {
   }
 }
 
+/**
+ * The first instant a daily wake at a local clock time fires, strictly after `afterMs`: today's occurrence if it is still
+ * ahead, else tomorrow's. The body uses it for the rhythm a Lar is given on its first start.
+ */
+export function firstDailyOccurrence(input: { afterMs: number; clock: string; timeZone: string | undefined }): number {
+  const { afterMs, clock, timeZone } = input;
+  const today = zoneParts(afterMs, timeZone);
+  for (let k = 0; k <= 2; k += 1) {
+    const candidate = instantOfLocal(addDays(today.year, today.month, today.day, k), clock, timeZone);
+    if (candidate > afterMs) return candidate;
+  }
+  throw new RangeError(`No occurrence of ${clock} follows the instant given.`);
+}
+
 /** The instant of a local wall-clock time on a calendar day, in a zone. Zone undefined means the host's zone. */
 export function instantOfLocal(
   day: { year: number; month: number; day: number },

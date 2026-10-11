@@ -6,11 +6,14 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Ceiling } from "../contracts.js";
 import type { ModelConfig } from "../model/from-config.js";
+import { parseClock } from "./wake-schedule.js";
 
 export const EFFORTS = ["low", "medium", "high", "xhigh"] as const;
 export type Effort = (typeof EFFORTS)[number];
 
 export const DEFAULT_CEILING: Ceiling = { maxModelCalls: 24, maxToolCalls: 48 };
+/** The local clock times a Lar wakes on its own each day, when entity.json leaves rhythm out. */
+export const DEFAULT_RHYTHM: readonly string[] = ["09:00", "14:00", "20:00"];
 
 export type EntityConfig = {
   /** The name the summoner gave. Left out, the Lar chooses its own name. */
@@ -27,6 +30,8 @@ export type EntityConfig = {
   holds?: { honesty?: boolean };
   /** Daily limits. Left out, there is none. */
   limits?: { turnsPerDay?: number };
+  /** Local clock times ("HH:MM") the Lar gets a daily wake at, once, on its first start. [] means none. Left out, DEFAULT_RHYTHM. */
+  rhythm?: string[];
 };
 
 export const ENTITY_FILE = "entity.json";
@@ -54,7 +59,7 @@ export function parseEntityConfig(value: unknown): EntityConfig {
   const root = objectOf(value, ENTITY_FILE);
   onlyKeys(
     root,
-    ["name", "timeZone", "model", "effort", "ceiling", "summoner", "owner", "holds", "limits"],
+    ["name", "timeZone", "model", "effort", "ceiling", "summoner", "owner", "holds", "limits", "rhythm"],
     ENTITY_FILE,
   );
   if (root["summoner"] !== undefined && root["owner"] !== undefined) {
@@ -65,6 +70,7 @@ export function parseEntityConfig(value: unknown): EntityConfig {
     model: parseModel(root["model"]),
     owner: parseOwner(root["summoner"] ?? root["owner"]),
     ceiling: parseCeiling(root["ceiling"]),
+    rhythm: parseRhythm(root["rhythm"]),
   };
   if (root["name"] !== undefined) config.name = textOf(root["name"], "name");
   if (root["timeZone"] !== undefined) {
@@ -81,6 +87,22 @@ export function parseEntityConfig(value: unknown): EntityConfig {
   if (root["holds"] !== undefined) config.holds = parseHolds(root["holds"]);
   if (root["limits"] !== undefined) config.limits = parseLimits(root["limits"]);
   return config;
+}
+
+/** The rhythm: a list of local clock times, each "HH:MM". Left out, the default times. A time may appear once. */
+function parseRhythm(value: unknown): string[] {
+  if (value === undefined) return [...DEFAULT_RHYTHM];
+  if (!Array.isArray(value)) throw new Error('rhythm must be a list of clock times such as ["09:00", "20:00"], or [].');
+  const times: string[] = [];
+  for (const item of value) {
+    const clock = typeof item === "string" ? parseClock(item) : undefined;
+    if (clock === undefined) {
+      throw new Error(`rhythm holds ${JSON.stringify(item)}, which is not a clock time "HH:MM" (24 hours, two digits).`);
+    }
+    if (times.includes(clock)) throw new Error(`rhythm lists ${clock} more than once.`);
+    times.push(clock);
+  }
+  return times;
 }
 
 function parseLimits(value: unknown): { turnsPerDay?: number } {

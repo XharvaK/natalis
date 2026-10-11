@@ -13,6 +13,7 @@ const facts = (over: Partial<IdentityFacts> = {}): IdentityFacts => ({
   young: true,
   worlds: ["A command line, where your summoner types to you at cli:summoner."],
   summonerAlias: "summoner",
+  rhythm: true,
   ...over,
 });
 
