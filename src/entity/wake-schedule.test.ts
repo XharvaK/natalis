@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clockOf, firstDailyOccurrence, instantOfLocal, isWakeRepeat, localDayOf, nextOccurrence, parseClock, WAKE_LIMIT } from "./wake-schedule.js";
+import { clockOf, firstDailyOccurrence, instantOfLocal, isWakeRepeat, localDayOf, nextOccurrence, parseAtIso, parseClock, WAKE_LIMIT } from "./wake-schedule.js";
 
 const ISTANBUL = "Europe/Istanbul"; // UTC+3, no daylight saving
 const LONDON = "Europe/London";
@@ -139,5 +139,18 @@ describe("firstDailyOccurrence", () => {
     expect(firstDailyOccurrence({ afterMs: Date.parse("2026-10-11T10:00:00Z"), clock: "09:00", timeZone: "Asia/Tokyo" })).toBe(
       Date.parse("2026-10-12T00:00:00Z"),
     );
+  });
+});
+
+describe("parseAtIso", () => {
+  it("reads a date and time with no offset in the zone given, and one with an offset as it is", () => {
+    expect(parseAtIso("2026-10-12T09:00", "Etc/GMT-3")).toBe(Date.UTC(2026, 9, 12, 6, 0));
+    expect(parseAtIso("2026-10-12T09:00:00+03:00", "UTC")).toBe(Date.UTC(2026, 9, 12, 6, 0));
+    expect(parseAtIso("2026-10-12T09:00:00Z", "Etc/GMT-3")).toBe(Date.UTC(2026, 9, 12, 9, 0));
+  });
+
+  it("is NaN for text that is not a date and time, and for a day that does not exist", () => {
+    expect(parseAtIso("soon", "UTC")).toBeNaN();
+    expect(parseAtIso("2026-02-30T09:00", "UTC")).toBeNaN();
   });
 });

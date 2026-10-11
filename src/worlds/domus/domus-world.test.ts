@@ -163,7 +163,7 @@ describe("observations", () => {
     await attach();
     await call("/domus/observation", viewBody({ portrait: { zone: { room_label: "Test kitchen" }, paused: true, mood: "Flirty" } }));
     expect(events).toHaveLength(1);
-    expect(events[0]?.text?.startsWith("Your body now:\nThe game is attached.\nThe game is paused.\nRoom: Test kitchen.\nMood: flirty.\n\nThe game (slot3) shows:\n")).toBe(true);
+    expect(events[0]?.text?.startsWith("Your body now:\nYour attention: every change.\nThe game is attached.\nThe game is paused.\nRoom: Test kitchen.\nMood: flirty.\n\nThe game (slot3) shows:\n")).toBe(true);
   });
 
   it("admits a new view with 202, and emits one outside event on the game thread with its refs", async () => {
@@ -511,8 +511,8 @@ describe("game pictures: the Lar asks, the helper takes, the shelf keeps", () =>
 describe("the world's surface", () => {
   it("offers one game tool, says what it is about, and refuses words", async () => {
     expect(world?.id).toBe("domus");
-    expect(world?.tools().map((item) => item.spec.name)).toEqual(["game_act", "game_snapshot"]);
-    expect(world?.tools().map((item) => item.spec.safeWhenStopped)).toEqual([undefined, undefined]);
+    expect(world?.tools().map((item) => item.spec.name)).toEqual(["game_act", "game_snapshot", "game_attention"]);
+    expect(world?.tools().map((item) => item.spec.safeWhenStopped)).toEqual([undefined, undefined, undefined]);
     expect(world?.about?.()).toBe("The Sims 4 (Domus): your household's game, at domus:<world>, while your summoner's helper is attached.");
     expect(await world?.say("domus:slot3", "hello")).toMatchObject({ ok: false, refused: { code: "no_words" } });
   });
@@ -545,14 +545,14 @@ describe("the game's attachment, in the views and on the game thread", () => {
   it("starts a view with 'The game is attached.' while its helper is attached", async () => {
     await call("/domus/heartbeat", heartbeat(true, T0));
     await call("/domus/observation", viewBody());
-    expect(events[0]?.text?.startsWith("Your body now:\nThe game is attached.\n\nThe game (slot3) shows:\n")).toBe(true);
+    expect(events[0]?.text?.startsWith("Your body now:\nYour attention: every change.\nThe game is attached.\n\nThe game (slot3) shows:\n")).toBe(true);
   });
 
   it("says the game is not attached, and when it was last seen, in a view that arrives after the helper went quiet", async () => {
     await call("/domus/heartbeat", heartbeat(true, T0));
     clock = T0 + 240_000;
     await call("/domus/observation", viewBody());
-    expect(events[0]?.text?.startsWith("Your body now:\nThe game is not attached (last seen 4 minutes ago).\n")).toBe(true);
+    expect(events[0]?.text?.startsWith("Your body now:\nYour attention: every change.\nThe game is not attached (last seen 4 minutes ago).\n")).toBe(true);
   });
 
   it("tells the game thread once when the helper says the game is no longer attached, and again only after a new attach", async () => {
@@ -600,5 +600,97 @@ describe("views of a whole lot: the choices, and what the game left out", () => 
     expect(events[1]?.text).toContain("- Test rug: a7 Sit");
     expect(events[1]?.text?.endsWith("The game left out 2 more choice object(s) on the lot, in Test garden.")).toBe(true);
     expect(events[1]?.data).toMatchObject({ optionsCut: { objects: 2, rooms: ["Test garden"] } });
+  });
+});
+
+describe("her attention: which views wake her, and the setting she keeps", () => {
+  const ORDINARY = [{ kind: "need", salience: 0, facts: { subject: "hunger", band: "ok" } }];
+  const CALL = [{ kind: "social", salience: 0, facts: { bucket: "addressed", by: "sim-2" } }];
+  const HELD = { asked: [{ title: "Pick a recipe", whose: "hers", held: true }] };
+
+  function setAttention(args: Record<string, unknown>, thread = "domus:slot3"): Promise<Receipt> {
+    return tool("game_attention").run(args, { thread, turnId: "t-attention", nowMs: clock } as ToolContext);
+  }
+
+  function iso(ms: number): string {
+    return new Date(ms).toISOString();
+  }
+
+  async function syncBody(): Promise<Record<string, unknown>> {
+    return (await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [] })).body;
+  }
+
+  it("wakes her on every view by default, and says every change at the top of the block", async () => {
+    await attach();
+    await call("/domus/observation", viewBody({ percepts: ORDINARY }));
+    expect(events[0]).toMatchObject({ wake: true, view: "domus" });
+    expect(events[0]?.text?.startsWith("Your body now:\nYour attention: every change.\n")).toBe(true);
+  });
+
+  it("when called, keeps an ordinary change for her turn without waking her, and wakes her for a call", async () => {
+    await attach();
+    expect(await setAttention({ mode: "when_called" })).toMatchObject({ ok: true, summary: "Your attention is now: when something calls you." });
+    await call("/domus/observation", viewBody({ percepts: ORDINARY }));
+    await call("/domus/observation", viewBody({ percepts: ORDINARY }));
+    await call("/domus/observation", viewBody({ percepts: CALL }));
+    expect(events.map((event) => event.wake)).toEqual([true, false, true]);
+    expect(events[1]?.text).toContain("Your attention: when something calls you.");
+    expect(events[1]?.brief).toBe("- Hunger: fine.");
+  });
+
+  it("when quiet, wakes her for a question with a deadline and a window held for her, and for nothing else", async () => {
+    await attach();
+    await setAttention({ mode: "quiet", until: iso(clock + 3_600_000) });
+    await call("/domus/observation", viewBody({ percepts: CALL }));
+    await call("/domus/observation", viewBody({ percepts: ORDINARY, portrait: { asked: [{ title: "Pick", whose: "hers", held: false }] } }));
+    await call("/domus/observation", viewBody({ percepts: ORDINARY, portrait: HELD }));
+    await call("/domus/observation", viewBody({ percepts: [{ kind: "env", salience: 0, facts: { bucket: "asked", title_key: "pick" } }] }));
+    expect(events.map((event) => event.wake)).toEqual([false, false, true, true]);
+  });
+
+  it("keeps her setting across a restart of the world", async () => {
+    await attach();
+    await call("/domus/observation", viewBody({ percepts: ORDINARY }));
+    await setAttention({ mode: "when_called", look_every_minutes: 30 });
+    await world?.stop();
+    await startWorld();
+    events.length = 0;
+    await call("/domus/observation", viewBody({ percepts: ORDINARY }));
+    expect(events[0]).toMatchObject({ wake: false });
+    expect(events[0]?.text?.startsWith("Your body now:\nYour attention: when something calls you, and a look every 30 minutes.\n")).toBe(true);
+  });
+
+  it("reverts a quiet to the mode before it once its time has passed", async () => {
+    await attach();
+    await call("/domus/observation", viewBody({ percepts: ORDINARY }));
+    await setAttention({ mode: "when_called" });
+    await setAttention({ mode: "quiet", until: iso(clock + 3_600_000) });
+    clock += 3_600_001;
+    await attach();
+    events.length = 0;
+    await call("/domus/observation", viewBody({ percepts: ORDINARY }));
+    expect(events[0]).toMatchObject({ wake: false });
+    expect(events[0]?.text).toContain("Your attention: when something calls you.");
+  });
+
+  it("asks for a look after the gap while the game is attached, once, and not while it is not", async () => {
+    await attach();
+    await setAttention({ look_every_minutes: 5 });
+    clock += 4 * 60_000;
+    await attach();
+    expect((await syncBody()).look).toBeUndefined();
+    clock += 60_000;
+    await attach();
+    expect((await syncBody()).look).toBe(true);
+    expect((await syncBody()).look).toBeUndefined();
+  });
+
+  it("owes no look while the game is not attached, and owes one once it is attached again after the gap", async () => {
+    await attach();
+    await setAttention({ look_every_minutes: 5 });
+    clock += 10 * 60_000;
+    expect((await syncBody()).look).toBeUndefined();
+    await attach();
+    expect((await syncBody()).look).toBe(true);
   });
 });

@@ -139,12 +139,12 @@ export function attachmentLine(attachment: AttachmentNow): string {
 }
 
 /**
- * The block's lines, in order: whether the game is attached (when known), then what the portrait holds. Empty when
- * there is neither. Never throws.
+ * The block's lines, in order: her attention (when given), whether the game is attached (when known), then what the
+ * portrait holds. Empty when there is none of these. Never throws.
  */
-export function bodyLines(portrait: unknown, attachment?: AttachmentNow): string[] {
+export function bodyLines(portrait: unknown, attachment?: AttachmentNow, attention?: string): string[] {
   const p = record(portrait);
-  const lines: string[] = attachment ? [attachmentLine(attachment)] : [];
+  const lines: string[] = [...(attention === undefined ? [] : [attention]), ...(attachment ? [attachmentLine(attachment)] : [])];
   if (!p) return lines;
   const clock = clockLine(p);
   if (clock) lines.push(clock);

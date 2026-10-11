@@ -164,3 +164,27 @@ function addDays(year: number, month: number, day: number, days: number): { year
 function pad(value: number): string {
   return String(value).padStart(2, "0");
 }
+
+/** A date, with an optional time (T or a space between), and no offset. */
+const LOCAL_ISO = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?)?$/;
+
+/**
+ * The instant an at_iso names. A date and time with no offset is read in the Lar's own zone, the zone its clock and its
+ * repeating wakes use; one with an offset or Z is read as it is. NaN when the text is not a date and time.
+ */
+export function parseAtIso(text: string, timeZone: string | undefined): number {
+  const match = LOCAL_ISO.exec(text.trim());
+  if (match === null) return Date.parse(text);
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4] ?? 0);
+  const minute = Number(match[5] ?? 0);
+  const second = Number(match[6] ?? 0);
+  // Date.UTC rolls an impossible day (such as February 30) over; a round trip that does not match is refused.
+  const calendar = new Date(Date.UTC(year, month - 1, day));
+  const real = calendar.getUTCFullYear() === year && calendar.getUTCMonth() === month - 1 && calendar.getUTCDate() === day;
+  if (!real || hour > 23 || minute > 59 || second > 59) return Number.NaN;
+  const clock = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  return instantOfLocal({ year, month, day }, clock, timeZone) + second * 1000;
+}

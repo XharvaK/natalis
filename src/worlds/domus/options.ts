@@ -186,11 +186,13 @@ export function viewBrief(percepts: readonly Percept[]): string {
  */
 export function renderView(input: {
   world: string; percepts: readonly Percept[]; options: readonly OptionObject[]; portrait?: unknown; attachment?: AttachmentNow;
+  /** Her attention, the first line of the body block (see attentionLine). */
+  attention?: string;
   /** The choices of the last view rendered on this thread (see choicesSignature), or undefined when there was none. */
   lastChoices?: string;
   optionsCut?: OptionsCut;
 }): string {
-  const body = bodyLines(input.portrait, input.attachment);
+  const body = bodyLines(input.portrait, input.attachment, input.attention);
   const head = [...(body.length ? ["Your body now:", ...body, ""] : []), `The game (${input.world}) shows:`];
   const lines: string[] = [...head];
   let shown = 0;

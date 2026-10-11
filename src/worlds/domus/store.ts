@@ -102,7 +102,37 @@ CREATE TABLE IF NOT EXISTS snapshots (
   settled_at_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS snapshots_thread_status ON snapshots (thread, status);
+CREATE TABLE IF NOT EXISTS game_attention (
+  thread TEXT PRIMARY KEY,
+  mode TEXT NOT NULL,
+  resume_mode TEXT NOT NULL,
+  quiet_until_ms INTEGER,
+  look_every_minutes INTEGER NOT NULL,
+  set_at_ms INTEGER NOT NULL,
+  viewed_session TEXT,
+  last_wake_ms INTEGER
+);
+CREATE TABLE IF NOT EXISTS looks (
+  attachment TEXT PRIMARY KEY,
+  owed INTEGER NOT NULL,
+  last_handed_ms INTEGER
+);
 `;
+
+/** How the game's changes reach the Lar's turns. A quiet mode reverts to resumeMode when quietUntilMs passes. */
+export type AttentionMode = "every_change" | "when_called" | "quiet";
+export type AttentionRow = {
+  thread: string;
+  mode: AttentionMode;
+  resumeMode: "every_change" | "when_called";
+  quietUntilMs: number | undefined;
+  lookEveryMinutes: number;
+  setAtMs: number;
+  /** The helper session of the newest view the thread got: a view from another session is the first after attach. */
+  viewedSession: string | undefined;
+  /** When a view last woke the thread, or undefined before the first one. */
+  lastWakeMs: number | undefined;
+};
 
 /** The refusal for a choice or a picture request that rests on a view from a helper session the game is no longer on. */
 export const STALE_VIEW_CODE = "view_from_earlier_session";
@@ -431,4 +461,70 @@ function load(path: string): Record<string, HeartbeatRecord> {
     throw new Error(`The Domus state file (${DOMUS_FOLDER}/${DOMUS_STATE_FILE}) has an unknown version; not starting.`);
   }
   return sessions as Record<string, HeartbeatRecord>;
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Her attention to the game, per game thread, and the looks owed to the helper, per helper session.
+
+/** The setting a thread has before she sets one: every change wakes her, and no look is asked for. */
+export function defaultAttention(thread: string): AttentionRow {
+  return { thread, mode: "every_change", resumeMode: "every_change", quietUntilMs: undefined, lookEveryMinutes: 0, setAtMs: 0, viewedSession: undefined, lastWakeMs: undefined };
+}
+
+export function readAttention(db: DatabaseSync, thread: string): AttentionRow {
+  const row = db.prepare("SELECT * FROM game_attention WHERE thread = ?").get(thread) as Row | undefined;
+  if (!row) return defaultAttention(thread);
+  return {
+    thread,
+    mode: String(row.mode) as AttentionMode,
+    resumeMode: String(row.resume_mode) as "every_change" | "when_called",
+    quietUntilMs: row.quiet_until_ms === null ? undefined : Number(row.quiet_until_ms),
+    lookEveryMinutes: Number(row.look_every_minutes),
+    setAtMs: Number(row.set_at_ms),
+    viewedSession: row.viewed_session === null ? undefined : String(row.viewed_session),
+    lastWakeMs: row.last_wake_ms === null ? undefined : Number(row.last_wake_ms),
+  };
+}
+
+export function writeAttention(db: DatabaseSync, row: AttentionRow): void {
+  db.prepare(`INSERT INTO game_attention (thread, mode, resume_mode, quiet_until_ms, look_every_minutes, set_at_ms, viewed_session, last_wake_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (thread) DO UPDATE SET mode = excluded.mode, resume_mode = excluded.resume_mode, quiet_until_ms = excluded.quiet_until_ms,
+      look_every_minutes = excluded.look_every_minutes, set_at_ms = excluded.set_at_ms, viewed_session = excluded.viewed_session,
+      last_wake_ms = excluded.last_wake_ms`)
+    .run(
+      row.thread, row.mode, row.resumeMode, row.quietUntilMs ?? null, row.lookEveryMinutes, row.setAtMs,
+      row.viewedSession ?? null, row.lastWakeMs ?? null,
+    );
+}
+
+/** Every thread that has set a look every so many minutes (zero is off, and is not listed). */
+export function threadsWithLookEvery(db: DatabaseSync): AttentionRow[] {
+  return (db.prepare("SELECT thread FROM game_attention WHERE look_every_minutes > 0").all() as Row[])
+    .map((row) => readAttention(db, String(row.thread)));
+}
+
+/** Whether a look is owed to this helper session and not yet handed over. */
+export function lookOwed(db: DatabaseSync, attachment: string): boolean {
+  const row = db.prepare("SELECT owed FROM looks WHERE attachment = ?").get(attachment) as Row | undefined;
+  return row !== undefined && Number(row.owed) === 1;
+}
+
+/** The last time a look was handed to this helper session, or undefined when none has been. */
+export function lastLookHanded(db: DatabaseSync, attachment: string): number | undefined {
+  const row = db.prepare("SELECT last_handed_ms FROM looks WHERE attachment = ?").get(attachment) as Row | undefined;
+  if (row === undefined || row.last_handed_ms === null) return undefined;
+  return Number(row.last_handed_ms);
+}
+
+/** Records that a look is owed to this helper session. One flag: asking again changes nothing. */
+export function oweLook(db: DatabaseSync, attachment: string): void {
+  db.prepare("INSERT INTO looks (attachment, owed, last_handed_ms) VALUES (?, 1, NULL) ON CONFLICT (attachment) DO UPDATE SET owed = 1")
+    .run(attachment);
+}
+
+/** Hands the owed look over: true once, and the flag is cleared. False when none was owed. */
+export function takeLook(db: DatabaseSync, attachment: string, nowMs: number): boolean {
+  const result = db.prepare("UPDATE looks SET owed = 0, last_handed_ms = ? WHERE attachment = ? AND owed = 1").run(nowMs, attachment);
+  return Number(result.changes) > 0;
 }
