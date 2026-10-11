@@ -498,12 +498,6 @@ export function writeAttention(db: DatabaseSync, row: AttentionRow): void {
     );
 }
 
-/** Every thread that has set a look every so many minutes (zero is off, and is not listed). */
-export function threadsWithLookEvery(db: DatabaseSync): AttentionRow[] {
-  return (db.prepare("SELECT thread FROM game_attention WHERE look_every_minutes > 0").all() as Row[])
-    .map((row) => readAttention(db, String(row.thread)));
-}
-
 /** Whether a look is owed to this helper session and not yet handed over. */
 export function lookOwed(db: DatabaseSync, attachment: string): boolean {
   const row = db.prepare("SELECT owed FROM looks WHERE attachment = ?").get(attachment) as Row | undefined;
