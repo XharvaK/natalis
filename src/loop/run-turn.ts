@@ -22,6 +22,7 @@ import {
   type TurnEndReason,
   type TurnResult,
 } from "../contracts.js";
+import { MalformedToolBlock } from "../model/emulated-tools.js";
 
 export const END_TURN = "end_turn";
 
@@ -186,6 +187,18 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
         if (signal?.aborted || (err instanceof ModelError && err.kind === "aborted")) {
           endedBy = "aborted";
           break;
+        }
+        if (err instanceof MalformedToolBlock) {
+          // A tool block the host could not read: the model's words are kept, and the model is told why and may try
+          // again. Each try is a model call, so the ceiling still ends a model that keeps failing.
+          if (err.reply !== null && err.reply.trim() !== "") {
+            thoughts.push(err.reply);
+            write({ kind: "note", source: "self", text: err.reply, data: { thought: true, turnId } });
+          }
+          messages.push({ role: "assistant", content: err.reply });
+          write({ kind: "note", source: "body", text: err.note, data: { turnId, kind: "malformed_tool_block" } });
+          messages.push({ role: "user", content: err.note });
+          continue;
         }
         endedBy = "model_error";
         error = messageOf(err);

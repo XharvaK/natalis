@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { ChatMessage, ModelRequest, ModelResponse, ToolSpec } from "../contracts.js";
+import { ModelError, type ChatMessage, type ModelRequest, type ModelResponse, type ToolSpec } from "../contracts.js";
 import { createScriptedModel } from "./mock.js";
-import { withEmulatedTools } from "./emulated-tools.js";
+import { MalformedToolBlock, withEmulatedTools } from "./emulated-tools.js";
 
 const recall: ToolSpec = {
   name: "recall",
@@ -50,21 +50,34 @@ describe("reply parsing", () => {
     expect(reply.content).toBeNull();
   });
 
-  it("keeps a malformed block as plain content with no tool calls", async () => {
+  it("refuses a malformed block when tools were offered, with a note that says why, and keeps the reply", async () => {
     const broken = "Searching now.\n```json\n{\"tool_calls\":[{\"name\":\"recall\",\"arguments\":\n```";
     const { port } = setup([{ content: broken }]);
-    const reply = await port.complete(ask([{ role: "user", content: "x" }], { tools: [recall] }));
+    const error = await port.complete(ask([{ role: "user", content: "x" }], { tools: [recall] })).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(MalformedToolBlock);
+    expect(error).toBeInstanceOf(ModelError);
+    expect(error).toMatchObject({ kind: "malformed", reply: broken });
+    expect((error as MalformedToolBlock).note).toMatch(/^Your tool block was not valid JSON: \S/);
+  });
+
+  it("keeps a malformed block as plain content with no tool calls when no tools were offered", async () => {
+    const broken = "Searching now.\n```json\n{\"tool_calls\":[{\"name\":\"recall\",\"arguments\":\n```";
+    const { port } = setup([{ content: broken }]);
+    const reply = await port.complete(ask([{ role: "user", content: "x" }]));
     expect(reply.toolCalls).toEqual([]);
     expect(reply.content).toBe(broken);
     expect(reply.finish).toBe("stop");
   });
 
-  it("keeps a block with the wrong shape as plain content", async () => {
+  it("refuses a block with the wrong shape, and says what is missing", async () => {
     const wrong = block({ tool_calls: [{ arguments: { query: "x" } }] });
     const { port } = setup([{ content: wrong }]);
-    const reply = await port.complete(ask([{ role: "user", content: "x" }], { tools: [recall] }));
-    expect(reply.toolCalls).toEqual([]);
-    expect(reply.content).toBe(wrong);
+    const error = await port.complete(ask([{ role: "user", content: "x" }], { tools: [recall] })).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(MalformedToolBlock);
+    expect((error as MalformedToolBlock).note).toBe(
+      "Your tool block was not in the tool-call shape: every call needs a name. Send the block again in the shape given, or answer in plain words.",
+    );
+    expect((error as MalformedToolBlock).reply).toBe(wrong);
   });
 
   it("leaves a plain reply and a non-tool json block alone", async () => {

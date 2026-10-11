@@ -3,22 +3,38 @@
 // reply, and keeps the history round-tripping, so the loop above sees the same ToolCall shape either way.
 
 import { randomBytes } from "node:crypto";
-import type {
-  ChatMessage,
-  ModelInfo,
-  ModelPort,
-  ModelRequest,
-  ModelResponse,
-  ToolCall,
-  ToolSpec,
+import {
+  ModelError,
+  type ChatMessage,
+  type ModelInfo,
+  type ModelPort,
+  type ModelRequest,
+  type ModelResponse,
+  type ToolCall,
+  type ToolSpec,
 } from "../contracts.js";
 
 /** A fenced json block (any case of the language tag). Group 1 is the block body. */
 const JSON_BLOCK = /```json[ \t]*\r?\n([\s\S]*?)\r?\n?[ \t]*```/gi;
 
 /**
+ * A reply whose tool block could not be read, when tools were offered. The loop shows the model `note` and lets it
+ * try again; `reply` is what the model wrote, block included, so the model can see its own words.
+ */
+export class MalformedToolBlock extends ModelError {
+  constructor(
+    readonly note: string,
+    readonly reply: string | null,
+  ) {
+    super(note, "malformed", 1);
+    this.name = "MalformedToolBlock";
+  }
+}
+
+/**
  * Wraps a port whose service has no native tools. Sends no `tools` field; describes the tools in the system
- * message; reads a tool-call block from the reply. A malformed block is left in the content as plain thinking.
+ * message; reads a tool-call block from the reply. When tools were offered and the block does not read, the wrapper
+ * throws MalformedToolBlock; with no tools offered, the block is left in the content as plain words.
  */
 export function withEmulatedTools(port: ModelPort): ModelPort {
   const info: ModelInfo = { ...port.info, nativeTools: false };
@@ -29,7 +45,7 @@ export function withEmulatedTools(port: ModelPort): ModelPort {
       const describe = tools && tools.length > 0 && toolChoice !== "none" ? tools : undefined;
       const messages = toEmulatedMessages(request.messages, describe, toolChoice);
       const reply = await port.complete({ ...rest, messages }, signal);
-      return readToolBlock(reply);
+      return readToolBlock(reply, describe !== undefined);
     },
   };
 }
@@ -112,14 +128,19 @@ function parseArguments(raw: string): unknown {
   }
 }
 
-function readToolBlock(reply: ModelResponse): ModelResponse {
+function readToolBlock(reply: ModelResponse, offered: boolean): ModelResponse {
   if (reply.toolCalls.length > 0 || reply.content === null) return reply;
   const blocks = [...reply.content.matchAll(JSON_BLOCK)].filter((match) => (match[1] ?? "").includes("tool_calls"));
   const block = blocks.at(-1);
   if (!block || block.index === undefined) return reply;
 
-  const calls = parseToolCalls(block[1] ?? "");
-  if (calls === null) return reply; // malformed: kept as the model's words, the loop sees no action
+  const parsed = parseToolCalls(block[1] ?? "");
+  if (!parsed.ok) {
+    // The model was offered tools and wrote a block the host cannot read: it must be told, not left to end the turn.
+    if (offered) throw new MalformedToolBlock(parsed.note, reply.content);
+    return reply; // kept as the model's words, the loop sees no action
+  }
+  const calls = parsed.calls;
 
   const before = reply.content.slice(0, block.index);
   const after = reply.content.slice(block.index + block[0].length);
@@ -135,20 +156,39 @@ function readToolBlock(reply: ModelResponse): ModelResponse {
   };
 }
 
-function parseToolCalls(body: string): Array<{ name: string; arguments: string }> | null {
+type ParsedBlock = { ok: true; calls: Array<{ name: string; arguments: string }> } | { ok: false; note: string };
+
+const RETRY_ADVICE = "Send the block again in the shape given, or answer in plain words.";
+
+/** The note the model reads when its block does not read. Short, plain, and says what was wrong. */
+function refusedBlock(reason: string): ParsedBlock {
+  return { ok: false, note: `${reason} ${RETRY_ADVICE}` };
+}
+
+function parseToolCalls(body: string): ParsedBlock {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
-  } catch {
-    return null;
+  } catch (err) {
+    const message = messageOf(err);
+    const short = message.length > 160 ? `${message.slice(0, 160)}...` : message;
+    return refusedBlock(`Your tool block was not valid JSON: ${short}.`);
   }
-  if (!isRecord(parsed) || !Array.isArray(parsed.tool_calls) || parsed.tool_calls.length === 0) return null;
+  if (!isRecord(parsed) || !Array.isArray(parsed.tool_calls) || parsed.tool_calls.length === 0) {
+    return refusedBlock("Your tool block was not in the tool-call shape: it needs a tool_calls list with at least one call.");
+  }
   const calls: Array<{ name: string; arguments: string }> = [];
   for (const raw of parsed.tool_calls) {
-    if (!isRecord(raw) || typeof raw.name !== "string" || raw.name.trim() === "") return null;
+    if (!isRecord(raw) || typeof raw.name !== "string" || raw.name.trim() === "") {
+      return refusedBlock("Your tool block was not in the tool-call shape: every call needs a name.");
+    }
     calls.push({ name: raw.name.trim(), arguments: argumentsText(raw.arguments) });
   }
-  return calls;
+  return { ok: true, calls };
+}
+
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function argumentsText(raw: unknown): string {
