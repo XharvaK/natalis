@@ -194,11 +194,20 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
 
       const calls = response.toolCalls ?? [];
       const content = response.content;
+      // Her reasoning summary is part of her thinking record; it is kept, never shown to anyone as speech.
+      if (response.reasoning !== undefined) {
+        write({ kind: "note", source: "self", text: response.reasoning, data: { thought: true, reasoning: true, turnId } });
+      }
       if (typeof content === "string" && content.trim() !== "") {
         thoughts.push(content);
         write({ kind: "note", source: "self", text: content, data: { thought: true, turnId } });
       }
-      messages.push(calls.length > 0 ? { role: "assistant", content, toolCalls: calls } : { role: "assistant", content });
+      messages.push({
+        role: "assistant",
+        content,
+        ...(calls.length > 0 ? { toolCalls: calls } : {}),
+        ...(response.providerState ? { providerState: response.providerState } : {}),
+      });
 
       if (calls.length === 0) {
         endedBy = "no_tool_call";

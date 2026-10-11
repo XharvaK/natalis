@@ -16,7 +16,13 @@ export type ToolCall = {
 export type ChatMessage =
   | { role: "system"; content: string }
   | { role: "user"; content: string; images?: string[] }
-  | { role: "assistant"; content: string | null; toolCalls?: ToolCall[] }
+  | {
+      role: "assistant";
+      content: string | null;
+      toolCalls?: ToolCall[];
+      /** Provider fields that carry the model's reasoning to its next call in the same turn. Opaque; never shown. */
+      providerState?: Record<string, unknown>;
+    }
   | { role: "tool"; toolCallId: string; content: string };
 
 /** JSON Schema object describing a tool's arguments. */
@@ -42,6 +48,10 @@ export type ModelResponse = {
   usage?: { inputTokens?: number; outputTokens?: number };
   /** Milliseconds from request to full response. */
   latencyMs: number;
+  /** The readable summary of the model's reasoning, when the provider sends one. */
+  reasoning?: string;
+  /** Opaque provider fields to send back with this message on the next call of the same turn. */
+  providerState?: Record<string, unknown>;
 };
 
 export type ModelInfo = {

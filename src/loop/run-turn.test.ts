@@ -112,6 +112,25 @@ describe("runTurn: the two-turn tool loop", () => {
     expect(result.thoughts).toEqual(["Mara is in the notes."]);
   });
 
+  it("keeps the reasoning summary as a thought and sends the provider state back within the turn", async () => {
+    const state = { reasoning_details: [{ type: "reasoning.encrypted", data: "opaque" }] };
+    const { input, model, river } = await setup({
+      steps: [
+        { ...reply({ toolCalls: [call("read_note", { path: "people/mara.md" }, "c1")] }), reasoning: "Look at Mara's note.", providerState: state },
+        reply({ toolCalls: [call(END_TURN, {}, "c2")] }),
+      ],
+    });
+
+    await runTurn(input);
+
+    expect(rowsOf(river).find((r) => r.kind === "note")).toMatchObject({
+      text: "Look at Mara's note.",
+      data: { thought: true, reasoning: true, turnId: "turn-1" },
+    });
+    const sent = model.requests[1]?.messages.find((m) => m.role === "assistant");
+    expect(sent).toMatchObject({ role: "assistant", providerState: state });
+  });
+
   it("writes every river row in order: start, thought, call, receipt, call, receipt, end", async () => {
     const { input, river } = await setup({
       steps: [

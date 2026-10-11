@@ -80,7 +80,11 @@ function convertMessage(message: ChatMessage): ChatMessage {
     case "user":
       return message;
     case "assistant":
-      return { role: "assistant", content: assistantText(message.content, message.toolCalls ?? []) };
+      return {
+        role: "assistant",
+        content: assistantText(message.content, message.toolCalls ?? []),
+        ...(message.providerState ? { providerState: message.providerState } : {}),
+      };
     case "tool":
       return { role: "user", content: `Tool result (${message.toolCallId}): ${message.content}` };
   }

@@ -206,6 +206,8 @@ function toWireMessage(message: ChatMessage): Record<string, unknown> {
         role: "assistant",
         content: message.content ?? (calls.length > 0 ? null : ""),
       };
+      // Reasoning a provider asked to get back (for example reasoning_details) rides along unchanged.
+      if (message.providerState) Object.assign(wire, message.providerState);
       if (calls.length > 0) {
         wire.tool_calls = calls.map((call) => ({
           id: call.id,
@@ -265,6 +267,14 @@ function parseReply(
     finish: mapFinish(choice.finish_reason),
     latencyMs,
   };
+  // Providers name the readable reasoning differently; the opaque details go back on the next call.
+  const reasoning = [message.reasoning, message.reasoning_content].find(
+    (value): value is string => typeof value === "string" && value.trim() !== "",
+  );
+  if (reasoning !== undefined) response.reasoning = reasoning;
+  if (message.reasoning_details !== undefined && message.reasoning_details !== null) {
+    response.providerState = { reasoning_details: message.reasoning_details };
+  }
   if (isRecord(parsed.usage)) {
     const usage: { inputTokens?: number; outputTokens?: number } = {};
     if (typeof parsed.usage.prompt_tokens === "number") usage.inputTokens = parsed.usage.prompt_tokens;

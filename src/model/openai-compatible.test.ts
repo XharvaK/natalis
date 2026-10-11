@@ -226,6 +226,38 @@ describe("reply mapping", () => {
     expect(reply.toolCalls[0]).toMatchObject({ name: "recall", arguments: "{}" });
   });
 
+  it("keeps the reasoning summary and sends the provider's reasoning details back on the next call", async () => {
+    const details = [{ type: "reasoning.encrypted", data: "opaque" }];
+    const { port, calls } = harness([
+      chat(
+        {
+          role: "assistant",
+          content: null,
+          reasoning: "Check the notes first.",
+          reasoning_details: details,
+          tool_calls: [{ id: "call_1", type: "function", function: { name: "recall", arguments: "{}" } }],
+        },
+        "tool_calls",
+      ),
+      chat({ role: "assistant", content: "done", reasoning_content: "All found." }),
+    ]);
+
+    const first = await port.complete(asks([{ role: "user", content: "hi" }]));
+    expect(first.reasoning).toBe("Check the notes first.");
+    expect(first.providerState).toEqual({ reasoning_details: details });
+
+    const second = await port.complete(
+      asks([
+        { role: "user", content: "hi" },
+        { role: "assistant", content: null, toolCalls: first.toolCalls, providerState: first.providerState! },
+        { role: "tool", toolCallId: "call_1", content: "ok" },
+      ]),
+    );
+    expect(second.reasoning).toBe("All found.");
+    expect(second.providerState).toBeUndefined();
+    expect(calls[1]?.body.messages[1]).toMatchObject({ role: "assistant", reasoning_details: details });
+  });
+
   it("reads a content-parts reply as text", async () => {
     const { port } = harness([chat({ content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] })]);
     const reply = await port.complete(asks([{ role: "user", content: "hi" }]));
