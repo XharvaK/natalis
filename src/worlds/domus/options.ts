@@ -80,6 +80,94 @@ function factsText(facts: Record<string, unknown>): string {
     .join(", ");
 }
 
+const BAND_WORDS: Readonly<Record<string, string>> = { distress: "very low", low: "low", ok: "fine", high: "full", full: "full" };
+const ORIGIN_WORDS: Readonly<Record<string, string>> = { her_choice: "your act", script: "your act", game: "the game", native_reaction: "the game, on its own" };
+
+function textOrUndefined(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim() !== "") return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return undefined;
+}
+
+/** A game name in plain words: the tuning name of a class string, with camel case, "_" and "-" as spaces, lower case. */
+export function plainName(text: string): string {
+  const tuning = /<class '([^']*)'>/.exec(text)?.[1] ?? text;
+  const last = tuning.split(".").pop() ?? tuning;
+  return last.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function capitalised(text: string): string {
+  return text.length === 0 ? text : `${text[0]!.toUpperCase()}${text.slice(1)}`;
+}
+
+/**
+ * One percept as one plain sentence, from its fixed form. Returns undefined for a kind it does not know, or a
+ * percept missing what its sentence needs; the caller then keeps the old "kind: facts" line, so nothing is lost.
+ */
+export function perceptSentence(percept: Percept): string | undefined {
+  const facts = percept.facts;
+  switch (percept.kind) {
+    case "need": {
+      const subject = textOrUndefined(facts.subject);
+      const band = textOrUndefined(facts.band);
+      if (!subject || !band) return undefined;
+      return `${capitalised(plainName(subject))}: ${BAND_WORDS[band] ?? band}.`;
+    }
+    case "moodlet": {
+      const to = textOrUndefined(facts.to);
+      if (!to) return undefined;
+      const from = textOrUndefined(facts.from);
+      const mood = (text: string) => plainName(text.replace(/^Mood_/, ""));
+      return `Mood: ${mood(to)} now${from ? ` (was ${mood(from)})` : ""}.`;
+    }
+    case "interaction": {
+      const bucket = textOrUndefined(facts.bucket);
+      if (!bucket) return undefined;
+      const affordance = textOrUndefined(facts.affordance_text) ?? textOrUndefined(facts.tuning_name);
+      const name = affordance ? plainName(affordance) : plainName(bucket);
+      const origin = textOrUndefined(facts.origin);
+      const from = origin ? ORIGIN_WORDS[origin] : undefined;
+      const coded = [
+        textOrUndefined(facts.code) ? `Result code ${textOrUndefined(facts.code)}` : undefined,
+        textOrUndefined(facts.detail) ? `detail ${textOrUndefined(facts.detail)}` : undefined,
+      ].filter((part): part is string => part !== undefined);
+      const tail = coded.length ? ` ${coded.join(", ")}.` : "";
+      return `${capitalised(plainName(bucket))}: ${name}${from ? ` (${from})` : ""}.${tail}`;
+    }
+    case "presence": {
+      const bucket = textOrUndefined(facts.bucket);
+      if (!bucket) return undefined;
+      const verb = bucket === "arrived" ? "arrived" : bucket === "left" ? "left" : bucket === "on_lot" ? "is on the lot" : undefined;
+      if (!verb) return undefined;
+      const name = textOrUndefined(facts.name) ?? "Someone";
+      const metres = Number(textOrUndefined(facts.distance_m));
+      const parts = [
+        Number.isFinite(metres) && textOrUndefined(facts.distance_m) !== undefined ? `${Math.round(metres)} m away` : undefined,
+        textOrUndefined(facts.doing) ? plainName(textOrUndefined(facts.doing)!) : undefined,
+      ].filter((part): part is string => part !== undefined);
+      const role = textOrUndefined(facts.role);
+      return `${name} ${verb}${parts.length ? `, ${parts.join(", ")}` : ""}${role ? ` (${role})` : ""}.`;
+    }
+    case "posture": {
+      const posture = textOrUndefined(facts.bucket);
+      return posture ? `Posture: ${plainName(posture)}.` : undefined;
+    }
+    case "env":
+      return facts.from_room !== undefined ? "She moved rooms." : undefined;
+    case "sleep_onset":
+      return "She fell asleep.";
+    case "lineage": {
+      const lineage = textOrUndefined(facts.bucket);
+      const reason = textOrUndefined(facts.reason);
+      return `Her life line changed${lineage ? ` (${plainName(lineage)})` : ""}${reason ? `: ${reason}` : ""}.`;
+    }
+    case "gap":
+      return "Part of the game's feed was missed.";
+    default:
+      return undefined;
+  }
+}
+
 /**
  * The plain text of a game view for the Lar: what the game shows, then the choices it offers, each with its ref.
  * Shows the ref and the game's words only; no id, no matcher hint, no advice.
@@ -89,9 +177,10 @@ export function renderView(input: { world: string; percepts: readonly Percept[];
   let shown = 0;
   let used = lines[0]!.length;
   for (const percept of input.percepts) {
+    const sentence = perceptSentence(percept);
     const label = percept.kind.replace(/_/g, " ");
     const facts = factsText(percept.facts);
-    const line = `- ${label}${facts ? `: ${facts}` : ""}`;
+    const line = sentence !== undefined ? `- ${sentence}` : `- ${label}${facts ? `: ${facts}` : ""}`;
     if (used + line.length > VIEW_TEXT_MAX) break;
     lines.push(line);
     used += line.length;

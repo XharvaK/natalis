@@ -40,10 +40,59 @@ describe("rendering a view", () => {
       options: TABLE,
     });
     expect(text).toContain("The game (slot3) shows:");
-    expect(text).toContain("- sim arrives: subject Pim Dorrow, count 2");
     expect(text).toContain("Choices you can name with game_act, by ref:");
     expect(text).toContain("- Test kettle (here, 2.0 m): a1 Boil water; a2 Tidy up [a screen only you can use]");
     expect(text).toContain("- Test bench [no way to get there from here]: a3 Sit down");
+  });
+
+  it("says each percept kind in plain words, with the game's own names humanised and no numbers for needs or rooms", () => {
+    const text = renderView({
+      world: "slot3",
+      percepts: [
+        { kind: "need", salience: 0.6, facts: { subject: "social", band: "distress", value: 5 } },
+        { kind: "need", salience: 0.6, facts: { subject: "hunger", band: "ok", value: 61 } },
+        { kind: "need", salience: 0.6, facts: { subject: "fun", band: "full", value: 99 } },
+        { kind: "need", salience: 0.6, facts: { subject: "energy", band: "critical", value: 2 } },
+        { kind: "moodlet", salience: 0.7, facts: { subject: "mood", from: "Mood_Sad", to: "Mood_Flirty" } },
+        { kind: "interaction", salience: 0.5, facts: {
+          subject: "sim", bucket: "started", affordance_text: "<class 'sims4.tuning.instances.mirror_GussyUp'>", origin: "her_choice",
+        } },
+        { kind: "interaction", salience: 0.5, facts: {
+          subject: "sim", bucket: "ended", affordance_text: "<class 'sims4.tuning.instances.sim-stand'>", origin: "game", code: "finished", detail: "ok",
+        } },
+        { kind: "interaction", salience: 0.5, facts: { subject: "sim", bucket: "started", affordance_text: "<class 'x.y'>", origin: "native_reaction" } },
+        { kind: "presence", salience: 0.5, facts: {
+          subject: "1", bucket: "arrived", name: "Mara Quill", distance_m: "49.2", doing: "<class 'sims4.tuning.instances.sim-stand'>", role: "guest",
+        } },
+        { kind: "presence", salience: 0.5, facts: { subject: "2", bucket: "left", name: "Tobin Ash" } },
+        { kind: "env", salience: 0.4, facts: { subject: "self", object: "9", bucket: "room", from_room: "4" } },
+        { kind: "posture", salience: 0.4, facts: { subject: "self", bucket: "Sitting" } },
+        { kind: "sleep_onset", salience: 1, facts: { onset_minute: 1320 } },
+        { kind: "gap", salience: 1, facts: { subject: "session", lost: "3" } },
+      ],
+      options: [],
+    });
+    expect(text).toContain("- Social: very low.");
+    expect(text).toContain("- Hunger: fine.");
+    expect(text).toContain("- Fun: full.");
+    expect(text).toContain("- Energy: critical.");
+    expect(text).toContain("- Mood: flirty now (was sad).");
+    expect(text).toContain("- Started: mirror gussy up (your act).");
+    expect(text).toContain("- Ended: sim stand (the game). Result code finished, detail ok.");
+    expect(text).toContain("- Started: y (the game, on its own).");
+    expect(text).toContain("- Mara Quill arrived, 49 m away, sim stand (guest).");
+    expect(text).toContain("- Tobin Ash left.");
+    expect(text).toContain("- She moved rooms.");
+    expect(text).toContain("- Posture: sitting.");
+    expect(text).toContain("- She fell asleep.");
+    expect(text).toContain("- Part of the game's feed was missed.");
+    expect(text).not.toContain("subject");
+    expect(text).not.toContain("value");
+  });
+
+  it("keeps the old line for a kind it does not know", () => {
+    const text = renderView({ world: "slot3", percepts: [{ kind: "sim_arrives", salience: 0.9, facts: { subject: "Pim Dorrow", count: 2 } }], options: [] });
+    expect(text).toContain("- sim arrives: subject Pim Dorrow, count 2");
   });
 
   it("says so when the view offers no choices, and states answer rules in plain words", () => {
