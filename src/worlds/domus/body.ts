@@ -248,6 +248,16 @@ function carryLine(inventory: unknown): string | undefined {
   return items.length ? `You carry: ${items.join(", ")}.` : undefined;
 }
 
+/** The season and the weather of the lot: the season first, then the weather words, all in plain words. */
+function weatherLine(portrait: Record_): string | undefined {
+  const season = wordOf(portrait.season);
+  const weather = Array.isArray(portrait.weather)
+    ? portrait.weather.map((item) => wordOf(item)?.replace(/_/g, " ").toLowerCase()).filter((item): item is string => item !== undefined)
+    : [];
+  const parts = [season?.replace(/_/g, " ").toLowerCase(), ...weather].filter((item): item is string => item !== undefined);
+  return parts.length ? `${capitalised(parts.join(", "))}.` : undefined;
+}
+
 /** The "You" section from the helper's portrait of her Sim: each part is skipped when absent or malformed. */
 function youLines(self: unknown): string[] {
   const s = record(self);
@@ -287,6 +297,8 @@ export function bodyLines(portrait: unknown, attachment?: AttachmentNow, attenti
   if (!p) return lines;
   const clock = clockLine(p);
   if (clock) lines.push(clock);
+  const weather = weatherLine(p);
+  if (weather) lines.push(weather);
   const room = textOrUndefined(record(p.zone)?.room_label);
   if (room) lines.push(`Room: ${room}.`);
   const posture = textOrUndefined(p.posture);

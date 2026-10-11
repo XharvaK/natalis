@@ -276,3 +276,34 @@ describe("the You section: her aspiration, her bills and what she carries", () =
     expect(lines).toEqual(["You are Cheerful.", "No bills owed.", "You carry: phone."]);
   });
 });
+
+describe("the weather and the season, after the game time", () => {
+  const CLOCK = { time: { hour: 14, minute: 5, weekday: "Monday", day_index: 0, week: 3 } };
+
+  it("says the season first, capitalised, then the weather in lower case, right after the game time", () => {
+    expect(bodyLines({ ...CLOCK, season: "SPRING", weather: ["SUNNY", "WINDY"] })).toEqual([
+      "Game time: Monday 14:05.",
+      "Spring, sunny, windy.",
+    ]);
+    expect(bodyLines({ ...CLOCK, zone: { room_label: "Test kitchen" }, season: "SPRING" })).toEqual([
+      "Game time: Monday 14:05.",
+      "Spring.",
+      "Room: Test kitchen.",
+    ]);
+  });
+
+  it("turns underscores into spaces, and says the weather alone when there is no season", () => {
+    expect(bodyLines({ ...CLOCK, weather: ["HEAVY_RAIN"] })).toEqual(["Game time: Monday 14:05.", "Heavy rain."]);
+    expect(bodyLines({ ...CLOCK, season: "SUMMER" })).toEqual(["Game time: Monday 14:05.", "Summer."]);
+  });
+
+  it("says nothing when both are absent, and says the line without a game time when there is no clock", () => {
+    expect(bodyLines({ ...CLOCK, season: null, weather: [] })).toEqual(["Game time: Monday 14:05."]);
+    expect(bodyLines({ season: "AUTUMN" })).toEqual(["Autumn."]);
+  });
+
+  it("skips what is malformed, and keeps the rest", () => {
+    expect(bodyLines({ ...CLOCK, season: 3, weather: "sunny" })).toEqual(["Game time: Monday 14:05."]);
+    expect(bodyLines({ ...CLOCK, season: "", weather: [1, null, "", "SUNNY"] })).toEqual(["Game time: Monday 14:05.", "Sunny."]);
+  });
+});
