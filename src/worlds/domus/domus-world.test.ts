@@ -511,8 +511,8 @@ describe("game pictures: the Lar asks, the helper takes, the shelf keeps", () =>
 describe("the world's surface", () => {
   it("offers one game tool, says what it is about, and refuses words", async () => {
     expect(world?.id).toBe("domus");
-    expect(world?.tools().map((item) => item.spec.name)).toEqual(["game_act", "game_snapshot", "game_attention"]);
-    expect(world?.tools().map((item) => item.spec.safeWhenStopped)).toEqual([undefined, undefined, undefined]);
+    expect(world?.tools().map((item) => item.spec.name)).toEqual(["game_act", "game_snapshot", "game_attention", "game_look"]);
+    expect(world?.tools().map((item) => item.spec.safeWhenStopped)).toEqual([undefined, undefined, undefined, undefined]);
     expect(world?.about?.()).toBe("The Sims 4 (Domus): your household's game, at domus:<world>, while your summoner's helper is attached.");
     expect(await world?.say("domus:slot3", "hello")).toMatchObject({ ok: false, refused: { code: "no_words" } });
   });
@@ -692,5 +692,36 @@ describe("her attention: which views wake her, and the setting she keeps", () =>
     expect((await syncBody()).look).toBeUndefined();
     await attach();
     expect((await syncBody()).look).toBe(true);
+  });
+});
+
+describe("a fresh look: she asks, the helper answers on its sync, and the answer wakes her", () => {
+  function look(thread = "domus:slot3"): Promise<Receipt> {
+    return tool("game_look").run({}, { thread, turnId: "t-look", nowMs: clock } as ToolContext);
+  }
+
+  async function syncBody(): Promise<Record<string, unknown>> {
+    return (await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [] })).body;
+  }
+
+  it("is refused with not_attached while the game is not attached, and nothing is owed", async () => {
+    expect(await look()).toMatchObject({ ok: false, refused: { code: "not_attached" } });
+    expect((await syncBody()).look).toBeUndefined();
+  });
+
+  it("is handed to the helper once, on its next sync, as look: true", async () => {
+    await attach();
+    expect(await look()).toMatchObject({ ok: true });
+    expect((await syncBody()).look).toBe(true);
+    expect((await syncBody()).look).toBeUndefined();
+  });
+
+  it("is answered by a look view, which wakes her even when she is quiet", async () => {
+    await attach();
+    await tool("game_attention").run({ mode: "quiet", until: new Date(clock + 3_600_000).toISOString() }, {
+      thread: "domus:slot3", turnId: "t-attention", nowMs: clock,
+    } as ToolContext);
+    await call("/domus/observation", viewBody({ percepts: [{ kind: "look", salience: 0, facts: { bucket: "asked" } }] }));
+    expect(events[0]).toMatchObject({ wake: true, view: "domus" });
   });
 });

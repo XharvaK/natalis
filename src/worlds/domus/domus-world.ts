@@ -9,6 +9,7 @@ import type { World, WorldBody, WorldEvent } from "../../contracts.js";
 import type { AttachmentNow } from "./body.js";
 import { attentionLine, type AttentionContext, currentAttention, gameAttentionTool, reviewAttention, wakesFor } from "./attention.js";
 import { gameActTool, type GameActContext } from "./game-act.js";
+import { gameLookTool, type LookContext } from "./look.js";
 import { isStopOn } from "../../entity/stop.js";
 import { expireDue, pendingCounts, syncActs, type ThreadNote, withdrawUndone, withholdForStop } from "./acts.js";
 import { choicesSignature, optionsOf, renderView, viewBrief } from "./options.js";
@@ -247,6 +248,19 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     const heartbeats = book;
     if (!current || !heartbeats) return null;
     return { db: current, nowMs, attachedSession: (at: number) => heartbeats.attachedSession(at) };
+  };
+
+  /** What the game_look tool reads on each call: null while the world is not running. */
+  const openLook = (): LookContext => {
+    const current = db;
+    const heartbeats = book;
+    if (!current || !heartbeats) return null;
+    return {
+      db: current,
+      nowMs,
+      attachedSession: (at: number) => heartbeats.attachedSession(at),
+      lastAttachedMs: () => heartbeats.lastAttachedAt(),
+    };
   };
 
   /** What the game_attention tool reads on each call: null while the world is not running. */
@@ -552,7 +566,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     },
 
     tools() {
-      return [gameActTool(open), gameSnapshotTool(openSnapshot), gameAttentionTool(openAttention)];
+      return [gameActTool(open), gameSnapshotTool(openSnapshot), gameAttentionTool(openAttention), gameLookTool(openLook)];
     },
 
     about() {

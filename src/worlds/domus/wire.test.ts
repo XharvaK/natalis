@@ -38,6 +38,11 @@ function refusal(fn: () => unknown): { status: number; code: string } {
 }
 
 describe("observations (v1)", () => {
+  it("admits a view that answers a look: its percept of kind look is kept as sent", () => {
+    const parsed = parseObservation(view({ percepts: [{ kind: "look", salience: 0, facts: { bucket: "asked" } }] }), NOW);
+    expect(parsed.percepts).toEqual([{ kind: "look", salience: 0, facts: { bucket: "asked" } }]);
+  });
+
   it("admits a well-formed view and keeps its fields", () => {
     const parsed = parseObservation(view(), NOW);
     expect(parsed.observationId).toBe("helper-1.1");
