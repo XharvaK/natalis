@@ -123,6 +123,10 @@ const RECALL_LIMIT = 8;
 const RECALL_WORDS = 4;
 const RECALL_CLIP = 300;
 const MOOD_LIMIT = 200;
+/** The most characters a wake's reason may hold, so a wake can never carry a page of text into every later turn. */
+const WAKE_WHY_MAX = 500;
+/** Context-size rejections in a row after which a thread waits for a new event instead of trying the same words again. */
+const OVERSIZE_TRIES = 3;
 const WAKE_LIMIT_MINUTES = 60 * 24 * 365 * 10;
 const TIMER_LIMIT_MS = 2_147_483_647;
 const ALL_ROWS = 1_000_000;
@@ -470,6 +474,8 @@ class Runtime implements Entity {
   /** Retries waiting after a failed turn, per thread. */
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly failures = new Map<string, number>();
+  /** Context-size rejections in a row per thread. Reset by a turn that finishes and by a new event for the thread. */
+  private readonly oversized = new Map<string, number>();
   /** The river seq each running turn started from, by turn id. A say reads it to see which asks the turn saw. */
   private readonly turnSnapshots = new Map<string, number>();
   private readonly wakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -651,6 +657,8 @@ class Runtime implements Entity {
     const actor = event.actor ?? (event.source === "owner" ? this.config.owner.alias : undefined);
     // Every thread with an event gets a cursor entry, so a restart knows where its events begin.
     this.threadState(thread);
+    // A new event is a new chance for a thread the model kept rejecting as too large.
+    this.oversized.delete(thread);
     if (event.source === "owner" && this.isOwnerPlace(event.place)) {
       // The summoner's own place. The welcome notice goes first, then a "!" line is a body command: it is never a turn
       // and opens no ask. Everything else is an ordinary message.
@@ -745,7 +753,7 @@ class Runtime implements Entity {
     const shown = new Set<number>([...recent, ...fresh].map((row) => row.seq));
     const done = this.doneBeforeCut(thread, seen);
     this.countTurn(nowMs);
-    const system = this.systemText(thread, fresh, shown, nowMs, snapshot);
+    const { text: system, sizes } = this.systemText(thread, fresh, shown, nowMs, snapshot);
     const event = [
       "Recent here:",
       ...(recent.length === 0 ? ["(nothing yet)"] : recent.map((row) => this.lineFor(row))),
@@ -785,10 +793,13 @@ class Runtime implements Entity {
     }
     if (result.endedBy === "model_error") {
       // The cursor stays too, so the retry takes the same events. The owner's asks are not touched.
-      this.failTurn(thread, result.error ?? "unknown error", true, turnId);
+      const message = result.error ?? "unknown error";
+      const oversize = isOversized(message) ? `${sizes}, the new messages and recent lines ${event.length} characters` : undefined;
+      this.failTurn(thread, message, true, turnId, oversize);
       return;
     }
     this.failures.delete(thread);
+    this.oversized.delete(thread);
     const cursor = this.threadState(thread);
     cursor.seenSeq = snapshot;
     cursor.lastTurnMs = this.nowMs();
@@ -834,20 +845,35 @@ class Runtime implements Entity {
     return lines;
   }
 
-  private failTurn(thread: string, message: string, fromModel: boolean, turnId?: string): void {
+  /**
+   * Records a failed turn and schedules its retry. A turn the model rejected as too large (`oversize` names the sections
+   * and their sizes) is tried again only until OVERSIZE_TRIES rejections in a row; then the thread waits for a new event.
+   */
+  private failTurn(thread: string, message: string, fromModel: boolean, turnId?: string, oversize?: string): void {
     if (this.stopping) return;
     const failed = this.failures.get(thread) ?? 0;
     this.failures.set(thread, failed + 1);
+    const rejections = oversize === undefined ? 0 : (this.oversized.get(thread) ?? 0) + 1;
+    if (oversize !== undefined) this.oversized.set(thread, rejections);
+    const giveUp = oversize !== undefined && rejections >= OVERSIZE_TRIES;
     const delay = this.delays[Math.min(failed, this.delays.length - 1)] ?? 0;
     const seconds = Math.ceil(delay / 1000);
     const cause = fromModel ? "Your turn failed (model error)" : "Your turn failed";
+    const text =
+      oversize === undefined
+        ? `${cause}; trying again in ${seconds} s.`
+        : `${cause}, too large for your model's context (${oversize}). ${
+            giveUp
+              ? `It was too large ${OVERSIZE_TRIES} times in a row, so it will not be tried again until a new message or event arrives.`
+              : `Trying again in ${seconds} s.`
+          }`;
     this.river.append({
       thread,
       kind: "note",
       source: "body",
-      text: `${cause}; trying again in ${seconds} s.`,
+      text,
       data: {
-        retryInMs: delay,
+        ...(giveUp ? {} : { retryInMs: delay }),
         failures: failed + 1,
         error: this.scanner.redact(message).slice(0, 500),
         ...(turnId === undefined ? {} : { turnId }),
@@ -855,6 +881,7 @@ class Runtime implements Entity {
       atMs: this.nowMs(),
     });
     this.cancelRetry(thread);
+    if (giveUp) return;
     const timer = setTimeout(() => {
       this.retries.delete(thread);
       if (this.stopping) return;
@@ -1176,7 +1203,13 @@ class Runtime implements Entity {
 
   // --- what the Lar sees --------------------------------------------------------------------------
 
-  private systemText(thread: string, fresh: RiverRow[], shown: Set<number>, nowMs: number, snapshot: number): string {
+  private systemText(
+    thread: string,
+    fresh: RiverRow[],
+    shown: Set<number>,
+    nowMs: number,
+    snapshot: number,
+  ): { text: string; sizes: string } {
     const wakes = this.state.wakes.map((wake) => ({ atMs: wake.atMs, why: wake.why, repeat: wake.repeat, clock: wake.clock }));
     // What stays the same from turn to turn comes first, so the provider can reuse it; what changes comes last.
     const sections: ContextSection[] = [
@@ -1199,7 +1232,10 @@ class Runtime implements Entity {
     ];
     const recall = this.recallText(thread, fresh, shown);
     if (recall !== "") sections.push({ name: "recall", text: recall, priority: 40 });
-    return assembleSystem(sections, this.config.model.contextTokens).text;
+    return {
+      text: assembleSystem(sections, this.config.model.contextTokens).text,
+      sizes: sections.map((section) => `${section.name} ${section.text.length} characters`).join(", "),
+    };
   }
 
   private identityText(nowMs: number): string {
@@ -1438,7 +1474,7 @@ class Runtime implements Entity {
             properties: {
               in_minutes: { type: "number", minimum: 0, description: "Minutes from now." },
               at_iso: { type: "string", description: "A date and time, such as 2026-10-12T09:00:00+03:00." },
-              why: { type: "string", description: "Why you are waking, in your own words." },
+              why: { type: "string", description: "Why you are waking, in your own words. At most 500 characters." },
               repeat: {
                 type: "string",
                 enum: ["daily", "weekly"],
@@ -1857,6 +1893,13 @@ class Runtime implements Entity {
   private async scheduleWake(args: Args, context: ToolContext): Promise<Receipt> {
     const why = requireText(args, "why", "The reason");
     if (!why.ok) return why.receipt;
+    if (Array.from(why.value).length > WAKE_WHY_MAX) {
+      return refuse(
+        "bad_arguments",
+        `Keep the reason for a wake to ${WAKE_WHY_MAX} characters.`,
+        `the wake reason is longer than ${WAKE_WHY_MAX} characters`,
+      );
+    }
     const secret = this.secretHold(why.value, "nothing was kept");
     if (secret !== undefined) return secret;
     const hasMinutes = args["in_minutes"] !== undefined;
@@ -2103,6 +2146,14 @@ export function forgetInStateFile(statePath: string, query: string): number {
   const count = scrubState(state, queryWords(query));
   if (count > 0) writeStateFile(statePath, state);
   return count;
+}
+
+/**
+ * True when the provider refused a request as too large for its context window. Only a refused request (a bad request,
+ * not a rate limit or an outage) that names the context or the token limit counts.
+ */
+function isOversized(message: string): boolean {
+  return /rejected the request/i.test(message) && /context|too (large|long|many)|maximum .*tokens/i.test(message);
 }
 
 function messageOf(err: unknown): string {

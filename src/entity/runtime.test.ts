@@ -499,6 +499,28 @@ describe("failures", () => {
     expect(userTextOf(model.requests[1])).toContain("owner] Are you there?");
   });
 
+  it("stops retrying a turn the model rejects as too large after three tries, says what was too large, and tries again on a new message", async () => {
+    const tooLarge = (): ModelError =>
+      new ModelError("model service rejected the request (HTTP 400): This model's maximum context length is 32768 tokens.", "bad_request", 1);
+    const model = new ScriptedModel([tooLarge(), tooLarge(), tooLarge(), reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model, { retryDelaysMs: [5] });
+    await entity.start();
+
+    cli.send("Hello?");
+    await entity.idle();
+    expect(model.requests).toHaveLength(3);
+    const notes = allRows(entity).filter((row) => row.kind === "note").map((row) => row.text ?? "");
+    const sizeNote = notes.filter((text) => text.includes("too large")).at(-1) ?? "";
+    expect(sizeNote).toContain("constitution");
+    expect(sizeNote).toContain("characters");
+    expect(sizeNote).toContain("will not be tried again");
+
+    cli.send("Still there?");
+    await entity.idle();
+    expect(model.requests).toHaveLength(4);
+    expect(userTextOf(model.requests[3])).toContain("Still there?");
+  });
+
   it("shows a retried turn the say and the wake its cut attempt already made, so it does not repeat them", async () => {
     const model = new ScriptedModel([
       reply({
@@ -1740,6 +1762,28 @@ describe("repeating wakes", () => {
     writeWakes([{ id: "bad00001", atMs: NOW + 60_000, why: "x", scheduledIn: "summoner", repeat: "hourly", clock: "09:00" }]);
 
     await expect(open(new ScriptedModel([]), { nowMs: () => NOW })).rejects.toThrow(/repeat/);
+  });
+
+  it("refuses a wake reason longer than 500 characters, names the limit, and keeps no wake for it", async () => {
+    const model = new ScriptedModel([
+      reply({
+        toolCalls: [
+          call("schedule_wake", { in_minutes: 60, why: "x".repeat(501) }, "w1"),
+          call("schedule_wake", { in_minutes: 60, why: "y".repeat(500) }, "w2"),
+        ],
+      }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    cli.send("Go.");
+    await entity.idle();
+
+    const receipts = receiptsShownIn(model.requests[1]);
+    expect(receipts[0]).toMatchObject({ ok: false, refused: { code: "bad_arguments" } });
+    expect(String(receipts[0]?.["summary"])).toContain("500 characters");
+    expect(receipts[1]).toMatchObject({ ok: true });
+    expect(readStateJson().wakes).toHaveLength(1);
   });
 
   it("refuses a 101st wake, names the count and how to cancel one", async () => {
