@@ -23,6 +23,8 @@ export const ACT_TTL_MS = 90_000;
 export const PLAN_STEP_MAX_MS = 5 * 60 * 1000;
 /** A plan is the first act and at most this many more. */
 export const PLAN_MORE = 2;
+/** Another thread's request for the game within this time holds a new act, unless the Lar says it knowingly. */
+export const ACT_MEANWHILE_MS = 60_000;
 
 const TERMINAL: ReadonlySet<string> = new Set(["rejected", "finished", "unknown", "expired"]);
 const RANK: Readonly<Record<string, number>> = { requested: 0, received: 1, accepted: 2, pushed: 3 };
@@ -86,6 +88,19 @@ function insertAct(db: DatabaseSync, row: {
     requested_at_ms, expires_at_ms, updated_at_ms, for_summoner, answer_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'requested', ?, ?, ?, ?, ?)`)
     .run(row.actId, row.turnId, row.thread, row.attachment, row.observationId, row.ref, row.objectId, row.guid64, row.label,
       row.nowMs, row.nowMs + ACT_TTL_MS, row.nowMs, row.forSummoner ? 1 : 0, row.answerJson);
+}
+
+/**
+ * The newest request of any other thread of hers within ACT_MEANWHILE_MS, or undefined. A released plan step is an act
+ * row of the thread that planned it, so it counts as that thread's request, at the time it was released.
+ */
+export function actRequestedMeanwhile(db: DatabaseSync, input: { thread: string; nowMs: number }): {
+  thread: string; label: string; requestedAtMs: number;
+} | undefined {
+  const row = db.prepare(`SELECT thread, label, requested_at_ms FROM acts WHERE thread != ? AND requested_at_ms >= ?
+    ORDER BY requested_at_ms DESC, act_id LIMIT 1`).get(input.thread, input.nowMs - ACT_MEANWHILE_MS) as Row | undefined;
+  if (!row) return undefined;
+  return { thread: String(row.thread), label: String(row.label), requestedAtMs: Number(row.requested_at_ms) };
 }
 
 /**
@@ -184,7 +199,13 @@ function phaseSentence(phase: DomusActPhase, detail: Record<string, unknown>, la
       return `it was cut short: ${ending.why ?? "the game ended it early"}`;
     }
     case "rejected": return `the game refused it${code}${reason}`;
-    case "unknown": return `nothing says how it ended${code}${reason}`;
+    case "unknown":
+      // A phone act runs at once and never waits in her queue; "nothing says how it ended (LEFT_QUEUE)" read as if it had
+      // waited, so that code gets its own words.
+      if (detail.code === "LEFT_QUEUE") {
+        return "It never waited in her queue: the game took it at once or dropped it, and did not say how it ended. A phone act often runs this way; what changed in your next view tells";
+      }
+      return `nothing says how it ended${code}${reason}`;
     case "expired":
       if (detail.code === "STOPPED") return "it was withdrawn before the game picked it up, because your summoner's stop is on";
       if (detail.code === "UNDONE") return "it was withdrawn, because the game went back before the view you chose it from";
