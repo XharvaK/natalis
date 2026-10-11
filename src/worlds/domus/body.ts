@@ -3,7 +3,7 @@
 // says what she should do, never ranks anything, and never speaks for her. A field that is missing or malformed is
 // skipped; a portrait never makes the view fail.
 
-import { BAND_WORDS, capitalised, plainName, textOrUndefined } from "./words.js";
+import { BAND_WORDS, capitalised, plainName, textOrUndefined, withStop, withoutStop } from "./words.js";
 
 /** The longest text of an open window the block shows, in characters. */
 const WINDOW_TEXT_MAX = 160;
@@ -53,6 +53,20 @@ function namesOf(value: unknown): string[] {
     : [];
 }
 
+/**
+ * Running or queued acts in words: the helper's sentence for an act of that state where it sent one (matched by the
+ * name the view already shows), else the plain name.
+ */
+function actWords(value: unknown, doingSaid: Record_[], state: string): string[] {
+  const sentences = new Map<string, string>();
+  for (const item of doingSaid) {
+    const name = textOrUndefined(item.name);
+    const text = textOrUndefined(item.sentence);
+    if (item.state === state && name !== undefined && text !== undefined) sentences.set(plainName(name), withoutStop(text));
+  }
+  return namesOf(value).map((name) => sentences.get(name) ?? name);
+}
+
 function needsLine(needs: Record_ | undefined): string | undefined {
   if (!needs) return undefined;
   const items: string[] = [];
@@ -70,11 +84,17 @@ function companyLines(company: Record_[]): string[] {
   const heard = company.filter((item) => item.heard === true);
   const lines: string[] = [];
   const people = seen.map((item) => {
+    const name = textOrUndefined(item.name) ?? "someone";
     const away = metres(item.distance_m);
+    const said = textOrUndefined(item.said);
+    if (said !== undefined) {
+      // SS4-v3: what this Sim is saying or doing, in the helper's sentence, after the name and distance.
+      return `${away === undefined ? name : `${name}, ${away} m away`} — ${withoutStop(said)}`;
+    }
     const doing = textOrUndefined(item.doing);
     const details = [away === undefined ? undefined : `${away} m away`, doing === undefined ? undefined : plainName(doing)]
       .filter((part): part is string => part !== undefined);
-    return `${textOrUndefined(item.name)}${details.length ? ` (${details.join(", ")})` : ""}`;
+    return `${name}${details.length ? ` (${details.join(", ")})` : ""}`;
   });
   lines.push(people.length ? `With you: ${people.join("; ")}.` : "With you: no one you can see.");
   if (heard.length) {
@@ -93,6 +113,9 @@ function talkingLines(addressedBy: Record_[], company: Record_[]): string[] {
     if (item.heard !== true && name !== undefined) names.set(String(item.id ?? ""), name);
   }
   return addressedBy.slice(0, LISTED_MAX).map((item) => {
+    const sentence = textOrUndefined(item.sentence);
+    // SS4-v3: the helper's sentence, already said to her ("you"), when it sent one.
+    if (sentence !== undefined) return `Talking to you: ${withStop(sentence)}`;
     const by = textOrUndefined(item.by);
     const who = (by !== undefined ? names.get(by) : undefined) ?? "someone";
     const act = textOrUndefined(item.interaction);
@@ -303,11 +326,12 @@ export function bodyLines(portrait: unknown, attachment?: AttachmentNow, attenti
   if (room) lines.push(`Room: ${room}.`);
   const posture = textOrUndefined(p.posture);
   if (posture) lines.push(`Posture: ${plainName(posture)}.`);
+  const doingSaid = records(p.doing_said);
   if (Array.isArray(p.running)) {
-    const running = namesOf(p.running);
+    const running = actWords(p.running, doingSaid, "running");
     lines.push(running.length ? `Doing: ${running.join(", ")}.` : "Doing: nothing.");
   }
-  const queued = namesOf(p.queued);
+  const queued = actWords(p.queued, doingSaid, "queued");
   if (queued.length) lines.push(`Queued: ${queued.join(", ")}.`);
   const mood = textOrUndefined(p.mood);
   if (mood) lines.push(`Mood: ${plainName(mood)}.`);
