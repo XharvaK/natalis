@@ -252,6 +252,36 @@ describe("a conversation", () => {
     expect(userTextOf(model.requests[0])).toContain("owner] Are you there?");
   });
 
+  it("writes a world's event that arrives after shutdown began as a river row, so the next start takes it", async () => {
+    let emitLate: ((event: WorldEvent) => void) | undefined;
+    const late: World = {
+      id: "fake",
+      async start(next) {
+        emitLate = next;
+      },
+      async stop() {
+        emitLate?.({ world: "fake", place: "fake:room", actor: "mara", source: "outside", text: "Sent as you stopped." });
+        emitLate = undefined;
+      },
+      async say(): Promise<Receipt> {
+        return { ok: true, summary: "Delivered." };
+      },
+      tools: () => [],
+      now: () => "fake is open.",
+    };
+    const a = await open(new ScriptedModel([]), {}, [late]);
+    await a.entity.start();
+    await a.entity.stop();
+
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const b = await open(model, {}, [fakeWorld("fake").world]);
+    await b.entity.start();
+    await b.entity.idle();
+
+    expect(model.requests).toHaveLength(1);
+    expect(userTextOf(model.requests[0])).toContain("Sent as you stopped.");
+  });
+
   it("takes a room's message again on the next start when a stop cut its turn, not only the summoner's asks", async () => {
     let entered: () => void = () => {};
     const inTurn = new Promise<void>((resolve) => (entered = resolve));

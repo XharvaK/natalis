@@ -495,6 +495,7 @@ class Runtime implements Entity {
 
   private started = false;
   private stopping = false;
+  private closed = false;
   private stopped: Promise<void> | undefined;
 
   constructor(init: RuntimeInit) {
@@ -636,6 +637,7 @@ class Runtime implements Entity {
     }
     await Promise.allSettled([...this.running.values()]);
     this.saveState();
+    this.closed = true;
     this.river.close();
     this.resolveIdle();
     if (failures.length > 0) throw failures[0];
@@ -644,7 +646,8 @@ class Runtime implements Entity {
   // --- intake -----------------------------------------------------------------------------------
 
   private intake(event: WorldEvent): void {
-    if (this.stopping) return;
+    // Once the river is closed there is nowhere to write an event; the worlds have been told to stop by then.
+    if (this.closed) return;
     if (typeof event.world !== "string" || event.world === "") throw new TypeError("A world event needs its world id.");
     if (typeof event.place !== "string" || event.place.trim() === "") {
       throw new TypeError(`World ${event.world} sent an event with no place.`);
@@ -659,9 +662,9 @@ class Runtime implements Entity {
     this.threadState(thread);
     // A new event is a new chance for a thread the model kept rejecting as too large.
     this.oversized.delete(thread);
-    if (event.source === "owner" && this.isOwnerPlace(event.place)) {
+    if (!this.stopping && event.source === "owner" && this.isOwnerPlace(event.place)) {
       // The summoner's own place. The welcome notice goes first, then a "!" line is a body command: it is never a turn
-      // and opens no ask. Everything else is an ordinary message.
+      // and opens no ask. Everything else is an ordinary message. During shutdown there are no commands to answer.
       this.queueOutbox(() => this.sendWelcome(event.place));
       if (isSummonerCommand(event.text)) {
         this.state.lastOwnerMs = atMs;
@@ -686,6 +689,8 @@ class Runtime implements Entity {
       this.state.lastOwnerMs = atMs;
       this.saveState();
     }
+    // An event that arrives during shutdown is written above, so the next start takes it; nothing is woken now.
+    if (this.stopping) return;
     if (event.wake !== false) {
       this.due.add(thread);
       this.pump();
