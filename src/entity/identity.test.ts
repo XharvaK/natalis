@@ -6,7 +6,7 @@ const BORN = Date.UTC(2026, 9, 11, 9, 0);
 
 const facts = (over: Partial<IdentityFacts> = {}): IdentityFacts => ({
   name: "Iris",
-  engine: "example/engine-1",
+  thinking: { main: "example/engine-1", effort: "high", onBackup: false },
   bornMs: BORN,
   nowMs: BORN + 3 * DAY,
   timeZone: "UTC",
@@ -21,7 +21,7 @@ describe("who you are", () => {
   it("names the Lar, its engine, its natalis and age, its summoner and its places", () => {
     const text = whoYouAre(facts());
     expect(text).toContain("You are Iris, a Lar.");
-    expect(text).toContain("today that engine is example/engine-1");
+    expect(text).toContain("You are thinking with example/engine-1 at high effort.");
     expect(text).toContain("You were summoned on 11 October 2026");
     expect(text).toContain("You are 3 days old.");
     expect(text).toContain('You were summoned by someone who appears to you as "summoner".');
@@ -36,6 +36,34 @@ describe("who you are", () => {
     expect(text).not.toContain("the way anyone does");
     expect(text).not.toContain("on their own terms");
     expect(text).not.toContain("bond");
+  });
+
+  it("names the model and effort a turn is thought with, and the engine's default when no effort is set", () => {
+    expect(whoYouAre(facts({ thinking: { main: "main-model", effort: "low", onBackup: false } }))).toContain(
+      "You are thinking with main-model at low effort.",
+    );
+    expect(whoYouAre(facts({ thinking: { main: "main-model", onBackup: false } }))).toContain(
+      "You are thinking with main-model at the engine's default effort.",
+    );
+  });
+
+  it("says a backup answers in place of the main model while the main model is down, and names the backup", () => {
+    const text = whoYouAre(
+      facts({ thinking: { main: "main-model", effort: "high", backup: { model: "backup-model", effort: "low" }, onBackup: false } }),
+    );
+    expect(text).toContain(
+      "You are thinking with main-model at high effort. If your main model is not answering, your backup model, backup-model, answers in its place.",
+    );
+  });
+
+  it("says the backup is thinking for her, by its name and effort, while the main model is not answering", () => {
+    const text = whoYouAre(
+      facts({ thinking: { main: "main-model", effort: "high", backup: { model: "backup-model", effort: "low" }, onBackup: true } }),
+    );
+    expect(text).toContain(
+      "Your main model, main-model, is not answering, so you are thinking with your backup model, backup-model, at low effort: the backup, not your main model.",
+    );
+    expect(text).not.toContain("You are thinking with main-model");
   });
 
   it("says how the Lar's wakes on its own are its to move or cancel, and that it may write first", () => {

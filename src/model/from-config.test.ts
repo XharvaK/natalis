@@ -215,3 +215,10 @@ describe("worldModelsFromConfig", () => {
     expect(worldModelsFromConfig(config, undefined, undefined, { [KEY_VAR]: KEY })).toEqual({});
   });
 });
+
+describe("the routing of a world's own model", () => {
+  it("keeps the backup's routing on a world model that cannot see pictures", () => {
+    const ports = worldModelsFromConfig(config, "high", { game: { model: "fast-model" } }, { [KEY_VAR]: KEY });
+    expect(ports["game"]?.routing?.()).toEqual({ onBackup: false, backup: config.model, backupEffort: "high" });
+  });
+});

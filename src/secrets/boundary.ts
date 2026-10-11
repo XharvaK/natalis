@@ -43,6 +43,7 @@ export function guardRiver(river: River, scanner: SecretScanner): River {
       });
     },
     read: (query) => river.read(query),
+    count: (query) => river.count(query),
     search: (text, options) => river.search(text, options),
     forget: (match, by, reason) => river.forget(match, by, scanner.redact(reason)),
     lastSeq: () => river.lastSeq(),
@@ -82,9 +83,11 @@ function guardMessage(scanner: SecretScanner, message: ChatMessage): ChatMessage
 }
 
 export function guardModel(model: ModelPort, scanner: SecretScanner): ModelPort {
+  const routing = model.routing;
   return {
     info: model.info,
     complete: (request, signal) =>
       model.complete({ ...request, messages: request.messages.map((message) => guardMessage(scanner, message)) }, signal),
+    ...(routing === undefined ? {} : { routing }),
   };
 }

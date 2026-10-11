@@ -2625,3 +2625,140 @@ describe("views shrink to briefs", () => {
     expect(fresh).toContain("Full text two.");
   });
 });
+
+describe("what a turn says it leaves out", () => {
+  /** A world whose events the test sends one by one, with or without a wake. */
+  function eventWorld(id: string): { world: World; emit(event: WorldEvent): void } {
+    let emitter: ((event: WorldEvent) => void) | undefined;
+    return {
+      world: {
+        id,
+        async start(next) {
+          emitter = next;
+        },
+        async stop() {
+          emitter = undefined;
+        },
+        async say(): Promise<Receipt> {
+          return { ok: true, summary: "Delivered." };
+        },
+        tools: () => [],
+        now: () => `${id} is open.`,
+      },
+      emit(event) {
+        if (emitter === undefined) throw new Error("the event world is not started");
+        emitter(event);
+      },
+    };
+  }
+
+  const HALL = "fake:hall";
+  const OTHER = "fake:cellar";
+
+  /** Quiet lines that do not wake the Lar, then one line that does, and a second that does: the first turn sees the quiet lines, so the second turn's Recent block holds them. */
+  async function twoTurns(quiet: number, cellar: number): Promise<string> {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);
+    const hall = eventWorld("fake");
+    const { entity } = await open(model, {}, [hall.world]);
+    await entity.start();
+    for (let i = 1; i <= cellar; i += 1) hall.emit({ world: "fake", place: OTHER, actor: "mara", source: "outside", text: `Cellar ${i}.`, wake: false });
+    for (let i = 1; i <= quiet; i += 1) hall.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: `Quiet line ${i}.`, wake: false });
+    hall.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: "First." });
+    await entity.idle();
+    hall.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: "Second." });
+    await entity.idle();
+    expect(model.requests).toHaveLength(2);
+    return userTextOf(model.requests[1]);
+  }
+
+  it("says how many older rows of its thread the turn leaves out, before the rows it shows", async () => {
+    const user = await twoTurns(35, 3);
+    expect(user).toContain("Recent here:\n(6 older messages here are not shown; recall finds them.)\n[");
+    expect(user).toContain("Quiet line 7.");
+    expect(user).not.toContain("Quiet line 6.");
+    expect(user).not.toContain("Cellar");
+    expect(user).toContain("Second.");
+  });
+
+  it("says one older message in the singular", async () => {
+    const user = await twoTurns(30, 0);
+    expect(user).toContain("Recent here:\n(1 older message here is not shown; recall finds them.)\n[");
+  });
+
+  it("says nothing about older rows when the turn shows them all", async () => {
+    const user = await twoTurns(3, 2);
+    expect(user).not.toContain("not shown");
+    expect(user).toContain("Quiet line 1.");
+  });
+  it("marks a line from a bot, and a line a flood or loop hold kept from waking the Lar", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const hall = eventWorld("fake");
+    const { entity } = await open(model, {}, [hall.world]);
+    await entity.start();
+
+    hall.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: "Hello from a bot.", data: { bot: true }, wake: false });
+    hall.emit({
+      world: "fake",
+      place: HALL,
+      actor: "crier",
+      source: "outside",
+      text: "Held words.",
+      data: { bot: true, heldBy: "a burst" },
+      wake: false,
+    });
+    hall.emit({ world: "fake", place: HALL, actor: "tovan", source: "outside", text: "A person speaks." });
+    await entity.idle();
+
+    const user = userTextOf(model.requests[0]);
+    expect(user).toContain("tovan (outside)] A person speaks.");
+    expect(user).toContain("mara (outside) (bot)] Hello from a bot.");
+    expect(user).toContain("crier (outside) (bot) (held: a burst)] Held words.");
+    expect(user).not.toContain("tovan (outside) (bot)");
+  });
+});
+
+describe("who is thinking", () => {
+  it("names the model and the effort a turn is thought with, in who you are", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const room = fakeWorld("room");
+    const { entity } = await open(model, { config: { ...CONFIG, effort: "high" } }, [room.world]);
+    await entity.start();
+    room.push("room:hall", "Anyone home?");
+    await entity.idle();
+    expect(systemTextOf(model.requests[0])).toContain("You are thinking with scripted at high effort.");
+  });
+
+  it("names the backup and says it is the backup while the main model is held out", async () => {
+    const main = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const port = Object.assign(main, {
+      routing: () => ({ onBackup: true, backup: "backup-model", backupEffort: "low" as const }),
+    });
+    const room = fakeWorld("room");
+    const { entity } = await open(port, { config: { ...CONFIG, effort: "high" } }, [room.world]);
+    await entity.start();
+    room.push("room:hall", "Anyone home?");
+    await entity.idle();
+    expect(systemTextOf(main.requests[0])).toContain(
+      "Your main model, scripted, is not answering, so you are thinking with your backup model, backup-model, at low effort: the backup, not your main model.",
+    );
+  });
+
+  it("names a world's own model and its effort for that world's turns", async () => {
+    const main = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const gameModel = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const game = fakeWorld("game");
+    const room = fakeWorld("room");
+    const { entity } = await open(
+      main,
+      { config: { ...CONFIG, effort: "high", worldModels: { game: { model: "fast", effort: "low" } } }, worldModels: { game: gameModel } },
+      [game.world, room.world],
+    );
+    await entity.start();
+    game.push("game:slot1", "The kettle is boiling.");
+    await entity.idle();
+    room.push("room:hall", "Anyone home?");
+    await entity.idle();
+    expect(systemTextOf(gameModel.requests[0])).toContain("You are thinking with fast at low effort.");
+    expect(systemTextOf(main.requests[0])).toContain("You are thinking with scripted at high effort.");
+  });
+});

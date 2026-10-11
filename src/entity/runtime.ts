@@ -52,7 +52,7 @@ import {
 } from "./commitments.js";
 import { dayKey, hostZone, msUntilNextDay, startOfDayMs } from "./day.js";
 import { FLOOR_TEXT } from "./floor.js";
-import { chosenName, NAME_NOTE, whoYouAre } from "./identity.js";
+import { chosenName, NAME_NOTE, whoYouAre, type Thinking } from "./identity.js";
 import { readNature } from "./nature.js";
 import { HONESTY_SYSTEM, type HonestyVerdict, parseHonestyReply } from "./honesty.js";
 import {
@@ -628,6 +628,7 @@ class Runtime implements Entity {
     return {
       append: (row) => river.append(row),
       read: (query) => river.read(query),
+      count: (query) => river.count(query),
       search: (text, options) => river.search(text, options),
       forget: (match, by, reason) => {
         const erased = river.forget(match, by, reason);
@@ -873,14 +874,22 @@ class Runtime implements Entity {
     const turnId = randomUUID();
     const nowMs = this.nowMs();
     const recent = this.recentRows(thread, seen, snapshot, fresh.length);
+    const cut = this.cutBefore(thread, seen, recent);
     const shown = new Set<number>([...recent, ...fresh].map((row) => row.seq));
     const done = this.doneBeforeCut(thread, seen);
     this.countTurn(nowMs);
-    const { text: system, sizes } = this.systemText(thread, fresh, shown, nowMs, snapshot);
+    // A world with a model of its own runs its turns on that model. A place is named for its world ("domus:...").
+    const world = this.worldFor(thread)?.id ?? "";
+    const worldModel = this.worldModels[world];
+    const effort = worldModel === undefined ? this.config.effort : (this.config.worldModels?.[world]?.effort ?? this.config.effort);
+    const turnModel = worldModel ?? this.model;
+    const mainName = worldModel === undefined ? this.config.model.model : (this.config.worldModels?.[world]?.model ?? turnModel.info.id);
+    const { text: system, sizes } = this.systemText(thread, fresh, shown, nowMs, snapshot, this.thinkingOf(turnModel, mainName, effort));
     // Among the rows shown, an older view of a key shows its brief; the newest of each key shows its full text.
     const briefed = olderViewRows([...recent, ...fresh]);
     const event = [
       "Recent here:",
+      ...(cut === 0 ? [] : [cutLine(cut)]),
       ...(recent.length === 0 ? ["(nothing yet)"] : recent.map((row) => this.lineFor(row, briefed.has(row.seq)))),
       "",
       "New:",
@@ -896,12 +905,8 @@ class Runtime implements Entity {
 
     this.turnSnapshots.set(turnId, snapshot);
     this.turnStarts.set(turnId, nowMs);
-    // A world with a model of its own runs its turns on that model. A place is named for its world ("domus:...").
-    const world = this.worldFor(thread)?.id ?? "";
-    const worldModel = this.worldModels[world];
-    const effort = worldModel === undefined ? this.config.effort : (this.config.worldModels?.[world]?.effort ?? this.config.effort);
     const { result } = await runTurnWithMessages({
-      model: worldModel ?? this.model,
+      model: turnModel,
       tools: this.tools,
       system: this.scanner.redact(system),
       history: [],
@@ -1500,19 +1505,35 @@ class Runtime implements Entity {
 
   // --- what the Lar sees --------------------------------------------------------------------------
 
+  /**
+   * The model and effort a turn is thought with, as it starts. A port with a backup says whether the backup takes the
+   * calls now; a fallback in the middle of a turn is named by the river's backup note and the turn's end row.
+   */
+  private thinkingOf(port: ModelPort, main: string, effort: string | undefined): Thinking {
+    const routing = port.routing?.();
+    const thinking: Thinking = { main, onBackup: routing?.onBackup === true, ...(effort === undefined ? {} : { effort }) };
+    if (routing === undefined) return thinking;
+    const backupEffort = routing.backupEffort ?? effort;
+    return {
+      ...thinking,
+      backup: { model: routing.backup, ...(backupEffort === undefined ? {} : { effort: backupEffort }) },
+    };
+  }
+
   private systemText(
     thread: string,
     fresh: RiverRow[],
     shown: Set<number>,
     nowMs: number,
     snapshot: number,
+    thinking: Thinking,
   ): { text: string; sizes: string } {
     const wakes = this.state.wakes.map((wake) => ({ atMs: wake.atMs, why: wake.why, repeat: wake.repeat, clock: wake.clock }));
     // What stays the same from turn to turn comes first, so the provider can reuse it; what changes comes last.
     // The nature is the default unless the Lar's folder has a nature.md: its text replaces the default, and an empty one leaves the section out.
     const nature = readNature(this.dir).text;
     const sections: ContextSection[] = [
-      { name: "who you are", text: this.identityText(nowMs), priority: 100, core: true },
+      { name: "who you are", text: this.identityText(nowMs, thinking), priority: 100, core: true },
       ...(nature === undefined ? [] : [{ name: "a lar's nature", text: nature, priority: 100, core: true }]),
       { name: "how you act", text: HOW_YOU_ACT, priority: 100, core: true },
       { name: "pictures", text: pictureAbility(this.config.model.vision === true), priority: 100, core: true },
@@ -1538,11 +1559,11 @@ class Runtime implements Entity {
     };
   }
 
-  private identityText(nowMs: number): string {
+  private identityText(nowMs: number, thinking: Thinking): string {
     const character = this.notebook.read("self/character.md");
     return whoYouAre({
       name: this.config.name ?? chosenName(this.notebook.read(NAME_NOTE)),
-      engine: this.config.model.model,
+      thinking,
       bornMs: this.state.bornMs ?? nowMs,
       nowMs,
       timeZone: this.config.timeZone,
@@ -1766,10 +1787,26 @@ class Runtime implements Entity {
       .reverse();
   }
 
+  /**
+   * How many rows of this thread, older than the oldest row the turn shows in Recent here, the turn does not show. The
+   * new rows are left out of the count, since New shows them. A hidden act is counted too: the river cannot tell it
+   * without reading it.
+   */
+  private cutBefore(thread: string, seen: number, recent: RiverRow[]): number {
+    const oldest = recent[0];
+    if (oldest === undefined) return 0;
+    const older = this.river.count({ thread, kinds: ["event", "say"], untilSeq: oldest.seq - 1 });
+    const fresh = this.river.count({ thread, kinds: ["event"], sinceSeq: seen, untilSeq: oldest.seq - 1 });
+    return Math.max(0, older - fresh);
+  }
+
   /** One row as one line. A row shown by its brief (an older view, see olderViewRows) gives the brief in place of its text. */
   private lineFor(row: RiverRow, brief = false): string {
     const outside = row.source === "outside" ? " (outside)" : "";
-    return `[${this.clock(row.atMs)} ${who(row)}${outside}] ${brief ? briefOf(row) : row.text ?? ""}`;
+    // A bot's line says so, and a line a flood or loop hold kept from waking the Lar says what held it.
+    const bot = row.data?.["bot"] === true ? " (bot)" : "";
+    const held = typeof row.data?.["heldBy"] === "string" ? ` (held: ${row.data["heldBy"]})` : "";
+    return `[${this.clock(row.atMs)} ${who(row)}${outside}${bot}${held}] ${brief ? briefOf(row) : row.text ?? ""}`;
   }
 
   private clock(atMs: number): string {
@@ -2538,6 +2575,13 @@ function eventData(event: WorldEvent): Record<string, unknown> | undefined {
   if (event.brief !== undefined) extra.brief = event.brief;
   if (event.data === undefined && Object.keys(extra).length === 0) return undefined;
   return { ...(event.data ?? {}), ...extra };
+}
+
+/** The line that says how many older rows of the thread the turn leaves out. */
+function cutLine(count: number): string {
+  return count === 1
+    ? "(1 older message here is not shown; recall finds them.)"
+    : `(${count} older messages here are not shown; recall finds them.)`;
 }
 
 /** The text an older view shows in place of its full text. */

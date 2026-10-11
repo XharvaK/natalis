@@ -267,3 +267,42 @@ describe("withoutPictures", () => {
     ]);
   });
 });
+
+describe("the backup's routing", () => {
+  it("says the backup takes the calls only while the main model is held out, with the backup's effort", async () => {
+    let clock = 1_000;
+    const main: ModelPort = {
+      info: { id: "fake:main", contextTokens: 8000, nativeTools: true },
+      async complete(): Promise<ModelResponse> {
+        throw new ModelError("service is down", "unavailable", 4);
+      },
+    };
+    const model = withBackup({
+      primary: main,
+      backup: port("backup", answer("from the backup")),
+      backupName: "backup-model",
+      backupSeesPictures: true,
+      backupEffort: "low",
+      holdMs: 60_000,
+      nowMs: () => clock,
+    });
+    expect(model.routing?.()).toEqual({ onBackup: false, backup: "backup-model", backupEffort: "low" });
+
+    await model.complete(request);
+    expect(model.routing?.()).toEqual({ onBackup: true, backup: "backup-model", backupEffort: "low" });
+
+    clock += 61_000;
+    expect(model.routing?.().onBackup).toBe(false);
+  });
+
+  it("leaves the backup's effort out when the backup has none of its own", () => {
+    const model = withBackup({
+      primary: port("main", answer("from the main")),
+      backup: port("backup", answer("from the backup")),
+      backupName: "backup-model",
+      backupSeesPictures: true,
+    });
+    expect(model.routing?.()).toEqual({ onBackup: false, backup: "backup-model" });
+    expect(model.routing?.()).not.toHaveProperty("backupEffort");
+  });
+});

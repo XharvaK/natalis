@@ -87,7 +87,19 @@ export interface ModelPort {
   readonly info: ModelInfo;
   /** Retries transient provider failures itself (with backoff); throws ModelError when it gives up. */
   complete(request: ModelRequest, signal?: AbortSignal): Promise<ModelResponse>;
+  /** A port with a backup says where its next call goes, as it stands now. Absent on a port without a backup. */
+  routing?(): ModelRouting;
 }
+
+/** Where a port with a backup sends its next call: the backup while the main model is held out, otherwise the main model. */
+export type ModelRouting = {
+  /** True while the backup takes the calls, because the main model failed moments ago and is not tried again yet. */
+  onBackup: boolean;
+  /** The backup's configured name. */
+  backup: string;
+  /** The effort the backup is given. Absent: the turn's own effort is used. */
+  backupEffort?: NonNullable<ModelRequest["effort"]>;
+};
 
 /**
  * What went wrong with a model call. "out_of_credit" is the provider's refusal for spent credit or quota (HTTP 402, or a
@@ -160,9 +172,14 @@ export type RiverQuery = {
 
 export type RiverHit = { row: RiverRow; score: number };
 
+/** A count takes a read's thread, kinds and bounds. It has no limit and no order, and reads no rows. */
+export type RiverCountQuery = Pick<RiverQuery, "thread" | "kinds" | "sinceSeq" | "untilSeq" | "sinceMs">;
+
 export interface River {
   append(row: RiverRowInput): RiverRow;
   read(query: RiverQuery): RiverRow[];
+  /** How many rows a read with the same thread, kinds and bounds would return, counted without reading them. */
+  count(query: RiverCountQuery): number;
   /** Full-text search over row text. Tombstoned rows never match. */
   search(text: string, options?: { limit?: number; thread?: string }): RiverHit[];
   /**

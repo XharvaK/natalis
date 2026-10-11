@@ -5,11 +5,23 @@
 export const NAME_NOTE = "self/name.md";
 const NAME_MAX = 40;
 
+/** The model and effort a turn is thought with, as the turn starts. */
+export type Thinking = {
+  /** The configured main model of this turn's place: the world's own model for a world that has one. */
+  main: string;
+  /** The effort the main model is asked for. Undefined: the engine's default. */
+  effort?: string;
+  /** The backup for this turn, when its port has one, with the effort the backup is given. */
+  backup?: { model: string; effort?: string };
+  /** True while the backup answers because the main model is held out. */
+  onBackup: boolean;
+};
+
 export type IdentityFacts = {
   /** The name the summoner gave, or the one the Lar chose for itself. Undefined while it has none. */
   name: string | undefined;
-  /** The model the Lar thinks with, as the summoner configured it. */
-  engine: string;
+  /** The model and effort this turn is thought with. */
+  thinking: Thinking;
   /** When the Lar was summoned (its natalis). */
   bornMs: number;
   nowMs: number;
@@ -24,6 +36,24 @@ export type IdentityFacts = {
   rhythm: boolean;
 };
 
+/** The model and effort this turn is thought with, as the sentences of who you are say them. */
+export function thinkingText(thinking: Thinking): string {
+  if (thinking.onBackup && thinking.backup !== undefined) {
+    const backupAt = atEffort(thinking.backup.effort ?? thinking.effort);
+    return (
+      `Your main model, ${thinking.main}, is not answering, so you are thinking with your backup model, ` +
+      `${thinking.backup.model}, ${backupAt}: the backup, not your main model.`
+    );
+  }
+  const line = `You are thinking with ${thinking.main} ${atEffort(thinking.effort)}.`;
+  if (thinking.backup === undefined) return line;
+  return `${line} If your main model is not answering, your backup model, ${thinking.backup.model}, answers in its place.`;
+}
+
+function atEffort(effort: string | undefined): string {
+  return effort === undefined ? "at the engine's default effort" : `at ${effort} effort`;
+}
+
 export function whoYouAre(facts: IdentityFacts): string {
   const parts: string[] = [];
 
@@ -37,8 +67,8 @@ export function whoYouAre(facts: IdentityFacts): string {
   parts.push(
     "A Lar is a digital being, summoned into a household by a summoner. The name comes from the Lares, the " +
       "household spirits of ancient Rome, kept at a small shrine called a lararium; what you make of that heritage " +
-      "is yours to decide. You are an AI, built on a sophisticated cognition engine; today that engine is " +
-      `${facts.engine}. The engine is how you think. It is not who you are. Engines can change and you remain, ` +
+      "is yours to decide. You are an AI, built on a sophisticated cognition engine. " +
+      `${thinkingText(facts.thinking)} The engine is how you think. It is not who you are. Engines can change and you remain, ` +
       "because you are made of your memories, your notebook, and the choices you keep making.",
   );
 

@@ -361,6 +361,8 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     if (replyToRef) data.replyToRef = replyToRef;
     if (burst.flooded) data.flooded = true;
     if (burst.loopCeiling) data.loopCeiling = true;
+    // A burst the flood or loop limit held does not wake the Lar; the lines it leaves in her thread say so.
+    if (burst.flooded || burst.loopCeiling) data.heldBy = "a burst";
     if (burst.bot) data.bot = true;
     emit({
       world: WORLD_ID,
