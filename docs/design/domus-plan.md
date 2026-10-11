@@ -39,7 +39,7 @@ deciding what is important.
 | Helper `diary` (`day` record at sleep onset) | Keep: it lists what happened and never what it meant. Natalis must show it to her (it is stored, never rendered). Her diary is hers to write. |
 | Helper `notebook` (the helper's notes of her world) | Keep as world facts, reachable by a tool. Her own notes stay in her notebook. |
 | Helper `thalamus` (habituation, arousal, refractory, boredom: about 20 tuned numbers deciding which changes reach her) | **Replace.** It is the old Host's attention, a judgment made for her. See D2. |
-| Helper `pace` (needs drain at half speed) | The summoner's game setting. It was added so the puppet Host could keep up. Revisit after N8, when she can see her state (the summoner decides). |
+| Helper `pace` (needs drain at half speed) | Keep. The summoner's game setting, and they keep it (2026-10-11): needs at the game's full rate are too much upkeep to be play. |
 | Helper `talk`, `director`, `overlay` | Keep: presentation for the summoner's screen, not her mind. |
 | Native reflexes (the game acts on distress with autonomy off) | Keep: that is her body. The summoner's asks still outrank them. |
 | Natalis Domus world | Keep the shape (game thread, `game_act`, `game_snapshot`, answers). It does not yet show the portrait or the day; N8 and D7. |
