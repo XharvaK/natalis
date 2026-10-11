@@ -33,27 +33,61 @@ function absoluteLink(href: string, base: string): string | undefined {
 
 const BLOCK_TAGS = /<\/?(p|div|section|article|header|footer|nav|main|aside|h[1-6]|ul|ol|table|tr|blockquote|pre|hr|br|dt|dd|figure|figcaption|form)\b[^>]*>/gi;
 
+/** Elements whose content is dropped with them. Each has its own pattern so an unclosed one cannot hold up another. */
+const RAW_ELEMENTS = ["script", "style", "svg", "template", "head", "title"].map((name) => ({
+  pattern: new RegExp(`<${name}\\b[^>]*>[\\s\\S]*?<\\/${name}\\s*>`, "gi"),
+  closer: new RegExp(`<\\/${name}\\s*>`, "gi"),
+}));
+const COMMENT = /<!--[\s\S]*?-->/g;
+const COMMENT_CLOSER = /-->/g;
+const ANCHOR = /<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi;
+const ANCHOR_CLOSER = /<\/a\s*>/gi;
+const LIST_ITEM = /<li\b[^>]*>/gi;
+const TAG = /<[^>]*>/g;
+
+/** The end of the last place a closing mark occurs, or 0. */
+function endOfLast(text: string, closer: RegExp): number {
+  let end = 0;
+  for (const found of text.matchAll(closer)) end = (found.index ?? 0) + found[0].length;
+  return end;
+}
+
+/**
+ * Runs a pattern only up to the end of the last closing mark. An opener after that point has no closer to find, and
+ * an opener before it always finds one, so no opener scans to the end of the text and back. The result is the same
+ * as running the pattern on the whole text, and the time stays linear on hostile input.
+ */
+function replaceUpTo(text: string, end: number, pattern: RegExp, replacer: (match: string, ...groups: string[]) => string): string {
+  return text.slice(0, end).replace(pattern, replacer) + text.slice(end);
+}
+
+/** Every tag removed. A "<" with no ">" after it is text. */
+function stripTags(text: string): string {
+  return replaceUpTo(text, endOfLast(text, />/g), TAG, () => "");
+}
+
 /** HTML to readable text: scripts, styles and markup dropped; links kept as "text (url)"; the page title first. */
 export function htmlToText(html: string, baseUrl: string): string {
   let title = "";
-  const titleMatch = /<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(html);
-  if (titleMatch) title = decodeEntities(titleMatch[1]!.replace(/<[^>]*>/g, "")).replace(/\s+/g, " ").trim();
-  let text = html
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/<(script|style|svg|template|head|title)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "")
-    .replace(/<li\b[^>]*>/gi, "\n- ")
-    .replace(/<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi, (_whole, attrs: string, inner: string) => {
-      const label = decodeEntities(inner.replace(/<[^>]*>/g, "")).replace(/\s+/g, " ").trim();
-      const href = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attrs);
-      const target = href ? absoluteLink(href[1] ?? href[2] ?? href[3] ?? "", baseUrl) : undefined;
-      if (target === undefined) return ` ${label} `;
-      return label === "" ? ` (${target}) ` : ` ${label} (${target}) `;
-    })
-    .replace(BLOCK_TAGS, "\n")
-    .replace(/<[^>]*>/g, "");
+  const titleMatch = /<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(html.slice(0, endOfLast(html, /<\/title\s*>/gi)));
+  if (titleMatch) title = decodeEntities(stripTags(titleMatch[1]!)).replace(/\s+/g, " ").trim();
+  let text = replaceUpTo(html, endOfLast(html, COMMENT_CLOSER), COMMENT, () => "");
+  for (const element of RAW_ELEMENTS) {
+    text = replaceUpTo(text, endOfLast(text, element.closer), element.pattern, () => "");
+  }
+  text = replaceUpTo(text, endOfLast(text, />/g), LIST_ITEM, () => "\n- ");
+  text = replaceUpTo(text, endOfLast(text, ANCHOR_CLOSER), ANCHOR, (_whole: string, attrs: string, inner: string) => {
+    const label = decodeEntities(stripTags(inner)).replace(/\s+/g, " ").trim();
+    const href = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attrs);
+    const target = href ? absoluteLink(href[1] ?? href[2] ?? href[3] ?? "", baseUrl) : undefined;
+    if (target === undefined) return ` ${label} `;
+    return label === "" ? ` (${target}) ` : ` ${label} (${target}) `;
+  });
+  text = replaceUpTo(text, endOfLast(text, />/g), BLOCK_TAGS, () => "\n");
+  text = stripTags(text);
   text = decodeEntities(text)
     .split("\n")
-    .map((line) => line.replace(/[ \t ]+/g, " ").trim())
+    .map((line) => line.replace(/[ \t ]+/g, " ").trim())
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

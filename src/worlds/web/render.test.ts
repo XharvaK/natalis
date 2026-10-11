@@ -29,6 +29,33 @@ describe("htmlToText", () => {
     expect(text).toContain("(https://example.org/bare)");
   });
 
+  it("renders 512 KiB of each hostile unclosed pattern in under a second", () => {
+    const size = 512 * 1024;
+    const patterns = [
+      "<!--",
+      '<a href="https://example.org/x">',
+      "<script>",
+      "<style>",
+      "<title>",
+      "<a",
+      "<",
+      "<li <p <div",
+    ];
+    for (const pattern of patterns) {
+      const hostile = pattern.repeat(Math.ceil(size / pattern.length));
+      const started = Date.now();
+      htmlToText(hostile, "https://example.org/");
+      expect(Date.now() - started, pattern).toBeLessThan(1000);
+    }
+  });
+
+  it("keeps an unclosed opener as it was: a stray tag goes and its text stays", () => {
+    expect(htmlToText("<a href='/x'>Kept", "https://example.org/")).toBe("Kept");
+    expect(htmlToText("Before <script>after", "https://example.org/")).toBe("Before after");
+    expect(htmlToText("Before <!-- x > after", "https://example.org/")).toBe("Before after");
+    expect(htmlToText("Before <!-- hidden? after", "https://example.org/")).toBe("Before <!-- hidden? after");
+  });
+
   it("turns list items and blocks into lines", () => {
     const text = htmlToText("<ul><li>one</li><li>two</li></ul><div>three</div>", "https://example.org/");
     expect(text.split("\n").filter((line) => line !== "")).toEqual(["- one", "- two", "three"]);
