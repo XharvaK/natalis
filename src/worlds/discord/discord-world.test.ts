@@ -29,7 +29,7 @@ const FAKE_IDS = [OWNER, SELF, MARA, BOT, GENERAL, OFF_TOPIC, DM_OWNER, DM_MARA,
 const TOKEN = ["fake", "bot", "token"].join(".");
 const CDN_URL = `https://cdn.discordapp.com/attachments/${GENERAL}/${CDN_ATTACHMENT}/pic.png?ex=abc&hm=def`;
 
-type SentRecord = { channelId: string; text: string; replyTo: string | null; id: string };
+type SentRecord = { channelId: string; text: string; replyTo: string | null; id: string; mentions: string[] };
 
 type Fake = {
   client: PlatformClient;
@@ -79,12 +79,12 @@ function fakeClient(): Fake {
     async openDm(userId) {
       return userId === OWNER ? DM_OWNER : DM_MARA;
     },
-    async send(channelId, text, replyTo) {
+    async send(channelId, text, replyTo, mentionUserIds = []) {
       const scripted = fake.sendScript.shift();
       if (scripted) throw scripted;
       seq += 1;
       const id = `30${String(seq).padStart(16, "0")}`;
-      fake.sent.push({ channelId, text, replyTo, id });
+      fake.sent.push({ channelId, text, replyTo, id, mentions: mentionUserIds });
       return id;
     },
     async react(channelId, messageId, emoji) {
@@ -404,6 +404,35 @@ describe("say", () => {
     const receipt = await world.say("discord:room:general", "an answer", { replyTo: "m1" });
     expect(receipt.ok).toBe(true);
     expect(fake.sent[0]?.replyTo).toBe(MSG_MARA);
+  });
+
+  it("keeps refs meaning the same message after a restart", async () => {
+    const first = await startWorld();
+    first.fake.deliver(incoming({ id: MSG_MARA, author: MARA_AUTHOR, content: "question" }));
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(first.events[0]?.data?.messageRefs).toEqual(["m1"]);
+    await first.world.stop();
+
+    const second = await startWorld();
+    const receipt = await second.world.say("discord:room:general", "late answer", { replyTo: "m1" });
+    expect(receipt.ok).toBe(true);
+    expect(second.fake.sent[0]?.replyTo).toBe(MSG_MARA);
+    second.fake.deliver(incoming({ author: MARA_AUTHOR, content: "next" }));
+    await vi.advanceTimersByTimeAsync(1500);
+    // Numbers are never reused: the new message gets a ref after the ones already handed out.
+    expect(second.events[0]?.data?.messageRefs).not.toContain("m1");
+  });
+
+  it("turns @alias of a person she knows into a mention that pings only them", async () => {
+    const { world, fake } = await startWorld();
+    fake.deliver(incoming({ author: MARA_AUTHOR, content: "hi there" }));
+    await vi.advanceTimersByTimeAsync(1500);
+    const receipt = await world.say("discord:room:general", "@mara look at this, and @nobody-here too; mail@example.org stays");
+    expect(receipt.ok).toBe(true);
+    expect(fake.sent[0]?.text).toBe(`<@${MARA}> look at this, and @nobody-here too; mail@example.org stays`);
+    expect(fake.sent[0]?.mentions).toEqual([MARA]);
+    await world.say("discord:room:general", "no pings here");
+    expect(fake.sent[1]?.mentions).toEqual([]);
   });
 
   it("refuses a reply to an unknown ref and sends nothing", async () => {

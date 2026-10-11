@@ -16,7 +16,7 @@ import { runTurnWithMessages } from "../loop/index.js";
 import { openNotebook, seedNotebook } from "../notebook/index.js";
 import { openRiver } from "../river/index.js";
 import { checkRiver } from "../river/integrity.js";
-import { createSecretScanner, KNOWN_VALUE_KIND } from "../secrets/index.js";
+import { createSecretScanner, guardModel, guardNotebook, guardRiver, KNOWN_VALUE_KIND } from "../secrets/index.js";
 import { notebookTools } from "../tools/index.js";
 import type {
   Ceiling,
@@ -98,7 +98,8 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
 
   mkdirSync(dir, { recursive: true });
   const statePath = join(dir, STATE_FILE);
-  const river = openRiver(join(dir, "river.db"), { nowMs });
+  // Credentials never enter memory or a model request: the river, notebook and model are guarded at the boundary.
+  const river = guardRiver(openRiver(join(dir, "river.db"), { nowMs }), scanner);
   let state: EntityState;
   let notebook: Notebook;
   try {
@@ -112,7 +113,7 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
     const check = checkRiver(river, { minSeq: state.lastSeq });
     if (!check.ok) throw new Error(`Not starting ${dir}: ${check.reason}`);
 
-    notebook = await openNotebook(join(dir, "notebook"));
+    notebook = guardNotebook(await openNotebook(join(dir, "notebook")), scanner);
     await seedNotebook(notebook);
     await seedStub(notebook, "self/constitution.md", CONSTITUTION_STUB, "Start my constitution file");
     await seedStub(notebook, "self/character.md", CHARACTER_STUB, "Start my character file");
@@ -121,7 +122,7 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
     throw err;
   }
 
-  const runtime = new Runtime({ config, model, worlds, nowMs, scanner, retryDelaysMs, statePath, river, notebook, state });
+  const runtime = new Runtime({ config, model: guardModel(model, scanner), worlds, nowMs, scanner, retryDelaysMs, statePath, river, notebook, state });
   runtime.saveState();
   return runtime;
 }

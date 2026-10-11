@@ -13,12 +13,35 @@ import {
   type Message,
   type SendableChannels,
 } from "discord.js";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import type { Receipt, RiverSource, Tool, World, WorldEvent } from "../../contracts.js";
 import { createAliasStore, OWNER_ALIAS, type AliasStore } from "./aliases.js";
 
 // ---------------------------------------------------------------------------------------------------
 // Platform port: the few calls this world needs. A fake implements it in tests; discord.js implements it
 // below. Nothing here is a judgment; each call maps to one platform action.
+
+
+const MAX_KEPT_REFS = 20_000;
+
+type RefsFile = { version: 1; seq: number; refs: Record<string, [string, string]> };
+
+function readRefs(path: string): RefsFile {
+  if (!existsSync(path)) return { version: 1, seq: 0, refs: {} };
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as RefsFile;
+  if (parsed?.version !== 1 || typeof parsed.seq !== "number" || typeof parsed.refs !== "object") {
+    throw new Error("The Discord refs file is damaged; not starting, so old refs cannot point at the wrong messages.");
+  }
+  return parsed;
+}
+
+function writeJsonAtomic(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(value));
+  renameSync(tmp, path);
+}
 
 export type PlatformAuthor = { id: string; displayName: string; bot: boolean };
 export type PlatformAttachment = { name: string; contentType: string | null; url: string };
@@ -49,7 +72,8 @@ export type PlatformClient = {
   /** The direct-message channel with a user. */
   openDm(userId: string): Promise<string>;
   /** Send one message; resolves with its id. Mentions in the text never ping anyone. */
-  send(channelId: string, text: string, replyToMessageId: string | null): Promise<string>;
+  /** `mentionUserIds`: the only people this message may ping (never everyone or roles). */
+  send(channelId: string, text: string, replyToMessageId: string | null, mentionUserIds?: string[]): Promise<string>;
   react(channelId: string, messageId: string, emoji: string): Promise<void>;
   /** Most recent messages first. */
   history(channelId: string, limit: number): Promise<PlatformMessage[]>;
@@ -65,6 +89,8 @@ export type DiscordWorldOptions = {
   rooms: string[];
   /** JSON file holding the alias map. Platform ids live only here. */
   aliasesPath: string;
+  /** Where message refs are kept so they mean the same message after a restart. Defaults beside the aliases file. */
+  refsPath?: string;
   /** Injected in tests; the discord.js client is used when absent. */
   client?: PlatformClient;
   debounceMs?: number;
@@ -126,10 +152,31 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
   let liveRoomSlugs: string[] = [];
   let unreachableRooms = 0;
 
-  // Opaque refs for messages and attachments. Refs are in memory: they restart from m1 with the process.
+  // Opaque refs for messages. They are kept in a file beside the aliases, so a ref the entity remembers
+  // means the same message after a restart. Only the newest MAX_KEPT_REFS are kept; numbers are never reused.
+  const refsPath = options.refsPath ?? options.aliasesPath.replace(/\.json$/i, "") + ".refs.json";
   const messageRefs = new Map<string, { channelId: string; messageId: string }>();
   const refOfMessage = new Map<string, string>();
   let messageSeq = 0;
+  {
+    const stored = readRefs(refsPath);
+    messageSeq = stored.seq;
+    for (const [ref, [channelId, messageId]] of Object.entries(stored.refs)) {
+      messageRefs.set(ref, { channelId, messageId });
+      refOfMessage.set(`${channelId}|${messageId}`, ref);
+    }
+  }
+  function saveRefs(): void {
+    while (messageRefs.size > MAX_KEPT_REFS) {
+      const oldest = messageRefs.keys().next().value as string;
+      const target = messageRefs.get(oldest)!;
+      messageRefs.delete(oldest);
+      refOfMessage.delete(`${target.channelId}|${target.messageId}`);
+    }
+    const refs: Record<string, [string, string]> = {};
+    for (const [ref, target] of messageRefs) refs[ref] = [target.channelId, target.messageId];
+    writeJsonAtomic(refsPath, { version: 1, seq: messageSeq, refs });
+  }
   const attachmentUrls = new Map<string, string>();
   const attachmentHandles = new Map<string, string>();
   let attachmentSeq = 0;
@@ -147,6 +194,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     const ref = `m${messageSeq}`;
     refOfMessage.set(key, ref);
     messageRefs.set(ref, { channelId, messageId });
+    saveRefs();
     return ref;
   }
 
@@ -513,7 +561,15 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       if (down) return down;
       const target = await resolveTarget(place);
       if (!target.ok) return target.receipt;
-      const chunks = splitForDiscord(text);
+      // "@alias" of a person she knows becomes a real mention; nobody else can be pinged.
+      const mentionUserIds = new Set<string>();
+      const withMentions = text.replace(/(^|[^\p{L}\p{N}_@.])@([\p{L}\p{N}][\p{L}\p{N}-]*)/gu, (whole, lead: string, alias: string) => {
+        const id = aliases.userIdForAlias(alias.toLowerCase());
+        if (!id) return whole;
+        mentionUserIds.add(id);
+        return `${lead}<@${id}>`;
+      });
+      const chunks = splitForDiscord(withMentions);
       if (chunks.length === 0) return refused("empty_text", "there is no text to send.", "There was nothing to send.");
 
       let replyId: string | null = null;
@@ -533,7 +589,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       for (let index = 0; index < chunks.length; index += 1) {
         const chunk = chunks[index] ?? "";
         try {
-          const sentId = await client.send(target.channelId, chunk, index === 0 ? replyId : null);
+          const sentId = await client.send(target.channelId, chunk, index === 0 ? replyId : null, [...mentionUserIds]);
           refs.push(refFor(target.channelId, sentId));
           botRuns.set(target.channelId, (botRuns.get(target.channelId) ?? 0) + 1);
         } catch (error) {
@@ -810,11 +866,11 @@ export function createDiscordJsClient(): PlatformClient {
       const dm = await user.createDM();
       return dm.id;
     },
-    async send(channelId, text, replyToMessageId) {
+    async send(channelId, text, replyToMessageId, mentionUserIds = []) {
       const channel = await sendable(channelId);
       const sent = await channel.send({
         content: text,
-        allowedMentions: { parse: [], repliedUser: false },
+        allowedMentions: { parse: [], users: mentionUserIds, repliedUser: false },
         ...(replyToMessageId ? { reply: { messageReference: replyToMessageId, failIfNotExists: false } } : {}),
       });
       return sent.id;
