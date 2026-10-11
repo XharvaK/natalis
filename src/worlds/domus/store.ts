@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS observations (
   undone_at_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS observations_thread ON observations (thread);
+CREATE INDEX IF NOT EXISTS observations_attachment ON observations (attachment);
 CREATE TABLE IF NOT EXISTS acts (
   act_id TEXT PRIMARY KEY,
   turn_id TEXT NOT NULL,
@@ -116,6 +117,12 @@ CREATE TABLE IF NOT EXISTS looks (
   attachment TEXT PRIMARY KEY,
   owed INTEGER NOT NULL,
   last_handed_ms INTEGER
+);
+CREATE TABLE IF NOT EXISTS look_asks (
+  attachment TEXT NOT NULL,
+  thread TEXT NOT NULL,
+  asked_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (attachment, thread)
 );
 CREATE TABLE IF NOT EXISTS overlay_lines (
   line_id TEXT PRIMARY KEY,
@@ -243,6 +250,19 @@ export function newestObservation(db: DatabaseSync, thread: string): { observati
   let payload: Row = {};
   try { payload = JSON.parse(String(row.payload_json)) as Row; } catch { payload = {}; }
   return { observationId: String(row.observation_id), attachment: String(row.attachment), payload };
+}
+
+/**
+ * The game's thread: the thread of the attached helper session's newest view. A session that has sent no view yet
+ * gets the thread of the newest view of any session (there is one game). Undefined when no view has come at all.
+ */
+export function gameThreadNow(db: DatabaseSync, attachedSession: string | undefined): string | undefined {
+  if (attachedSession !== undefined) {
+    const own = db.prepare("SELECT thread FROM observations WHERE attachment = ? ORDER BY rowid DESC LIMIT 1").get(attachedSession) as Row | undefined;
+    if (own) return String(own.thread);
+  }
+  const newest = db.prepare("SELECT thread FROM observations ORDER BY rowid DESC LIMIT 1").get() as Row | undefined;
+  return newest ? String(newest.thread) : undefined;
 }
 
 export type UndoSpan = { thread: string; world: string; branch: string; session: string; afterSourceTimeMs: number; reason: string };
@@ -543,4 +563,23 @@ export function oweLook(db: DatabaseSync, attachment: string): void {
 export function takeLook(db: DatabaseSync, attachment: string, nowMs: number): boolean {
   const result = db.prepare("UPDATE looks SET owed = 0, last_handed_ms = ? WHERE attachment = ? AND owed = 1").run(nowMs, attachment);
   return Number(result.changes) > 0;
+}
+
+/** A look asked for from a thread waits this long for the look view that answers it; an older ask is not handed on. */
+export const LOOK_ASK_KEEP_MS = 10 * 60_000;
+
+/** Records that a thread asked for a look of this helper session. A thread that asks twice is kept once. */
+export function recordLookAsk(db: DatabaseSync, attachment: string, thread: string, nowMs: number): void {
+  db.prepare("INSERT INTO look_asks (attachment, thread, asked_at_ms) VALUES (?, ?, ?) ON CONFLICT (attachment, thread) DO UPDATE SET asked_at_ms = excluded.asked_at_ms")
+    .run(attachment, thread, nowMs);
+}
+
+/**
+ * The threads that asked for a look of this helper session, in the order they asked, within LOOK_ASK_KEEP_MS. They are
+ * all forgotten here: a look view that comes for the session is the answer to them.
+ */
+export function takeLookAskers(db: DatabaseSync, attachment: string, nowMs: number): string[] {
+  const rows = db.prepare("SELECT thread, asked_at_ms FROM look_asks WHERE attachment = ? ORDER BY rowid").all(attachment) as Row[];
+  db.prepare("DELETE FROM look_asks WHERE attachment = ?").run(attachment);
+  return rows.filter((row) => Number(row.asked_at_ms) > nowMs - LOOK_ASK_KEEP_MS).map((row) => String(row.thread));
 }

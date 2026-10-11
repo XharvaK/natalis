@@ -89,7 +89,7 @@ describe("her body now", () => {
     expect(lines).toContain("2 more of the household is out of sight.");
     expect(lines).toContain("Recent windows: window opened (held), 3 min ago.");
     expect(lines).toContain("Near you: fridge (spoiled).");
-    expect(lines).toContain("Situations: Guest.");
+    expect(lines).toContain("Situations: guest.");
     expect(bodyLines({})).toEqual([]);
     expect(bodyLines({ needs: "bad", company: 3, asked: [null, 4] })).toEqual([]);
   });
@@ -305,5 +305,30 @@ describe("the weather and the season, after the game time", () => {
   it("skips what is malformed, and keeps the rest", () => {
     expect(bodyLines({ ...CLOCK, season: 3, weather: "sunny" })).toEqual(["Game time: Monday 14:05."]);
     expect(bodyLines({ ...CLOCK, season: "", weather: [1, null, "", "SUNNY"] })).toEqual(["Game time: Monday 14:05.", "Sunny."]);
+  });
+});
+
+describe("the situations she is in, in plain words, and game tokens kept out of her body", () => {
+  it("words each situation in plain words, and counts a repeat once with its count", () => {
+    expect(bodyLines({ situations: [{ role: "Role_PivotalMoment" }, { role: "Role_PivotalMoment" }, { role: "Role_PivotalMoment" }] }))
+      .toEqual(["Situations: pivotal moment (×3)."]);
+    expect(bodyLines({ situations: [{ name: "<class 'situations.Role_BirthdayParty'>" }, { role: "Role_Guest" }, { role: "Role_Guest" }] }))
+      .toEqual(["Situations: birthday party, guest (×2)."]);
+  });
+
+  it("shows at most four different situations, and skips a situation with no name", () => {
+    const many = ["A", "B", "C", "D", "E"].map((letter) => ({ role: `Role_Named${letter}` }));
+    expect(bodyLines({ situations: [...many, {}] })).toEqual(["Situations: named a, named b, named c, named d."]);
+  });
+
+  it("drops any game token left in her body's text, so no brace reaches her", () => {
+    const lines = bodyLines({
+      mood: "Happy {0.SimFirstName}",
+      windows: [{ event: "{0.SimFirstName} {1.Number} tasks", ago_min: 2 }],
+      place: { her_home: true, household_here: ["{0.SimFirstName} {1.Number}"] },
+    });
+    expect(lines.join("\n")).not.toMatch(/[{}]/);
+    expect(lines).toContain("Mood: happy.");
+    expect(lines).toContain("Recent windows: tasks, 2 min ago.");
   });
 });

@@ -77,9 +77,20 @@ function acts(): Array<Record<string, unknown>> {
 }
 
 describe("game_act: where it works", () => {
-  it("is refused outside a game thread, and while the world is not running", async () => {
+  it("works from any thread: it chooses from the game's newest view, and the act is kept for the thread that asked", async () => {
     view(VIEW);
-    expect(await run({ option: "a1" }, "discord:dm:owner")).toMatchObject({ ok: false, refused: { code: "not_a_game_thread" } });
+    expect(await run({ option: "a1" }, "discord:dm:owner")).toMatchObject({ ok: true });
+    expect(acts()).toEqual([expect.objectContaining({ thread: "discord:dm:owner", observation_id: "helper-1.1", option_ref: "a1" })]);
+  });
+
+  it("finds the game's thread from the attached session, and from the newest view when that session has sent none", async () => {
+    view(VIEW);
+    open = { db, nowMs: () => T0, attachedSession: () => "helper-2", lastAttachedMs: () => T0 };
+    expect(await run({ option: "a1" }, "cli:summoner")).toMatchObject({ ok: false, refused: { code: "view_from_earlier_session" } });
+  });
+
+  it("is refused while the world is not running", async () => {
+    view(VIEW);
     open = null;
     expect(await run({ option: "a1" })).toMatchObject({ ok: false, refused: { code: "not_running" } });
   });

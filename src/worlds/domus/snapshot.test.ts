@@ -134,11 +134,16 @@ describe("the helper's answer", () => {
 describe("the game_snapshot tool", () => {
   const context = (thread: string): ToolContext => ({ thread, turnId: "t", nowMs: T0, river: undefined as never, notebook: undefined as never });
 
-  it("refuses while the world is not running, outside a game thread, and while the game is not attached", async () => {
+  it("refuses while the world is not running and while the game is not attached", async () => {
     expect(await gameSnapshotTool(() => null).run({}, context(THREAD))).toMatchObject({ ok: false, refused: { code: "not_running" } });
     const game = { db, nowMs: () => T0, attachedSession: () => undefined };
     expect(await gameSnapshotTool(() => game).run({}, context(THREAD))).toMatchObject({ ok: false, refused: { code: "not_attached" } });
-    expect(await gameSnapshotTool(() => game).run({}, context("cli:summoner"))).toMatchObject({ ok: false, refused: { code: "not_a_game_thread" } });
+  });
+
+  it("asks from any thread, and the picture request is kept for the thread that asked", async () => {
+    const game = { db, nowMs: () => T0, attachedSession: () => HELPER };
+    expect(await gameSnapshotTool(() => game).run({}, context("cli:summoner"))).toMatchObject({ ok: true });
+    expect(db.prepare("SELECT thread FROM snapshots").all()).toEqual([{ thread: "cli:summoner" }]);
   });
 
   it("asks for the attached session and says the request is only asked for, not taken", async () => {

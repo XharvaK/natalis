@@ -9,7 +9,6 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import type { ThreadNote } from "./acts.js";
 import { localStamp, memoryActLine, personLine } from "./day-record.js";
-import { GAME_THREAD_PREFIX } from "./game-act.js";
 import { type Row } from "./store.js";
 
 /** A question the helper does not answer within this time expires. */
@@ -67,9 +66,6 @@ export function gameMemoryTool(open: () => MemoryContext): Tool {
 function gameMemory(open: () => MemoryContext, args: Record<string, unknown>, context: ToolContext): Receipt {
   const game = open();
   if (!game) return refused("not_running", "The game is not connected to you right now.");
-  if (!context.thread.startsWith(GAME_THREAD_PREFIX)) {
-    return refused("not_a_game_thread", "game_memory works in a game thread (domus:...). This is not one.");
-  }
   for (const key of Object.keys(args)) {
     if (key !== "about") return refused("bad_args", `${key} is not a field of game_memory.`);
   }

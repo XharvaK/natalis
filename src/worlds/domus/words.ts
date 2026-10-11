@@ -4,9 +4,20 @@
 /** The words for a need's band. A band not listed here is shown as the band word itself. */
 export const BAND_WORDS: Readonly<Record<string, string>> = { distress: "very low", low: "low", ok: "fine", high: "full", full: "full" };
 
-/** A string or a finite number as text; anything empty or of another type is undefined. */
+/**
+ * Game text can still carry its tokens ({0.SimFirstName}, {1.Number}) when the helper did not format them. Natalis drops
+ * every one it finds, with the spaces it leaves: the helper's formatting is the real fix, this keeps the braces out.
+ */
+export function dropTokens(text: string): string {
+  return text.replace(/ ?\{[^{}]*\}/g, "").replace(/ {2,}/g, " ").trim();
+}
+
+/** A string or a finite number as text, without game tokens; anything empty or of another type is undefined. */
 export function textOrUndefined(value: unknown): string | undefined {
-  if (typeof value === "string" && value.trim() !== "") return value.trim();
+  if (typeof value === "string") {
+    const text = dropTokens(value);
+    return text === "" ? undefined : text;
+  }
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return undefined;
 }

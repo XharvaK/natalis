@@ -83,4 +83,10 @@ describe("a person in the game's record, as a memory line", () => {
     expect(personLine({ who: "Pim Dorrow", acts: 1, last_at_ms: 5 }, stamp)).toBe("Pim Dorrow: 1 act together, last at 5.");
     expect(personLine({ acts: 1 }, stamp)).toBeUndefined();
   });
+
+  it("drops a game token from a name in the record, so no brace reaches her", () => {
+    const stamp = (ms: number) => String(ms);
+    expect(personLine({ who: "Mara {0.SimFirstName} Quill", acts: 2, last_at_ms: 7 }, stamp)).toBe("Mara Quill: 2 acts together, last at 7.");
+    expect(personLine({ who: "{0.SimFirstName}", acts: 2, last_at_ms: 7 }, stamp)).toBeUndefined();
+  });
 });

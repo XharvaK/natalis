@@ -196,7 +196,6 @@ export function gameSnapshotTool(open: () => SnapshotContext): Tool {
 function gameSnapshot(open: () => SnapshotContext, context: ToolContext): Receipt {
   const game = open();
   if (!game) return refused("not_running", "The game is not connected to you right now.");
-  if (!context.thread.startsWith("domus:")) return refused("not_a_game_thread", "game_snapshot works in a game thread (domus:...). This is not one.");
   const nowMs = game.nowMs();
   const attachment = game.attachedSession(nowMs);
   if (attachment === undefined) {

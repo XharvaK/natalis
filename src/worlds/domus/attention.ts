@@ -6,8 +6,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import { parseAtIso } from "../../entity/wake-schedule.js";
-import { GAME_THREAD_PREFIX } from "./game-act.js";
-import { oweLook, readAttention, writeAttention, type AttentionMode, type AttentionRow, lastLookHanded, lookOwed } from "./store.js";
+import { gameThreadNow, oweLook, readAttention, writeAttention, type AttentionMode, type AttentionRow, lastLookHanded, lookOwed } from "./store.js";
 import type { Percept } from "./wire.js";
 
 export const LOOK_MIN = 5;
@@ -29,8 +28,13 @@ export type ViewFacts = {
   firstAfterAttach: boolean;
 };
 
-/** The context the tool reads on each call: null while the world is not running. */
-export type AttentionContext = { db: DatabaseSync; nowMs: () => number; timeZone: string | undefined } | null;
+/**
+ * The context the tool reads on each call: null while the world is not running. The setting is kept on the game's thread
+ * (see gameThreadNow), whichever thread asks; the helper session that is attached now finds that thread.
+ */
+export type AttentionContext = {
+  db: DatabaseSync; nowMs: () => number; timeZone: string | undefined; attachedSession: (nowMs: number) => string | undefined;
+} | null;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
@@ -135,12 +139,12 @@ function refused(code: string, reason: string): Receipt {
 }
 
 const SET_UP =
-  "Set how the game reaches you on this game thread. every_change: every change in the game wakes you (the default). " +
+  "Set how the game reaches you. every_change: every change in the game wakes you (the default). " +
   "when_called: a change wakes you only when something calls you: a question put to you, someone speaking to you, someone " +
   "arriving on the lot, the day's record at sleep, the first view after the game attached, or a look you asked for. " +
   "quiet: nothing wakes you until until, then the mode goes back to what it was. until is a date and time, such as " +
   "2026-10-12T14:30, in your own zone unless it has an offset, at most 24 hours ahead; it goes with quiet only. " +
-  "A question with a deadline always reaches you, in every mode. Changes still reach this thread, and you see them by " +
+  "A question with a deadline always reaches you, in every mode. Changes still reach the game's thread, and you see them by " +
   "their brief in your next turn. look_every_minutes (5 to 240, or 0 for off) asks the game for a fresh view while it is " +
   "attached and nothing has woken you for that long.";
 
@@ -167,9 +171,6 @@ export function gameAttentionTool(open: () => AttentionContext): Tool {
 function gameAttention(open: () => AttentionContext, args: Record<string, unknown>, context: ToolContext): Receipt {
   const game = open();
   if (!game) return refused("not_running", "The game is not connected to you right now.");
-  if (!context.thread.startsWith(GAME_THREAD_PREFIX)) {
-    return refused("not_a_game_thread", "game_attention works in a game thread (domus:...). This is not one.");
-  }
   for (const key of Object.keys(args)) {
     if (!ARG_KEYS.has(key)) return refused("bad_args", `${key} is not a field of game_attention.`);
   }
@@ -196,7 +197,11 @@ function gameAttention(open: () => AttentionContext, args: Record<string, unknow
     untilMs = parsed;
   }
 
-  const current = currentAttention(game.db, context.thread, nowMs);
+  const thread = gameThreadNow(game.db, game.attachedSession(nowMs));
+  if (thread === undefined) {
+    return refused("no_view", "The game has not shown you a view yet, so there is no game thread to set your attention on.");
+  }
+  const current = currentAttention(game.db, thread, nowMs);
   const next: AttentionRow = { ...current, setAtMs: nowMs };
   if (mode === "quiet") {
     next.resumeMode = current.mode === "quiet" ? current.resumeMode : current.mode;

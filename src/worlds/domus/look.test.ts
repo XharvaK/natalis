@@ -5,7 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import { gameLookTool, type LookContext } from "./look.js";
-import { lookOwed, openDomusDb, takeLook } from "./store.js";
+import { LOOK_ASK_KEEP_MS, lookOwed, openDomusDb, takeLook, takeLookAskers } from "./store.js";
 
 const T0 = Date.UTC(2026, 9, 12, 8, 0);
 const THREAD = "domus:slot3";
@@ -58,9 +58,20 @@ describe("game_look", () => {
     });
   });
 
-  it("is refused while the world is not running, and outside a game thread", async () => {
+  it("is refused while the world is not running", async () => {
     expect(await look(THREAD, {}, () => null)).toMatchObject({ ok: false, refused: { code: "not_running" } });
-    expect(await look("cli:summoner")).toMatchObject({ ok: false, refused: { code: "not_a_game_thread" } });
+  });
+
+  it("works from any thread, and keeps the thread that asked, so its look view can come to that thread too", async () => {
+    expect(await look("discord:dm:owner")).toMatchObject({ ok: true });
+    expect(await look(THREAD)).toMatchObject({ ok: true });
+    expect(takeLookAskers(db, "helper-1", T0)).toEqual(["discord:dm:owner", THREAD]);
+    expect(takeLookAskers(db, "helper-1", T0)).toEqual([]);
+  });
+
+  it("does not hand a look view to a thread that asked long ago", async () => {
+    await look("discord:dm:owner");
+    expect(takeLookAskers(db, "helper-1", T0 + LOOK_ASK_KEEP_MS + 1)).toEqual([]);
   });
 
   it("owes one look to the attached helper session, and says so", async () => {

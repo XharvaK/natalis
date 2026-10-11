@@ -81,9 +81,13 @@ describe("game_memory: she asks the game what it remembers", () => {
     expect(askedRows()).toHaveLength(1);
   });
 
-  it("is refused while the world is not running, off a game thread, while the summoner's stop is on, and while the game is not attached", async () => {
+  it("asks from any thread, and the answer is kept for the thread that asked", async () => {
+    expect(await ask({ about: "Mara" }, undefined, "cli:summoner")).toMatchObject({ ok: true });
+    expect(askedRows()).toEqual([expect.objectContaining({ thread: "cli:summoner", about: "Mara", status: "owed" })]);
+  });
+
+  it("is refused while the world is not running, while the summoner's stop is on, and while the game is not attached", async () => {
     expect(await ask({ about: "Mara" }, () => null)).toMatchObject({ ok: false, refused: { code: "not_running" } });
-    expect(await ask({ about: "Mara" }, undefined, "cli:summoner")).toMatchObject({ ok: false, refused: { code: "not_a_game_thread" } });
     stopped = true;
     expect(await ask({ about: "Mara" })).toMatchObject({ ok: false, refused: { code: "stopped" } });
     stopped = false;

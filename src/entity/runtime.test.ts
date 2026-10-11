@@ -1463,7 +1463,9 @@ describe("two threads, one voice", () => {
     const receipts = receiptsShownIn(requests.filter((item) => item.key === "summoner").at(-1)?.request);
     const held = receipts.find((item) => (item["refused"] as { code?: string } | undefined)?.code === "spoken_meanwhile");
     expect(held).toMatchObject({ ok: false, refused: { code: "spoken_meanwhile" } });
-    expect(String((held?.["refused"] as { reason: string }).reason)).toContain('"Hello from the room."');
+    // The earlier say was her own, on another thread: the hold names that thread as hers, not as someone else's.
+    expect(String(held?.["summary"])).toMatch(/^Nothing was sent to fake:room\. You said this there \d+ s ago from your \S+ thread, while this turn was running\.$/);
+    expect(String((held?.["refused"] as { reason: string }).reason)).toMatch(/^You said "Hello from the room\." in fake:room \d+ s ago from your \S+ thread, after this turn began\./);
     expect(String((held?.["refused"] as { reason: string }).reason)).toContain("knowingly: true");
     expect(receipts.filter((item) => (item["refused"] as { code?: string } | undefined)?.code === "spoken_meanwhile")).toHaveLength(1);
   });
