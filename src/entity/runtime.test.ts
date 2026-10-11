@@ -1248,16 +1248,17 @@ describe("the summoner's commands", () => {
     expect(isStopOn(dir)).toBe(false);
   });
 
-  it("answers an unknown ! word with the plain line and nothing else", async () => {
-    const model = new ScriptedModel([]);
+  it("treats a ! word that is not a command as an ordinary message: the river and the Lar get it", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
     const { entity, cli, said } = await open(model);
     await entity.start();
     cli.send("!dance");
     await entity.idle();
 
-    expect(said.map((item) => item.text)).toEqual(["[natalis] I don't know that command. !help lists them."]);
-    expect(model.requests).toHaveLength(0);
-    expect(readStateJson().asks).toEqual([]);
+    expect(said).toEqual([]);
+    expect(model.requests).toHaveLength(1);
+    expect(userTextOf(model.requests[0])).toContain("owner] !dance");
+    expect(readStateJson().asks).toEqual([expect.objectContaining({ place: "cli:summoner" })]);
     expect(allRows(entity).filter((row) => row.thread === "self")).toEqual([]);
   });
 

@@ -69,6 +69,13 @@ describe("isSummonerCommand", () => {
     expect(isSummonerCommand("! wow")).toBe(false);
     expect(isSummonerCommand(undefined)).toBe(false);
   });
+
+  it("is true only for a known command word, so a ! word that is not a command stays an ordinary message", () => {
+    expect(isSummonerCommand("!dance")).toBe(false);
+    expect(isSummonerCommand("!wow, that is great")).toBe(false);
+    expect(isSummonerCommand("!Stop the garden")).toBe(true);
+    expect(isSummonerCommand("!help")).toBe(true);
+  });
 });
 
 describe("the stop commands", () => {
