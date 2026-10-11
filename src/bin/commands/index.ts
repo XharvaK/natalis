@@ -1,10 +1,12 @@
 // Dispatches the newer command-line commands. Each lives in its own module here. `chat` stays in natalis.ts.
 // Returns undefined for a command this module does not own, so the caller can handle it.
 
+import { backupCommand } from "./backup.js";
 import { captureCommand } from "./capture.js";
 import { importCommand } from "./import.js";
 import { judgeCommand } from "./judge.js";
 import { replayCommand } from "./replay.js";
+import { restoreCommand } from "./restore.js";
 
 export async function dispatchCommand(command: string | undefined, args: string[]): Promise<number | undefined> {
   switch (command) {
@@ -16,6 +18,10 @@ export async function dispatchCommand(command: string | undefined, args: string[
       return replayCommand(args);
     case "judge":
       return judgeCommand(args);
+    case "backup":
+      return backupCommand(args);
+    case "restore":
+      return restoreCommand(args);
     default:
       return undefined;
   }
