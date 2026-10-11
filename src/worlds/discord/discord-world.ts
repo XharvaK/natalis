@@ -15,6 +15,7 @@ import {
 } from "discord.js";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { readContacts } from "../../entity/contacts.js";
 import type { Receipt, RiverSource, SayFile, Tool, World, WorldBody, WorldEvent } from "../../contracts.js";
 import { PICTURE_BYTES_MAX } from "../../media/shelf.js";
 import { createAliasStore, OWNER_ALIAS, type AliasStore } from "./aliases.js";
@@ -117,6 +118,11 @@ export type DiscordWorldOptions = {
   rooms: string[];
   /** JSON file holding the alias map. Platform ids live only here. */
   aliasesPath: string;
+  /**
+   * The Lar's contacts file (contacts.json): the people, besides the summoner, who may write to the Lar in a direct message.
+   * Read fresh on each direct message. Without a path, or without a file, nobody but the summoner may write in a DM.
+   */
+  contactsPath?: string;
   /** Where message refs are kept so they mean the same message after a restart. Defaults beside the aliases file. */
   refsPath?: string;
   /** Where the day's count of pictures from others is kept, so a restart does not reset it. Defaults beside the aliases file. */
@@ -143,6 +149,10 @@ const PICTURE_HOSTS: ReadonlySet<string> = new Set(["cdn.discordapp.com", "media
 const PICTURE_FETCH_MS = 20_000;
 /** Pictures from anyone but the summoner that the Lar may ask for in one local day. */
 const OTHERS_PICTURES_PER_DAY = 50;
+
+/** One line in the body's log for a refused direct message, at most once an hour per author. Never the words or an id. */
+const REFUSED_DM_LOG = "[discord] a DM from someone who is not a contact was not admitted.";
+const REFUSED_DM_LOG_MS = 60 * 60 * 1000;
 
 function refused(code: string, reason: string, summary: string, data?: Record<string, unknown>): Receipt {
   return { ok: false, summary, ...(data ? { data } : {}), refused: { code, reason: `${code}: ${reason}` } };
@@ -236,6 +246,8 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
   /** The body's way to keep pictures. Set at start. */
   let keeper: WorldBody | null = null;
   const guestHits = new Map<string, number[]>();
+  /** When a refused direct message from each author was last logged. */
+  const refusedDmLogged = new Map<string, number>();
   const botRuns = new Map<string, number>();
 
   function refFor(channelId: string, messageId: string): string {
@@ -365,6 +377,22 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     });
   }
 
+  /** The contacts as the file says now. A missing file, or no path, is no contacts; a damaged one is none, with the problem. */
+  function currentContacts(): { ids: string[]; problem?: string } {
+    if (options.contactsPath === undefined) return { ids: [] };
+    const load = readContacts(options.contactsPath);
+    return load.problem === undefined ? { ids: load.contacts.discord } : { ids: [], problem: load.problem };
+  }
+
+  /** The now line's fact about who may write in a direct message, by alias. */
+  function whoMayWrite(): string {
+    const contacts = currentContacts();
+    if (contacts.problem !== undefined) return "Your contacts file cannot be read, so only your summoner may write to you directly.";
+    if (contacts.ids.length === 0) return "Nobody but your summoner may write to you directly.";
+    const names = contacts.ids.map((id) => aliases.knownUserAlias(id) ?? "a person with no alias yet");
+    return `Contacts who may write to you directly: ${names.join(", ")}.`;
+  }
+
   function handleMessage(message: PlatformMessage): void {
     if ((status !== "starting" && status !== "connected") || !self || !emitter) return;
     if (message.author.id === self.id) return;
@@ -376,6 +404,15 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     }
 
     const nowMs = Date.now();
+    // A direct message from anyone but the summoner and the contacts is not admitted: no event, alias, ref or flood count.
+    if (message.channelKind === "dm" && !isOwner && !currentContacts().ids.includes(message.author.id)) {
+      const last = refusedDmLogged.get(message.author.id);
+      if (last === undefined || nowMs - last >= REFUSED_DM_LOG_MS) {
+        refusedDmLogged.set(message.author.id, nowMs);
+        console.log(REFUSED_DM_LOG);
+      }
+      return;
+    }
     const actor = aliases.userAlias(message.author.id, message.author.displayName || "person");
     const placeAlias =
       message.channelKind === "dm"
@@ -756,7 +793,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       if (status === "connected" && self) {
         const places = [`dm:${ownerAlias}`, ...liveRoomSlugs.map((slug) => `room:${slug}`)];
         const missing = unreachableRooms > 0 ? ` ${unreachableRooms} room(s) not reachable.` : "";
-        return `Discord: connected as ${self.name}; places: ${places.join(", ")}.${missing}`;
+        return `Discord: connected as ${self.name}; places: ${places.join(", ")}.${missing} ${whoMayWrite()}`;
       }
       return `Discord: not connected (${statusReason}).`;
     },

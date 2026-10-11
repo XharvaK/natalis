@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import { isStopOn, writeStop } from "./stop.js";
 import { MemoryNotebook } from "../testing/memory-notebook.js";
 import { loadWebFile, saveWebFile } from "../worlds/web/sites.js";
 import { keepVaultEntry, readVaultEntry } from "../worlds/web/vault.js";
+import { CONTACTS_FILE, readContacts } from "./contacts.js";
 
 // Invented fixtures: a harbour lamp kept by Tomas, and a gardener named Mara.
 const NOW = Date.parse("2026-10-11T09:00:00Z");
@@ -278,5 +279,72 @@ describe("the site and vault commands", () => {
   it("names the new commands in the help text", async () => {
     expect(HELP_TEXT).toContain("!sites add <host>");
     expect(HELP_TEXT).toContain("!vault remove <name>");
+  });
+});
+
+describe("the contact commands", () => {
+  // Invented ids. The alias file is the one the Discord world keeps in the Lar's folder.
+  const MARA_ID = "600001";
+  const SAM_ID = "600002";
+
+  function writeAliases(users: Record<string, string>): void {
+    writeFileSync(join(dir, "discord-aliases.json"), JSON.stringify({ version: 1, users, rooms: {} }), "utf8");
+  }
+
+  it("adds a contact by mention and by alias, and names them by alias", async () => {
+    writeAliases({ [MARA_ID]: "mara", [SAM_ID]: "sam" });
+    expect(await run(`!contacts add <@!${MARA_ID}>`)).toBe("Added mara. They may write to the Lar directly from now on.");
+    expect(await run("!contacts add sam")).toBe("Added sam. They may write to the Lar directly from now on.");
+    expect(readContacts(join(dir, CONTACTS_FILE)).contacts.discord).toEqual([MARA_ID, SAM_ID]);
+    expect(rows.at(-1)).toBe("Your summoner added a contact: sam.");
+    expect(await run("!contacts list")).toBe("Contacts who may write to the Lar directly: mara, sam.");
+  });
+
+  it("adds a mention the world has no alias for, and lists it as a person with no alias yet", async () => {
+    expect(await run(`!contacts add <@${SAM_ID}>`)).toBe("Added a person with no alias yet. They may write to the Lar directly from now on.");
+    expect(await run("!contacts list")).toBe("Contacts who may write to the Lar directly: a person with no alias yet.");
+  });
+
+  it("says a person is already a contact, and writes nothing again", async () => {
+    await run(`!contacts add <@${MARA_ID}>`);
+    expect(await run(`!contacts add <@${MARA_ID}>`)).toBe("That person is already a contact.");
+    expect(readContacts(join(dir, CONTACTS_FILE)).contacts.discord).toEqual([MARA_ID]);
+  });
+
+  it("removes a contact by alias or by mention, and says plainly when they were not listed", async () => {
+    writeAliases({ [MARA_ID]: "mara", [SAM_ID]: "sam" });
+    await run(`!contacts add <@${MARA_ID}>`);
+    await run(`!contacts add <@${SAM_ID}>`);
+    expect(await run("!contacts remove mara")).toBe("Removed mara. They can no longer write to the Lar directly.");
+    expect(await run(`!contacts remove <@${SAM_ID}>`)).toBe("Removed sam. They can no longer write to the Lar directly.");
+    expect(readContacts(join(dir, CONTACTS_FILE)).contacts.discord).toEqual([]);
+    expect(await run("!contacts remove mara")).toBe("mara is not a contact. !contacts list shows them.");
+    expect(await run("!contacts list")).toBe("Nobody but your summoner may write to the Lar directly.");
+  });
+
+  it("refuses an alias the world does not know, and writes nothing", async () => {
+    expect(await run("!contacts add nobody-here")).toBe(
+      "I don't know anyone called nobody-here. Give their @ mention, or the alias the Lar knows them by.",
+    );
+    expect(readContacts(join(dir, CONTACTS_FILE)).contacts.discord).toEqual([]);
+    expect(existsSync(join(dir, CONTACTS_FILE))).toBe(false);
+  });
+
+  it("refuses to change a damaged contacts file, says why, and leaves it as it was", async () => {
+    writeFileSync(join(dir, CONTACTS_FILE), "{ not json", "utf8");
+    const answer = await run(`!contacts add <@${MARA_ID}>`);
+    expect(answer).toBe("contacts.json is damaged: the file is not valid JSON. Nothing was changed.");
+    expect(readFileSync(join(dir, CONTACTS_FILE), "utf8")).toBe("{ not json");
+  });
+
+  it("answers the usage when the words are missing or wrong", async () => {
+    expect(await run("!contacts add")).toMatch(/^Use !contacts/);
+    expect(await run("!contacts frobnicate")).toMatch(/^Use !contacts/);
+    expect(rows).toEqual([]);
+  });
+
+  it("names the contact commands in the help text", () => {
+    expect(HELP_TEXT).toContain("!contacts add <mention or alias>");
+    expect(isSummonerCommand("!contacts list")).toBe(true);
   });
 });

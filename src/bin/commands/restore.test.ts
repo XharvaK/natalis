@@ -125,6 +125,7 @@ describe("natalis restore", () => {
     writeFileSync(join(lar, "home", "venv", "x.py"), "pass\n");
     writeFileSync(join(lar, "home", ".env"), "NOPE=1\n");
     writeFileSync(join(lar, "web.json"), `${JSON.stringify({ sites: ["example.org"] })}\n`);
+    writeFileSync(join(lar, "contacts.json"), `${JSON.stringify({ version: 1, discord: ["600001"] })}\n`);
     writeFileSync(join(lar, "sandbox.json"), "{}\n");
     writeFileSync(join(lar, "domus.json"), `${JSON.stringify({ tokenEnv: "DOMUS_HELPER_TOKEN" })}\n`);
     mkdirSync(join(lar, "domus"));
@@ -137,7 +138,7 @@ describe("natalis restore", () => {
     const manifest = JSON.parse(readFileSync(join(backup, MANIFEST_FILE), "utf8")) as Manifest;
     const names = manifest.files.map((file) => file.name);
     expect(names).toEqual(expect.arrayContaining([
-      "web.json", "sandbox.json", "domus.json", "domus/domus.sqlite", "domus/state.json", "vault/site_key.json", "home/notes/plan.md",
+      "web.json", "contacts.json", "sandbox.json", "domus.json", "domus/domus.sqlite", "domus/state.json", "vault/site_key.json", "home/notes/plan.md",
     ]));
     expect(names.some((name) => name.includes(".cache") || name.includes("venv") || name === "home/.env")).toBe(false);
 

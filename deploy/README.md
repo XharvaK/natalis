@@ -64,6 +64,12 @@ the token itself:
 }
 ```
 
+Who may write to the Lar directly is the summoner's list, kept in `~/lares/<name>/contacts.json`. Only you may write in a
+direct message until you add someone: in your own DM with the Lar, send `!contacts add <@mention>` or `!contacts add <alias>`,
+and `!contacts remove <@mention or alias>` or `!contacts list` the same way. A room named in `discord.json` admits its
+members as before. The file holds Discord user ids, so it stays on this host, like the alias file beside it. A damaged
+`contacts.json` admits nobody but you until it is fixed.
+
 Check the Lar in a terminal before you run it as a service: `node ~/natalis/dist/bin/natalis.js chat --dir ~/lares/<name>`.
 Ctrl+C stops it.
 

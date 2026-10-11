@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +13,7 @@ import {
   type PlatformMessage,
 } from "./discord-world.js";
 import { openShelf, PICTURE_BYTES_MAX, shelfBody } from "../../media/shelf.js";
+import { CONTACTS_FILE, writeContacts } from "../../entity/contacts.js";
 
 // Every id here is invented. Tokens are built from parts so no token-shaped literal sits in the source.
 const OWNER = "5".repeat(18);
@@ -159,6 +160,7 @@ async function startWorld(extra: Partial<DiscordWorldOptions> = {}) {
     ownerUserId: OWNER,
     rooms: [GENERAL],
     aliasesPath,
+    contactsPath: join(dir, CONTACTS_FILE),
     client: fake.client,
     fetch: notFound,
     ...extra,
@@ -217,7 +219,8 @@ describe("intake", () => {
     expect(events[0]?.data).not.toHaveProperty("flooded");
   });
 
-  it("names a guest's DM by their alias", async () => {
+  it("names a contact's DM by their alias", async () => {
+    writeContacts(join(dir, CONTACTS_FILE), { version: 1, discord: [MARA] });
     const { fake, events } = await startWorld();
     fake.deliver(incoming({ channelKind: "dm", author: MARA_AUTHOR, content: "psst" }));
     await vi.advanceTimersByTimeAsync(1500);
@@ -560,7 +563,9 @@ describe("tools", () => {
 describe("now and lifecycle", () => {
   it("says who the Lar is and where it lives once connected", async () => {
     const { world } = await startWorld({ rooms: [GENERAL, OFF_TOPIC] });
-    expect(world.now()).toBe("Discord: connected as Natalis; places: dm:owner, room:general, room:off-topic.");
+    expect(world.now()).toBe(
+      "Discord: connected as Natalis; places: dm:owner, room:general, room:off-topic. Nobody but your summoner may write to you directly.",
+    );
   });
 
   it("says the Lar is not connected when login fails, without the token", async () => {
@@ -857,5 +862,92 @@ describe("pictures in", () => {
     expect(second.events[0]?.text).toContain("today's picture limit for others is reached");
     // The shelf holds the 50 others' pictures and the summoner's one; the refused one is not kept.
     expect(second.shelf.list()).toHaveLength(51);
+  });
+});
+
+describe("direct messages and contacts", () => {
+  const LOG_LINE = "[discord] a DM from someone who is not a contact was not admitted.";
+
+  function setContacts(ids: string[]): void {
+    writeContacts(join(dir, CONTACTS_FILE), { version: 1, discord: ids });
+  }
+
+  it("makes no event, alias or ref from a DM by someone who is not a contact", async () => {
+    const { fake, events } = await startWorld();
+    fake.deliver(incoming({ channelKind: "dm", author: MARA_AUTHOR, content: "psst" }));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(events).toEqual([]);
+    // The room aliases are kept at start; the person has no alias, so no id of theirs is in the file.
+    expect(JSON.stringify(JSON.parse(readFileSync(aliasesPath, "utf8")))).not.toContain(MARA);
+  });
+
+  it("admits a DM once the summoner has added the person, and stops when they are removed", async () => {
+    const { fake, events } = await startWorld();
+    fake.deliver(incoming({ channelKind: "dm", author: MARA_AUTHOR, content: "before" }));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(events).toHaveLength(0);
+
+    setContacts([MARA]);
+    fake.deliver(incoming({ channelKind: "dm", author: MARA_AUTHOR, content: "after" }));
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ place: "discord:dm:mara", actor: "mara", source: "outside", text: "after" });
+
+    setContacts([]);
+    fake.deliver(incoming({ channelKind: "dm", author: MARA_AUTHOR, content: "removed" }));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(events).toHaveLength(1);
+  });
+
+  it("keeps the summoner's own DM and every room exactly as before, contacts or not", async () => {
+    const { fake, events } = await startWorld();
+    fake.deliver(incoming({ channelKind: "dm", author: OWNER_AUTHOR, content: "hello" }));
+    fake.deliver(incoming({ author: MARA_AUTHOR, content: "in the room" }));
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(events.map((event) => event.place).sort()).toEqual(["discord:dm:owner", "discord:room:general"]);
+  });
+
+  it("writes one console line for a refused DM, with no text and no id, at most once an hour per author", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      const { fake } = await startWorld();
+      fake.deliver(incoming({ channelKind: "dm", author: MARA_AUTHOR, content: "a secret sentence" }));
+      fake.deliver(incoming({ channelKind: "dm", author: MARA_AUTHOR, content: "another one" }));
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(log.mock.calls).toEqual([[LOG_LINE]]);
+
+      await vi.advanceTimersByTimeAsync(59 * 60 * 1000);
+      fake.deliver(incoming({ channelKind: "dm", author: MARA_AUTHOR, content: "still quiet" }));
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(log.mock.calls).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+      fake.deliver(incoming({ channelKind: "dm", author: MARA_AUTHOR, content: "an hour later" }));
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(log.mock.calls).toEqual([[LOG_LINE], [LOG_LINE]]);
+      expect(JSON.stringify(log.mock.calls)).not.toContain(MARA);
+      expect(JSON.stringify(log.mock.calls)).not.toContain("secret");
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("admits nobody but the summoner while the contacts file is damaged, and says so on the now line", async () => {
+    writeFileSync(join(dir, CONTACTS_FILE), "{ not json", "utf8");
+    const { world, fake, events } = await startWorld();
+    fake.deliver(incoming({ channelKind: "dm", author: MARA_AUTHOR, content: "hello" }));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(events).toEqual([]);
+    expect(world.now()).toContain("Your contacts file cannot be read, so only your summoner may write to you directly.");
+  });
+
+  it("names the contacts by alias on the now line, once they have a name", async () => {
+    setContacts([MARA]);
+    const { world, fake } = await startWorld();
+    expect(world.now()).toContain("Contacts who may write to you directly: a person with no alias yet.");
+    fake.deliver(incoming({ author: MARA_AUTHOR, content: "hi from the room" }));
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(world.now()).toContain("Contacts who may write to you directly: mara.");
+    expect(world.now()).not.toContain(MARA);
   });
 });

@@ -24,6 +24,7 @@ export const PLAIN_FILES: readonly string[] = [
   "discord-aliases.json",
   "discord-aliases.refs.json",
   "privacy.json",
+  "contacts.json",
   "welcome.md",
   "web.json",
   "sandbox.json",

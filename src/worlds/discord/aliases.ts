@@ -7,6 +7,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 
 export const OWNER_ALIAS = "owner";
+/** The alias file's name in the Lar's folder. Platform ids are kept only here and in the contacts file. */
+export const DISCORD_ALIASES_FILE = "discord-aliases.json";
 const ALIAS_MAX_CHARS = 32;
 
 export type AliasStore = {
@@ -53,6 +55,15 @@ function readFile(path: string): AliasFile {
     throw new Error(`Discord aliases file has an unexpected shape: ${path}. Move it aside to start fresh.`);
   }
   return { version: 1, users: { ...candidate.users }, rooms: { ...candidate.rooms } };
+}
+
+/**
+ * The people the alias file names, as platform id to alias, read without a store. A missing file names nobody; a damaged
+ * one throws, like the store does. For the body's commands, which need a name for an id and never an id for a name they
+ * have not been given.
+ */
+export function readUserAliases(path: string): Record<string, string> {
+  return existsSync(path) ? readFile(path).users : {};
 }
 
 function isStringMap(value: unknown): value is Record<string, string> {

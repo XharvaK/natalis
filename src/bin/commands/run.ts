@@ -11,6 +11,8 @@ import { openEntity } from "../../entity/runtime.js";
 import { modelFromConfig, worldModelsFromConfig } from "../../model/from-config.js";
 import { createSecretScanner } from "../../secrets/index.js";
 import { createDiscordWorld } from "../../worlds/discord/index.js";
+import { DISCORD_ALIASES_FILE } from "../../worlds/discord/aliases.js";
+import { CONTACTS_FILE } from "../../entity/contacts.js";
 import { createDomusWorld, DOMUS_FILE, parseDomusFile } from "../../worlds/domus/index.js";
 import { bodyRefusal, createSandboxWorld, defaultBodyRoot, parseSandboxFile, SANDBOX_FILE } from "../../worlds/sandbox/index.js";
 import { createWebWorld, loadWebFile, WEB_FILE } from "../../worlds/web/index.js";
@@ -51,7 +53,8 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
         ownerUserId: discord.ownerUserId,
         ownerAlias: config.owner.alias,
         rooms: discord.rooms,
-        aliasesPath: join(dir, "discord-aliases.json"),
+        aliasesPath: join(dir, DISCORD_ALIASES_FILE),
+        contactsPath: join(dir, CONTACTS_FILE),
       }),
     );
   }
