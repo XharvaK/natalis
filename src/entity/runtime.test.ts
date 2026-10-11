@@ -1284,6 +1284,25 @@ describe("the summoner's commands", () => {
     expect(allRows(entity).filter((row) => row.thread === "self")).toEqual([]);
   });
 
+  it("shows the summoner's acts only in turns of the summoner's own places, and to the first of those turns", async () => {
+    const room = fakeWorld("fake");
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model, {}, [room.world]);
+    await entity.start();
+
+    cli.send("!sites add example.org");
+    await entity.idle();
+    room.push("fake:room", "Hello room.");
+    await entity.idle();
+    expect(model.requests).toHaveLength(1);
+    expect(systemTextOf(model.requests[0])).not.toContain("example.org");
+
+    cli.send("Hello.");
+    await entity.idle();
+    expect(model.requests).toHaveLength(2);
+    expect(systemTextOf(model.requests[1])).toContain("example.org");
+  });
+
   it("writes the household line, and the Lar sees what the summoner did on its next turn, once", async () => {
     const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);
     const { entity, cli } = await open(model);

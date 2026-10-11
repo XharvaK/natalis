@@ -707,7 +707,9 @@ class Runtime implements Entity {
   private async takeTurn(thread: string): Promise<void> {
     const seen = this.threadState(thread).seenSeq;
     const snapshot = this.river.lastSeq();
-    const fresh = this.river.read({ thread, kinds: ["event"], sinceSeq: seen, untilSeq: snapshot, limit: ALL_ROWS });
+    const fresh = this.river
+      .read({ thread, kinds: ["event"], sinceSeq: seen, untilSeq: snapshot, limit: ALL_ROWS })
+      .filter((row) => !this.hiddenHere(row, thread));
     if (fresh.length === 0) return;
 
     const turnId = randomUUID();
@@ -764,7 +766,8 @@ class Runtime implements Entity {
     cursor.seenSeq = snapshot;
     cursor.lastTurnMs = this.nowMs();
     // The summoner's acts up to this turn were shown to the Lar; acts written during the turn wait for the next one.
-    this.state.actsSeenSeq = Math.max(this.state.actsSeenSeq, snapshot);
+    // Only a turn in the summoner's own places shows acts, so only such a turn moves that mark.
+    if (this.isOwnerPlace(thread)) this.state.actsSeenSeq = Math.max(this.state.actsSeenSeq, snapshot);
     this.saveState();
   }
 
@@ -1163,7 +1166,7 @@ class Runtime implements Entity {
         nextWakes: wakes,
       }),
     ];
-    const recall = this.recallText(fresh, shown);
+    const recall = this.recallText(thread, fresh, shown);
     if (recall !== "") sections.push({ name: "recall", text: recall, priority: 40 });
     return assembleSystem(sections, this.config.model.contextTokens).text;
   }
@@ -1233,7 +1236,7 @@ class Runtime implements Entity {
     const claims = this.placeClaimLines(thread, nowMs);
     lines.push(...(claims.length === 0 ? ["- none"] : claims));
 
-    const acts = this.summonerActs(snapshot);
+    const acts = this.isOwnerPlace(thread) ? this.summonerActs(snapshot) : [];
     if (acts.length > 0) {
       lines.push("", "Your summoner did these since your last turn (body notes):");
       for (const row of acts) lines.push(`- ${this.stamp(row.atMs)}: ${row.text ?? ""}`);
@@ -1288,7 +1291,7 @@ class Runtime implements Entity {
     return entries.map((entry) => `- ${entry.path} — ${entry.firstLine.trim() || "(empty)"}`).join("\n");
   }
 
-  private recallText(fresh: RiverRow[], shown: Set<number>): string {
+  private recallText(thread: string, fresh: RiverRow[], shown: Set<number>): string {
     // River search ANDs its terms, so each word is searched on its own and the rows that match most words win.
     const words: string[] = [];
     for (const row of fresh) {
@@ -1300,7 +1303,7 @@ class Runtime implements Entity {
     const found = new Map<number, { row: RiverRow; score: number }>();
     for (const word of words.slice(0, RECALL_WORDS)) {
       for (const hit of this.river.search(word, { limit: RECALL_LIMIT })) {
-        if (shown.has(hit.row.seq)) continue;
+        if (shown.has(hit.row.seq) || this.hiddenHere(hit.row, thread)) continue;
         const entry = found.get(hit.row.seq);
         if (entry) entry.score += 1;
         else found.set(hit.row.seq, { row: hit.row, score: 1 });
@@ -1311,6 +1314,14 @@ class Runtime implements Entity {
       .slice(0, RECALL_LIMIT)
       .map(({ row }) => `[${this.stamp(row.atMs)} ${row.thread} ${who(row)}] ${clip(row.text ?? "", RECALL_CLIP)}`)
       .join("\n");
+  }
+
+  /**
+   * A summoner act (a stop reason, a decline reason, and the like) is shown only in a turn of one of the summoner's own
+   * places. Elsewhere it stays in the record, and the summoner's own turns show it.
+   */
+  private hiddenHere(row: RiverRow, thread: string): boolean {
+    return row.data?.["summonerAct"] === true && !this.isOwnerPlace(thread);
   }
 
   /** The last rows of kinds event and say before the new events, oldest first. */
@@ -1324,6 +1335,7 @@ class Runtime implements Entity {
     });
     return rows
       .filter((row) => !(row.kind === "event" && row.seq > seen))
+      .filter((row) => !this.hiddenHere(row, thread))
       .slice(0, RECENT_LIMIT)
       .reverse();
   }
