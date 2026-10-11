@@ -11,6 +11,7 @@ import { openEntity } from "../../entity/runtime.js";
 import { modelFromConfig } from "../../model/from-config.js";
 import { createSecretScanner } from "../../secrets/index.js";
 import { createDiscordWorld } from "../../worlds/discord/index.js";
+import { createWebWorld, loadWebFile, WEB_FILE } from "../../worlds/web/index.js";
 import { flagValue } from "./args.js";
 
 export const RUN_USAGE = "Usage: natalis run --dir <entity folder>";
@@ -63,6 +64,8 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
   const keyName = config.model.apiKeyEnv;
   const modelKey = keyName === undefined ? undefined : process.env[keyName];
   if (modelKey !== undefined && modelKey.length >= 8) known.push(modelKey);
+  // Created before the worlds, so a world can register its own secrets (the web's vault values) as it starts.
+  const scanner = createSecretScanner({ knownValues: known });
 
   const worlds: World[] = [];
   const discordPath = join(dir, DISCORD_FILE);
@@ -73,7 +76,7 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
       err(`${DISCORD_FILE} names ${discord.tokenEnv} for the bot token, but it is not set.`);
       return 1;
     }
-    known.push(token);
+    scanner.addKnownValue(token);
     worlds.push(
       createDiscordWorld({
         token,
@@ -84,12 +87,20 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
       }),
     );
   }
+  if (existsSync(join(dir, WEB_FILE))) {
+    try {
+      loadWebFile(dir);
+    } catch (error) {
+      err(error instanceof Error ? error.message : String(error));
+      return 1;
+    }
+    worlds.push(createWebWorld({ dir, scanner }));
+  }
   if (worlds.length === 0) {
     err(`No worlds to run in: add ${DISCORD_FILE} to ${dir}, or use natalis chat for the terminal.`);
     return 1;
   }
 
-  const scanner = createSecretScanner({ knownValues: known });
   const entity = await openEntity({ dir, config, model: modelFromConfig(config.model), worlds, scanner });
   const stopped = new Promise<void>((resolveStopped) => {
     process.once("SIGINT", () => resolveStopped());

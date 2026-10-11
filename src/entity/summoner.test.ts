@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -6,6 +6,8 @@ import { COMMITMENTS_PATH, COMMITMENTS_STUB, HOUSEHOLD_PATH } from "./commitment
 import { answerSummoner, HELP_TEXT, isSummonerCommand, type Proposal, type SummonerDesk } from "./summoner.js";
 import { isStopOn, writeStop } from "./stop.js";
 import { MemoryNotebook } from "../testing/memory-notebook.js";
+import { loadWebFile, saveWebFile } from "../worlds/web/sites.js";
+import { keepVaultEntry, readVaultEntry } from "../worlds/web/vault.js";
 
 // Invented fixtures: a harbour lamp kept by Tomas, and a gardener named Mara.
 const NOW = Date.parse("2026-10-11T09:00:00Z");
@@ -198,5 +200,76 @@ describe("help and unknown words", () => {
   it("reads the command word without regard to case", async () => {
     expect(await run("!STOP")).toContain("Emergency stop is on");
     expect(isStopOn(dir)).toBe(true);
+  });
+});
+
+// Invented fixture for the vault commands: a value a made-up site showed once, built from parts at runtime.
+const VAULT_FIXTURE = ["fixture", "summoner", "value", "0123456789"].join("-");
+
+describe("the site and vault commands", () => {
+  it("says the web is off when there is no web.json, and lists nothing", async () => {
+    expect(await run("!sites")).toContain("The web is off");
+    expect(rows.at(-1)).toBe("Your summoner read the list of sites you may post, log in or make accounts on.");
+  });
+
+  it("creates web.json on the first add, lower-cases the host, and says the web starts at the next start", async () => {
+    expect(await run("!sites add Example.ORG.")).toBe("Created web.json with example.org. The web starts when the Lar next starts.");
+    expect(loadWebFile(dir)).toEqual({ sites: ["example.org"], perHour: 120 });
+    expect(rows.at(-1)).toBe("Your summoner added example.org to the sites you may post, log in or make accounts on. The web starts when you next start.");
+  });
+
+  it("adds a second host, keeps the ceiling, and lists both", async () => {
+    saveWebFile(dir, { sites: ["example.org"], perHour: 40 });
+    expect(await run("!sites add api.example.net")).toBe("Added api.example.net. The Lar may now post, log in or make accounts there.");
+    expect(loadWebFile(dir)).toEqual({ sites: ["example.org", "api.example.net"], perHour: 40 });
+    expect(await run("!sites")).toBe(
+      "Sites the Lar may post, log in or make accounts on: example.org, api.example.net. Ceiling: 40 web requests an hour.",
+    );
+  });
+
+  it("refuses a host that is not a host name, a second listing, and extra words", async () => {
+    saveWebFile(dir, { sites: ["example.org"] });
+    expect(await run("!sites add https://example.org/path")).toContain("is not a host name");
+    expect(await run("!sites add example.org")).toBe("example.org is already listed.");
+    expect(await run("!sites add one.example two.example")).toBe("Give one host name, such as example.org: !sites add <host> or !sites remove <host>.");
+    expect(await run("!sites dance")).toBe("Use !sites, !sites add <host>, or !sites remove <host>.");
+    expect(loadWebFile(dir)).toEqual({ sites: ["example.org"], perHour: 120 });
+  });
+
+  it("removes a listed host, and says plainly when it was not listed", async () => {
+    saveWebFile(dir, { sites: ["example.org", "example.net"] });
+    expect(await run("!sites remove example.org")).toBe("Removed example.org. The Lar can no longer post, log in or make accounts there.");
+    expect(loadWebFile(dir)).toEqual({ sites: ["example.net"], perHour: 120 });
+    expect(await run("!sites remove example.org")).toBe("example.org is not listed. !sites shows the list.");
+  });
+
+  it("refuses to change a damaged web.json, and says why", async () => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "web.json"), JSON.stringify({ sites: ["bad host"] }));
+    expect(await run("!sites")).toContain("web.json is damaged");
+    expect(await run("!sites add example.org")).toContain("Nothing was changed.");
+    expect(() => loadWebFile(dir)).toThrow(/not a host name/);
+  });
+
+  it("lists vault names with their hosts, and never a value", async () => {
+    expect(await run("!vault")).toBe("The vault is empty.");
+    keepVaultEntry(dir, "site_key", { host: "example.org", value: VAULT_FIXTURE });
+    const listed = await run("!vault");
+    expect(listed).toBe("Vault names, with the host each belongs to (values are never shown): site_key (example.org).");
+    expect(listed).not.toContain(VAULT_FIXTURE);
+  });
+
+  it("removes a vault value by name, and says plainly when there is none", async () => {
+    keepVaultEntry(dir, "site_key", { host: "example.org", value: VAULT_FIXTURE });
+    expect(await run("!vault remove site_key")).toBe("Removed the vault value named site_key. The Lar can no longer send it.");
+    expect(readVaultEntry(dir, "site_key")).toBeUndefined();
+    expect(await run("!vault remove site_key")).toBe("There is no vault value named site_key. !vault lists the names.");
+    expect(await run("!vault remove ..")).toContain("A vault name is letters");
+    expect(await run("!vault remove")).toContain("Give the name of the vault value");
+  });
+
+  it("names the new commands in the help text", async () => {
+    expect(HELP_TEXT).toContain("!sites add <host>");
+    expect(HELP_TEXT).toContain("!vault remove <name>");
   });
 });
