@@ -681,6 +681,29 @@ describe("the ledger and the failure alert", () => {
     await entity.idle();
     expect(notices()).toHaveLength(2);
   });
+
+  it("keeps the failure count and the notice in state.json, so a restart during an outage does not tell the summoner again", async () => {
+    const failing = (): ScriptStep => new ModelError("model service rejected the request (HTTP 404): no such model", "bad_request", 1);
+    // Five failures in a row (the scripted model then fails on every call too); the summoner is told at the fifth.
+    const before = new ScriptedModel([failing(), failing(), failing(), failing(), failing()]);
+    const first = await open(before, { retryDelaysMs: [1] });
+    await first.entity.start();
+    first.cli.send("One.");
+    await waitFor(() => first.said.some((item) => item.text.includes("could not get an answer")));
+    await first.entity.stop();
+    const stored = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as { failedRun?: number; outageNoticed?: boolean };
+    expect(stored.outageNoticed).toBe(true);
+    expect(stored.failedRun).toBeGreaterThanOrEqual(5);
+
+    // The same folder, after a restart: the outage goes on, and another failure is not told a second time.
+    const after = new ScriptedModel([failing(), failing(), failing()]);
+    const second = await open(after, { retryDelaysMs: [60_000] });
+    await second.entity.start();
+    second.cli.send("Two.");
+    await waitFor(() => after.requests.length >= 1);
+    await second.entity.stop();
+    expect(second.said.filter((item) => item.text.includes("could not get an answer"))).toHaveLength(0);
+  });
 });
 
 describe("what the Lar sends and what it is shown", () => {

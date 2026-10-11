@@ -306,6 +306,10 @@ type EntityState = {
   privacyDamage?: { told: boolean };
   /** Turns in a row woken only by her own wakes, with nothing from outside or the summoner between them. */
   selfWakeRun?: number;
+  /** Failed turns in a row, over every thread (the failure alert's count). Kept here so a restart does not reset it. */
+  failedRun?: number;
+  /** Set once the summoner was told of the current outage. Kept here so a restart during an outage does not tell again. */
+  outageNoticed?: boolean;
 };
 
 function emptyState(): EntityState {
@@ -461,6 +465,16 @@ function checkState(value: unknown): EntityState {
     if (typeof selfWakeRun !== "number" || !Number.isSafeInteger(selfWakeRun) || selfWakeRun < 0) bad("selfWakeRun");
     state.selfWakeRun = selfWakeRun as number;
   }
+  const failedRun = root["failedRun"];
+  if (failedRun !== undefined) {
+    if (typeof failedRun !== "number" || !Number.isSafeInteger(failedRun) || failedRun < 0) bad("failedRun");
+    state.failedRun = failedRun as number;
+  }
+  const outageNoticed = root["outageNoticed"];
+  if (outageNoticed !== undefined) {
+    if (typeof outageNoticed !== "boolean") bad("outageNoticed");
+    state.outageNoticed = outageNoticed as boolean;
+  }
   const summonerPlace = root["summonerPlace"];
   if (summonerPlace !== undefined) {
     if (typeof summonerPlace !== "string" || summonerPlace === "") bad("summonerPlace");
@@ -589,6 +603,8 @@ class Runtime implements Entity {
     this.dir = init.dir;
     this.privacy = init.privacy;
     this.state = init.state;
+    this.failedRun = init.state.failedRun ?? 0;
+    this.outageNoticed = init.state.outageNoticed ?? false;
     this.shelf = init.shelf;
     // The body's outward check reads the privacy list through the same watch as the say, so a damaged list is noticed there too.
     this.body = shelfBody(init.shelf, init.nowMs, (texts) => outwardHold(this.privacyNow(), texts));
@@ -1034,6 +1050,7 @@ class Runtime implements Entity {
     this.failedRun += 1;
     const outage = fromModel && kind !== undefined && OUTAGE_KINDS.has(kind);
     if (outage || this.failedRun >= FAILED_TURNS_ALERT) this.noticeOutage(message);
+    this.saveState();
     if (giveUp) return;
     const timer = setTimeout(() => {
       this.retries.delete(thread);
@@ -2538,6 +2555,9 @@ class Runtime implements Entity {
   /** Writes state.json with the river's current last seq. Called after every change to what the Lar carries. */
   saveState(): void {
     this.state.lastSeq = this.river.lastSeq();
+    // The failure alert's count and its notice are kept with the rest, so a restart does not reset or repeat them.
+    this.state.failedRun = this.failedRun;
+    this.state.outageNoticed = this.outageNoticed;
     writeStateFile(this.statePath, this.state);
   }
 }
