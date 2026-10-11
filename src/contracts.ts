@@ -285,4 +285,6 @@ export interface World {
   tools(): Tool[];
   /** One or two plain lines for the now board: connected or not, places open. */
   now(): string;
+  /** One stable line saying what this world is and which places in it are hers, for "who you are". */
+  about?(): string;
 }

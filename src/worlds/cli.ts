@@ -4,7 +4,7 @@
 import type { SayResult, World, WorldEvent } from "../contracts.js";
 
 export const CLI_WORLD_ID = "cli";
-export const CLI_PLACE = "cli:owner";
+export const CLI_PLACE = "cli:summoner";
 export const CLI_NOW = "Command line: open.";
 
 export type CliWorldOptions = {
@@ -33,7 +33,7 @@ export function createCliWorld(options: CliWorldOptions): CliWorld {
     send(text: string): void {
       if (emit === undefined) throw new Error("The command-line world is not started.");
       if (typeof text !== "string" || text.trim() === "") throw new RangeError("Nothing to send: the line is empty.");
-      emit({ world: CLI_WORLD_ID, place: CLI_PLACE, actor: "owner", source: "owner", text });
+      emit({ world: CLI_WORLD_ID, place: CLI_PLACE, source: "owner", text });
     },
 
     async say(place: string, text: string): Promise<SayResult> {
@@ -55,6 +55,10 @@ export function createCliWorld(options: CliWorldOptions): CliWorld {
 
     tools() {
       return [];
+    },
+
+    about() {
+      return `A command line, where your summoner types to you at ${CLI_PLACE}.`;
     },
 
     now() {

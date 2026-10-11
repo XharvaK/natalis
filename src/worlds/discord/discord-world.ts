@@ -626,6 +626,14 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       return [reactTool, readHistoryTool];
     },
 
+    about() {
+      const rooms = liveRoomSlugs.map((slug) => `${PLACE_PREFIX}room:${slug}`);
+      return (
+        `Discord: direct messages with your summoner at ${PLACE_PREFIX}dm:${ownerAlias}, and with people who write to you` +
+        (rooms.length === 0 ? "." : `; rooms: ${rooms.join(", ")}.`)
+      );
+    },
+
     now() {
       if (status === "connected" && self) {
         const places = [`dm:${ownerAlias}`, ...liveRoomSlugs.map((slug) => `room:${slug}`)];

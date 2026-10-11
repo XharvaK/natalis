@@ -199,7 +199,7 @@ describe("opening an entity", () => {
 describe("a conversation", () => {
   it("wakes on an owner message, says back, ends the turn, and writes the river", async () => {
     const model = new ScriptedModel([
-      reply({ toolCalls: [call("say", { place: "cli:owner", text: "Hello, Mira." })] }),
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "Hello, Mira." })] }),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
     const { entity, cli, said } = await open(model);
@@ -207,12 +207,12 @@ describe("a conversation", () => {
     cli.send("Hello, Iris.");
     await entity.idle();
 
-    expect(said).toEqual([{ place: "cli:owner", text: "Hello, Mira." }]);
+    expect(said).toEqual([{ place: "cli:summoner", text: "Hello, Mira." }]);
     const kinds = new Set(allRows(entity).map((row) => row.kind));
     for (const kind of ["event", "turn", "tool_call", "receipt", "say"]) expect(kinds.has(kind)).toBe(true);
 
     const say = allRows(entity).find((row) => row.kind === "say");
-    expect(say).toMatchObject({ thread: "cli:owner", place: "cli:owner", source: "self", text: "Hello, Mira." });
+    expect(say).toMatchObject({ thread: "cli:summoner", place: "cli:summoner", source: "self", text: "Hello, Mira." });
 
     const user = userTextOf(model.requests[0]);
     expect(user).toContain("New:");
@@ -227,7 +227,7 @@ describe("a conversation", () => {
           call("write_note", { path: "people/owner.md", text: "The owner is Mira. She likes tea.", why: "Remember who I talk with" }),
         ],
       }),
-      reply({ toolCalls: [call("say", { place: "cli:owner", text: "I will remember you, Mira." })] }),
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I will remember you, Mira." })] }),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
     const a = await open(first);
@@ -344,7 +344,7 @@ describe("the owner's asks", () => {
 
     cli.send("Are you there?");
     await entity.idle();
-    expect(readStateFile().asks.map((ask) => ask.place)).toEqual(["cli:owner"]);
+    expect(readStateFile().asks.map((ask) => ask.place)).toEqual(["cli:summoner"]);
 
     cli.send("Still there?");
     await entity.idle();
@@ -352,14 +352,14 @@ describe("the owner's asks", () => {
     expect(system).toContain("Open asks");
     // Two messages wait in one place: two asks in the state, one line on the board.
     expect(readStateFile().asks).toHaveLength(2);
-    expect(system.match(/- cli:owner, asked/g)).toHaveLength(1);
+    expect(system.match(/- cli:summoner, asked/g)).toHaveLength(1);
     expect(system).toContain("(2 messages waiting)");
   });
 
   it("is cleared by let_go, which leaves a note in the river", async () => {
     const model = new ScriptedModel([
       reply({ toolCalls: [call("end_turn")] }),
-      reply({ toolCalls: [call("let_go", { place: "cli:owner", why: "It no longer matters." })] }),
+      reply({ toolCalls: [call("let_go", { place: "cli:summoner", why: "It no longer matters." })] }),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
     const { entity, cli } = await open(model);
@@ -373,12 +373,12 @@ describe("the owner's asks", () => {
     await entity.idle();
     expect(readStateFile().asks).toHaveLength(0);
     const note = allRows(entity).find((row) => row.kind === "note" && row.text?.startsWith("Let go of the open question"));
-    expect(note?.text).toBe("Let go of the open question in cli:owner: It no longer matters.");
+    expect(note?.text).toBe("Let go of the open question in cli:summoner: It no longer matters.");
   });
 
   it("is cleared by a say to that place", async () => {
     const model = new ScriptedModel([
-      reply({ toolCalls: [call("say", { place: "cli:owner", text: "Yes, I am here." })] }),
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "Yes, I am here." })] }),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
     const { entity, cli, said } = await open(model);
@@ -397,7 +397,7 @@ describe("failures", () => {
       new ModelError("The model service is down.", "unavailable", 1),
       () => {
         asksDuringRetry = readStateFile().asks;
-        return reply({ toolCalls: [call("say", { place: "cli:owner", text: "I am here, Mira." })] });
+        return reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I am here, Mira." })] });
       },
       reply({ toolCalls: [call("end_turn")] }),
     ]);
@@ -407,8 +407,8 @@ describe("failures", () => {
     cli.send("Are you there?");
     await entity.idle();
 
-    expect(asksDuringRetry).toEqual([expect.objectContaining({ place: "cli:owner" })]);
-    expect(said).toEqual([{ place: "cli:owner", text: "I am here, Mira." }]);
+    expect(asksDuringRetry).toEqual([expect.objectContaining({ place: "cli:summoner" })]);
+    expect(said).toEqual([{ place: "cli:summoner", text: "I am here, Mira." }]);
     expect(readStateFile().asks).toHaveLength(0);
     const notes = allRows(entity).filter((row) => row.kind === "note").map((row) => row.text ?? "");
     expect(notes).toContain("Your turn failed (model error); trying again in 1 s.");
@@ -421,7 +421,7 @@ describe("failures", () => {
 describe("what she sends and what she is shown", () => {
   it("holds a say that carries a credential and delivers nothing", async () => {
     const model = new ScriptedModel([
-      reply({ toolCalls: [call("say", { place: "cli:owner", text: `Here is the key: ${FAKE_KEY}` })] }),
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: `Here is the key: ${FAKE_KEY}` })] }),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
     const { entity, cli, said } = await open(model);
@@ -493,7 +493,7 @@ describe("what she sends and what she is shown", () => {
   it("lists another active thread on the now board with what she last said there", async () => {
     const room = fakeWorld("fake");
     const model = new ScriptedModel([
-      reply({ toolCalls: [call("say", { place: "cli:owner", text: "Hello from the command line." })] }),
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "Hello from the command line." })] }),
       reply({ toolCalls: [call("end_turn")] }),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
@@ -506,7 +506,7 @@ describe("what she sends and what she is shown", () => {
     await entity.idle();
 
     const system = systemTextOf(model.requests[2]);
-    expect(system).toContain("- cli:owner, ");
+    expect(system).toContain("- cli:summoner, ");
     expect(system).toContain('last said: "Hello from the command line."');
     expect(system).toContain("- fake: fake is open.");
   });
@@ -578,7 +578,7 @@ describe("the owner's privacy list", () => {
     expect(refused).toMatchObject({
       refused: {
         code: "held_privacy",
-        reason: `"Lantern Yard" is on your owner's privacy list (home). Nothing was sent. Say it without that, or say nothing.`,
+        reason: `"Lantern Yard" is on your summoner's privacy list (home). Nothing was sent. Say it without that, or say nothing.`,
       },
     });
     const note = noteRows(entity).find((row) => row.data?.["held"] === "privacy");
@@ -589,7 +589,7 @@ describe("the owner's privacy list", () => {
 
   it("does not hold the same words when they are said to her owner", async () => {
     const model = new ScriptedModel([
-      reply({ toolCalls: [call("say", { place: "cli:owner", text: "Lantern Yard, by the water." })] }),
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "Lantern Yard, by the water." })] }),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
     const { entity, cli, said } = await open(model);
@@ -599,7 +599,7 @@ describe("the owner's privacy list", () => {
     cli.send("Tell me where.");
     await entity.idle();
 
-    expect(said).toEqual([{ place: "cli:owner", text: "Lantern Yard, by the water." }]);
+    expect(said).toEqual([{ place: "cli:summoner", text: "Lantern Yard, by the water." }]);
     expect(noteRows(entity).some((row) => row.data?.["held"] === "privacy")).toBe(false);
   });
 
@@ -666,7 +666,7 @@ describe("the honesty check on her life record", () => {
   it("asks the model once, with low effort and no tools, when her life record has real content", async () => {
     const room = fakeWorld("fake");
     const model = new ScriptedModel([
-      reply({ toolCalls: [call("say", { place: "cli:owner", text: "I work at the bakery." })] }),
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I work at the bakery." })] }),
       honestyReply(false),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
@@ -677,7 +677,7 @@ describe("the honesty check on her life record", () => {
     cli.send("Where do you work?");
     await entity.idle();
 
-    expect(said).toEqual([{ place: "cli:owner", text: "I work at the bakery." }]);
+    expect(said).toEqual([{ place: "cli:summoner", text: "I work at the bakery." }]);
     const check = model.requests[1];
     expect(check?.effort).toBe("low");
     expect(check?.tools).toBeUndefined();
@@ -687,7 +687,7 @@ describe("the honesty check on her life record", () => {
 
   it("holds a say that her record contradicts, quotes both sides, and sends nothing", async () => {
     const model = new ScriptedModel([
-      reply({ toolCalls: [call("say", { place: "cli:owner", text: "I work at the lighthouse." })] }),
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I work at the lighthouse." })] }),
       honestyReply(true, "I work at the lighthouse", "I work at the bakery"),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
@@ -710,7 +710,7 @@ describe("the honesty check on her life record", () => {
 
   it("sends a contradicting say when she says it knowingly, and skips the check for that say only", async () => {
     const model = new ScriptedModel([
-      reply({ toolCalls: [call("say", { place: "cli:owner", text: "I work at the lighthouse.", knowingly: true })] }),
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I work at the lighthouse.", knowingly: true })] }),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
     const { entity, cli, said } = await open(model);
@@ -720,13 +720,13 @@ describe("the honesty check on her life record", () => {
     cli.send("Where do you work?");
     await entity.idle();
 
-    expect(said).toEqual([{ place: "cli:owner", text: "I work at the lighthouse." }]);
+    expect(said).toEqual([{ place: "cli:summoner", text: "I work at the lighthouse." }]);
     expect(model.requests).toHaveLength(2);
   });
 
   it("refuses a knowingly that is not true or false, with no check and no send", async () => {
     const model = new ScriptedModel([
-      reply({ toolCalls: [call("say", { place: "cli:owner", text: "Hello.", knowingly: "yes" })] }),
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "Hello.", knowingly: "yes" })] }),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
     const { entity, cli, said } = await open(model);
@@ -759,7 +759,7 @@ describe("the honesty check on her life record", () => {
 
   it("sends the words and writes a note when the check cannot run", async () => {
     const model = new ScriptedModel([
-      reply({ toolCalls: [call("say", { place: "cli:owner", text: "I work at the lighthouse." })] }),
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I work at the lighthouse." })] }),
       new ModelError("The service is busy.", "unavailable", 2),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
@@ -770,14 +770,14 @@ describe("the honesty check on her life record", () => {
     cli.send("Where do you work?");
     await entity.idle();
 
-    expect(said).toEqual([{ place: "cli:owner", text: "I work at the lighthouse." }]);
+    expect(said).toEqual([{ place: "cli:summoner", text: "I work at the lighthouse." }]);
     const note = noteRows(entity).find((row) => row.data?.["check"] === "honesty");
     expect(note?.text).toMatch(/^honesty check could not run: the model call failed \(The service is busy\.\)/);
   });
 
   it("sends the words and writes a note when the reply does not parse", async () => {
     const model = new ScriptedModel([
-      reply({ toolCalls: [call("say", { place: "cli:owner", text: "I work at the lighthouse." })] }),
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I work at the lighthouse." })] }),
       reply({ content: "I think it is fine." }),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
@@ -794,7 +794,7 @@ describe("the honesty check on her life record", () => {
 
   it("does not ask while her life record is still the stub", async () => {
     const model = new ScriptedModel([
-      reply({ toolCalls: [call("say", { place: "cli:owner", text: "I work at the lighthouse." })] }),
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I work at the lighthouse." })] }),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
     const { entity, cli, said } = await open(model);
@@ -809,7 +809,7 @@ describe("the honesty check on her life record", () => {
 
   it("does not ask when entity.json switches the honesty check off", async () => {
     const model = new ScriptedModel([
-      reply({ toolCalls: [call("say", { place: "cli:owner", text: "I work at the lighthouse." })] }),
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I work at the lighthouse." })] }),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
     const { entity, cli, said } = await open(model, { config: { ...CONFIG, holds: { honesty: false } } });
@@ -843,9 +843,9 @@ describe("place claims", () => {
 
     expect(room.said).toEqual(["Hello from the owner's side.", "Hello back."]);
     const board = systemTextOf(model.requests[2]);
-    expect(board).toMatch(/- fake:room: thread cli:owner spoke \d+ s ago: "Hello from the owner's side\."/);
+    expect(board).toMatch(/- fake:room: thread cli:summoner spoke \d+ s ago: "Hello from the owner's side\."/);
     const shown = receiptsShownIn(model.requests[3]).find((item) => item["ok"] === true);
-    expect(shown).toMatchObject({ data: { othersSpokeHere: { thread: "cli:owner" } } });
+    expect(shown).toMatchObject({ data: { othersSpokeHere: { thread: "cli:summoner" } } });
   });
 });
 
@@ -858,7 +858,7 @@ describe("the owner's emergency stop", () => {
       reply({
         toolCalls: [
           call("say", { place: "fake:room", text: "Hello room." }, "call_room"),
-          call("say", { place: "cli:owner", text: "Hello owner." }, "call_owner"),
+          call("say", { place: "cli:summoner", text: "Hello owner." }, "call_owner"),
         ],
       }),
       reply({ toolCalls: [call("end_turn")] }),
@@ -870,13 +870,13 @@ describe("the owner's emergency stop", () => {
     await entity.idle();
 
     expect(room.said).toEqual([]);
-    expect(said).toEqual([{ place: "cli:owner", text: "Hello owner." }]);
+    expect(said).toEqual([{ place: "cli:summoner", text: "Hello owner." }]);
     const receipts = receiptsShownIn(model.requests[1]);
     expect(receipts[0]).toMatchObject({
       ok: false,
       refused: {
         code: "stopped",
-        reason: "Your owner's emergency stop is on: outward acts are paused. You can still answer your owner.",
+        reason: "Your summoner's emergency stop is on: outward acts are paused. You can still answer your summoner.",
       },
     });
     expect(receipts[1]).toMatchObject({ ok: true });
@@ -932,7 +932,7 @@ describe("the owner's emergency stop", () => {
     cli.send("First.");
     await entity.idle();
     expect(systemTextOf(model.requests[0])).toContain(
-      "EMERGENCY STOP: your owner has paused outward acts: Too much noise.",
+      "EMERGENCY STOP: your summoner has paused outward acts: Too much noise.",
     );
 
     unlinkSync(file);
@@ -942,8 +942,8 @@ describe("the owner's emergency stop", () => {
 
     const selfRows = allRows(entity).filter((row) => row.thread === "self" && row.kind === "event");
     expect(selfRows.map((row) => row.text)).toEqual([
-      "Your owner's emergency stop is on: outward acts are paused. Reason: Too much noise.",
-      "Your owner's emergency stop is off: outward acts can go on again.",
+      "Your summoner's emergency stop is on: outward acts are paused. Reason: Too much noise.",
+      "Your summoner's emergency stop is off: outward acts can go on again.",
     ]);
     expect(selfRows.every((row) => row.source === "body")).toBe(true);
     // The rows wait for her next turn in her own thread; they never wake a turn by themselves.

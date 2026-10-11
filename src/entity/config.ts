@@ -13,13 +13,15 @@ export type Effort = (typeof EFFORTS)[number];
 export const DEFAULT_CEILING: Ceiling = { maxModelCalls: 24, maxToolCalls: 48 };
 
 export type EntityConfig = {
-  name: string;
+  /** The name the summoner gave. Left out, the Lar chooses its own name. */
+  name?: string;
   /** IANA zone name. Defaults to the host's zone. */
   timeZone?: string;
   model: ModelConfig;
   effort?: Effort;
   /** Defaults to DEFAULT_CEILING when left out. */
   ceiling?: Ceiling;
+  /** The summoner: the alias they appear under. Written as "summoner" in entity.json ("owner" is still read). */
   owner: { alias: string };
   /** Body checks on what she says. Each one is on unless the block says false. */
   holds?: { honesty?: boolean };
@@ -34,7 +36,7 @@ export function loadEntityConfig(dir: string): EntityConfig {
   try {
     raw = readFileSync(file, "utf8");
   } catch {
-    throw new Error(`No ${ENTITY_FILE} found in ${dir}. Make one with a name, a model block and an owner alias.`);
+    throw new Error(`No ${ENTITY_FILE} found in ${dir}. Make one with a model block and a summoner alias.`);
   }
   let parsed: unknown;
   try {
@@ -48,15 +50,17 @@ export function loadEntityConfig(dir: string): EntityConfig {
 /** Validates an already-parsed entity config. Throws a plain error naming the first wrong field. */
 export function parseEntityConfig(value: unknown): EntityConfig {
   const root = objectOf(value, ENTITY_FILE);
-  onlyKeys(root, ["name", "timeZone", "model", "effort", "ceiling", "owner", "holds"], ENTITY_FILE);
+  onlyKeys(root, ["name", "timeZone", "model", "effort", "ceiling", "summoner", "owner", "holds"], ENTITY_FILE);
+  if (root["summoner"] !== undefined && root["owner"] !== undefined) {
+    throw new Error("Give either summoner or owner in entity.json, not both. summoner is the current name.");
+  }
 
-  const name = textOf(root["name"], "name");
   const config: EntityConfig = {
-    name,
     model: parseModel(root["model"]),
-    owner: parseOwner(root["owner"]),
+    owner: parseOwner(root["summoner"] ?? root["owner"]),
     ceiling: parseCeiling(root["ceiling"]),
   };
+  if (root["name"] !== undefined) config.name = textOf(root["name"], "name");
   if (root["timeZone"] !== undefined) {
     const zone = textOf(root["timeZone"], "timeZone");
     checkZone(zone);
@@ -126,9 +130,9 @@ export function parseModel(value: unknown): ModelConfig {
 }
 
 function parseOwner(value: unknown): { alias: string } {
-  const owner = objectOf(value, "owner");
-  onlyKeys(owner, ["alias"], "owner");
-  return { alias: textOf(owner["alias"], "owner.alias") };
+  const owner = objectOf(value, "summoner");
+  onlyKeys(owner, ["alias"], "summoner");
+  return { alias: textOf(owner["alias"], "summoner.alias") };
 }
 
 function parseCeiling(value: unknown): Ceiling {

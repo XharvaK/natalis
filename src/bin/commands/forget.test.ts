@@ -103,8 +103,8 @@ describe("natalis forget --query", () => {
     await runForget({ dir, query: "lantern yard", reason: REASON });
 
     const notebook = await openNotebook(join(dir, "notebook"));
-    expect(notebook.read("people/mara.md")).toBe("[forgotten by the owner]\nShe likes tea\n[forgotten by the owner]\n");
-    expect(notebook.read("places/quay.md")).toBe("[forgotten by the owner]\n");
+    expect(notebook.read("people/mara.md")).toBe("[forgotten by the summoner]\nShe likes tea\n[forgotten by the summoner]\n");
+    expect(notebook.read("places/quay.md")).toBe("[forgotten by the summoner]\n");
     const trashed = notebook.list("trash").map((entry) => entry.path);
     expect(trashed).toHaveLength(1);
     expect(notebook.read(trashed[0] as string)).toContain("Lantern Yard, an old note");

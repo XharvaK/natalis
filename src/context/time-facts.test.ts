@@ -49,14 +49,14 @@ describe("timeFacts", () => {
     });
 
     expect(section.text).toContain("Since your last turn here: 3 h 12 min.");
-    expect(section.text).toContain("Since the owner last wrote: 25 min.");
+    expect(section.text).toContain("Since your summoner last wrote: 25 min.");
   });
 
   it("says plainly when there is no earlier turn here or no owner message", () => {
     const section = timeFacts({ nowMs: NOW, timeZone: ZONE });
 
     expect(section.text).toContain("You have no earlier turn here.");
-    expect(section.text).toContain("The owner has not written to you yet.");
+    expect(section.text).toContain("Your summoner has not written to you yet.");
     expect(section.text).not.toContain("Since");
   });
 

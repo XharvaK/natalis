@@ -28,8 +28,8 @@ export function timeFacts(input: TimeFactsInput): ContextSection {
   );
   lines.push(
     input.lastOwnerMessageMs === undefined
-      ? "The owner has not written to you yet."
-      : `Since the owner last wrote: ${formatDuration(now - input.lastOwnerMessageMs)}.`,
+      ? "Your summoner has not written to you yet."
+      : `Since your summoner last wrote: ${formatDuration(now - input.lastOwnerMessageMs)}.`,
   );
 
   const wakes = [...(input.nextWakes ?? [])].sort((a, b) => a.atMs - b.atMs);

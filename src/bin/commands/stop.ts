@@ -1,5 +1,5 @@
 // `natalis stop --dir <entity folder> [--reason "<text>"]` turns the owner's emergency stop on: outward acts are
-// refused until it is lifted, and replies to the owner still go. `natalis stop --dir <entity folder> --off` lifts it.
+// refused until it is lifted, and replies to the summoner still go. `natalis stop --dir <entity folder> --off` lifts it.
 // The running entity notices the change at its next outward act.
 
 import { existsSync } from "node:fs";

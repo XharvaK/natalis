@@ -2,7 +2,7 @@
 // The body matches words only; it never judges what a line means. Files in trash/ are not searched, and the
 // marker never matches again, so a second forget does not count it.
 
-export const FORGOTTEN_LINE = "[forgotten by the owner]";
+export const FORGOTTEN_LINE = "[forgotten by the summoner]";
 
 /** The words of a query, in the form lines are compared in. Empty when the query has no words. */
 export function queryWords(query: string): string[] {

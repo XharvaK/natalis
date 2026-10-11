@@ -53,10 +53,19 @@ describe("parseEntityConfig", () => {
     expect(config.model.timeoutMs).toBe(60000);
   });
 
+  it("takes the summoner under its own name, keeps reading owner, and lets the name be left out", () => {
+    const { owner: _owner, ...rest } = MINIMAL;
+    expect(parseEntityConfig({ ...rest, summoner: { alias: "summoner" } }).owner).toEqual({ alias: "summoner" });
+    expect(parseEntityConfig(MINIMAL).owner).toEqual({ alias: "owner" });
+    expect(() => parseEntityConfig({ ...MINIMAL, summoner: { alias: "summoner" } })).toThrow(/not both/);
+    const { name: _name, ...unnamed } = MINIMAL;
+    expect(parseEntityConfig(unnamed).name).toBeUndefined();
+  });
+
   it("names the field that is missing", () => {
     expect(() => parseEntityConfig({ ...MINIMAL, name: "  " })).toThrow(/name must be a non-empty text/);
-    expect(() => parseEntityConfig({ ...MINIMAL, owner: undefined })).toThrow(/owner must be an object/);
-    expect(() => parseEntityConfig({ ...MINIMAL, owner: {} })).toThrow(/owner.alias must be a non-empty text/);
+    expect(() => parseEntityConfig({ ...MINIMAL, owner: undefined })).toThrow(/summoner must be an object/);
+    expect(() => parseEntityConfig({ ...MINIMAL, owner: {} })).toThrow(/summoner.alias must be a non-empty text/);
   });
 
   it("refuses a model address that is not http or https", () => {

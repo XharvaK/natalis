@@ -96,7 +96,7 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
     process.once("SIGTERM", () => resolveStopped());
   });
   await entity.start();
-  out(`${config.name} is running in: ${worlds.map((world) => world.id).join(", ")}.`);
+  out(`${config.name ?? "An unnamed Lar"} is running in: ${worlds.map((world) => world.id).join(", ")}.`);
   await stopped;
   out("Stopping…");
   await entity.stop();

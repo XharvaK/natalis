@@ -9,7 +9,7 @@ describe("the command-line world", () => {
     await cli.start((event) => events.push(event));
     cli.send("Hello, Iris.");
     expect(events).toEqual([
-      { world: "cli", place: CLI_PLACE, actor: "owner", source: "owner", text: "Hello, Iris." },
+      { world: "cli", place: CLI_PLACE, source: "owner", text: "Hello, Iris." },
     ]);
     await cli.stop();
   });

@@ -45,7 +45,7 @@ async function main(argv: string[]): Promise<number> {
   let rl: ReturnType<typeof createInterface> | undefined;
   const cli = createCliWorld({
     onSay: (_place, text) => {
-      output.write(`\n${config.name}: ${text}\n`);
+      output.write(`\n${config.name ?? "Lar"}: ${text}\n`);
       if (rl !== undefined) rl.prompt(true);
     },
   });
@@ -66,7 +66,7 @@ async function main(argv: string[]): Promise<number> {
   });
 
   await entity.start();
-  output.write(`Chatting with ${config.name}. Type a line and press Enter. Ctrl+C stops.\n`);
+  output.write(`Chatting with ${config.name ?? "an unnamed Lar"}. Type a line and press Enter. Ctrl+C stops.\n`);
   rl?.prompt();
   await closed;
   await entity.stop();
