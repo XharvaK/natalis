@@ -63,9 +63,9 @@ export type SummonerDesk = {
   stopChanged: () => void;
 };
 
-/** True when a summoner message is a body command. */
+/** True when a summoner message is a body command: "!" and a letter. "!!!" or "! wow" stay ordinary words. */
 export function isSummonerCommand(text: string | undefined): boolean {
-  return (text ?? "").trimStart().startsWith("!");
+  return /^![a-zA-Z]/.test((text ?? "").trimStart());
 }
 
 /** Runs one summoner command and returns the words to answer with (without the prefix). */
@@ -188,7 +188,7 @@ async function removeHouseholdLine(arg: string | undefined, desk: SummonerDesk):
 // --- the Lar's proposed commitments -----------------------------------------------------------
 
 function proposals(desk: SummonerDesk): string {
-  desk.record("Your summoner looked at the commitments the Lar proposed.");
+  desk.record("Your summoner looked at the commitments you proposed.");
   const waiting = desk.proposals();
   if (waiting.length === 0) return "No commitments are waiting for an answer.";
   const lines = waiting.map(

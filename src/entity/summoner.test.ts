@@ -63,6 +63,8 @@ describe("isSummonerCommand", () => {
     expect(isSummonerCommand("  !stop")).toBe(true);
     expect(isSummonerCommand("please !stop")).toBe(false);
     expect(isSummonerCommand("")).toBe(false);
+    expect(isSummonerCommand("!!! that worked")).toBe(false);
+    expect(isSummonerCommand("! wow")).toBe(false);
     expect(isSummonerCommand(undefined)).toBe(false);
   });
 });
