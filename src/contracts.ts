@@ -87,7 +87,19 @@ export interface ModelPort {
   readonly info: ModelInfo;
   /** Retries transient provider failures itself (with backoff); throws ModelError when it gives up. */
   complete(request: ModelRequest, signal?: AbortSignal): Promise<ModelResponse>;
+  /** A port with a backup says where its next call goes, as it stands now. Absent on a port without a backup. */
+  routing?(): ModelRouting;
 }
+
+/** Where a port with a backup sends its next call: the backup while the main model is held out, otherwise the main model. */
+export type ModelRouting = {
+  /** True while the backup takes the calls, because the main model failed moments ago and is not tried again yet. */
+  onBackup: boolean;
+  /** The backup's configured name. */
+  backup: string;
+  /** The effort the backup is given. Absent: the turn's own effort is used. */
+  backupEffort?: NonNullable<ModelRequest["effort"]>;
+};
 
 /**
  * What went wrong with a model call. "out_of_credit" is the provider's refusal for spent credit or quota (HTTP 402, or a

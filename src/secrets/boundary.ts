@@ -83,9 +83,11 @@ function guardMessage(scanner: SecretScanner, message: ChatMessage): ChatMessage
 }
 
 export function guardModel(model: ModelPort, scanner: SecretScanner): ModelPort {
+  const routing = model.routing;
   return {
     info: model.info,
     complete: (request, signal) =>
       model.complete({ ...request, messages: request.messages.map((message) => guardMessage(scanner, message)) }, signal),
+    ...(routing === undefined ? {} : { routing }),
   };
 }

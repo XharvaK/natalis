@@ -120,7 +120,11 @@ export function worldModelsFromConfig(
     // The look tool is offered on the main model's word; a world model that cannot see gets a plain line instead.
     ports[world] = spec.vision === true
       ? port
-      : { info: port.info, complete: (request, signal) => port.complete(withoutPictures(request), signal) };
+      : {
+        info: port.info,
+        complete: (request, signal) => port.complete(withoutPictures(request), signal),
+        ...(port.routing === undefined ? {} : { routing: port.routing }),
+      };
   }
   return ports;
 }

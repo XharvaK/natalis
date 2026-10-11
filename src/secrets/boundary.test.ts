@@ -80,3 +80,12 @@ describe("secret boundaries: escaped values in data", () => {
     expect(river.read({})[0]!.data).toEqual({ note: "plain words only" });
   });
 });
+
+describe("guardModel and routing", () => {
+  it("passes the wrapped model's routing through, and has none when it has none", () => {
+    const scanner = createSecretScanner({ knownValues: [] });
+    const withRouting = Object.assign(new ScriptedModel([]), { routing: () => ({ onBackup: true, backup: "backup-model" }) });
+    expect(guardModel(withRouting, scanner).routing?.()).toEqual({ onBackup: true, backup: "backup-model" });
+    expect(guardModel(new ScriptedModel([]), scanner).routing).toBeUndefined();
+  });
+});
