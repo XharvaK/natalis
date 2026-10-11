@@ -38,6 +38,23 @@ leaves every judgment to the entity: what it notices, when it thinks, what it sa
 5. More worlds as plugins, starting with The Sims 4.
 6. Reflection while it sleeps, and a weekly review of the changes it proposes to itself.
 
+## Commands
+
+Each takes `--dir <entity folder>` (the Lar's own folder) unless noted.
+
+- `chat`: talk with a Lar in the terminal.
+- `run`: keep a Lar living in its worlds (Discord) until it is stopped.
+- `stop`: the summoner's emergency stop; pauses outward acts. `--off` lifts it.
+- `forget`: erase river rows or note lines, with a reason.
+- `import`: bring a seed bundle into a new Lar; prints the plan unless `--apply` is given.
+- `capture`: write one time window of a Lar's river for a replay.
+- `replay`: replay captured events on a copy of a Lar; the original is never written.
+- `judge`: score two replays event by event against a rubric.
+- `backup`: a dated, checked copy of a Lar (`--out <folder>`, `--keep <n>` keeps the newest n).
+- `restore`: rebuild a Lar from a backup (`--from <backup folder>`, `--dir <new folder>`).
+
+To run a Lar as a service on a host, see [deploy/README.md](deploy/README.md).
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

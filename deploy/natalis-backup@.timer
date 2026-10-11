@@ -1,0 +1,13 @@
+# Runs natalis-backup@%i.service once a day. Persistent=true runs a missed one after the host was off.
+
+[Unit]
+Description=Daily backup timer for the Natalis Lar %i
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=15min
+Persistent=true
+Unit=natalis-backup@%i.service
+
+[Install]
+WantedBy=timers.target
