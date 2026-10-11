@@ -170,7 +170,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     const current = db;
     const heartbeats = book;
     if (!current || !heartbeats) return null;
-    return { db: current, nowMs, attachedAt: (at: number) => heartbeats.attachedAt(at) };
+    return { db: current, nowMs, attachedSession: (at: number) => heartbeats.attachedSession(at) };
   };
 
   /** What the game_snapshot tool reads on each call: null while the world is not running. */

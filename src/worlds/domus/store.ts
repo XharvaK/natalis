@@ -103,6 +103,11 @@ CREATE TABLE IF NOT EXISTS snapshots (
 CREATE INDEX IF NOT EXISTS snapshots_thread_status ON snapshots (thread, status);
 `;
 
+/** The refusal for a choice or a picture request that rests on a view from a helper session the game is no longer on. */
+export const STALE_VIEW_CODE = "view_from_earlier_session";
+export const STALE_VIEW_REASON =
+  "The game restarted since that view, and its new view has not arrived yet. Wait for the game's new view, then choose again.";
+
 export type Row = Record<string, unknown>;
 
 /** Opens (or creates) the Domus database in the Lar's domus folder. */

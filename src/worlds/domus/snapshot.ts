@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import type { ThreadNote } from "./acts.js";
-import { type Row } from "./store.js";
+import { newestObservation, type Row, STALE_VIEW_CODE, STALE_VIEW_REASON } from "./store.js";
 import { type SnapshotFailure, SNAPSHOT_FAILURES } from "./wire.js";
 
 /** A requested picture the helper does not take within this time expires; the game never sees it again. */
@@ -191,6 +191,9 @@ function gameSnapshot(open: () => SnapshotContext, context: ToolContext): Receip
   if (attachment === undefined) {
     return refused("not_attached", "The game is not attached right now, so no picture can be taken. Ask again when it is.");
   }
+  // A picture of a game that restarted is asked for only once the new view of that game has come.
+  const newest = newestObservation(game.db, context.thread);
+  if (newest && newest.attachment !== attachment) return refused(STALE_VIEW_CODE, STALE_VIEW_REASON);
   const requested = requestSnapshot(game.db, { thread: context.thread, attachment, nowMs });
   if (!requested.ok) {
     const waited = Math.max(0, Math.round((nowMs - requested.openSinceMs) / 1000));

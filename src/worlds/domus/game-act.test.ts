@@ -33,7 +33,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "domus-tool-"));
   db = openDomusDb(dir);
   seq = 0;
-  open = { db, nowMs: () => T0, attachedAt: () => true };
+  open = { db, nowMs: () => T0, attachedSession: () => HELPER };
   tool = gameActTool(() => open);
 });
 
@@ -86,6 +86,23 @@ describe("game_act: where it works", () => {
 
   it("is refused while the game has shown no view of its thread", async () => {
     expect(await run({ option: "a1" })).toMatchObject({ ok: false, refused: { code: "no_view" } });
+  });
+});
+
+describe("game_act: a view from an earlier helper session", () => {
+  it("refuses a choice from a view the game sent before it restarted, and requests nothing", async () => {
+    view(VIEW);
+    open = { db, nowMs: () => T0, attachedSession: () => "helper-2" };
+    const receipt = await run({ option: "a1" });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "view_from_earlier_session" } });
+    expect(receipt.refused?.reason).toContain("The game restarted since that view, and its new view has not arrived yet.");
+    expect(acts()).toEqual([]);
+  });
+
+  it("requests the choice when the attached session is the one that sent the view", async () => {
+    view(VIEW);
+    expect(await run({ option: "a1" })).toMatchObject({ ok: true, data: { attached: true } });
+    expect(acts()).toHaveLength(1);
   });
 });
 
@@ -143,7 +160,7 @@ describe("game_act: requests", () => {
 
   it("says the game is not attached, and that the request may expire, when it is not", async () => {
     view(VIEW);
-    open = { db, nowMs: () => T0, attachedAt: () => false };
+    open = { db, nowMs: () => T0, attachedSession: () => undefined };
     const receipt = await run({ option: "a1" });
     expect(receipt.summary).toContain("The game is not attached right now");
     expect(receipt.data).toMatchObject({ attached: false });

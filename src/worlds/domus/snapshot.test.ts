@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ToolContext } from "../../contracts.js";
-import { openDomusDb } from "./store.js";
+import { admitObservation, openDomusDb } from "./store.js";
 import {
   checkSnapshot,
   expireSnapshots,
@@ -128,6 +128,17 @@ describe("the game_snapshot tool", () => {
     const game = { db, nowMs: () => T0, attachedSession: () => undefined };
     expect(await gameSnapshotTool(() => game).run({}, context(THREAD))).toMatchObject({ ok: false, refused: { code: "not_attached" } });
     expect(await gameSnapshotTool(() => game).run({}, context("cli:summoner"))).toMatchObject({ ok: false, refused: { code: "not_a_game_thread" } });
+  });
+
+  it("refuses while the newest view is from an earlier helper session, and asks for nothing", async () => {
+    admitObservation(db, {
+      observationId: "helper-1.1", digest: "d", thread: THREAD, world: "slot3", branch: "b", session: "s", attachment: HELPER,
+      body: "sim-9", snapshot: "7", seq: 1, sourceTimeMs: T0 - 1000, expiresAtMs: T0 + 30_000, receiptTimeMs: T0,
+      lineageClass: "LIVE", payloadJson: "{}",
+    });
+    const game = { db, nowMs: () => T0, attachedSession: () => "helper-2" };
+    expect(await gameSnapshotTool(() => game).run({}, context(THREAD))).toMatchObject({ ok: false, refused: { code: "view_from_earlier_session" } });
+    expect(openSnapshots(db, { helperSession: "helper-2", nowMs: T0 })).toHaveLength(0);
   });
 
   it("asks for the attached session and says the request is only asked for, not taken", async () => {
