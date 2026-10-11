@@ -216,9 +216,9 @@ describe("model.fallback, the backup model", () => {
 });
 
 describe("rhythm", () => {
-  it("is the default three clock times when entity.json leaves it out", () => {
-    expect(parseEntityConfig(MINIMAL).rhythm).toEqual(["09:00", "14:00", "20:00"]);
-    expect(DEFAULT_RHYTHM).toEqual(["09:00", "14:00", "20:00"]);
+  it("is empty when entity.json leaves it out: no Lar is given preset times", () => {
+    expect(parseEntityConfig(MINIMAL).rhythm).toEqual([]);
+    expect(DEFAULT_RHYTHM).toEqual([]);
   });
 
   it("keeps the times it is given, and an empty list means none", () => {

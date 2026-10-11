@@ -1953,9 +1953,9 @@ describe("the daily rhythm", () => {
     writeFileSync(join(dir, "state.json"), JSON.stringify(state, null, 2));
   }
 
-  const RHYTHM_CONFIG = { ...CONFIG, timeZone: "UTC", rhythm: undefined };
+  const RHYTHM_CONFIG = { ...CONFIG, timeZone: "UTC", rhythm: ["09:00", "14:00", "20:00"] };
 
-  it("gives a fresh Lar one daily wake per default time, in its own thread, once, and says nothing of what it is for", async () => {
+  it("gives a fresh Lar one daily wake per configured time, in its own thread, once, and says nothing of what it is for", async () => {
     const { entity } = await open(new ScriptedModel([]), { nowMs: () => NOW, config: RHYTHM_CONFIG });
     await entity.start();
     await entity.stop();
@@ -2091,5 +2091,14 @@ describe("the daily rhythm", () => {
     await after.entity.start();
     await after.entity.stop();
     expect(readStateFile().wakes).toEqual([expect.objectContaining({ clock: "09:00", atMs: Date.parse("2026-11-01T14:00:00Z") })]);
+  });
+});
+
+describe("no preset rhythm", () => {
+  it("gives a Lar whose entity.json names no rhythm no wakes at all", async () => {
+    const { entity } = await open(new ScriptedModel([]), { config: { ...CONFIG, rhythm: undefined } });
+    await entity.start();
+    await entity.stop();
+    expect(readStateFile().wakes).toEqual([]);
   });
 });

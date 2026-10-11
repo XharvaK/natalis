@@ -12,8 +12,8 @@ export const EFFORTS = ["low", "medium", "high", "xhigh"] as const;
 export type Effort = (typeof EFFORTS)[number];
 
 export const DEFAULT_CEILING: Ceiling = { maxModelCalls: 24, maxToolCalls: 48 };
-/** The local clock times a Lar wakes on its own each day, when entity.json leaves rhythm out. */
-export const DEFAULT_RHYTHM: readonly string[] = ["09:00", "14:00", "20:00"];
+/** No preset rhythm: a Lar keeps whatever wakes it sets itself. A summoner may give times in entity.json rhythm. */
+export const DEFAULT_RHYTHM: readonly string[] = [];
 
 export type EntityConfig = {
   /** The name the summoner gave. Left out, the Lar chooses its own name. */
@@ -30,7 +30,7 @@ export type EntityConfig = {
   holds?: { honesty?: boolean };
   /** Daily limits. Left out, there is none. */
   limits?: { turnsPerDay?: number };
-  /** Local clock times ("HH:MM") the Lar gets a daily wake at, once, on its first start. [] means none. Left out, DEFAULT_RHYTHM. */
+  /** Local clock times ("HH:MM") the Lar gets a daily wake at, once, on its first start. Left out or [], none. */
   rhythm?: string[];
   /**
    * A model of its own for the turns of one world (keyed by world id, e.g. "domus"): same service and key as the main

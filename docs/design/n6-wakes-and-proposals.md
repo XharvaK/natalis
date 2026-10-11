@@ -30,10 +30,11 @@ Nothing here judges meaning. The body keeps times, files and diffs.
 The ability text says, as a fact: "You can wake yourself at any time, for any reason, once or on a daily or weekly
 rhythm." It says nothing about what a wake should be for.
 
-### 1a. The rhythm the body gives
+### 1a. A rhythm the summoner may give (none by default)
 
-`entity.json` takes `rhythm`: a list of local clock times, `"HH:MM"`. Left out, it is `["09:00", "14:00", "20:00"]`;
-`[]` means none. A malformed time (or a list that is not a list, or a time listed twice) is refused by name.
+No Lar is given preset wake times: the times would be the host's choice, not the Lar's (User, 2026-10-11, after a
+day with a 09:00/14:00/20:00 default). Whether the Lar keeps a rhythm is its own doing; the summoner may tell it so in
+conversation. `entity.json` still takes `rhythm`: a list of local clock times, `"HH:MM"`. Left out or `[]`, none. A malformed time (or a list that is not a list, or a time listed twice) is refused by name.
 
 On the Lar's first start, the body gives it one ordinary **daily** repeating wake per time, in its own thread (`self`),
 with the reason `Your daily rhythm.`, and records `rhythmGiven: true` in `state.json`. That is all the body says about
