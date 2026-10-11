@@ -75,6 +75,16 @@ describe("timeFacts", () => {
     );
   });
 
+  it("shows a repeating wake with its clock and rhythm, then its next occurrence", () => {
+    const section = timeFacts({
+      nowMs: NOW,
+      timeZone: ZONE,
+      nextWakes: [{ atMs: NOW + 2 * HOUR, why: "water the plants", repeat: "daily", clock: "16:05" }],
+    });
+
+    expect(section.text).toContain("Your next wakes: 16:05 daily, next Sunday 2026-10-11 16:05 (in 2 h): water the plants.");
+  });
+
   it("sorts wakes by time, and shows a wake that is already due as due now", () => {
     const section = timeFacts({
       nowMs: NOW,

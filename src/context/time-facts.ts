@@ -3,7 +3,8 @@
 
 import type { ContextSection } from "../contracts.js";
 
-export type WakeFact = { atMs: number; why: string };
+/** A scheduled wake. A repeating one shows its local clock and rhythm; atMs is its next occurrence. */
+export type WakeFact = { atMs: number; why: string; repeat?: string; clock?: string };
 
 export type TimeFactsInput = {
   nowMs: number;
@@ -39,7 +40,8 @@ export function timeFacts(input: TimeFactsInput): ContextSection {
     const described = wakes.map((wake) => {
       const when = wake.atMs <= now ? "due now" : `in ${formatDuration(wake.atMs - now)}`;
       const why = wake.why.trim() === "" ? "" : `: ${wake.why.trim()}`;
-      return `${stamp(formatter, wake.atMs)} (${when})${why}`;
+      const rhythm = wake.repeat === undefined || wake.clock === undefined ? "" : `${wake.clock} ${wake.repeat}, next `;
+      return `${rhythm}${stamp(formatter, wake.atMs)} (${when})${why}`;
     });
     lines.push(`Your next wakes: ${described.join("; ")}.`);
   }
