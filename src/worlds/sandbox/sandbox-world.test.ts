@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { EventEmitter } from "node:events";
@@ -6,8 +6,19 @@ import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Receipt, Tool, ToolContext, World } from "../../contracts.js";
 import { buildBwrapArgs } from "./bwrap.js";
+import { PASTA_ARGS, routeScript } from "./wall.js";
 import { createSandboxWorld, formatBytes, measureHome, type SpawnFn } from "./sandbox-world.js";
 import { OUTPUT_CAP_BYTES } from "./output.js";
+
+type SandboxConfigOverride = {
+  timeoutSeconds: number;
+  maxTimeoutSeconds: number;
+  bwrapPath?: string;
+  body?: boolean;
+  network?: "wall" | "host" | "none";
+  pastaPath?: string;
+  ipPath?: string;
+};
 
 // A child process the tests drive by hand: its output and its exit are the test's to decide.
 class FakeChild extends EventEmitter {
@@ -32,11 +43,13 @@ let harness: Harness;
 
 function makeHarness(
   overrides: Partial<{
-    config: { timeoutSeconds: number; maxTimeoutSeconds: number; bwrapPath?: string; body?: boolean };
+    config: SandboxConfigOverride;
     bodyDir: string;
     platform: NodeJS.Platform;
     spawnThrows: boolean;
     locate: (configured: string | undefined) => string | undefined;
+    locatePasta: (configured: string | undefined) => string | undefined;
+    locateIp: (configured: string | undefined) => string | undefined;
   }> = {},
 ): Harness {
   const children: FakeChild[] = [];
@@ -50,12 +63,15 @@ function makeHarness(
   const nowValues = [1_000, 3_500];
   const world = createSandboxWorld({
     dir,
-    config: overrides.config ?? { timeoutSeconds: 120, maxTimeoutSeconds: 900 },
+    // The host network unless a test says otherwise: the bwrap argument tests are about bwrap, and the wall has its own tests.
+    config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, network: "host", ...(overrides.config ?? {}) },
     // A checkout folder of the test's own, so the body bind never depends on the real repository.
     bodyDir: overrides.bodyDir ?? checkout,
     spawn: spawn as unknown as SpawnFn,
     platform: overrides.platform ?? "linux",
     locateBwrap: overrides.locate ?? (() => "/usr/bin/bwrap"),
+    locatePasta: overrides.locatePasta ?? (() => "/usr/bin/pasta"),
+    locateIp: overrides.locateIp ?? (() => "/usr/sbin/ip"),
     killGroup,
     nowMs: () => (nowValues.length > 1 ? (nowValues.shift() as number) : nowValues[0] as number),
   });
@@ -443,5 +459,121 @@ describe("the body: the allow-listed parts of the checkout bound read-only at /b
     writeFileSync(join(checkout, "src", ".env"), "placeholder\n");
     harness = makeHarness({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, body: false } });
     await expect(harness.world.start(() => undefined)).resolves.toBeUndefined();
+  });
+});
+
+describe("the network: wall (the default), host, or none", () => {
+  const resolvFile = (): string => join(dir, "sandbox-network", "resolv.conf");
+
+  it("runs pasta around bwrap in wall mode, and bwrap keeps the network pasta made", async () => {
+    harness = await started({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, network: "wall" } });
+    const pending = runTool(harness.world).run({ command: "echo hi" }, context());
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+    const [program, args, options] = harness.spawn.mock.calls[0] as [string, string[], SpawnOptions];
+    expect(program).toBe("/usr/bin/pasta");
+    const bwrapArgs = buildBwrapArgs({
+      homeDir: resolve(dir, "home"),
+      command: "echo hi",
+      bodyDir: checkout,
+      network: "wall",
+      resolvPath: resolvFile(),
+    });
+    expect(args).toEqual([
+      ...PASTA_ARGS,
+      "--",
+      "/bin/sh",
+      "-c",
+      `${routeScript("/usr/sbin/ip")}; exec "$@"`,
+      "sh",
+      "/usr/bin/bwrap",
+      ...bwrapArgs,
+    ]);
+    expect(bwrapArgs).toContain("--share-net");
+    expect(options).toMatchObject({ detached: true, env: {} });
+    (harness.children[0] as FakeChild).emit("close", 0, null);
+    await pending;
+  });
+
+  it("writes the resolver file once at start, naming the wall's DNS address, and binds it in place of the host's", async () => {
+    harness = await started({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, network: "wall" } });
+    expect(readFileSync(resolvFile(), "utf8")).toBe("nameserver 192.0.2.3\n");
+    const pending = runTool(harness.world).run({ command: "true" }, context());
+    const [, args] = harness.spawn.mock.calls[0] as [string, string[], SpawnOptions];
+    const at = args.indexOf("/etc/resolv.conf");
+    expect(args.slice(at - 2, at + 1)).toEqual(["--ro-bind", resolvFile(), "/etc/resolv.conf"]);
+    expect(args.join(" ")).not.toContain("--ro-bind-try /etc/resolv.conf /etc/resolv.conf");
+    (harness.children[0] as FakeChild).emit("close", 0, null);
+    await pending;
+  });
+
+  it("refuses the command, plainly and without running it, when pasta is not installed", async () => {
+    harness = await started({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, network: "wall" }, locatePasta: () => undefined });
+    const receipt = await runTool(harness.world).run({ command: "curl example.invalid" }, context());
+    expect(receipt.ok).toBe(false);
+    expect(receipt.refused?.code).toBe("network_not_walled");
+    expect(receipt.summary).toContain("pasta (the passt package)");
+    expect(receipt.summary).toContain("passt package");
+    expect(receipt.summary).toContain('"network": "host"');
+    expect(receipt.refused?.reason).toBe("not found: pasta (the passt package)");
+    expect(harness.spawn).not.toHaveBeenCalled();
+  });
+
+  it("refuses the command when ip is not installed, and names ip", async () => {
+    harness = await started({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, network: "wall" }, locateIp: () => undefined });
+    const receipt = await runTool(harness.world).run({ command: "true" }, context());
+    expect(receipt.refused?.code).toBe("network_not_walled");
+    expect(receipt.refused?.reason).toBe("not found: ip (iproute2)");
+    expect(harness.spawn).not.toHaveBeenCalled();
+  });
+
+  it("looks for the configured pasta and ip paths", async () => {
+    const locatePasta = vi.fn(() => "/opt/pasta");
+    const locateIp = vi.fn(() => "/opt/ip");
+    harness = await started({
+      config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, network: "wall", pastaPath: "/opt/pasta", ipPath: "/opt/ip" },
+      locatePasta,
+      locateIp,
+    });
+    const pending = runTool(harness.world).run({ command: "true" }, context());
+    expect(locatePasta).toHaveBeenCalledWith("/opt/pasta");
+    expect(locateIp).toHaveBeenCalledWith("/opt/ip");
+    const [program, args] = harness.spawn.mock.calls[0] as [string, string[], SpawnOptions];
+    expect(program).toBe("/opt/pasta");
+    expect(args).toContain(`${routeScript("/opt/ip")}; exec "$@"`);
+    (harness.children[0] as FakeChild).emit("close", 0, null);
+    await pending;
+  });
+
+  it("runs bwrap directly in host mode, as before the wall, with the host's network", async () => {
+    harness = await started({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, network: "host" } });
+    const pending = runTool(harness.world).run({ command: "true" }, context());
+    const [program, args] = harness.spawn.mock.calls[0] as [string, string[], SpawnOptions];
+    expect(program).toBe("/usr/bin/bwrap");
+    expect(args).toContain("--share-net");
+    expect(args).toEqual(buildBwrapArgs({ homeDir: resolve(dir, "home"), command: "true", bodyDir: checkout }));
+    (harness.children[0] as FakeChild).emit("close", 0, null);
+    await pending;
+  });
+
+  it("runs bwrap directly in none mode, with loopback only: no pasta and no --share-net", async () => {
+    harness = await started({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, network: "none" }, locatePasta: () => undefined });
+    const pending = runTool(harness.world).run({ command: "true" }, context());
+    const [program, args] = harness.spawn.mock.calls[0] as [string, string[], SpawnOptions];
+    expect(program).toBe("/usr/bin/bwrap");
+    expect(args).toContain("--unshare-all");
+    expect(args).not.toContain("--share-net");
+    expect(args).toEqual(buildBwrapArgs({ homeDir: resolve(dir, "home"), command: "true", bodyDir: checkout, network: "none" }));
+    (harness.children[0] as FakeChild).emit("close", 0, null);
+    await pending;
+  });
+
+  it("says in about() what the network reaches, in each mode", async () => {
+    harness = await started({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, network: "wall" } });
+    expect(harness.world.about()).toContain("reaches the internet, but not this host's own services");
+    harness = await started({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, network: "none" } });
+    expect(harness.world.about()).toContain("with no network");
+    harness = await started({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, network: "host" } });
+    expect(harness.world.about()).toContain("with network access");
+    expect(harness.world.about()).not.toContain("reaches the internet");
   });
 });

@@ -4,3 +4,4 @@ export * from "./bwrap.js";
 export * from "./config.js";
 export * from "./output.js";
 export * from "./sandbox-world.js";
+export * from "./wall.js";

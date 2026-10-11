@@ -136,3 +136,34 @@ describe("buildBwrapArgs: the body", () => {
     expect(withBody).toEqual([...without.slice(0, at), ...block, ...without.slice(at)]);
   });
 });
+
+describe("buildBwrapArgs: the network mode", () => {
+  const RESOLV = `${ENTITY}/sandbox-network/resolv.conf`;
+
+  it("shares the host's network by default, exactly as the host mode always did", () => {
+    expect(buildBwrapArgs({ homeDir: HOME, command: "true" })).toEqual(buildBwrapArgs({ homeDir: HOME, command: "true", network: "host" }));
+    expect(buildBwrapArgs({ homeDir: HOME, command: "true" })).toContain("--share-net");
+  });
+
+  it("leaves --share-net out in none mode, so the command has loopback only", () => {
+    const args = buildBwrapArgs({ homeDir: HOME, command: "true", network: "none" });
+    expect(args.slice(0, 3)).toEqual(["--unshare-all", "--die-with-parent", "--new-session"]);
+    expect(args).not.toContain("--share-net");
+    expect(args).toContain("--ro-bind-try");
+    expect(args).toContain("/etc/resolv.conf");
+  });
+
+  it("keeps --share-net in wall mode, binds the resolver file in place of the host's, and never the host's resolv.conf", () => {
+    const args = buildBwrapArgs({ homeDir: HOME, command: "true", network: "wall", resolvPath: RESOLV });
+    expect(args.slice(0, 3)).toEqual(["--unshare-all", "--share-net", "--die-with-parent"]);
+    const at = args.indexOf("/etc/resolv.conf");
+    expect(args.slice(at - 2, at + 1)).toEqual(["--ro-bind", RESOLV, "/etc/resolv.conf"]);
+    expect(args.join(" ")).not.toContain("/etc/resolv.conf /etc/resolv.conf");
+    // Every other /etc piece is still bound as before.
+    expect(args.join(" ")).toContain("--ro-bind-try /etc/hosts /etc/hosts");
+  });
+
+  it("refuses wall mode without a resolver file, rather than binding the host's", () => {
+    expect(() => buildBwrapArgs({ homeDir: HOME, command: "true", network: "wall" })).toThrow(/resolvPath/);
+  });
+});

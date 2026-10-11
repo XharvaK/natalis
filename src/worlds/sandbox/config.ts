@@ -6,8 +6,15 @@ export const SANDBOX_DEFAULT_TIMEOUT_S = 120;
 export const SANDBOX_DEFAULT_MAX_TIMEOUT_S = 900;
 /** The largest number of seconds any timeout may be set to in the file. */
 export const SANDBOX_TIMEOUT_LIMIT_S = 3600;
+/**
+ * What a command's network is. "wall": the internet, but never the host's own loopback or its local network (the
+ * default). "host": the host's whole network, as before the wall. "none": loopback only.
+ */
+export const SANDBOX_NETWORKS = ["wall", "host", "none"] as const;
+export type SandboxNetwork = (typeof SANDBOX_NETWORKS)[number];
+export const SANDBOX_DEFAULT_NETWORK: SandboxNetwork = "wall";
 
-const ALLOWED = ["timeoutSeconds", "maxTimeoutSeconds", "bwrapPath", "body"];
+const ALLOWED = ["timeoutSeconds", "maxTimeoutSeconds", "bwrapPath", "body", "network", "pastaPath", "ipPath"];
 
 export type SandboxSettings = {
   /** The default timeout for a command, in seconds. */
@@ -18,6 +25,12 @@ export type SandboxSettings = {
   bwrapPath?: string;
   /** Whether the Natalis checkout is bound read-only at /body. Set in the file as "body": false to leave it out. */
   body?: boolean;
+  /** What a command's network is. Left out, "wall". See SANDBOX_NETWORKS. */
+  network?: SandboxNetwork;
+  /** Where to find pasta (the passt package), which walls the network in "wall" mode. Left out, pasta is looked for on PATH. */
+  pastaPath?: string;
+  /** Where to find ip (iproute2), used in "wall" mode. Left out, /usr/sbin/ip, then /sbin/ip. */
+  ipPath?: string;
 };
 
 /** Checks an already-parsed sandbox.json and fills in the defaults. Throws a plain error naming the first wrong field. */
@@ -39,12 +52,29 @@ export function parseSandboxFile(value: unknown): SandboxSettings {
   }
   const body = root["body"] ?? true;
   if (typeof body !== "boolean") throw new Error(`${SANDBOX_FILE}: body must be true or false.`);
-  const bwrap = root["bwrapPath"];
-  if (bwrap === undefined) return { timeoutSeconds, maxTimeoutSeconds, body };
-  if (typeof bwrap !== "string" || bwrap.trim() === "" || bwrap.includes("\0")) {
-    throw new Error(`${SANDBOX_FILE}: bwrapPath must be the path to the bwrap program, as text.`);
+  // Only a missing key takes the default: a null or an empty value is refused, never read as "wall".
+  const network = root["network"] === undefined ? SANDBOX_DEFAULT_NETWORK : root["network"];
+  if (!(SANDBOX_NETWORKS as readonly unknown[]).includes(network)) {
+    throw new Error(`${SANDBOX_FILE}: network must be "wall", "host" or "none".`);
   }
-  return { timeoutSeconds, maxTimeoutSeconds, bwrapPath: bwrap.trim(), body };
+  const settings: SandboxSettings = { timeoutSeconds, maxTimeoutSeconds, body, network: network as SandboxNetwork };
+  const bwrap = programPath(root, "bwrapPath");
+  if (bwrap !== undefined) settings.bwrapPath = bwrap;
+  const pasta = programPath(root, "pastaPath");
+  if (pasta !== undefined) settings.pastaPath = pasta;
+  const ip = programPath(root, "ipPath");
+  if (ip !== undefined) settings.ipPath = ip;
+  return settings;
+}
+
+/** A program's path, trimmed, when the file gives one; undefined when the key is left out. */
+function programPath(root: Record<string, unknown>, key: string): string | undefined {
+  const value = root[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim() === "" || value.includes("\0")) {
+    throw new Error(`${SANDBOX_FILE}: ${key} must be the path to the program, as text.`);
+  }
+  return value.trim();
 }
 
 function wholeSeconds(root: Record<string, unknown>, key: string): number | undefined {

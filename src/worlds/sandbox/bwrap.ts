@@ -3,6 +3,7 @@
 // folder, the vault and every env file stay out of the sandbox by construction.
 
 import { BODY_BINDS, BODY_MOUNT } from "./body.js";
+import type { SandboxNetwork } from "./config.js";
 
 /** Where the Lar's home folder appears inside the sandbox. */
 export const SANDBOX_HOME = "/home/lar";
@@ -20,6 +21,13 @@ export type BwrapInput = {
   command: string;
   /** The Natalis checkout: its allow-listed names are bound read-only at /body. Left out, nothing of the checkout is in the sandbox. */
   bodyDir?: string;
+  /**
+   * "host" (left out): the host's network, as before the wall. "wall": a private network that pasta has already made and
+   * walled (the caller runs bwrap under pasta); bwrap shares it, and /etc/resolv.conf is resolvPath. "none": loopback only.
+   */
+  network?: SandboxNetwork;
+  /** For "wall": a file holding the resolver the command uses, bound read-only at /etc/resolv.conf in place of the host's. */
+  resolvPath?: string;
 };
 
 /**
@@ -36,13 +44,31 @@ function bodyBinds(checkout: string): string[] {
   ];
 }
 
-/** The full argument list for `bwrap`, ending with the shell and its command. */
+/**
+ * The full argument list for `bwrap`, ending with the shell and its command.
+ *
+ * Network: "host" shares the host's network; "wall" shares the private network pasta made (see wall.ts), which is not
+ * the host's; "none" leaves out --share-net, so only the command's own loopback is there. --unshare-all already
+ * unshares the network, so "none" needs nothing more.
+ */
 export function buildBwrapArgs(input: BwrapInput): string[] {
-  const etc = ETC_PIECES.flatMap((piece) => ["--ro-bind-try", `/etc/${piece}`, `/etc/${piece}`]);
+  const network = input.network ?? "host";
+  if (network === "wall" && input.resolvPath === undefined) {
+    throw new RangeError('The "wall" network needs the resolver file (resolvPath); the host\'s /etc/resolv.conf is never bound.');
+  }
+  // In the wall the host's resolver is not bound: it may sit on the host's loopback or local network, which the wall keeps out.
+  const etc =
+    network === "wall"
+      ? [
+          ...ETC_PIECES.filter((piece) => piece !== "resolv.conf").flatMap((piece) => ["--ro-bind-try", `/etc/${piece}`, `/etc/${piece}`]),
+          "--ro-bind",
+          input.resolvPath as string,
+          "/etc/resolv.conf",
+        ]
+      : ETC_PIECES.flatMap((piece) => ["--ro-bind-try", `/etc/${piece}`, `/etc/${piece}`]);
   return [
-    // Every namespace, then the network back on: the Lar has network, nothing else from the host is shared.
     "--unshare-all",
-    "--share-net",
+    ...(network === "none" ? [] : ["--share-net"]),
     "--die-with-parent",
     "--new-session",
     "--clearenv",
