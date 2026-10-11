@@ -50,8 +50,11 @@ Each takes `--dir <entity folder>` (the Lar's own folder) unless noted.
 - `capture`: write one time window of a Lar's river for a replay.
 - `replay`: replay captured events on a copy of a Lar; the original is never written.
 - `judge`: score two replays event by event against a rubric.
-- `backup`: a dated, checked copy of a Lar (`--out <folder>`, `--keep <n>` keeps the newest n).
+- `backup`: a dated, checked copy of a Lar (`--out <folder>`, `--keep <n>` keeps the newest n). With `--seal-to <folder>
+  and --key-env <NAME>` it also writes one encrypted package there; `--seal-keep <n>` keeps the newest n packages.
 - `restore`: rebuild a Lar from a backup (`--from <backup folder>`, `--dir <new folder>`).
+- `unseal`: open one sealed package into a backup folder (`--from <file.natalisbak>`, `--to <new folder>`,
+  `--key-env <NAME>`). The key is read from that environment variable and is never a flag value.
 
 To run a Lar as a service on a host, see [deploy/README.md](deploy/README.md).
 
