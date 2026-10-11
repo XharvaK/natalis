@@ -2008,6 +2008,32 @@ describe("the daily turn limit", () => {
   });
 });
 
+describe("body notes on start", () => {
+  it("says in the self thread when the Lar was last running and how long it was down", async () => {
+    const first = Date.parse("2026-10-11T10:00:00Z");
+    const before = await open(new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]), { nowMs: () => first });
+    await before.entity.start();
+    before.cli.send("Hello.");
+    await before.entity.idle();
+    await before.entity.stop();
+
+    const after = await open(new ScriptedModel([]), { nowMs: () => first + 3 * 3_600_000 });
+    await after.entity.start();
+    await after.entity.idle();
+
+    const notes = allRows(after.entity).filter((row) => row.thread === "self" && row.kind === "note" && row.text?.startsWith("You were last running"));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.text).toBe("You were last running at 2026-10-11 10:00 and were down for 3 h.");
+  });
+
+  it("writes no start note on the first start of a new Lar", async () => {
+    const { entity } = await open(new ScriptedModel([]), { nowMs: () => Date.parse("2026-10-11T10:00:00Z") });
+    await entity.start();
+    await entity.idle();
+    expect(allRows(entity).some((row) => row.text?.startsWith("You were last running"))).toBe(false);
+  });
+});
+
 describe("repeating wakes", () => {
   const NOW = Date.parse("2026-10-11T10:00:00Z");
   type StoredWake = { id: string; atMs: number; why: string; repeat?: string; clock?: string };
@@ -2306,7 +2332,10 @@ describe("the daily rhythm", () => {
 
     const full = await open(new ScriptedModel([]), { nowMs: () => NOW, config: RHYTHM_CONFIG });
     await full.entity.start();
-    const notes = allRows(full.entity).filter((row) => row.kind === "note" && row.source === "body");
+    // The start note the body writes on every start is not the rhythm's note, so it is left out here.
+    const notes = allRows(full.entity).filter(
+      (row) => row.kind === "note" && row.source === "body" && !row.text?.startsWith("You were last running"),
+    );
     await full.entity.stop();
 
     const wakes = readStateFile().wakes as RhythmWake[];

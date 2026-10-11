@@ -646,6 +646,7 @@ class Runtime implements Entity {
       if (!this.stopping) this.stopIsOn();
     }, this.stopPollMs);
     this.seedRhythm();
+    this.noteStart();
     for (const wake of this.state.wakes) this.armWake(wake);
     try {
       for (const world of this.worlds) {
@@ -1047,6 +1048,34 @@ class Runtime implements Entity {
   }
 
   // --- wakes ------------------------------------------------------------------------------------
+
+  /**
+   * The body's note at each start, in the self thread (where the body's own notes go): when the Lar was last running, and
+   * how long it was down since. The newest row that is not a start note is the last time it was running; a start note
+   * is skipped, since it was written at the start itself. A new Lar has no rows yet, so it gets no note.
+   */
+  private noteStart(): void {
+    const last = this.lastRunningRow();
+    if (last === undefined) return;
+    const now = this.nowMs();
+    this.river.append({
+      thread: "self",
+      kind: "note",
+      source: "body",
+      text: `You were last running at ${this.stamp(last.atMs)} and were down for ${formatDuration(Math.max(0, now - last.atMs))}.`,
+      data: { bodyNote: "start" },
+      atMs: now,
+    });
+  }
+
+  /** The newest row that is not a start note, read in growing batches until one is found or the river is read through. */
+  private lastRunningRow(): RiverRow | undefined {
+    for (let limit = 64; ; limit *= 4) {
+      const rows = this.river.read({ newestFirst: true, limit });
+      const found = rows.find((row) => row.data?.["bodyNote"] !== "start");
+      if (found !== undefined || rows.length < limit) return found;
+    }
+  }
 
   /**
    * The daily rhythm the body gives a Lar on its first start: one ordinary daily wake per configured clock time, in the
