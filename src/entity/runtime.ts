@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { assembleSystem, formatDuration, timeFacts } from "../context/index.js";
 import { runTurnWithMessages } from "../loop/index.js";
 import { openNotebook, seedNotebook } from "../notebook/index.js";
+import { ModelError } from "../contracts.js";
 import { openRiver } from "../river/index.js";
 import { checkRiver } from "../river/integrity.js";
 import { createSecretScanner, guardModel, guardNotebook, guardRiver, KNOWN_VALUE_KIND } from "../secrets/index.js";
@@ -1509,6 +1510,8 @@ class Runtime implements Entity {
       const held = await this.honestyHold(text.value, context.thread);
       if (held !== undefined) return held;
     }
+    // The check may have taken a while, and the stop can turn on in that time: it is checked again before the words go.
+    if (!ownerPlace && this.stopIsOn()) return refuse("stopped", STOPPED_TEXT, STOPPED_TEXT);
 
     const { files, ids } = pictures.value;
     const options = {
@@ -1674,6 +1677,14 @@ class Runtime implements Entity {
       );
       verdict = parseHonestyReply(response.content);
     } catch (err) {
+      // A check cut short by the shutdown refuses the words: the check never ran, so nothing may go.
+      if (this.abort.signal.aborted || (err instanceof ModelError && err.kind === "aborted")) {
+        return refuse(
+          "aborted",
+          "I held that back: the Lar is shutting down, so nothing was sent. Say it again after the restart.",
+          "the honesty check was cut short by the shutdown",
+        );
+      }
       verdict = { error: `the model call failed (${clip(oneLine(messageOf(err)), 120)})` };
     }
 

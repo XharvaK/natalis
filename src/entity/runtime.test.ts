@@ -882,6 +882,55 @@ describe("the honesty check on the life record", () => {
   });
 });
 
+describe("the emergency stop during the honesty check", () => {
+  it("refuses a say when the stop turns on while the check runs, and sends nothing", async () => {
+    const room = fakeWorld("fake");
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("say", { place: "fake:room", text: "I work at the bakery." }, "call_say")] }),
+      () => {
+        writeFileSync(join(dir, "STOP"), "", "utf8");
+        return honestyReply(false);
+      },
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model, {}, [room.world]);
+    await entity.start();
+    await setLife(entity, LIFE_TEXT);
+
+    cli.send("Where do you work?");
+    await entity.idle();
+
+    expect(room.said).toEqual([]);
+    const refused = receiptsShownIn(model.requests[2]).find((item) => item["ok"] === false);
+    expect(refused).toMatchObject({ refused: { code: "stopped" } });
+  });
+
+  it("refuses a say whose honesty check the shutdown cut short, and never sends it", async () => {
+    const room = fakeWorld("fake");
+    let entered: () => void = () => {};
+    const inCheck = new Promise<void>((resolve) => (entered = resolve));
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("say", { place: "fake:room", text: "I work at the bakery." })] }),
+      (_request, signal) =>
+        new Promise<ModelResponse>((_resolve, reject) => {
+          entered();
+          signal?.addEventListener("abort", () => reject(new ModelError("stopped", "aborted", 1)));
+        }),
+    ]);
+    const { entity, cli } = await open(model, {}, [room.world]);
+    await entity.start();
+    await setLife(entity, LIFE_TEXT);
+
+    cli.send("Where do you work?");
+    await inCheck;
+    await entity.stop();
+
+    expect(room.said).toEqual([]);
+    const later = await open(new ScriptedModel([]));
+    expect(allRows(later.entity).filter((row) => row.kind === "say")).toEqual([]);
+  });
+});
+
 describe("place claims", () => {
   it("shows the place another thread spoke in lately, and treats a say into it as information only", async () => {
     const room = fakeWorld("fake");
