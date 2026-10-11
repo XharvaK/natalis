@@ -130,7 +130,7 @@ repeated them to the summoner as status reports ("social still 5, mood back to S
 - Mood: "She feels flirty now (she felt sad before)."
 - Interactions by a readable name: tuning class strings are reduced to the tuning name and humanised
   (`sim-stand` becomes "standing").
-- People: "Vivian Lewis arrived, 49 m away, standing", "Nancy Landgraab left".
+- People: "Mara Quill arrived, 49 m away, standing", "Tobin Ash left".
 - Kinds the renderer does not know stay as they are, so nothing is lost.
 
 The words are a fixed mapping of the game's own facts, not an interpretation.
