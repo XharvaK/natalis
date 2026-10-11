@@ -4,11 +4,27 @@
 
 import type { ChatMessage, ModelPort, Notebook, River, RiverRowInput, SecretScanner } from "../contracts.js";
 
+/** Every string in the data, keys included, scanned as the text it is. Numbers, booleans and null pass as they are. */
+function redactStrings(scanner: SecretScanner, value: unknown): unknown {
+  if (typeof value === "string") return scanner.redact(value);
+  if (Array.isArray(value)) return value.map((item) => redactStrings(scanner, item));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [scanner.redact(key), redactStrings(scanner, item)]),
+    );
+  }
+  return value;
+}
+
 function redactData(scanner: SecretScanner, data: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
   if (data === undefined) return undefined;
-  const text = JSON.stringify(data);
+  // Strings are scanned one by one, so a known value written escaped inside a string (as a model's JSON
+  // arguments write it) is seen as it is, not doubly escaped by JSON.stringify.
+  const walked = redactStrings(scanner, data) as Record<string, unknown>;
+  // Then the whole JSON text, for anything the walk cannot see (a number that is a known value, say).
+  const text = JSON.stringify(walked);
   const clean = scanner.redact(text);
-  if (clean === text) return data;
+  if (clean === text) return walked;
   try {
     return JSON.parse(clean) as Record<string, unknown>;
   } catch {

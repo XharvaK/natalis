@@ -117,3 +117,36 @@ describe("secret scanner: merging and redaction", () => {
     expect(createSecretScanner().redact(text)).toBe(text);
   });
 });
+
+describe("secret scanner: JSON-escaped known values", () => {
+  // Built from parts: a quote, a backslash and a newline, the characters JSON.stringify escapes.
+  const FAKE = ["fake", '"', "key", "\\", "tail", "\n", "end"].join("");
+  const ESCAPED = JSON.stringify(FAKE).slice(1, -1);
+
+  it("matches a known value echoed in its JSON-escaped form, inside JSON text", () => {
+    const scanner = createSecretScanner({ knownValues: [FAKE] });
+    const text = `{"k":"${ESCAPED}"}`;
+    const hits = scanner.scan(text);
+    expect(hits.map((h) => h.kind)).toEqual(["known_value"]);
+    expect(scanner.redact(text)).toBe('{"k":"[secret:known_value]"}');
+  });
+
+  it("matches the raw value and the escaped form in plain text alike", () => {
+    const scanner = createSecretScanner({ knownValues: [FAKE] });
+    expect(scanner.redact(`raw ${FAKE} and escaped ${ESCAPED} end`)).toBe(
+      "raw [secret:known_value] and escaped [secret:known_value] end",
+    );
+  });
+
+  it("addKnownValue also covers the escaped form", () => {
+    const scanner = createSecretScanner();
+    scanner.addKnownValue(FAKE);
+    expect(scanner.redact(`echo ${ESCAPED}`)).toBe("echo [secret:known_value]");
+  });
+
+  it("leaves a value with nothing to escape as it was", () => {
+    const plain = "house-door-code-2026";
+    const scanner = createSecretScanner({ knownValues: [plain] });
+    expect(scanner.redact(`code ${plain}`)).toBe("code [secret:known_value]");
+  });
+});

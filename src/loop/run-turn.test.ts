@@ -3,6 +3,7 @@ import { ModelError, type ChatMessage, type Receipt, type RiverRow, type Tool } 
 import { MemoryNotebook } from "../testing/memory-notebook.js";
 import { MemoryRiver } from "../testing/memory-river.js";
 import { ScriptedModel, call, reply, untilAborted, type ScriptStep } from "../testing/scripted-model.js";
+import { withEmulatedTools } from "../model/emulated-tools.js";
 import { notebookTools } from "../tools/notebook-tools.js";
 import { END_TURN, runTurn, runTurnWithMessages, type RunTurnInput } from "./run-turn.js";
 
@@ -464,5 +465,36 @@ describe("runTurn: pictures a tool hands over", () => {
     expect(JSON.stringify(rowsOf(river))).not.toContain("AAAA");
     expect(toolMessages(model.requests[1]?.messages ?? []).map((item) => item.content).join("\n")).not.toContain("AAAA");
     expect(result.receipts[0]?.receipt).toEqual({ ok: true, summary: "Here is the picture." });
+  });
+});
+
+describe("runTurn: a tool block the host cannot read", () => {
+  const broken = 'Let me look.\n```json\n{"tool_calls":[{"name":"end_turn","arguments":\n```';
+
+  it("tells the model why, keeps its words, and lets it try again within the ceiling", async () => {
+    const inner = new ScriptedModel([reply({ content: broken }), reply({ toolCalls: [call(END_TURN, {})] })], {
+      nativeTools: true,
+    });
+    const { input, river } = await setup({ steps: [] });
+    const result = await runTurn({ ...input, model: withEmulatedTools(inner) });
+
+    expect(result.endedBy).toBe("end_turn");
+    expect(result.modelCalls).toBe(2);
+    const note = rowsOf(river).find((r) => r.kind === "note" && r.source === "body");
+    expect(note?.text).toMatch(/^Your tool block was not valid JSON: \S/);
+    expect(note?.data).toMatchObject({ kind: "malformed_tool_block", turnId: "turn-1" });
+    const second = inner.requests[1]!.messages;
+    expect(second.at(-2)).toMatchObject({ role: "assistant", content: expect.stringContaining("Let me look.") });
+    expect(second.at(-1)).toMatchObject({ role: "user", content: note?.text });
+  });
+
+  it("stops at the ceiling when the model keeps writing a block the host cannot read", async () => {
+    const inner = new ScriptedModel([reply({ content: broken }), reply({ content: broken })], { nativeTools: true });
+    const { input, river } = await setup({ steps: [] });
+    const result = await runTurn({ ...input, model: withEmulatedTools(inner), ceiling: { maxModelCalls: 2, maxToolCalls: 5 } });
+
+    expect(result.endedBy).toBe("ceiling");
+    expect(result.modelCalls).toBe(2);
+    expect(rowsOf(river).filter((r) => r.kind === "note" && r.source === "body")).toHaveLength(3);
   });
 });
