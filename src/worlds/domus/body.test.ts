@@ -84,7 +84,7 @@ describe("her body now", () => {
     expect(lines).toContain("Your summoner is playing another Sim of the household, so your acts are refused for now.");
     expect(lines).toContain("The company list missed someone in this sample.");
     expect(lines).toContain("More Sims are nearby than the list shows.");
-    expect(lines).toContain("This is her home.");
+    expect(lines).toContain("This is your home.");
     expect(lines).toContain("Household here: Test Parent.");
     expect(lines).toContain("2 more of the household is out of sight.");
     expect(lines).toContain("Recent windows: window opened (held), 3 min ago.");

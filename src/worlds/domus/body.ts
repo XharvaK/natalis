@@ -185,8 +185,8 @@ export function bodyLines(portrait: unknown, attachment?: AttachmentNow): string
   lines.push(...flagLines(p));
   const place = record(p.place);
   if (place) {
-    if (place.her_home === true) lines.push("This is her home.");
-    else if (place.her_home === false) lines.push("This is not her home.");
+    if (place.her_home === true) lines.push("This is your home.");
+    else if (place.her_home === false) lines.push("This is not your home.");
     const household = Array.isArray(place.household_here)
       ? place.household_here.map((item) => textOrUndefined(item)).filter((item): item is string => item !== undefined)
       : [];
