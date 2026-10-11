@@ -7,6 +7,7 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ENTITY_FILE } from "../../entity/config.js";
+import { forgetInStateFile, STATE_FILE } from "../../entity/runtime.js";
 import { forgetLines, queryWords } from "../../notebook/forget.js";
 import { openNotebook } from "../../notebook/index.js";
 import { openRiver } from "../../river/index.js";
@@ -25,7 +26,7 @@ export type ForgetRequest = {
   reason: string;
 };
 
-export type ForgetCounts = { rows: number; lines: number; files: number };
+export type ForgetCounts = { rows: number; lines: number; files: number; stateTexts: number };
 
 export type ParsedForget = { ok: true; request: ForgetRequest } | { ok: false; error: string };
 
@@ -96,7 +97,10 @@ export async function runForget(request: ForgetRequest): Promise<ForgetCounts> {
       files += 1;
     }
   }
-  return { rows, lines, files };
+  // The state keeps short texts too (mood, wake reasons, proposals, the last words said in a place). A running Lar
+  // writes its own state on its next save, so this part holds only when the Lar is stopped; the command says so.
+  const stateTexts = request.query === undefined ? 0 : forgetInStateFile(join(dir, STATE_FILE), request.query);
+  return { rows, lines, files, stateTexts };
 }
 
 /** The forget command. Returns the exit code; output goes to the writers given. */
@@ -116,7 +120,8 @@ export async function forgetCommand(
     out(`Forgot ${counts.rows} river row(s).`);
     return 0;
   }
-  out(`Forgot ${counts.rows} river row(s) and ${counts.lines} note line(s) in ${counts.files} note file(s).`);
+  out(`Forgot ${counts.rows} river row(s), ${counts.lines} note line(s) in ${counts.files} note file(s), and ${counts.stateTexts} text(s) in the state file.`);
+  out("If the Lar was running, stop it and run this again: a running Lar writes its own state file on its next save.");
   out("Warning: the notebook's git history still holds the old text. Purging that history is a separate step, not done here.");
   out("Files in trash/ were not searched; they keep their text until that separate step.");
   return 0;

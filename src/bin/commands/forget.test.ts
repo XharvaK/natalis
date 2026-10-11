@@ -94,7 +94,9 @@ describe("natalis forget --query", () => {
   it("forgets the river rows and the note lines with the words, and prints counts only", async () => {
     const code = await forgetCommand(["--dir", dir, "--query", "lantern yard", "--reason", REASON], (l) => out.push(l), (l) => err.push(l));
     expect(code).toBe(0);
-    expect(out[0]).toBe("Forgot 2 river row(s) and 3 note line(s) in 2 note file(s).");
+    expect(out[0]).toBe("Forgot 2 river row(s), 3 note line(s) in 2 note file(s), and 0 text(s) in the state file.");
+    expect(out.join("
+")).toContain("stop it and run this again");
     expect(out.join("\n")).toContain("git history still holds the old text");
     expect(out.join("\n")).not.toMatch(/lantern|mara|quay/i);
   });
