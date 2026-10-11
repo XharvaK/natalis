@@ -49,13 +49,14 @@ const ALLOWED_NAMES: ReadonlySet<string> = new Set<string>([RIVER_FILE, BUNDLE_F
 
 /** A name a manifest may list: a known file, a vault entry, or a plain relative path inside the home. */
 export function isAllowedName(name: string): boolean {
-  if (ALLOWED_NAMES.has(name)) return !hasEnvName(name);
+  if (ALLOWED_NAMES.has(name)) return !isEnvFileName(name);
   if (VAULT_ENTRY.test(name)) return true;
-  if (MEDIA_ENTRY.test(name)) return !hasEnvName(name);
+  // A picture id is random base32, so letters such as "ENV" in it are part of the id and not an env file.
+  if (MEDIA_ENTRY.test(name)) return true;
   if (!name.startsWith(`${HOME_TREE}/`)) return false;
   const parts = name.split("/");
   return parts.length >= 2 && parts.every((part) => part !== "" && part !== "." && part !== ".." && !/[\\\u0000:]/.test(part))
-    && !parts.slice(1).some(hasEnvName);
+    && !parts.slice(1).some((part) => isEnvFileName(part) || isVenvFolderName(part));
 }
 
 export type ManifestFile = { name: string; bytes: number; sha256: string };
@@ -74,8 +75,14 @@ export type Manifest = {
   files: ManifestFile[];
 };
 
-export function hasEnvName(name: string): boolean {
-  return name.toLowerCase().includes("env");
+/** An env file: `.env`, `.env.*` or `*.env`, in any letter case. Names that only contain "env" are not env files. */
+export function isEnvFileName(name: string): boolean {
+  return /^(\.env(\..*)?|.*\.env)$/i.test(name);
+}
+
+/** A virtual-environment folder (`venv` or `.venv`), which holds installed code and never the Lar's own notes. */
+function isVenvFolderName(name: string): boolean {
+  return /^\.?venv$/i.test(name);
 }
 
 /** Checks an already-parsed manifest. Throws a plain error naming the first wrong field. */

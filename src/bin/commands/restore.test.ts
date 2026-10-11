@@ -153,10 +153,12 @@ describe("natalis restore", () => {
   }, 60_000);
 
   it("lets a manifest name only known files, vault entries and plain paths inside the home", () => {
-    for (const name of ["river.db", "web.json", "domus/domus.sqlite", "vault/a_key.json", "home/notes/a.md", "home/.bashrc"]) {
+    for (const name of ["river.db", "web.json", "domus/domus.sqlite", "vault/a_key.json", "home/notes/a.md", "home/.bashrc",
+      "home/notes/environment.md", "home/readme.environment", "media/m-AAENVBBB.png", "media/m-AAENVBBB.json"]) {
       expect(isAllowedName(name), name).toBe(true);
     }
-    for (const name of ["home/../entity.json", "home/./a", "home//a", "../river.db", "/etc/passwd", "home/a/.env", "vault/../x.json",
+    for (const name of ["home/../entity.json", "home/./a", "home//a", "../river.db", "/etc/passwd", "home/a/.env", "home/a/.env.local",
+      "home/a/prod.env", "home/a/PROD.ENV", "home/.ENV", "home/venv/lib.py", "home/app/.venv/bin/python", "vault/../x.json",
       "vault/a/b.json", "notebook/x", "STOP", "home/a\\b", "domus/other.db"]) {
       expect(isAllowedName(name), name).toBe(false);
     }
@@ -263,6 +265,7 @@ describe("the shelf of pictures in a backup", () => {
     expect(isAllowedName("media/m-ABCD2345.png.tmp")).toBe(false);
     expect(isAllowedName("media/../m-ABCD2345.png")).toBe(false);
     expect(isAllowedName("media/m-ABCD234.png")).toBe(false);
-    expect(isAllowedName("media/m-ENVABCDE.png")).toBe(false);
+    // A picture id is random base32, so "ENV" in it is an id, not an env file.
+    expect(isAllowedName("media/m-ENVABCDE.png")).toBe(true);
   });
 });
