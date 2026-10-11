@@ -112,7 +112,8 @@ below). Unknown paths 404. Same status codes and JSON bodies as v1.
 - `POST /domus/acts/sync`: the helper pulls requested acts for its session and reports act events
   (received, accepted, rejected, pushed, finished, unknown, expired). Phases only move forward; a terminal
   phase is never overwritten; a late event is still kept. Each event is a body row on the game thread.
-  Rejected, unknown and expired wake the thread; the others wait for the next turn.
+  Every final phase wakes the thread (rejected, finished, unknown, expired); received, accepted and pushed wait for the
+  next turn. The undo's withdrawals and notices, and the snapshot's expiry notes, are written with wake false and do not wake it.
 - `POST /domus/undo`: observations after the given time count as undone. The world writes one body row
   on the game thread: the game went back to that time, and what happened there after it did not happen.
   Nothing in the notebook is rewritten; the Lar decides what to do about its own notes.

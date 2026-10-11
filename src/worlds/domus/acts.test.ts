@@ -148,6 +148,24 @@ describe("requested acts", () => {
     expect(sync(T0 + 1, [ev(other, "pushed", T0 + 1)]).notes[0]).toMatchObject({ wake: false });
   });
 
+  it("wakes the thread for every way an act finishes, not only the refusals and expiries", () => {
+    // A finished act that completed, one that opened the game's question, and one the game cut short: each wakes.
+    const natural = okId(ask(T0, "a1"));
+    const done = sync(T0 + 1, [completed(natural, T0 + 1)]).notes[0];
+    expect(done).toMatchObject({ wake: true, data: { phase: "finished" } });
+    expect(done?.text).toContain("it finished");
+
+    const asked = okId(ask(T0, "a2"));
+    const question = sync(T0 + 2, [ev(asked, "finished", T0 + 2, { finishing_type: "ASKED" })]).notes[0];
+    expect(question).toMatchObject({ wake: true, data: { phase: "finished" } });
+    expect(question?.text).toContain("it opened a question from the game");
+
+    const cut = okId(ask(T0, "a3"));
+    const cancelled = sync(T0 + 3, [ev(cut, "finished", T0 + 3, { finishing_type: "USER_CANCEL", started: true })]).notes[0];
+    expect(cancelled).toMatchObject({ wake: true, data: { phase: "finished" } });
+    expect(cancelled?.text).toContain("it was cut short");
+  });
+
   it("expires an act its helper never picked up within 90 s, and the game never sees it", () => {
     const actId = okId(ask(T0, "a1"));
     const late = sync(T0 + ACT_TTL_MS + 1);
