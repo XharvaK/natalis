@@ -313,4 +313,9 @@ export interface World {
   now(): string;
   /** One stable line saying what this world is and which places in it are hers, for "who you are". */
   about?(): string;
+  /**
+   * The Lar's forget of words, for the text this world keeps outside the river (the runtime calls it after the river and
+   * the state). Returns how many rows it erased. A world that keeps no such text does not define it.
+   */
+  forget?(words: string[]): number;
 }

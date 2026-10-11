@@ -1,10 +1,12 @@
 import { execFileSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openNotebook } from "../../notebook/index.js";
 import { openRiver } from "../../river/index.js";
+import { admitObservation, DOMUS_DB_FILE, DOMUS_FOLDER, openDomusDb } from "../../worlds/domus/store.js";
 import { forgetCommand, parseForgetArgs, runForget } from "./forget.js";
 
 // Every name and line here is invented.
@@ -122,6 +124,28 @@ describe("natalis forget --query", () => {
     expect(seqsOf("Lantern Yard is by the water.")).toHaveLength(1);
     const notebook = await openNotebook(join(dir, "notebook"));
     expect(notebook.read("people/mara.md")).toContain("Mara lives on Lantern Yard");
+  });
+});
+
+describe("natalis forget --query and the game store", () => {
+  it("also forgets the words in the game store when there is one, and counts its rows", async () => {
+    const game = openDomusDb(dir);
+    admitObservation(game, {
+      observationId: "helper-1.1", digest: "d", thread: "domus:slot3", world: "slot3", branch: "b", session: "s", attachment: "helper-1",
+      body: "sim-9", snapshot: "7", seq: 1, sourceTimeMs: 1_800_000_000_000, expiresAtMs: 1_800_000_030_000, receiptTimeMs: 1_800_000_000_000,
+      lineageClass: "LIVE", payloadJson: JSON.stringify({ options: [{ object: "Lantern Yard door", acts: [] }] }),
+    });
+    game.close();
+    const code = await forgetCommand(["--dir", dir, "--query", "lantern yard", "--reason", REASON], (l) => out.push(l), (l) => err.push(l));
+    expect(code).toBe(0);
+    expect(out[0]).toBe("Forgot 2 river row(s), 3 note line(s) in 2 note file(s), 0 text(s) in the state file, and 1 row(s) in the game's store.");
+    const check = new DatabaseSync(join(dir, DOMUS_FOLDER, DOMUS_DB_FILE));
+    try {
+      expect(check.prepare("SELECT payload_json FROM observations").get()).toEqual({ payload_json: "{}" });
+    } finally {
+      check.close();
+    }
+    expect(out.join("\n")).not.toMatch(/lantern|yard|door/i);
   });
 });
 

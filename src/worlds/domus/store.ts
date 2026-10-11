@@ -5,6 +5,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { FORGOTTEN_LINE } from "../../notebook/forget.js";
 
 export const DOMUS_FOLDER = "domus";
 export const DOMUS_DB_FILE = "domus.sqlite";
@@ -103,6 +104,11 @@ CREATE TABLE IF NOT EXISTS snapshots (
 CREATE INDEX IF NOT EXISTS snapshots_thread_status ON snapshots (thread, status);
 `;
 
+/** The refusal for a choice or a picture request that rests on a view from a helper session the game is no longer on. */
+export const STALE_VIEW_CODE = "view_from_earlier_session";
+export const STALE_VIEW_REASON =
+  "The game restarted since that view, and its new view has not arrived yet. Wait for the game's new view, then choose again.";
+
 export type Row = Record<string, unknown>;
 
 /** Opens (or creates) the Domus database in the Lar's domus folder. */
@@ -200,16 +206,123 @@ export type UndoSpan = { thread: string; world: string; branch: string; session:
  * view). Returns how many were undone now. Nothing else is rewritten.
  */
 export function markSpanUndone(db: DatabaseSync, span: UndoSpan, nowMs: number): number {
-  return inTransaction(db, () => {
-    const changed = db.prepare(`UPDATE observations SET undone_at_ms = ?
-      WHERE world = ? AND branch = ? AND session = ? AND source_time_ms > ? AND undone_at_ms IS NULL`)
-      .run(nowMs, span.world, span.branch, span.session, span.afterSourceTimeMs);
-    const count = Number(changed.changes);
-    db.prepare(`INSERT INTO undos (thread, world, branch, session, after_source_time_ms, reason, observations, undone_at_ms)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(span.thread, span.world, span.branch, span.session, span.afterSourceTimeMs,
-      span.reason, count, nowMs);
-    return count;
+  return inTransaction(db, () => markSpanUndoneIn(db, span, nowMs));
+}
+
+/** The undo's rows, without a transaction of their own: for a caller that runs them inside its own (the Domus undo route). */
+export function markSpanUndoneIn(db: DatabaseSync, span: UndoSpan, nowMs: number): number {
+  const changed = db.prepare(`UPDATE observations SET undone_at_ms = ?
+    WHERE world = ? AND branch = ? AND session = ? AND source_time_ms > ? AND undone_at_ms IS NULL`)
+    .run(nowMs, span.world, span.branch, span.session, span.afterSourceTimeMs);
+  const count = Number(changed.changes);
+  db.prepare(`INSERT INTO undos (thread, world, branch, session, after_source_time_ms, reason, observations, undone_at_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(span.thread, span.world, span.branch, span.session, span.afterSourceTimeMs,
+    span.reason, count, nowMs);
+  return count;
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Forgetting the game's own words (the summoner's forget, and the Lar's). Ids, digests and times stay: rows keep their
+// place, and only the text they hold is replaced.
+
+type ForgetColumn = { name: string; json: boolean; erased: string };
+
+/** Every table that keeps game or Lar text, its text columns, and what a forgotten cell holds instead. */
+const FORGET_TABLES: ReadonlyArray<{ table: string; columns: readonly ForgetColumn[] }> = [
+  { table: "observations", columns: [{ name: "payload_json", json: true, erased: "{}" }] },
+  { table: "acts", columns: [{ name: "label", json: false, erased: FORGOTTEN_LINE }, { name: "answer_json", json: true, erased: "{}" }] },
+  { table: "act_events", columns: [{ name: "detail_json", json: true, erased: "{}" }] },
+  { table: "plan_steps", columns: [{ name: "label", json: false, erased: FORGOTTEN_LINE }] },
+  { table: "undos", columns: [{ name: "reason", json: false, erased: FORGOTTEN_LINE }] },
+];
+
+/** The form words are compared in: NFKC and lower case, as the notebook and the river fold them. */
+function foldForget(text: string): string {
+  return text.normalize("NFKC").toLowerCase();
+}
+
+/** The text of one cell to search: a JSON cell by its strings (not its keys or shape), any other cell as it is. */
+function searchableCell(value: string, json: boolean): string {
+  if (!json) return value;
+  try {
+    const parts: string[] = [];
+    collectStrings(JSON.parse(value) as unknown, parts);
+    return parts.join("\n");
+  } catch {
+    return value;
+  }
+}
+
+function collectStrings(value: unknown, parts: string[]): void {
+  if (typeof value === "string") parts.push(value);
+  else if (Array.isArray(value)) for (const item of value) collectStrings(item, parts);
+  else if (value !== null && typeof value === "object") for (const item of Object.values(value)) collectStrings(item, parts);
+}
+
+/**
+ * What was still waiting to go to the game does not go once its words are forgotten: a requested act is withdrawn (kept
+ * as expired, code FORGOTTEN) with the waiting steps of its plan, and a waiting plan step is dropped. The game never
+ * receives an act whose words were erased, nor one stripped of its answer.
+ */
+function withdrawForgotten(db: DatabaseSync, table: string, rowid: number, nowMs: number): void {
+  if (table === "acts") {
+    const act = db.prepare("SELECT act_id FROM acts WHERE rowid = ? AND state = 'requested'").get(rowid) as Row | undefined;
+    if (!act) return;
+    const actId = String(act.act_id);
+    db.prepare("UPDATE acts SET state = 'expired', updated_at_ms = ? WHERE act_id = ?").run(nowMs, actId);
+    db.prepare("INSERT OR IGNORE INTO act_events (act_id, phase, at_ms, received_at_ms, detail_json) VALUES (?, 'expired', ?, ?, ?)")
+      .run(actId, nowMs, nowMs, JSON.stringify({ code: "FORGOTTEN" }));
+    db.prepare("UPDATE plan_steps SET state = 'dropped', reason = 'forgotten', updated_at_ms = ? WHERE plan_id = ? AND state = 'planned'")
+      .run(nowMs, actId);
+  } else if (table === "plan_steps") {
+    db.prepare("UPDATE plan_steps SET state = 'dropped', reason = 'forgotten', updated_at_ms = ? WHERE rowid = ? AND state = 'planned'")
+      .run(nowMs, rowid);
+  }
+}
+
+/**
+ * Forgets words in the game's store. In every table that keeps game or Lar text, each row whose live text holds all the
+ * words (case and form aside) has that text replaced: a marker for plain text, an empty object for JSON. Rows already
+ * forgotten are not counted again. Returns how many rows were erased; the file is then vacuumed.
+ */
+export function forgetText(db: DatabaseSync, words: readonly string[]): number {
+  const wanted = words.map(foldForget).filter((word) => word.length > 0);
+  if (wanted.length === 0) return 0;
+  let erased = 0;
+  inTransaction(db, () => {
+    for (const spec of FORGET_TABLES) {
+      const names = spec.columns.map((column) => column.name).join(", ");
+      const rows = db.prepare(`SELECT rowid AS rid, ${names} FROM ${spec.table}`).all() as Row[];
+      for (const row of rows) {
+        const live = spec.columns.filter((column) => typeof row[column.name] === "string" && row[column.name] !== column.erased);
+        if (live.length === 0) continue;
+        const haystack = foldForget(live.map((column) => searchableCell(String(row[column.name]), column.json)).join("\n"));
+        if (!wanted.every((word) => haystack.includes(word))) continue;
+        const sets = live.map((column) => `${column.name} = ?`).join(", ");
+        db.prepare(`UPDATE ${spec.table} SET ${sets} WHERE rowid = ?`).run(...live.map((column) => column.erased), row.rid as number);
+        withdrawForgotten(db, spec.table, row.rid as number, Date.now());
+        erased += 1;
+      }
+    }
   });
+  db.exec("VACUUM");
+  return erased;
+}
+
+/**
+ * The summoner's forget in the game's store when no world is running: opens domus/domus.sqlite if it exists (it is not
+ * created here), forgets, and closes it. Returns how many rows were erased; 0 when there is no store.
+ */
+export function forgetInDomusFile(dir: string, words: readonly string[]): number {
+  const path = join(dir, DOMUS_FOLDER, DOMUS_DB_FILE);
+  if (!existsSync(path)) return 0;
+  const db = new DatabaseSync(path);
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    return forgetText(db, words);
+  } finally {
+    db.close();
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------

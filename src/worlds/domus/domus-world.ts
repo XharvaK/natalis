@@ -8,13 +8,15 @@ import type { DatabaseSync } from "node:sqlite";
 import type { World, WorldBody, WorldEvent } from "../../contracts.js";
 import { gameActTool, type GameActContext } from "./game-act.js";
 import { isStopOn } from "../../entity/stop.js";
-import { expireDue, pendingCounts, syncActs, type ThreadNote, withholdForStop } from "./acts.js";
+import { expireDue, pendingCounts, syncActs, type ThreadNote, withdrawUndone, withholdForStop } from "./acts.js";
 import { optionsOf, renderView } from "./options.js";
 import {
   checkSnapshot, expireSnapshots, gameSnapshotTool, openSnapshots, SNAPSHOT_PICTURE_NAME, SNAPSHOT_STATUS, settleFailed,
   settleTaken, type SnapshotContext, withdrawSnapshots,
 } from "./snapshot.js";
-import { admitObservation, HeartbeatBook, markSpanUndone, openDomusDb, pruneObservations } from "./store.js";
+import {
+  admitObservation, forgetInDomusFile, forgetText, HeartbeatBook, inTransaction, markSpanUndoneIn, openDomusDb, pruneObservations,
+} from "./store.js";
 import {
   BODY_LIMIT, canonicalJson, DOMUS_WORLD_ID, gameThreadOf, MIN_TOKEN_BYTES, observationDigest, parseActSync, parseFeed,
   parseHeartbeat, parseObservation, parseSnapshot, parseUndo, type ParsedObservation, SNAPSHOT_BODY_LIMIT, tokenProblem,
@@ -44,6 +46,8 @@ export type DomusWorldOptions = {
 export interface DomusWorld extends World {
   /** Where the listener is bound (the real port, when 0 was asked for); null when it is not listening. */
   listeningAddress(): { host: string; port: number } | null;
+  /** The Lar's forget of words: erases them from the game's store, running or not. Returns how many rows were erased. */
+  forget(words: string[]): number;
 }
 
 const TOKEN_MESSAGE: Record<"missing" | "too_short" | "matches_other", string> = {
@@ -170,7 +174,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     const current = db;
     const heartbeats = book;
     if (!current || !heartbeats) return null;
-    return { db: current, nowMs, attachedAt: (at: number) => heartbeats.attachedAt(at) };
+    return { db: current, nowMs, attachedSession: (at: number) => heartbeats.attachedSession(at) };
   };
 
   /** What the game_snapshot tool reads on each call: null while the world is not running. */
@@ -242,7 +246,13 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     const parsed = parseUndo(body);
     const now = nowMs();
     const thread = gameThreadOf(parsed.world);
-    const observations = markSpanUndone(requireDb(), { thread, ...parsed }, now);
+    const span = { thread, ...parsed };
+    // The views are undone and the acts and plan steps chosen on them withdrawn, in one transaction.
+    const db = requireDb();
+    const { observations, withdrawn } = inTransaction(db, () => ({
+      observations: markSpanUndoneIn(db, span, now),
+      withdrawn: withdrawUndone(db, span, now),
+    }));
     send(res, 200, { status: "ok", observations, supports: 0, assertions: 0, episodes: 0, journal: 0 });
     deliver({
       world: DOMUS_WORLD_ID,
@@ -254,6 +264,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       atMs: now,
       wake: false,
     });
+    for (const note of withdrawn) deliver(noteEvent(note, now));
   }
 
   /** The helper's answer to a picture request: the picture goes on the shelf and the request is marked taken, or the reason is kept. */
@@ -460,6 +471,10 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
 
     listeningAddress() {
       return bound;
+    },
+
+    forget(words) {
+      return db ? forgetText(db, words) : forgetInDomusFile(options.dir, words);
     },
   };
 }

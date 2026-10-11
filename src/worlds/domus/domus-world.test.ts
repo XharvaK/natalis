@@ -109,6 +109,23 @@ function gameAct(args: Record<string, unknown>, turnId: string): Promise<Receipt
   return tool("game_act").run(args, { thread: "domus:slot3", turnId, nowMs: clock } as ToolContext);
 }
 
+describe("forget", () => {
+  it("erases the words from the game store while the world runs, so the newest view offers no choices", async () => {
+    await call("/domus/observation", viewBody({ observation_id: "helper-1.f1", seq: 600 }));
+    expect((await gameAct({ option: "a1" }, "t-before")).ok).toBe(true);
+    expect(world!.forget(["PIM", "dorrow"])).toBe(1);
+    expect(world!.forget(["pim"])).toBe(0);
+    expect(await gameAct({ option: "a1" }, "t-after")).toMatchObject({ ok: false, refused: { code: "unknown_option" } });
+  });
+
+  it("erases the words from the game store file when the world is not running", async () => {
+    await call("/domus/observation", viewBody({ observation_id: "helper-1.f2", seq: 601 }));
+    await world!.stop();
+    world = undefined;
+    expect(make().forget(["dorrow"])).toBe(1);
+  });
+});
+
 describe("start and the token", () => {
   it("refuses a missing, short, or other-token-equal helper token, and listens for nothing", async () => {
     await world?.stop();
@@ -310,13 +327,31 @@ describe("snapshot, feed and undo", () => {
     events = [];
     const undo = await call("/domus/undo", { v: 1, world: "slot3", branch: "branch-1", session: "telemetry-1", after_source_time_ms: T0 - 800, reason: "HELPER_UNDO" });
     expect(undo).toEqual({ status: 200, body: { status: "ok", observations: 1, supports: 0, assertions: 0, episodes: 0, journal: 0 } });
-    expect(events).toHaveLength(1);
+    // The body row first; then the requested act chosen on the undone view is withdrawn too (see the next test).
+    expect(events).toHaveLength(2);
     expect(events[0]).toMatchObject({ place: "domus:slot3", source: "body", wake: false });
     expect(events[0]?.text).toContain(`The game went back to ${new Date(T0 - 800).toISOString()}.`);
     expect(events[0]?.text).toContain("did not happen");
     // The undone view's choices are gone; the view before it (still standing) is what the refs resolve against.
     expect(await gameAct({ option: "a8" }, "t-undo")).toMatchObject({ ok: false, refused: { code: "unknown_option" } });
     expect(await gameAct({ option: "a1" }, "t-undo-2")).toMatchObject({ ok: true, data: { label: "Boil water (Test kettle)" } });
+  });
+
+  it("withdraws the requested act and the waiting plan steps chosen on the undone view, with notes that do not wake", async () => {
+    const ghost = [{ object: "Ghost", object_id: "obj-ghost", acts: [
+      { ref: "a8", guid64: "808", text: "Haunt" },
+      { ref: "a9", guid64: "909", text: "Vanish" },
+    ] }];
+    await call("/domus/observation", viewBody({ observation_id: "helper-1.undo", seq: 500, source_time_ms: clock - 500, options: ghost }));
+    expect((await gameAct({ option: "a8", then: ["a9"] }, "t-plan")).ok).toBe(true);
+    events = [];
+    const undo = await call("/domus/undo", { v: 1, world: "slot3", branch: "branch-1", session: "telemetry-1", after_source_time_ms: T0 - 800, reason: "HELPER_UNDO" });
+    expect(undo.status).toBe(200);
+    expect(events.map((event) => [event.source, event.wake])).toEqual([["body", false], ["body", false], ["body", false]]);
+    expect(events[1]?.text).toBe('Your act "Haunt (Ghost)" (a8): it was withdrawn, because the game went back before the view you chose it from.');
+    expect(events[2]?.text).toContain('Your plan stopped before "Vanish (Ghost)": the game went back before the view it was chosen from.');
+    // The game takes nothing it was asked before the undo: no act and no planned step is handed to the helper.
+    expect(await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [] })).toMatchObject({ status: 200, body: { acts: [], planned: 0 } });
   });
 
   it("refuses an undo time outside the JavaScript Date range as invalid_body, and the listener stays up", async () => {
