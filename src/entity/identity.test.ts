@@ -51,7 +51,7 @@ describe("who you are", () => {
   it("leaves out the rhythm sentence when the Lar has no rhythm of wakes", () => {
     const text = whoYouAre(facts({ rhythm: false }));
     expect(text).not.toContain("You wake on your own");
-    expect(text).toContain("You can also wake yourself at any time, keep notes, and write to someone first.");
+    expect(text).toContain("You can wake yourself at any time, keep notes, and write to someone first.");
   });
 
   it("tells a Lar with no name that it may choose one", () => {

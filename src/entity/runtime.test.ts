@@ -1984,12 +1984,12 @@ describe("the daily rhythm", () => {
     expect(readStateFile().wakes).toHaveLength(3);
   });
 
-  it("creates no wake when the rhythm is an empty list", async () => {
+  it("creates no wake when the rhythm is an empty list, and does not record it as given", async () => {
     const { entity } = await open(new ScriptedModel([]), { nowMs: () => NOW, config: { ...RHYTHM_CONFIG, rhythm: [] } });
     await entity.start();
     await entity.stop();
     expect(readStateFile().wakes).toEqual([]);
-    expect(stateObject()["rhythmGiven"]).toBe(true);
+    expect(stateObject()["rhythmGiven"]).toBeUndefined();
   });
 
   it("makes only the wakes that fit under the limit, and a body note says how many were not made", async () => {

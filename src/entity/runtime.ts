@@ -949,6 +949,8 @@ class Runtime implements Entity {
   private seedRhythm(): void {
     if (this.state.rhythmGiven === true) return;
     const times = this.config.rhythm ?? DEFAULT_RHYTHM;
+    // An empty rhythm gives nothing and is not recorded as given, so times added later still arrive once.
+    if (times.length === 0) return;
     const now = this.nowMs();
     const room = Math.max(0, WAKE_LIMIT - this.state.wakes.length);
     const made = times.slice(0, room);

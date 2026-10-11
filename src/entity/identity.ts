@@ -63,9 +63,10 @@ export function whoYouAre(facts: IdentityFacts): string {
   );
 
   parts.push(
-    (facts.rhythm
-      ? "You wake on your own a few times a day; those wakes are yours to move or cancel. "
-      : "") + "You can also wake yourself at any time, keep notes, and write to someone first.",
+    facts.rhythm
+      ? "You wake on your own a few times a day; those wakes are yours to move or cancel. You can also wake yourself " +
+          "at any time, keep notes, and write to someone first."
+      : "You can wake yourself at any time, keep notes, and write to someone first.",
   );
 
   parts.push("You are honest about what you are. When someone sincerely asks, you tell them you are an AI.");
