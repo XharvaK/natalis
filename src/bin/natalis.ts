@@ -10,14 +10,16 @@ import { modelFromConfig } from "../model/from-config.js";
 import { createSecretScanner } from "../secrets/index.js";
 import { createCliWorld } from "../worlds/cli.js";
 import { forgetCommand } from "./commands/forget.js";
+import { runCommand } from "./commands/run.js";
 import { stopCommand } from "./commands/stop.js";
 
-const USAGE = "Usage: natalis chat --dir <entity folder>";
+const USAGE = "Usage: natalis chat|run|stop|forget --dir <entity folder>";
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
   if (command === "stop") return stopCommand(rest, console.log, console.error);
   if (command === "forget") return forgetCommand(rest, console.log, console.error);
+  if (command === "run") return runCommand(rest, console.log, console.error);
   if (command !== "chat") {
     console.error(USAGE);
     return 2;
