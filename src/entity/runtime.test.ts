@@ -2625,3 +2625,69 @@ describe("views shrink to briefs", () => {
     expect(fresh).toContain("Full text two.");
   });
 });
+
+describe("what a turn says it leaves out", () => {
+  /** A world whose events the test sends one by one, with or without a wake. */
+  function eventWorld(id: string): { world: World; emit(event: WorldEvent): void } {
+    let emitter: ((event: WorldEvent) => void) | undefined;
+    return {
+      world: {
+        id,
+        async start(next) {
+          emitter = next;
+        },
+        async stop() {
+          emitter = undefined;
+        },
+        async say(): Promise<Receipt> {
+          return { ok: true, summary: "Delivered." };
+        },
+        tools: () => [],
+        now: () => `${id} is open.`,
+      },
+      emit(event) {
+        if (emitter === undefined) throw new Error("the event world is not started");
+        emitter(event);
+      },
+    };
+  }
+
+  const HALL = "fake:hall";
+  const OTHER = "fake:cellar";
+
+  /** Quiet lines that do not wake the Lar, then one line that does, and a second that does: the first turn sees the quiet lines, so the second turn's Recent block holds them. */
+  async function twoTurns(quiet: number, cellar: number): Promise<string> {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);
+    const hall = eventWorld("fake");
+    const { entity } = await open(model, {}, [hall.world]);
+    await entity.start();
+    for (let i = 1; i <= cellar; i += 1) hall.emit({ world: "fake", place: OTHER, actor: "mara", source: "outside", text: `Cellar ${i}.`, wake: false });
+    for (let i = 1; i <= quiet; i += 1) hall.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: `Quiet line ${i}.`, wake: false });
+    hall.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: "First." });
+    await entity.idle();
+    hall.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: "Second." });
+    await entity.idle();
+    expect(model.requests).toHaveLength(2);
+    return userTextOf(model.requests[1]);
+  }
+
+  it("says how many older rows of its thread the turn leaves out, before the rows it shows", async () => {
+    const user = await twoTurns(35, 3);
+    expect(user).toContain("Recent here:\n(6 older messages here are not shown; recall finds them.)\n[");
+    expect(user).toContain("Quiet line 7.");
+    expect(user).not.toContain("Quiet line 6.");
+    expect(user).not.toContain("Cellar");
+    expect(user).toContain("Second.");
+  });
+
+  it("says one older message in the singular", async () => {
+    const user = await twoTurns(30, 0);
+    expect(user).toContain("Recent here:\n(1 older message here is not shown; recall finds them.)\n[");
+  });
+
+  it("says nothing about older rows when the turn shows them all", async () => {
+    const user = await twoTurns(3, 2);
+    expect(user).not.toContain("not shown");
+    expect(user).toContain("Quiet line 1.");
+  });
+});

@@ -874,6 +874,7 @@ class Runtime implements Entity {
     const turnId = randomUUID();
     const nowMs = this.nowMs();
     const recent = this.recentRows(thread, seen, snapshot, fresh.length);
+    const cut = this.cutBefore(thread, seen, recent);
     const shown = new Set<number>([...recent, ...fresh].map((row) => row.seq));
     const done = this.doneBeforeCut(thread, seen);
     this.countTurn(nowMs);
@@ -882,6 +883,7 @@ class Runtime implements Entity {
     const briefed = olderViewRows([...recent, ...fresh]);
     const event = [
       "Recent here:",
+      ...(cut === 0 ? [] : [cutLine(cut)]),
       ...(recent.length === 0 ? ["(nothing yet)"] : recent.map((row) => this.lineFor(row, briefed.has(row.seq)))),
       "",
       "New:",
@@ -1767,6 +1769,19 @@ class Runtime implements Entity {
       .reverse();
   }
 
+  /**
+   * How many rows of this thread, older than the oldest row the turn shows in Recent here, the turn does not show. The
+   * new rows are left out of the count, since New shows them. A hidden act is counted too: the river cannot tell it
+   * without reading it.
+   */
+  private cutBefore(thread: string, seen: number, recent: RiverRow[]): number {
+    const oldest = recent[0];
+    if (oldest === undefined) return 0;
+    const older = this.river.count({ thread, kinds: ["event", "say"], untilSeq: oldest.seq - 1 });
+    const fresh = this.river.count({ thread, kinds: ["event"], sinceSeq: seen, untilSeq: oldest.seq - 1 });
+    return Math.max(0, older - fresh);
+  }
+
   /** One row as one line. A row shown by its brief (an older view, see olderViewRows) gives the brief in place of its text. */
   private lineFor(row: RiverRow, brief = false): string {
     const outside = row.source === "outside" ? " (outside)" : "";
@@ -2539,6 +2554,13 @@ function eventData(event: WorldEvent): Record<string, unknown> | undefined {
   if (event.brief !== undefined) extra.brief = event.brief;
   if (event.data === undefined && Object.keys(extra).length === 0) return undefined;
   return { ...(event.data ?? {}), ...extra };
+}
+
+/** The line that says how many older rows of the thread the turn leaves out. */
+function cutLine(count: number): string {
+  return count === 1
+    ? "(1 older message here is not shown; recall finds them.)"
+    : `(${count} older messages here are not shown; recall finds them.)`;
 }
 
 /** The text an older view shows in place of its full text. */
