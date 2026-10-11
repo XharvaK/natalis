@@ -203,7 +203,7 @@ function phaseSentence(phase: DomusActPhase, detail: Record<string, unknown>, la
       // A phone act runs at once and never waits in her queue; "nothing says how it ended (LEFT_QUEUE)" read as if it had
       // waited, so that code gets its own words.
       if (detail.code === "LEFT_QUEUE") {
-        return "It never waited in her queue: the game took it at once or dropped it, and did not say how it ended. A phone act often runs this way; what changed in your next view tells";
+        return "it never waited in her queue: the game took it at once or dropped it, and did not say how it ended. A phone act often runs this way; what changed in your next view tells";
       }
       return `nothing says how it ended${code}${reason}`;
     case "expired":

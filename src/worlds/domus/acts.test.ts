@@ -262,7 +262,7 @@ describe("plans", () => {
     const actId = okId(ask(T0, "a1"));
     const result = sync(T0 + 1, [ev(actId, "unknown", T0 + 1, { code: "LEFT_QUEUE" })]);
     expect(result.notes[0]).toMatchObject({ thread: THREAD, wake: true });
-    expect(result.notes[0]?.text).toBe('Your act "Boil water (Test kettle)" (a1): It never waited in her queue: the game took it at once or dropped it, and did not say how it ended. A phone act often runs this way; what changed in your next view tells.');
+    expect(result.notes[0]?.text).toBe('Your act "Boil water (Test kettle)" (a1): it never waited in her queue: the game took it at once or dropped it, and did not say how it ended. A phone act often runs this way; what changed in your next view tells.');
   });
 
   it("keeps the wording, with the code and the reason, for any other unknown", () => {
