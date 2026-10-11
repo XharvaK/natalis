@@ -213,7 +213,7 @@ export type TurnResult = {
   modelCalls: number;
   toolCalls: number;
   receipts: Array<{ tool: string; receipt: Receipt }>;
-  /** Free text the model wrote outside tool calls (her thinking aloud); kept, never sent anywhere. */
+  /** Free text the model wrote outside tool calls (the Lar's thinking aloud); kept, never sent anywhere. */
   thoughts: string[];
   error?: string;
 };

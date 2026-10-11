@@ -207,7 +207,7 @@ describe("intake", () => {
     expect(events[0]?.data).not.toHaveProperty("flooded");
   });
 
-  it("names a guest's DM by her alias", async () => {
+  it("names a guest's DM by their alias", async () => {
     const { fake, events } = await startWorld();
     fake.deliver(incoming({ channelKind: "dm", author: MARA_AUTHOR, content: "psst" }));
     await vi.advanceTimersByTimeAsync(1500);
@@ -237,7 +237,7 @@ describe("intake", () => {
     expect(attachments).toEqual([{ name: "pic.png", contentType: "image/png", url: "attachment:a1" }]);
   });
 
-  it("rewrites mentions, channels and emoji into names and marks mentions of her", async () => {
+  it("rewrites mentions, channels and emoji into names and marks mentions of the Lar", async () => {
     const { fake, events } = await startWorld();
     fake.deliver(
       incoming({
@@ -309,7 +309,7 @@ describe("debounce and cap", () => {
 });
 
 describe("flood and loop limits", () => {
-  it("keeps a flooding guest visible but does not wake her", async () => {
+  it("keeps a flooding guest visible but does not wake the Lar", async () => {
     const { fake, events } = await startWorld();
     for (let i = 0; i < 5; i += 1) {
       fake.deliver(incoming({ author: MARA_AUTHOR, content: `msg ${i}` }));
@@ -330,7 +330,7 @@ describe("flood and loop limits", () => {
     expect(events.every((event) => event.wake === true && event.data?.flooded === undefined)).toBe(true);
   });
 
-  it("stops waking her for another bot past the exchange ceiling, and a person resets it", async () => {
+  it("stops waking the Lar for another bot past the exchange ceiling, and a person resets it", async () => {
     const { fake, events } = await startWorld({ guestLimit: { messages: 100, perMs: 20_000 } });
     const bot = { id: BOT, displayName: "Crier", bot: true };
     for (let i = 0; i < 5; i += 1) {

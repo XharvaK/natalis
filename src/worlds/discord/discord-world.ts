@@ -1,5 +1,5 @@
-// The Discord world: pure transport. Messages come in as events; her words go out as messages, each with a
-// receipt. No judgment lives here: no tone, no emoji rules, no reply caps, no decision about when she may speak.
+// The Discord world: pure transport. Messages come in as events; the Lar's words go out as messages, each with a
+// receipt. No judgment lives here: no tone, no emoji rules, no reply caps, no decision about when the Lar may speak.
 //
 // Ids stay on this side of the line. Places, people and messages reach the entity only as aliases and opaque
 // refs (m1, m2 ...). The real ids are held in memory here and in the aliases file, and nowhere else.
@@ -62,7 +62,7 @@ export type PlatformMessage = {
 };
 
 export type PlatformClient = {
-  /** Connect and resolve with her own identity once ready. */
+  /** Connect and resolve with the bot's own identity once ready. */
   login(token: string): Promise<{ id: string; displayName: string }>;
   logout(): Promise<void>;
   /** Every message the bot can see, unfiltered. The world decides what is in its places. */
@@ -87,7 +87,7 @@ export type DiscordWorldOptions = {
   ownerUserId: string;
   /** The owner's alias in places ("discord:dm:<alias>"). Defaults to "owner", the entity config's usual alias. */
   ownerAlias?: string;
-  /** Channel ids she lives in. */
+  /** Channel ids the Lar lives in. */
   rooms: string[];
   /** JSON file holding the alias map. Platform ids live only here. */
   aliasesPath: string;
@@ -566,7 +566,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       if (down) return down;
       const target = await resolveTarget(place);
       if (!target.ok) return target.receipt;
-      // "@alias" of a person she knows becomes a real mention; nobody else can be pinged.
+      // "@alias" of a person the Lar knows becomes a real mention; nobody else can be pinged.
       const mentionUserIds = new Set<string>();
       const withMentions = text.replace(/(^|[^\p{L}\p{N}_@.])@([\p{L}\p{N}][\p{L}\p{N}-]*)/gu, (whole, lead: string, alias: string) => {
         const id = aliases.userIdForAlias(alias.toLowerCase());

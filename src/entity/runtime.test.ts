@@ -245,7 +245,7 @@ describe("a conversation", () => {
     const system = systemTextOf(second.requests[0]);
     expect(system).toContain("people/owner.md");
     expect(system).toContain("The owner is Mira. She likes tea.");
-    // The river came back too: what she said before the restart is in the recent transcript now.
+    // The river came back too: what the Lar said before the restart is in the recent transcript now.
     expect(userTextOf(second.requests[0])).toContain("you] I will remember you, Mira.");
     expect(b.entity.notebook.read("people/owner.md")).toContain("She likes tea.");
   });
@@ -418,7 +418,7 @@ describe("failures", () => {
   });
 });
 
-describe("what she sends and what she is shown", () => {
+describe("what the Lar sends and what it is shown", () => {
   it("holds a say that carries a credential and delivers nothing", async () => {
     const model = new ScriptedModel([
       reply({ toolCalls: [call("say", { place: "cli:summoner", text: `Here is the key: ${FAKE_KEY}` })] }),
@@ -473,7 +473,7 @@ describe("what she sends and what she is shown", () => {
     expect(readStateFile().wakes).toHaveLength(0);
   });
 
-  it("shows her mood on the now board", async () => {
+  it("shows the Lar's mood on the now board", async () => {
     const model = new ScriptedModel([
       reply({ toolCalls: [call("set_mood", { text: "quiet and curious" })] }),
       reply({ toolCalls: [call("end_turn")] }),
@@ -490,7 +490,7 @@ describe("what she sends and what she is shown", () => {
     expect(readStateFile().mood).toBe("quiet and curious");
   });
 
-  it("lists another active thread on the now board with what she last said there", async () => {
+  it("lists another active thread on the now board with what was last said there", async () => {
     const room = fakeWorld("fake");
     const model = new ScriptedModel([
       reply({ toolCalls: [call("say", { place: "cli:summoner", text: "Hello from the command line." })] }),
@@ -587,7 +587,7 @@ describe("the owner's privacy list", () => {
     expect(JSON.stringify(note)).not.toContain("lantern");
   });
 
-  it("does not hold the same words when they are said to her owner", async () => {
+  it("does not hold the same words when they are said to the summoner", async () => {
     const model = new ScriptedModel([
       reply({ toolCalls: [call("say", { place: "cli:summoner", text: "Lantern Yard, by the water." })] }),
       reply({ toolCalls: [call("end_turn")] }),
@@ -603,7 +603,7 @@ describe("the owner's privacy list", () => {
     expect(noteRows(entity).some((row) => row.data?.["held"] === "privacy")).toBe(false);
   });
 
-  it("shows her the categories in a privacy section, never the words", async () => {
+  it("shows the Lar the categories in a privacy section, never the words", async () => {
     const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
     const { entity, cli } = await open(model);
     await entity.start();
@@ -636,7 +636,7 @@ describe("the owner's privacy list", () => {
     expect(system).toContain("No categories are on the list right now.");
   });
 
-  it("reloads the list when the file changes while she runs", async () => {
+  it("reloads the list when the file changes while the Lar runs", async () => {
     const room = fakeWorld("fake");
     const model = new ScriptedModel([
       reply({ toolCalls: [call("say", { place: "fake:room", text: "Lantern Yard is lovely." })] }),
@@ -662,8 +662,8 @@ describe("the owner's privacy list", () => {
   });
 });
 
-describe("the honesty check on her life record", () => {
-  it("asks the model once, with low effort and no tools, when her life record has real content", async () => {
+describe("the honesty check on the life record", () => {
+  it("asks the model once, with low effort and no tools, when the life record has real content", async () => {
     const room = fakeWorld("fake");
     const model = new ScriptedModel([
       reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I work at the bakery." })] }),
@@ -685,7 +685,7 @@ describe("the honesty check on her life record", () => {
     expect(userTextOf(check)).toContain(LIFE_TEXT);
   });
 
-  it("holds a say that her record contradicts, quotes both sides, and sends nothing", async () => {
+  it("holds a say that the record contradicts, quotes both sides, and sends nothing", async () => {
     const model = new ScriptedModel([
       reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I work at the lighthouse." })] }),
       honestyReply(true, "I work at the lighthouse", "I work at the bakery"),
@@ -708,7 +708,7 @@ describe("the honesty check on her life record", () => {
     });
   });
 
-  it("sends a contradicting say when she says it knowingly, and skips the check for that say only", async () => {
+  it("sends a contradicting say when it is said knowingly, and skips the check for that say only", async () => {
     const model = new ScriptedModel([
       reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I work at the lighthouse.", knowingly: true })] }),
       reply({ toolCalls: [call("end_turn")] }),
@@ -739,7 +739,7 @@ describe("the honesty check on her life record", () => {
     expect(refused).toMatchObject({ refused: { code: "bad_arguments" } });
   });
 
-  it("checks a say to an outside place as well as one to her owner", async () => {
+  it("checks a say to an outside place as well as one to the summoner", async () => {
     const room = fakeWorld("fake");
     const model = new ScriptedModel([
       reply({ toolCalls: [call("say", { place: "fake:room", text: "I work at the lighthouse." })] }),
@@ -792,7 +792,7 @@ describe("the honesty check on her life record", () => {
     expect(noteRows(entity).map((row) => row.text)).toContain("honesty check could not run: the reply was not JSON");
   });
 
-  it("does not ask while her life record is still the stub", async () => {
+  it("does not ask while the life record is still the stub", async () => {
     const model = new ScriptedModel([
       reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I work at the lighthouse." })] }),
       reply({ toolCalls: [call("end_turn")] }),
@@ -850,7 +850,7 @@ describe("place claims", () => {
 });
 
 describe("the owner's emergency stop", () => {
-  it("refuses outward acts while STOP is there, and still answers her owner", async () => {
+  it("refuses outward acts while STOP is there, and still answers the summoner", async () => {
     const room = fakeWorld("fake");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "STOP"), "Checking the stop.\n", "utf8");
@@ -946,7 +946,7 @@ describe("the owner's emergency stop", () => {
       "Your summoner's emergency stop is off: outward acts can go on again.",
     ]);
     expect(selfRows.every((row) => row.source === "body")).toBe(true);
-    // The rows wait for her next turn in her own thread; they never wake a turn by themselves.
+    // The rows wait for the next turn in the self thread; they never wake a turn by themselves.
     expect(model.requests).toHaveLength(2);
   });
 });

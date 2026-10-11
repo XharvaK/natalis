@@ -6,7 +6,7 @@ import { appendFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { Receipt, Tool, ToolContext, ToolSpec, World, WorldEvent } from "../contracts.js";
 
-/** One line of transcript.jsonl: a say, a wake the entity scheduled, or a wake she cancelled. */
+/** One line of transcript.jsonl: a say, a wake the entity scheduled, or a wake it cancelled. */
 export type TranscriptRow =
   | { atMs: number; place: string; text: string; replyTo?: string }
   | { wake: { id: string; atMs: number; why: string; scheduledIn: string } }

@@ -194,7 +194,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
 
       const calls = response.toolCalls ?? [];
       const content = response.content;
-      // Her reasoning summary is part of her thinking record; it is kept, never shown to anyone as speech.
+      // The reasoning summary is part of the Lar's thinking record; it is kept, never shown to anyone as speech.
       if (response.reasoning !== undefined) {
         write({ kind: "note", source: "self", text: response.reasoning, data: { thought: true, reasoning: true, turnId } });
       }

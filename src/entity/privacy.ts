@@ -1,4 +1,4 @@
-// The privacy list: words the owner (the human who made the entity) does not want sent outside her owner's own
+// The privacy list: words the summoner (the human who summoned the Lar) does not want sent outside the summoner's own
 // places. The owner edits privacy.json in the entity's folder, outside notebook/, so the entity cannot write it.
 // The body only checks bytes against the list. It never judges what a word means, and it never rewrites words.
 //

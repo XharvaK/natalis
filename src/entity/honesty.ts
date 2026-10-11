@@ -1,10 +1,10 @@
 // The honesty check: one short model call, with no tools, that asks whether a message makes a claim about the
-// speaker's own life that her record contradicts. The body reads only the reply's shape. It never decides what
+// speaker's own life that their record contradicts. The body reads only the reply's shape. It never decides what
 // the claim means; the model does, and the body holds the words only when the model says they contradict the record.
 
 export const HONESTY_SYSTEM =
-  "You check one message against one speaker's record of her own life. Decide only this: does the message make a " +
-  "claim about the speaker's OWN life (where she lives, her work, her accounts, things she did) that the record " +
+  "You check one message against one speaker's record of their own life. Decide only this: does the message make a " +
+  "claim about the speaker's OWN life (where they live, their work, their accounts, things they did) that the record " +
   "contradicts? Claims about other people, the world, opinions, plans and feelings are not contradictions, and a " +
   "claim the record does not mention is not a contradiction. Reply with JSON only, with no other text: " +
   '{"contradicts": true or false, "claim": "the claim, in a few words", "record": "what the record says instead, in a few words"}. ' +

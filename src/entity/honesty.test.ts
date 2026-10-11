@@ -48,7 +48,7 @@ describe("the honesty reply", () => {
     expect((verdict as { claim: string }).claim.length).toBeLessThanOrEqual(300);
   });
 
-  it("asks for JSON only, and says the check is about her own life", () => {
+  it("asks for JSON only, and says the check is about the speaker's own life", () => {
     expect(HONESTY_SYSTEM).toContain("OWN life");
     expect(HONESTY_SYSTEM).toContain("JSON only");
   });

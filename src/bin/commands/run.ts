@@ -20,7 +20,7 @@ export type DiscordFile = {
   /** Name of the environment variable holding the bot token. */
   tokenEnv: string;
   ownerUserId: string;
-  /** Channel ids she lives in. DMs with known people need no listing. */
+  /** Channel ids the Lar lives in. DMs with known people need no listing. */
   rooms: string[];
 };
 

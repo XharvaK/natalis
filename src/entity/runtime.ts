@@ -1,11 +1,11 @@
-// The entity runtime: the body that keeps an entity running. It opens her folder, takes what her worlds send into
-// the river, wakes one turn per thread at a time, assembles what she sees, runs the turn through the loop, and
+// The entity runtime: the body that keeps an entity running. It opens the Lar's folder, takes what its worlds send into
+// the river, wakes one turn per thread at a time, assembles what the Lar sees, runs the turn through the loop, and
 // keeps the owner's asks open until they are answered. It decides nothing about meaning: the model judges, the
 // tools act, and this file keeps the record.
 //
 // Storage, all in the entity's folder:
 //   river.db      the river (every event, say, tool call, receipt and turn)
-//   notebook/     her notebook: plain text, versioned with git
+//   notebook/     the Lar's notebook: plain text, versioned with git
 //   state.json    cursors per thread, open asks, scheduled wakes, mood, written atomically after each change
 
 import { randomUUID } from "node:crypto";
@@ -646,7 +646,7 @@ class Runtime implements Entity {
     });
   }
 
-  // --- what she sees ----------------------------------------------------------------------------
+  // --- what the Lar sees --------------------------------------------------------------------------
 
   private systemText(thread: string, fresh: RiverRow[], shown: Set<number>, nowMs: number): string {
     const wakes = this.state.wakes.map((wake) => ({ atMs: wake.atMs, why: wake.why }));
@@ -821,7 +821,7 @@ class Runtime implements Entity {
     return `${parts["year"] ?? ""}-${parts["month"] ?? ""}-${parts["day"] ?? ""} ${parts["hour"] ?? ""}:${parts["minute"] ?? ""}`;
   }
 
-  // --- her own tools ----------------------------------------------------------------------------
+  // --- the Lar's own tools --------------------------------------------------------------------------
 
   private builtInTools(): Tool[] {
     const make = (spec: ToolSpec, run: (args: Args, context: ToolContext) => Promise<Receipt> | Receipt): Tool => ({
@@ -1059,7 +1059,7 @@ class Runtime implements Entity {
   }
 
   /**
-   * Asks the model once whether the words contradict her own life record. Only when the record has real content and
+   * Asks the model once whether the words contradict the Lar's own life record. Only when the record has real content and
    * the check is switched on. If the check cannot run, the words go on and a river note says so (fail open, recorded).
    */
   private async honestyHold(text: string, thread: string): Promise<Receipt | undefined> {
@@ -1245,7 +1245,7 @@ class Runtime implements Entity {
     return this.state.threads[thread] as ThreadState;
   }
 
-  /** Writes state.json with the river's current last seq. Called after every change to what she carries. */
+  /** Writes state.json with the river's current last seq. Called after every change to what the Lar carries. */
   saveState(): void {
     this.state.lastSeq = this.river.lastSeq();
     writeStateFile(this.statePath, this.state);
@@ -1255,7 +1255,7 @@ class Runtime implements Entity {
 // ---------------------------------------------------------------------------------------------------
 // Helpers
 
-/** The privacy section she sees: the categories only. The words on the list are never shown to her. */
+/** The privacy section the Lar sees: the categories only. The words on the list are never shown. */
 function privacyText(load: PrivacyLoad): string {
   const head =
     "Your summoner keeps a privacy list. Words on it are held back when you say them anywhere except your summoner's own places, and the receipt names the category. The words themselves are not shown to you.";

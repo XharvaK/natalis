@@ -1,5 +1,5 @@
-// The time facts every turn sees: what time it is here, how long since her last turn here, how long since the
-// owner last wrote, and her next scheduled wakes. Plain lines in English. The clock is injected, never read.
+// The time facts every turn sees: what time it is here, how long since the Lar's last turn here, how long since
+// the summoner last wrote, and the Lar's next scheduled wakes. Plain lines in English. The clock is injected, never read.
 
 import type { ContextSection } from "../contracts.js";
 

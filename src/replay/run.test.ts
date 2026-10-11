@@ -101,12 +101,12 @@ function transcript(path: string): Array<Record<string, unknown>> {
 }
 
 describe("runReplay", () => {
-  it("feeds each event, records what she says and the wakes she schedules, and never touches the original", async () => {
+  it("feeds each event, records what the Lar says and the wakes it schedules, and never touches the original", async () => {
     const source = await buildSource();
     const eventsPath = writeEvents("events.jsonl", TWO_EVENTS);
     const before = { seq: lastSeqOf(source), head: headOf(source), state: stateOf(source) };
     const model = new ScriptedModel([
-      // Turn for the owner's question: she answers, then ends.
+      // Turn for the owner's question: the Lar answers, then ends.
       reply({ toolCalls: [call("say", { place: "cli:owner", text: "I am here." })] }),
       reply({ content: null }),
       // Turn for the room: she sets a wake for right away (which must not fire), speaks, then ends.
