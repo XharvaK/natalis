@@ -39,7 +39,7 @@ describe("the people she can see, with what each is saying or doing", () => {
         { id: "102", name: "Pim Dorrow", distance_m: "3", doing: "sim-stand" },
       ],
     });
-    expect(lines).toContain("With you: Mara Quill, 2 m away — Mara Quill is telling Pim Dorrow a joke; Pim Dorrow (3 m away, sim stand).");
+    expect(lines).toContain("With you: Mara Quill (2 m away: Mara Quill is telling Pim Dorrow a joke); Pim Dorrow (3 m away, sim stand).");
   });
 
   it("keeps the plain form for a Sim with no sentence, and a sentence keeps its own words", () => {
@@ -48,7 +48,7 @@ describe("the people she can see, with what each is saying or doing", () => {
     });
     expect(lines).toContain("With you: Mara Quill (49 m away, sim stand).");
     const alone = block({ company: [{ id: "102", name: "Pim Dorrow", said: "Pim Dorrow waves at someone!" }] });
-    expect(alone).toContain("With you: Pim Dorrow — Pim Dorrow waves at someone.");
+    expect(alone).toContain("With you: Pim Dorrow (Pim Dorrow waves at someone).");
   });
 });
 

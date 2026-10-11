@@ -88,8 +88,8 @@ function companyLines(company: Record_[]): string[] {
     const away = metres(item.distance_m);
     const said = textOrUndefined(item.said);
     if (said !== undefined) {
-      // SS4-v3: what this Sim is saying or doing, in the helper's sentence, after the name and distance.
-      return `${away === undefined ? name : `${name}, ${away} m away`} — ${withoutStop(said)}`;
+      // SS4-v3: what this Sim is saying or doing, in the helper's sentence, in brackets after the name (no dashes: she copies them).
+      return `${name} (${away === undefined ? "" : `${away} m away: `}${withoutStop(said)})`;
     }
     const doing = textOrUndefined(item.doing);
     const details = [away === undefined ? undefined : `${away} m away`, doing === undefined ? undefined : plainName(doing)]
