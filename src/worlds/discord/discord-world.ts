@@ -15,7 +15,7 @@ import {
 } from "discord.js";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Receipt, RiverSource, Tool, World, WorldEvent } from "../../contracts.js";
+import type { Receipt, RiverSource, SayFile, Tool, World, WorldEvent } from "../../contracts.js";
 import { createAliasStore, OWNER_ALIAS, type AliasStore } from "./aliases.js";
 
 // ---------------------------------------------------------------------------------------------------
@@ -46,6 +46,7 @@ function writeJsonAtomic(path: string, value: unknown): void {
 export type PlatformAuthor = { id: string; displayName: string; bot: boolean };
 export type PlatformAttachment = { name: string; contentType: string | null; url: string };
 export type PlatformMention = { id: string; displayName: string };
+export type OutboundFile = { name: string; bytes: Uint8Array };
 
 export type PlatformMessage = {
   id: string;
@@ -72,8 +73,14 @@ export type PlatformClient = {
   /** The direct-message channel with a user. */
   openDm(userId: string): Promise<string>;
   /** Send one message; resolves with its id. Mentions in the text never ping anyone. */
-  /** `mentionUserIds`: the only people this message may ping (never everyone or roles). */
-  send(channelId: string, text: string, replyToMessageId: string | null, mentionUserIds?: string[]): Promise<string>;
+  /** `mentionUserIds`: the only people this message may ping (never everyone or roles). `files`: pictures to attach. */
+  send(
+    channelId: string,
+    text: string,
+    replyToMessageId: string | null,
+    mentionUserIds?: string[],
+    files?: OutboundFile[],
+  ): Promise<string>;
   react(channelId: string, messageId: string, emoji: string): Promise<void>;
   /** Most recent messages first. */
   history(channelId: string, limit: number): Promise<PlatformMessage[]>;
@@ -576,6 +583,8 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       });
       const chunks = splitForDiscord(withMentions);
       if (chunks.length === 0) return refused("empty_text", "there is no text to send.", "There was nothing to send.");
+      const pictures = readOutboundFiles(sayOptions?.files ?? []);
+      if (!pictures.ok) return pictures.receipt;
 
       let replyId: string | null = null;
       if (sayOptions?.replyTo !== undefined) {
@@ -594,7 +603,9 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       for (let index = 0; index < chunks.length; index += 1) {
         const chunk = chunks[index] ?? "";
         try {
-          const sentId = await client.send(target.channelId, chunk, index === 0 ? replyId : null, [...mentionUserIds]);
+          // The pictures go with the first message only.
+          const files = index === 0 && pictures.files.length > 0 ? pictures.files : undefined;
+          const sentId = await client.send(target.channelId, chunk, index === 0 ? replyId : null, [...mentionUserIds], files);
           refs.push(refFor(target.channelId, sentId));
           botRuns.set(target.channelId, (botRuns.get(target.channelId) ?? 0) + 1);
         } catch (error) {
@@ -647,6 +658,36 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
 
 // ---------------------------------------------------------------------------------------------------
 // Helpers.
+
+const PICTURE_EXTENSION: Readonly<Record<string, string>> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+};
+
+/** The shelf pictures a say carries, read from the files the body holds. A file that cannot be read refuses the say. */
+function readOutboundFiles(files: SayFile[]): { ok: true; files: OutboundFile[] } | { ok: false; receipt: Receipt } {
+  const out: OutboundFile[] = [];
+  for (const file of files) {
+    try {
+      out.push({ name: safeFileName(file.name, file.mime), bytes: readFileSync(file.path) });
+    } catch {
+      return {
+        ok: false,
+        receipt: refused("picture_unreadable", `the picture ${file.name} could not be read from the shelf, so nothing was sent.`, "A picture could not be read, so nothing was sent."),
+      };
+    }
+  }
+  return { ok: true, files: out };
+}
+
+/** A file name Discord takes: letters, digits, dash and underscore, with the extension the picture type gives. */
+function safeFileName(name: string, mime: string): string {
+  const extension = PICTURE_EXTENSION[mime] ?? "bin";
+  const stem = name.replace(/\.[A-Za-z0-9]{1,5}$/, "").replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 48);
+  return `${stem || "picture"}.${extension}`;
+}
 
 /** Long digit runs are platform ids (snowflakes are 17 to 20 digits). They never reach the entity. */
 function scrubIds(text: string): string {
@@ -883,12 +924,13 @@ export function createDiscordJsClient(): PlatformClient {
       const dm = await user.createDM();
       return dm.id;
     },
-    async send(channelId, text, replyToMessageId, mentionUserIds = []) {
+    async send(channelId, text, replyToMessageId, mentionUserIds = [], files = []) {
       const channel = await sendable(channelId);
       const sent = await channel.send({
         content: text,
         allowedMentions: { parse: [], users: mentionUserIds, repliedUser: false },
         ...(replyToMessageId ? { reply: { messageReference: replyToMessageId, failIfNotExists: false } } : {}),
+        ...(files.length > 0 ? { files: files.map((file) => ({ attachment: Buffer.from(file.bytes), name: file.name })) } : {}),
       });
       return sent.id;
     },

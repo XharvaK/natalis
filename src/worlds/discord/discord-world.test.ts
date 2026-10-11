@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -35,6 +35,8 @@ type Fake = {
   client: PlatformClient;
   sent: SentRecord[];
   reactions: Array<{ channelId: string; messageId: string; emoji: string }>;
+  /** Pictures sent with a message: the channel, the name Discord gets, and the size. */
+  uploads: Array<{ channelId: string; name: string; bytes: number }>;
   history: PlatformMessage[];
   /** Per send: null succeeds, an Error fails that call. Consumed in order. */
   sendScript: Array<Error | null>;
@@ -51,6 +53,7 @@ function fakeClient(): Fake {
     client: undefined as unknown as PlatformClient,
     sent: [],
     reactions: [],
+    uploads: [],
     history: [],
     sendScript: [],
     loginError: null,
@@ -79,12 +82,13 @@ function fakeClient(): Fake {
     async openDm(userId) {
       return userId === OWNER ? DM_OWNER : DM_MARA;
     },
-    async send(channelId, text, replyTo, mentionUserIds = []) {
+    async send(channelId, text, replyTo, mentionUserIds = [], files = []) {
       const scripted = fake.sendScript.shift();
       if (scripted) throw scripted;
       seq += 1;
       const id = `30${String(seq).padStart(16, "0")}`;
       fake.sent.push({ channelId, text, replyTo, id, mentions: mentionUserIds });
+      for (const file of files) fake.uploads.push({ channelId, name: file.name, bytes: file.bytes.length });
       return id;
     },
     async react(channelId, messageId, emoji) {
@@ -670,5 +674,38 @@ describe("receipts", () => {
       summary: "Delivered to discord:room:general in 1 message(s).",
       data: { refs: ["m1"] },
     });
+  });
+});
+
+describe("pictures out", () => {
+  const PNG_BYTES = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 9]);
+
+  it("sends the shelf pictures with the words, named safely for Discord", async () => {
+    const { world, fake } = await startWorld();
+    const path = join(dir, "picture.bin");
+    writeFileSync(path, PNG_BYTES);
+    const receipt = await world.say("discord:dm:owner", "Here is the cat.", { files: [{ path, name: "../cat photo.png", mime: "image/png" }] });
+    expect(receipt.ok).toBe(true);
+    expect(fake.uploads).toEqual([{ channelId: DM_OWNER, name: "cat_photo.png", bytes: PNG_BYTES.length }]);
+    expect(fake.sent.map((item) => item.text)).toEqual(["Here is the cat."]);
+  });
+
+  it("attaches the pictures to the first message only, when the words are split", async () => {
+    const { world, fake } = await startWorld();
+    const path = join(dir, "picture.bin");
+    writeFileSync(path, PNG_BYTES);
+    const long = "A sentence of plain words. ".repeat(120);
+    const receipt = await world.say("discord:dm:owner", long, { files: [{ path, name: "one.png", mime: "image/png" }] });
+    expect(receipt.ok).toBe(true);
+    expect(fake.sent.length).toBeGreaterThan(1);
+    expect(fake.uploads).toHaveLength(1);
+  });
+
+  it("refuses the whole say when a picture cannot be read, and sends nothing", async () => {
+    const { world, fake } = await startWorld();
+    const receipt = await world.say("discord:dm:owner", "Look.", { files: [{ path: join(dir, "gone.png"), name: "gone.png", mime: "image/png" }] });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "picture_unreadable" } });
+    expect(fake.sent).toEqual([]);
+    expect(fake.uploads).toEqual([]);
   });
 });

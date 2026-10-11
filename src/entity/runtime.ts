@@ -28,6 +28,7 @@ import type {
   River,
   RiverRow,
   RiverSource,
+  SayFile,
   SecretScanner,
   Tool,
   ToolContext,
@@ -96,6 +97,9 @@ const CLAIM_WINDOW_MS = 2 * 60 * 1000;
 /** How many of the summoner's acts the board lists at once, and how much of a proposal it shows. */
 const ACTS_LIMIT = 20;
 const PROPOSAL_SHOW = 80;
+/** How many pictures one say may carry, and how many of the newest shelf ids a refusal lists. */
+const SAY_PICTURES_MAX = 4;
+const SHELF_LIST = 10;
 
 const DEFAULT_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 300_000, 600_000];
 const ACTIVE_WINDOW_MS = 6 * 60 * 60 * 1000;
@@ -944,6 +948,7 @@ class Runtime implements Entity {
       notebook: this.notebook,
       timeZone: this.config.timeZone,
       nowMs: () => this.nowMs(),
+      pictures: this.shelf,
       proposals: () => this.state.proposals,
       setProposals: (next) => {
         this.state.proposals = next;
@@ -1074,6 +1079,12 @@ class Runtime implements Entity {
     }
     lines.push("Worlds:");
     for (const world of this.worlds) lines.push(`- ${world.id}: ${world.now()}`);
+    const shelf = this.shelf.summary();
+    lines.push(
+      shelf.count === 0
+        ? "Your shelf of pictures: none kept."
+        : `Your shelf of pictures: ${shelf.count} kept, ${Math.ceil(shelf.bytes / 1024)} KB.`,
+    );
 
     lines.push("", "Other threads active in the last 6 hours:");
     const latest = new Map<string, number>();
@@ -1226,6 +1237,12 @@ class Runtime implements Entity {
               place: { type: "string", description: "The place to say it in." },
               text: { type: "string", description: "What to say." },
               reply_to: { type: "string", description: "Optional. The id of the message you answer, if the world gives one." },
+              attach: {
+                type: "array",
+                items: { type: "string" },
+                maxItems: SAY_PICTURES_MAX,
+                description: "Optional. Up to four picture ids from your shelf (such as m-ABCD2345), sent with the words.",
+              },
               knowingly: {
                 type: "boolean",
                 description: "Optional. True sends words your record contradicts, as they are. Leave it out otherwise.",
@@ -1356,18 +1373,21 @@ class Runtime implements Entity {
     if (world === undefined) {
       return refuse("no_world", "I have no way to reach that place.", `No connected world owns the place ${place.value}.`);
     }
+    const pictures = this.pictureFiles(args);
+    if (!pictures.ok) return pictures.receipt;
     if (!knowingly) {
       const held = await this.honestyHold(text.value, context.thread);
       if (held !== undefined) return held;
     }
 
+    const { files, ids } = pictures.value;
+    const options = {
+      ...(replyTo.value === undefined ? {} : { replyTo: replyTo.value }),
+      ...(files.length === 0 ? {} : { files }),
+    };
     let receipt: Receipt;
     try {
-      receipt = await world.say(
-        place.value,
-        text.value,
-        replyTo.value === undefined ? undefined : { replyTo: replyTo.value },
-      );
+      receipt = await world.say(place.value, text.value, Object.keys(options).length === 0 ? undefined : options);
     } catch (err) {
       return refuse("world_error", "The world could not deliver that.", messageOf(err));
     }
@@ -1376,12 +1396,15 @@ class Runtime implements Entity {
     const nowMs = this.nowMs();
     // Read before this say is recorded, so the claim it leaves is not counted against itself.
     const others = this.othersSpokeHere(place.value, context.thread, nowMs);
+    // The river keeps what was sent: the words, and which pictures went with them.
+    const pictureLines = ids.map((id) => `[picture ${id}: ${this.shelf.get(id)?.name ?? "picture"}]`);
     this.river.append({
       thread: place.value,
       kind: "say",
       source: "self",
       place: place.value,
-      text: text.value,
+      text: [text.value, ...pictureLines].join("\n"),
+      ...(ids.length === 0 ? {} : { data: { pictures: ids } }),
       atMs: nowMs,
     });
     this.state.asks = this.state.asks.filter((ask) => ask.place !== place.value);
@@ -1389,13 +1412,49 @@ class Runtime implements Entity {
     this.saveState();
     return {
       ok: true,
-      summary: `Said to ${place.value}.`,
+      summary: ids.length === 0 ? `Said to ${place.value}.` : `Said to ${place.value} with ${ids.length} picture(s).`,
       data: {
         place: place.value,
         chars: text.value.length,
+        ...(ids.length === 0 ? {} : { pictures: ids }),
         ...(others === undefined ? {} : { othersSpokeHere: others }),
       },
     };
+  }
+
+  /**
+   * The shelf pictures a say carries: up to four different ids, each one on the shelf. An unknown id refuses the whole
+   * say and names the newest ids, so the Lar never believes a picture went that did not.
+   */
+  private pictureFiles(args: Args): Checked<{ files: SayFile[]; ids: string[] }> {
+    const raw = args["attach"];
+    if (raw === undefined) return { ok: true, value: { files: [], ids: [] } };
+    if (!Array.isArray(raw) || raw.length > SAY_PICTURES_MAX || !raw.every((id) => typeof id === "string")) {
+      return {
+        ok: false,
+        receipt: refuse("bad_arguments", `attach is a list of up to ${SAY_PICTURES_MAX} picture ids from your shelf.`, "attach is not a list of picture ids"),
+      };
+    }
+    const ids = raw as string[];
+    if (new Set(ids).size !== ids.length) {
+      return { ok: false, receipt: refuse("bad_arguments", "Each picture can go with a say once.", "attach repeats a picture id") };
+    }
+    const files: SayFile[] = [];
+    for (const id of ids) {
+      const meta = this.shelf.get(id);
+      const path = this.shelf.pathOf(id);
+      if (meta === undefined || path === undefined) {
+        const newest = this.newestPictureIds();
+        const listed = newest.length === 0 ? "Your shelf is empty." : `The newest on your shelf are: ${newest.join(", ")}.`;
+        return { ok: false, receipt: refuse("no_picture", `There is no picture ${id} on your shelf, so nothing was sent. ${listed}`, `no picture ${id}`) };
+      }
+      files.push({ path, name: meta.name, mime: meta.mime });
+    }
+    return { ok: true, value: { files, ids } };
+  }
+
+  private newestPictureIds(): string[] {
+    return this.shelf.list().slice(0, SHELF_LIST).map((meta) => meta.id);
   }
 
   // --- holds ------------------------------------------------------------------------------------
