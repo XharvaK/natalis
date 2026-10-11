@@ -67,6 +67,12 @@ The file in the Lar's folder. Its blocks:
 - `model`: the main model. `baseUrl` (http or https), `model` (its name), `contextTokens`, and optionally `apiKeyEnv`
   (the name of the environment variable holding the key, never the key), `nativeTools`, `effortParam`
   (`"reasoning_effort"` or `null`), `timeoutMs` and `vision` (true only when the model can see pictures).
+- `model.fallback`: an optional backup model, the same service and key. It answers only when the main model cannot: a rate
+  limit, an unavailable or unreachable service, or no reply in time. A refused key or request is never sent to it. Its
+  fields: `model` (required), `effort` (`low`, `medium`, `high` or `xhigh`; left out, the main model's), `effortParam`
+  (left out, the main model's), `vision` (false by default: it gets no pictures, only a plain line in their place), and
+  `contextTokens` (a request estimated larger than this is not sent to it; the river says why). When it answers, the
+  river says so for that turn.
 - `holds`: body checks on what the Lar says. `honesty` (true or false) runs one model call that asks whether the words
   contradict the Lar's own life record. It is **off** unless `"holds": { "honesty": true }` is written.
 

@@ -498,3 +498,30 @@ describe("runTurn: a tool block the host cannot read", () => {
     expect(rowsOf(river).filter((r) => r.kind === "note" && r.source === "body")).toHaveLength(3);
   });
 });
+
+describe("runTurn: a backup model answered", () => {
+  it("writes one body note per turn that says which backup answered, and not once per call", async () => {
+    const backed = { ...reply({ toolCalls: [call("read_note", { path: "people/mara.md" })] }), servedBy: "backup-model" };
+    const { input, river } = await setup({
+      steps: [backed, { ...reply({ toolCalls: [call("end_turn")] }), servedBy: "backup-model" }],
+    });
+
+    const result = await runTurn(input);
+
+    expect(result.endedBy).toBe("end_turn");
+    const notes = rowsOf(river).filter((r) => r.kind === "note" && r.data?.["kind"] === "backup_model");
+    expect(notes).toEqual([
+      expect.objectContaining({
+        source: "body",
+        text: "Your main model did not answer; your backup model (backup-model) answered this turn.",
+        data: expect.objectContaining({ turnId: "turn-1", kind: "backup_model", model: "backup-model" }),
+      }),
+    ]);
+  });
+
+  it("writes no such note when the main model answered", async () => {
+    const { input, river } = await setup({ steps: [reply({ toolCalls: [call("end_turn")] })] });
+    await runTurn(input);
+    expect(rowsOf(river).some((r) => r.data?.["kind"] === "backup_model")).toBe(false);
+  });
+});

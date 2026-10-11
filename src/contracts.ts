@@ -59,6 +59,11 @@ export type ModelResponse = {
   reasoning?: string;
   /** Opaque provider fields to send back with this message on the next call of the same turn. */
   providerState?: Record<string, unknown>;
+  /**
+   * Set only when a backup model answered in place of the main one: the backup's configured name. The loop writes a
+   * river note from it, so the Lar can read which model answered. Absent when the main model answered.
+   */
+  servedBy?: string;
 };
 
 export type ModelInfo = {
