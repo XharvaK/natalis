@@ -342,6 +342,37 @@ describe("the vault", () => {
     expect(readVaultEntry(dir, "gone")).toBeUndefined();
   });
 
+  it("hides every value it parsed for keeping when a keep fails part-way, and keeps none of the failed one", async () => {
+    const second = ["fixture", "second", "value", "0123456789"].join("-");
+    queue.push(reply(200, JSON.stringify({ a: { first: SECRET, second } }), { "content-type": "application/json" }));
+    // The second entry's name becomes a folder while the request is resolving, so its write fails after the first is kept.
+    scanner = createSecretScanner();
+    world = createWebWorld({
+      dir,
+      scanner,
+      fetch: fetchFake,
+      resolve: async (name) => {
+        mkdirSync(join(dir, "vault", "second_key.json"), { recursive: true });
+        return resolve(name);
+      },
+      nowMs: () => clock.now,
+    });
+    const r = await run({
+      url: "https://example.org/login",
+      keep: [
+        { path: "a.first", as: "first_key" },
+        { path: "a.second", as: "second_key" },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    expect(r.refused?.code).toBe("vault_write_failed");
+    expect(JSON.stringify(r)).not.toContain(SECRET);
+    expect(JSON.stringify(r)).not.toContain(second);
+    expect(readVaultEntry(dir, "first_key")).toEqual({ host: "example.org", value: SECRET });
+    expect(r.summary).toContain("Kept in your vault: first_key.");
+    expect(r.data?.["keptInVault"]).toEqual(["first_key"]);
+  });
+
   it("refuses every request plainly when a vault file is damaged", async () => {
     mkdirSync(join(dir, "vault"), { recursive: true });
     writeFileSync(join(dir, "vault", "broken.json"), "not json");

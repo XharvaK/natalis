@@ -364,11 +364,14 @@ export function createWebWorld(options: WebWorldOptions): World {
     root: unknown,
     keep: readonly Keep[],
     host: string,
-  ): { kept: string[]; replaced: string[]; missed: string[]; tooShort: string[] } => {
+  ): { kept: string[]; replaced: string[]; missed: string[]; tooShort: string[]; writeError?: string } => {
     const kept: string[] = [];
     const replaced: string[] = [];
     const missed: string[] = [];
     const tooShort: string[] = [];
+    // First every value is found and registered with the scanner, so a write that fails part-way leaves no raw value
+    // in the reply; then the writes.
+    const planned: Array<{ item: Keep; found: { set: (replacement: string) => void }; value: string }> = [];
     for (const item of keep) {
       const found = takeAt(root, item.path);
       const raw = found?.value;
@@ -382,13 +385,23 @@ export function createWebWorld(options: WebWorldOptions): World {
         tooShort.push(item.path);
         continue;
       }
-      if (readVaultEntry(dir, item.as) !== undefined) replaced.push(item.as);
-      keepVaultEntry(dir, item.as, { host, value });
       scanner.addKnownValue(value);
-      found.set(`[kept in your vault as ${item.as}]`);
-      kept.push(item.as);
+      planned.push({ item, found, value });
     }
-    return { kept, replaced, missed, tooShort };
+    let writeError: string | undefined;
+    for (const { item, found, value } of planned) {
+      try {
+        const existed = readVaultEntry(dir, item.as) !== undefined;
+        keepVaultEntry(dir, item.as, { host, value });
+        if (existed) replaced.push(item.as);
+        found.set(`[kept in your vault as ${item.as}]`);
+        kept.push(item.as);
+      } catch (error) {
+        writeError = messageOf(error);
+        break;
+      }
+    }
+    return { kept, replaced, missed, tooShort, writeError };
   };
 
   async function webRequest(args: Record<string, unknown>): Promise<Receipt> {
@@ -565,7 +578,9 @@ export function createWebWorld(options: WebWorldOptions): World {
           kept = outcome.kept;
           replaced = outcome.replaced;
           text = JSON.stringify(shaped.parsed, null, 2);
-          if (outcome.tooShort.length > 0) {
+          if (outcome.writeError !== undefined) {
+            keepProblem = { code: "vault_write_failed", reason: `${outcome.writeError} Nothing more was kept.` };
+          } else if (outcome.tooShort.length > 0) {
             keepProblem = {
               code: "value_too_short",
               reason: `${outcome.tooShort.join(", ")} holds a value shorter than ${MIN_KNOWN_VALUE_LENGTH} characters, which cannot be kept. Nothing was kept from it.`,
@@ -612,7 +627,7 @@ export function createWebWorld(options: WebWorldOptions): World {
     if (keepProblem) {
       return {
         ok: false,
-        summary: `${summary} Nothing was kept in your vault.`,
+        summary: `${summary} ${kept.length > 0 ? `Kept in your vault: ${kept.join(", ")}.` : "Nothing was kept in your vault."}`,
         data,
         refused: { code: keepProblem.code, reason: `${keepProblem.code}: ${keepProblem.reason}` },
       };
