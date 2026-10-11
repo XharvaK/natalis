@@ -7,6 +7,7 @@ import { importCommand } from "./import.js";
 import { judgeCommand } from "./judge.js";
 import { replayCommand } from "./replay.js";
 import { restoreCommand } from "./restore.js";
+import { unsealCommand } from "./unseal.js";
 
 export async function dispatchCommand(command: string | undefined, args: string[]): Promise<number | undefined> {
   switch (command) {
@@ -22,6 +23,8 @@ export async function dispatchCommand(command: string | undefined, args: string[
       return backupCommand(args);
     case "restore":
       return restoreCommand(args);
+    case "unseal":
+      return unsealCommand(args);
     default:
       return undefined;
   }

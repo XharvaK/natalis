@@ -117,7 +117,59 @@ ls ~/lar-backups/
 
 A backup holds the river (the Lar's whole record), the notebook as a git bundle, the Lar's small files and a manifest
 with hashes. It holds no keys and no emergency-stop file. Backups contain private conversations: keep them off shared
-folders, and copy them somewhere safe off this host if you can.
+folders, and copy them somewhere safe off this host, as sealed copies (below).
+
+### Sealed copies, for storage off the host
+
+A sealed copy is one encrypted file per backup, `<name>-<YYYYMMDD-HHMMSS>.natalisbak`. Someone who holds the file but
+not the key cannot read it. Sealing runs after the plain backup is made and checked, and a sealed package is opened
+again and checked before the run reports success. The Lar's folder name must use only letters, digits, dashes and
+underscores to be sealed.
+
+Make the key on this host, and keep it in a private file beside the Lar's folder. `openssl rand -hex 32` prints 64 hex
+characters, which is a 32-byte key:
+
+```sh
+install -m 600 /dev/null ~/lares/<name>-seal.env
+```
+
+Write one line in it, the variable name and the key:
+
+```
+<NAME_OF_THE_SEAL_KEY_VARIABLE>=<64 hex characters>
+```
+
+Check the mode is still 600 with `ls -l ~/lares/<name>-seal.env`. The key lives in that file and nowhere else: not in the
+repository, not in a backup folder, not in a log. **Keep a second copy of the key somewhere safe off this host**, such as
+a password manager. If the host is lost with its key, the sealed copies can never be opened, and nothing can recover
+them.
+
+Give the backup service the key with a drop-in, one per Lar. The empty `ExecStart=` line clears the template's command
+so the new one replaces it. The drop-in gives the backup service only the sealing key, not the model key:
+
+```sh
+mkdir -p ~/.config/systemd/user/natalis-backup@<name>.service.d
+```
+
+In `~/.config/systemd/user/natalis-backup@<name>.service.d/seal.conf`:
+
+```
+[Service]
+EnvironmentFile=%h/lares/<name>-seal.env
+ExecStart=
+ExecStart=/usr/bin/env node %h/natalis/dist/bin/natalis.js backup --dir %h/lares/<name> --out %h/lar-backups --keep 14 --seal-to %h/lar-sealed --key-env <NAME_OF_THE_SEAL_KEY_VARIABLE> --seal-keep 30
+```
+
+Then reload and run one now:
+
+```sh
+systemctl --user daemon-reload
+systemctl --user start natalis-backup@<name>.service
+journalctl --user -u natalis-backup@<name> -n 30
+ls -l ~/lar-sealed/
+```
+
+The sealed folder `~/lar-sealed` is created with mode 700. It keeps the newest 30 packages of each Lar.
 
 ## 6. Restore a Lar from a backup
 
@@ -135,7 +187,56 @@ The restore checks every file's hash against the manifest before it writes anyth
 notebook after. The keys file `~/lares/<name>.env` is not in the backup and is not touched. The Lar starts with its
 emergency stop off, whatever it was when the backup was made.
 
-## 7. The emergency stop
+### Opening a sealed copy
+
+Opening needs the sealing key from `~/lares/<name>-seal.env`, which is on this host. On another machine, copy the
+package and the key there, the same way. The target folder must be missing or empty:
+
+```sh
+set -a; . ~/lares/<name>-seal.env; set +a
+node ~/natalis/dist/bin/natalis.js unseal --from ~/lar-sealed/<name>-<YYYYMMDD-HHMMSS>.natalisbak --to ~/unsealed/<name> --key-env <NAME_OF_THE_SEAL_KEY_VARIABLE>
+```
+
+A wrong key or a damaged package writes nothing. A good one leaves a plain backup folder in `--to`, which
+`natalis restore --from` takes, as in the steps above.
+
+## 7. Copies on a Windows PC
+
+`deploy/pull-backups.ps1` runs on a Windows PC and copies new sealed packages from the host to a folder there, which a
+cloud sync client can then sync off the house. It cannot open packages: it has no key and never reads inside a package.
+It checks each copy's SHA-256 against the host, keeps the first package of each month, and keeps the newest 30 daily
+and 12 monthly copies of each Lar (change them with `-DailyKeep` and `-MonthlyKeep`). The host is named by its ssh
+config alias, and the login must need no passphrase, because the script runs ssh with `BatchMode=yes`.
+
+Check the login first from a PowerShell window, with your own alias in place of the angle brackets. It should print
+without asking anything:
+
+```
+ssh -o BatchMode=yes <host alias> "echo ok"
+```
+
+Try one run by hand, then read `status.json` and `pull.log` in the destination folder:
+
+```
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<folder with the script>\pull-backups.ps1" -SshHost <host alias> -RemoteDir lar-sealed -Dest "<folder on this PC>"
+```
+
+`-RemoteDir` is the folder on the host, relative to the login folder, such as `lar-sealed` for `~/lar-sealed`.
+
+To run it every day, make a Windows scheduled task (create it yourself, in Task Scheduler):
+
+- Trigger: daily, at a time after the host's backup timer usually runs. Add a second trigger, "At log on", if the PC is
+  often off at that time. Tick "Run task as soon as possible after a scheduled start is missed".
+- Action: start a program. Program: `powershell.exe`. Arguments: the same as the manual run above, with your own
+  values. Start in: the folder with the script.
+- Run it as the Windows user whose `.ssh` folder holds the key for the host.
+- Exit codes: 0 is a good run, 1 is a failed run, and 2 means a Lar's newest copy is older than `-StaleHours` (48 by
+  default). A failed or stale run raises a Windows notification, and Task Scheduler's "Last Run Result" shows the code.
+
+The destination folder holds sealed packages only. That is safe to sync to a cloud folder, but the packages can be
+opened only with the key, which must not be in that folder.
+
+## 8. The emergency stop
 
 The summoner's emergency stop pauses the Lar's outward acts. Replies to the summoner still go. The Lar notices the stop
 at its next outward act.

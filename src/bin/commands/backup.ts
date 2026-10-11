@@ -2,7 +2,9 @@
 // running. The folder <out>/<entity-folder-name>-<YYYYMMDD-HHMMSS>/ holds river.db (a consistent copy made by SQLite,
 // never a plain file copy), notebook.bundle (the whole notebook as a git bundle), copies of the small files beside
 // the river, and MANIFEST.json with sizes and hashes. The backup is written under a temporary name and renamed only
-// after it checks out. With --keep n, the oldest backups of this Lar beyond n are removed.
+// after it checks out. With --keep n, the oldest backups of this Lar beyond n are removed. With --seal-to <dir> and
+// --key-env <NAME>, the checked folder is also sealed into one encrypted package in <dir> (see backup-seal.ts), and
+// --seal-keep n keeps the newest n sealed packages of this Lar.
 
 import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -17,15 +19,25 @@ import {
   PLAIN_FILES,
   formatStamp,
   git,
+  errorText,
   hasEnvName,
   readRiverLastSeq,
   sha256File,
   type Manifest,
   type ManifestFile,
 } from "./backup-format.js";
-import { parseFlags, requireFlag, runCommand, UsageError } from "./shared.js";
+import {
+  assertSealableLar,
+  readSealKey,
+  requireKeyName,
+  sealFolder,
+  type SealFolderResult,
+  type SealOptions,
+} from "./backup-seal.js";
+import { parseFlags, requireFlag, runCommand, UsageError, type ParsedFlags } from "./shared.js";
 
-export const BACKUP_USAGE = "Usage: natalis backup --dir <entity folder> --out <folder> [--keep <n>]";
+export const BACKUP_USAGE =
+  "Usage: natalis backup --dir <entity folder> --out <folder> [--keep <n>] [--seal-to <folder> --key-env <NAME> [--seal-keep <n>]]";
 
 export type BackupOptions = {
   /** The Lar's own folder. Read only. */
@@ -34,13 +46,15 @@ export type BackupOptions = {
   out: string;
   /** Keep this many of the newest backups of this Lar. Older ones are removed. Omit to keep all. */
   keep?: number;
+  /** Also seal the checked folder into one encrypted package. Omit to leave the backup unsealed. */
+  seal?: SealOptions;
   /** The time the backup is named for. Defaults to now. */
   now?: Date;
   /** One plain line per step. */
   say: (line: string) => void;
 };
 
-export type BackupResult = { folder: string; manifest: Manifest; removed: string[] };
+export type BackupResult = { folder: string; manifest: Manifest; removed: string[]; sealed?: SealFolderResult };
 
 /** Makes a backup. Throws a plain error on any failure, and leaves no half-written folder behind. */
 export async function backupEntity(options: BackupOptions): Promise<BackupResult> {
@@ -51,6 +65,8 @@ export async function backupEntity(options: BackupOptions): Promise<BackupResult
   if (!existsSync(join(dir, RIVER_FILE))) throw new Error(`No ${RIVER_FILE} in ${dir}. Give the Lar's own folder.`);
   const notebook = join(dir, NOTEBOOK_DIR);
   if (!existsSync(join(notebook, ".git"))) throw new Error(`No notebook in ${dir}. Start the Lar once before backing it up.`);
+  // A sealed package carries the folder's name, so a name it cannot carry is refused before anything is written.
+  if (options.seal !== undefined) assertSealableLar(name);
 
   const now = options.now ?? new Date();
   const folder = join(out, `${name}-${formatStamp(now)}`);
@@ -110,8 +126,25 @@ export async function backupEntity(options: BackupOptions): Promise<BackupResult
     renameSync(partial, folder);
     say(`Backup is ready: ${folder}`);
 
+    let sealed: SealFolderResult | undefined;
+    if (options.seal !== undefined) {
+      try {
+        sealed = sealFolder({
+          folder,
+          lar: name,
+          stamp: formatStamp(now),
+          key: options.seal.key,
+          out: resolve(options.seal.dir),
+          keep: options.seal.keep,
+          say,
+        });
+      } catch (err) {
+        throw new Error(`${errorText(err)} The backup folder ${folder} is kept.`);
+      }
+    }
+
     const removed = options.keep === undefined ? [] : pruneBackups(out, name, options.keep, say);
-    return { folder, manifest, removed };
+    return { folder, manifest, removed, sealed };
   } catch (err) {
     rmSync(partial, { recursive: true, force: true, maxRetries: 5 });
     throw err;
@@ -174,17 +207,36 @@ function escapeRegExp(text: string): string {
 /** `natalis backup` as the command line runs it. Returns the exit code. */
 export async function backupCommand(args: readonly string[]): Promise<number> {
   return runCommand(BACKUP_USAGE, async () => {
-    const flags = parseFlags([...args], ["--dir", "--out", "--keep"], []);
+    const flags = parseFlags([...args], ["--dir", "--out", "--keep", "--seal-to", "--key-env", "--seal-keep"], []);
     const dir = requireFlag(flags, "--dir");
     const out = requireFlag(flags, "--out");
     const keep = parseKeep(flags.values.get("--keep"));
-    await backupEntity({ dir, out, keep, say: (line) => console.log(line) });
+    const seal = sealOptionsFrom(flags, process.env);
+    await backupEntity({ dir, out, keep, seal, say: (line) => console.log(line) });
     return 0;
   });
 }
 
-export function parseKeep(value: string | undefined): number | undefined {
+/**
+ * The sealing options the flags name, or undefined when sealing is off. The key is read here, before any backup is
+ * made, so a bad key fails at once. A key error is a plain failure (exit 1); a flag mix-up is a usage error (exit 2).
+ */
+export function sealOptionsFrom(flags: ParsedFlags, env: NodeJS.ProcessEnv): SealOptions | undefined {
+  const to = flags.values.get("--seal-to");
+  const keyName = flags.values.get("--key-env");
+  const keepText = flags.values.get("--seal-keep");
+  if (to === undefined && keyName === undefined && keepText === undefined) return undefined;
+  if (to === undefined) {
+    throw new UsageError(keyName === undefined ? "--seal-keep needs --seal-to." : "--key-env needs --seal-to.");
+  }
+  if (keyName === undefined) throw new UsageError("--seal-to needs --key-env: the name of the variable that holds the sealing key.");
+  const name = requireKeyName(keyName);
+  const keep = parseKeep(keepText, "--seal-keep");
+  return { dir: to, key: readSealKey(name, env), keep };
+}
+
+export function parseKeep(value: string | undefined, flag = "--keep"): number | undefined {
   if (value === undefined) return undefined;
-  if (!/^[1-9]\d*$/.test(value)) throw new UsageError("--keep needs a whole number, 1 or more.");
+  if (!/^[1-9]\d*$/.test(value)) throw new UsageError(`${flag} needs a whole number, 1 or more.`);
   return Number(value);
 }
