@@ -5,7 +5,8 @@
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
-import type { Receipt, Tool, ToolContext, World } from "../../contracts.js";
+import type { Receipt, Tool, ToolContext, World, WorldBody } from "../../contracts.js";
+import { outwardHoldWords } from "../../entity/privacy.js";
 import { BODY_MOUNT, bodyRefusal, defaultBodyRoot } from "./body.js";
 import { buildBwrapArgs, SANDBOX_HOME } from "./bwrap.js";
 import { SANDBOX_DEFAULT_NETWORK, type SandboxSettings } from "./config.js";
@@ -164,6 +165,8 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
   // The default root is looked up once here; the refusal is checked at start, when the bind is decided.
 
   let status: Status = "idle";
+  /** The body the runtime gives the world at start. Its privacy check is the only way a command is checked. */
+  let outward: WorldBody | undefined;
   let bwrapPath: string | undefined;
   /** The resolver file a walled command uses, written at start. Only set in "wall" mode. */
   let resolvPath: string | undefined;
@@ -318,6 +321,15 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
     if (command.length > MAX_COMMAND_CHARS || command.includes("\0")) {
       return refusal("bad_args", `command must be at most ${MAX_COMMAND_CHARS} characters of text.`, "The command is too long or is not text.");
     }
+    // The command's words leave the Lar's body with the run, so the privacy list is checked before anything starts.
+    if (outward === undefined) {
+      return refusal("not_started", "The sandbox has not started yet, so the command did not run.", "The sandbox world is not started, so nothing was run.");
+    }
+    const hold = outward.outwardHold([command]);
+    if (hold !== undefined) {
+      const words = outwardHoldWords(hold, "the command");
+      return refusal(words.code, words.summary, words.reason);
+    }
     const requested = args["timeout_s"];
     if (requested !== undefined && (typeof requested !== "number" || !Number.isFinite(requested) || requested <= 0)) {
       return refusal("bad_args", "timeout_s must be a positive number of seconds.", "The timeout is not a number of seconds.");
@@ -391,7 +403,8 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
   return {
     id: SANDBOX_WORLD_ID,
 
-    async start(): Promise<void> {
+    async start(_emit, body): Promise<void> {
+      outward = body;
       if (platform !== "linux") {
         throw new Error(
           `The sandbox runs on Linux only (Bubblewrap); this host is ${platform}. Remove sandbox.json, or run the Lar on a Linux host.`,

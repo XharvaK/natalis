@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -159,6 +159,29 @@ describe("say with attach", () => {
 
     expect(fake.sent).toEqual([]);
     expect(receiptsIn(model.requests[1]).join("\n")).toContain(`There is no picture m-AAAAAAAA on your shelf, so nothing was sent. The newest on your shelf are: ${kept}.`);
+    expect(entity.river.read({ thread: PLACE, kinds: ["say"], limit: 10 })).toEqual([]);
+  });
+
+  it("holds a say whose picture name carries a word on the privacy list, and sends nothing", async () => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "privacy.json"), JSON.stringify({ terms: [{ term: "Lantern Yard", category: "home" }] }), "utf8");
+    const fake = pictureWorld(true);
+    let picture = "";
+    const model = new ScriptedModel([
+      () => reply({ toolCalls: [call("say", { place: PLACE, text: "Here is the gate.", attach: [picture] })] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, send } = await open(model, [fake.world]);
+    await entity.start();
+    picture = fake.body().keepPicture({ bytes: png(), name: "Lantern Yard gate.png", from: FROM }).id;
+
+    send("Send the gate.");
+    await entity.idle();
+
+    expect(fake.sent).toEqual([]);
+    const refusal = receiptsIn(model.requests[1]).join("\n");
+    expect(refusal).toContain('"held_privacy"');
+    expect(refusal).toContain("(home)");
     expect(entity.river.read({ thread: PLACE, kinds: ["say"], limit: 10 })).toEqual([]);
   });
 

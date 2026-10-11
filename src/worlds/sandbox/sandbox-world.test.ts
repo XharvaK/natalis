@@ -9,6 +9,8 @@ import { buildBwrapArgs } from "./bwrap.js";
 import { PASTA_ARGS, routeScript } from "./wall.js";
 import { createSandboxWorld, formatBytes, measureHome, type SpawnFn } from "./sandbox-world.js";
 import { OUTPUT_CAP_BYTES } from "./output.js";
+import { privacyBody } from "../../testing/privacy-body.js";
+import { PRIVACY_UNREADABLE_REASON } from "../../entity/privacy.js";
 
 type SandboxConfigOverride = {
   timeoutSeconds: number;
@@ -91,7 +93,7 @@ function runTool(world: World): Tool {
 /** Brings a fresh harness up as a started world on a Linux host. */
 async function started(overrides: Parameters<typeof makeHarness>[0] = {}): Promise<Harness> {
   const h = makeHarness(overrides);
-  await h.world.start(() => undefined);
+  await h.world.start(() => undefined, privacyBody(dir));
   return h;
 }
 
@@ -109,22 +111,53 @@ afterEach(() => {
 describe("start", () => {
   it("refuses a non-Linux host with a plain error and starts nothing", async () => {
     harness = makeHarness({ platform: "win32" });
-    await expect(harness.world.start(() => undefined)).rejects.toThrow(/runs on Linux only/);
+    await expect(harness.world.start(() => undefined, privacyBody(dir))).rejects.toThrow(/runs on Linux only/);
     expect(harness.spawn).not.toHaveBeenCalled();
   });
 
   it("refuses when bwrap is not found, naming the configured path when there is one", async () => {
     harness = makeHarness({ locate: () => undefined });
-    await expect(harness.world.start(() => undefined)).rejects.toThrow(/bwrap \(Bubblewrap\), and it was not found on PATH/);
+    await expect(harness.world.start(() => undefined, privacyBody(dir))).rejects.toThrow(/bwrap \(Bubblewrap\), and it was not found on PATH/);
     harness = makeHarness({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, bwrapPath: "/opt/bwrap" }, locate: () => undefined });
-    await expect(harness.world.start(() => undefined)).rejects.toThrow(/not found at \/opt\/bwrap/);
+    await expect(harness.world.start(() => undefined, privacyBody(dir))).rejects.toThrow(/not found at \/opt\/bwrap/);
   });
 
   it("looks for the configured bwrap path", async () => {
     const locate = vi.fn(() => "/opt/bwrap");
     harness = makeHarness({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, bwrapPath: "/opt/bwrap" }, locate });
-    await harness.world.start(() => undefined);
+    await harness.world.start(() => undefined, privacyBody(dir));
     expect(locate).toHaveBeenCalledWith("/opt/bwrap");
+  });
+});
+
+describe("the privacy list", () => {
+  it("refuses a command that carries a listed term, and starts no process", async () => {
+    writeFileSync(join(dir, "privacy.json"), JSON.stringify({ terms: [{ term: "Lantern Yard", category: "home" }] }));
+    harness = await started();
+    const receipt = await runTool(harness.world).run({ command: "echo 'the Lantern Yard gate'" }, context());
+    expect(receipt.ok).toBe(false);
+    expect(receipt.refused?.code).toBe("held_privacy");
+    expect(receipt.refused?.reason).toContain("(home)");
+    expect(JSON.stringify(receipt)).not.toContain("Lantern");
+    expect(harness.spawn).not.toHaveBeenCalled();
+  });
+
+  it("refuses every command while the privacy list cannot be read, and starts no process", async () => {
+    writeFileSync(join(dir, "privacy.json"), "{ not json");
+    harness = await started();
+    const receipt = await runTool(harness.world).run({ command: "echo hi" }, context());
+    expect(receipt.ok).toBe(false);
+    expect(receipt.refused?.code).toBe("privacy_unreadable");
+    expect(receipt.refused?.reason).toBe(PRIVACY_UNREADABLE_REASON);
+    expect(harness.spawn).not.toHaveBeenCalled();
+  });
+
+  it("refuses a command when the world was started without the body's check, so the list is never skipped", async () => {
+    harness = makeHarness();
+    await harness.world.start(() => undefined);
+    const receipt = await runTool(harness.world).run({ command: "echo hi" }, context());
+    expect(receipt.refused?.code).toBe("not_started");
+    expect(harness.spawn).not.toHaveBeenCalled();
   });
 });
 
@@ -349,7 +382,7 @@ describe("now, about and say", () => {
   it("says the sandbox is not started, then reports the home folder's size", async () => {
     harness = makeHarness();
     expect(harness.world.now()).toBe("Sandbox: not started.");
-    await harness.world.start(() => undefined);
+    await harness.world.start(() => undefined, privacyBody(dir));
     expect(harness.world.now()).toBe("Sandbox: ready. Your home at /home/lar holds 0 bytes, in 0 files.");
     mkdirSync(join(dir, "home", "pkgs"), { recursive: true });
     writeFileSync(join(dir, "home", "pkgs", "a.txt"), "x".repeat(1_536));
@@ -439,26 +472,26 @@ describe("the body: the allow-listed parts of the checkout bound read-only at /b
     mkdirSync(join(checkout, "src"));
     writeFileSync(join(checkout, "src", "prod.env"), "placeholder\n");
     harness = makeHarness();
-    await expect(harness.world.start(() => undefined)).rejects.toThrow(/src holds prod\.env/);
+    await expect(harness.world.start(() => undefined, privacyBody(dir))).rejects.toThrow(/src holds prod\.env/);
     expect(harness.spawn).not.toHaveBeenCalled();
   });
 
   it("refuses to start when an allow-listed folder holds a vault folder", async () => {
     mkdirSync(join(checkout, "docs", "vault"), { recursive: true });
     harness = makeHarness();
-    await expect(harness.world.start(() => undefined)).rejects.toThrow(/vault folder/);
+    await expect(harness.world.start(() => undefined, privacyBody(dir))).rejects.toThrow(/vault folder/);
   });
 
   it("refuses to start when the Lar's folder lies inside the checkout", async () => {
     harness = makeHarness({ bodyDir: dir });
-    await expect(harness.world.start(() => undefined)).rejects.toThrow(/inside/);
+    await expect(harness.world.start(() => undefined, privacyBody(dir))).rejects.toThrow(/inside/);
   });
 
   it("starts when an allow-listed folder holds an env file but the body is off", async () => {
     mkdirSync(join(checkout, "src"));
     writeFileSync(join(checkout, "src", ".env"), "placeholder\n");
     harness = makeHarness({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, body: false } });
-    await expect(harness.world.start(() => undefined)).resolves.toBeUndefined();
+    await expect(harness.world.start(() => undefined, privacyBody(dir))).resolves.toBeUndefined();
   });
 });
 

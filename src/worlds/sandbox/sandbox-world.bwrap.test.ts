@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Receipt, Tool, ToolContext, World } from "../../contracts.js";
 import { createSandboxWorld, findIp, findPasta } from "./sandbox-world.js";
+import { privacyBody } from "../../testing/privacy-body.js";
 
 const enabled = process.env["NATALIS_BWRAP_TEST"] === "1";
 // The wall needs pasta and ip as well as bwrap. Without them the wall tests are skipped, never run unwalled.
@@ -34,7 +35,7 @@ describe.skipIf(!enabled)("sandbox with real bwrap", () => {
     writeFileSync(join(checkout, "not-listed.txt"), "not for the sandbox\n");
     // The host network: these tests are about bwrap. The wall has its own block below.
     world = createSandboxWorld({ dir, config: { timeoutSeconds: 30, maxTimeoutSeconds: 60, network: "host" }, bodyDir: checkout });
-    await world.start(() => undefined);
+    await world.start(() => undefined, privacyBody(dir));
     run = world.tools().find((tool) => tool.spec.name === "run") as Tool;
   });
 
@@ -138,7 +139,7 @@ describe.skipIf(!wallTools)("sandbox network wall with real pasta and bwrap", ()
       mkdirSync(folder, { recursive: true });
       // The body is off: these tests bind no checkout.
       const world = createSandboxWorld({ dir: folder, config: { timeoutSeconds: 30, maxTimeoutSeconds: 60, network, body: false } });
-      await world.start(() => undefined);
+      await world.start(() => undefined, privacyBody(folder));
       worlds.push(world);
     }
   }, 60_000);

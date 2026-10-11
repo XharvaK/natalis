@@ -4,7 +4,8 @@
 // mechanics (what may be connected to, what may be sent, how much is read); what a page means is the Lar's to judge.
 
 import { isIP } from "node:net";
-import type { Receipt, SecretScanner, Tool, World } from "../../contracts.js";
+import type { OutwardHold, Receipt, SecretScanner, Tool, World, WorldBody } from "../../contracts.js";
+import { outwardHoldWords } from "../../entity/privacy.js";
 import { MIN_KNOWN_VALUE_LENGTH } from "../../secrets/scanner.js";
 import {
   defaultResolve,
@@ -104,6 +105,23 @@ function bad(reason: string): Checked<never> {
     ok: false,
     receipt: refused("bad_request", reason, "The web request was not in the form the web takes, so nothing was sent."),
   };
+}
+
+/** The receipt for a request the body holds: the same shape as a say held for the privacy list. */
+function outwardRefusal(hold: OutwardHold): Receipt {
+  const words = outwardHoldWords(hold, "the request");
+  return refused(words.code, words.reason, words.summary);
+}
+
+/** Every text that leaves in a request: the url as written and as decoded, the header names and values, and the body. */
+function outgoingTexts(url: string, headers: Record<string, string>, body: string | undefined): string[] {
+  let decoded = url;
+  try {
+    decoded = decodeURIComponent(url.replace(/\+/g, " "));
+  } catch {
+    // A url that is not valid percent-encoding is checked as written.
+  }
+  return [url, decoded, ...Object.keys(headers), ...Object.values(headers), ...(body === undefined ? [] : [body])];
 }
 
 function messageOf(error: unknown): string {
@@ -315,6 +333,8 @@ export function createWebWorld(options: WebWorldOptions): World {
   const resolve = options.resolve ?? defaultResolve;
   const nowMs = options.nowMs ?? (() => Date.now());
   const requestTimes: number[] = [];
+  /** The body the runtime gives the world at start. Its privacy check is the only way a request is checked. */
+  let outward: WorldBody | undefined;
 
   const pruneRequestTimes = (sinceMs: number): void => {
     while (requestTimes.length > 0 && requestTimes[0]! <= sinceMs) requestTimes.shift();
@@ -416,6 +436,13 @@ export function createWebWorld(options: WebWorldOptions): World {
         "That web address is not one you can use, so nothing was sent.",
       );
     }
+
+    // Words that leave are checked before anything else is read: a listed term, or a privacy list that cannot be read.
+    if (outward === undefined) {
+      return refused("not_started", "The web has not started yet, so nothing was sent.", "The web is not running, so nothing was sent.");
+    }
+    const hold = outward.outwardHold(outgoingTexts(asked.url, asked.headers, asked.body));
+    if (hold !== undefined) return outwardRefusal(hold);
 
     let sites: WebFile | undefined;
     try {
@@ -695,7 +722,8 @@ export function createWebWorld(options: WebWorldOptions): World {
   return {
     id: WEB_WORLD_ID,
 
-    async start() {
+    async start(_emit, body) {
+      outward = body;
       // Every vault value is known to the scanner before anything can read the reply that might carry it.
       const vault = readVault(dir);
       for (const entry of Object.values(vault)) {

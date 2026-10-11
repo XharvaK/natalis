@@ -164,13 +164,22 @@ export function sealFolder(input: {
   out: string;
   keep?: number;
   say: (line: string) => void;
+  /** Files that go into the package beside the folder's own, by their path inside it. */
+  add?: SealedEntry[];
+  /** Folder files whose content the package takes from here instead, by path (the backup's manifest, for one). */
+  replace?: Record<string, Buffer>;
 }): SealFolderResult {
   const { folder, lar, stamp, key, out, say } = input;
   assertSealableLar(lar);
   checkKey(key);
-  const files = listFiles(folder)
-    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
-    .map((found) => ({ path: found.path, content: readFileSync(found.abs) }));
+  const replaced = input.replace ?? {};
+  const files: SealedEntry[] = [
+    ...listFiles(folder)
+      .filter((found) => !Object.hasOwn(replaced, found.path))
+      .map((found) => ({ path: found.path, content: readFileSync(found.abs) })),
+    ...Object.entries(replaced).map(([path, content]) => ({ path, content })),
+    ...(input.add ?? []),
+  ].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   say(`Read ${files.length} files from ${basename(folder)} for sealing.`);
 
   const bytes = sealBytes({ lar, stamp, key, entries: files });

@@ -6,8 +6,8 @@
 // --key-env <NAME>, the checked folder is also sealed into one encrypted package in <dir> (see backup-seal.ts), and
 // --seal-keep n keeps the newest n sealed packages of this Lar.
 
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { NOTEBOOK_DIR, RIVER_FILE } from "../../import/folder.js";
@@ -114,13 +114,12 @@ export async function backupEntity(options: BackupOptions): Promise<BackupResult
       copyFileSync(join(dir, DOMUS_STATE_PATH), join(partial, DOMUS_STATE_PATH));
       plainNames.push(DOMUS_STATE_PATH);
     }
-    const vaultNames = copyTree(dir, partial, VAULT_TREE, () => true);
-    if (vaultNames.length > 0) say(`Copied the vault (${vaultNames.length} entries).`);
+    // The vault is not in a plain backup: it holds the web's secret values, so only a sealed package carries it.
     const mediaNames = copyTree(dir, partial, MEDIA_TREE, () => true);
     if (mediaNames.length > 0) say(`Copied the shelf of pictures (${mediaNames.length} files).`);
     const homeNames = copyTree(dir, partial, HOME_TREE, (rel) => !HOME_SKIPPED.has(rel.split("/")[1] ?? ""));
     if (homeNames.length > 0) say(`Copied the home (${homeNames.length} files).`);
-    plainNames.push(...vaultNames, ...mediaNames, ...homeNames);
+    plainNames.push(...mediaNames, ...homeNames);
 
     const notebookHead = await notebookHeadOf(notebook);
     await git(notebook, ["bundle", "create", bundle, "--all"]);
@@ -157,6 +156,14 @@ export async function backupEntity(options: BackupOptions): Promise<BackupResult
     let sealed: SealFolderResult | undefined;
     if (options.seal !== undefined) {
       try {
+        // The package carries the vault too. Its manifest lists the vault's files with their hashes, so a restore from
+        // the opened package brings the vault back; the plain folder's manifest stays as it is.
+        const vault = vaultFiles(dir);
+        if (vault.length > 0) say(`Read the vault (${vault.length} entries) for the sealed package.`);
+        const sealedManifest: Manifest = {
+          ...manifest,
+          files: [...manifest.files, ...vault.map((entry) => ({ name: entry.path, bytes: entry.content.length, sha256: sha256Of(entry.content) }))],
+        };
         sealed = sealFolder({
           folder,
           lar: name,
@@ -165,6 +172,9 @@ export async function backupEntity(options: BackupOptions): Promise<BackupResult
           out: resolve(options.seal.dir),
           keep: options.seal.keep,
           say,
+          add: vault,
+          replace: { [MANIFEST_FILE]: Buffer.from(`${JSON.stringify(sealedManifest, null, 2)}
+`, "utf8") },
         });
       } catch (err) {
         throw new Error(`${errorText(err)} The backup folder ${folder} is kept.`);
@@ -199,8 +209,24 @@ function snapshotSqlite(source: string, target: string): void {
   }
 }
 
+/** The vault's files as a sealed package holds them: the path inside the package and the bytes, read from the Lar's folder. */
+function vaultFiles(dir: string): Array<{ path: string; content: Buffer }> {
+  const root = join(dir, VAULT_TREE);
+  if (!existsSync(root) || !lstatSync(root).isDirectory()) return [];
+  const found: Array<{ path: string; content: Buffer }> = [];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = `${VAULT_TREE}/${entry.name}`;
+    if (entry.isFile() && isAllowedName(path)) found.push({ path, content: readFileSync(join(dir, path)) });
+  }
+  return found.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+}
+
+function sha256Of(content: Buffer): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
 /**
- * Copies the regular files of one of the Lar's folders (the vault, the home) into the backup, keeping each file's mode.
+ * Copies the regular files of one of the Lar's folders (the home) into the backup, keeping each file's mode.
  * Symlinks and anything else that is not a plain file or folder are left out, and so is every name the manifest would
  * refuse. Returns the copied names, as the manifest lists them ("<tree>/<path>").
  */

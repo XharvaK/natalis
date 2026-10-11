@@ -300,7 +300,15 @@ export type PictureRef = { id: string; mime: string; bytes: number; name: string
 /** What a world gets from the body: its own way to put a picture on the Lar's shelf. Worlds never write the folder. */
 export type WorldBody = {
   keepPicture(input: { bytes: Uint8Array; name: string; from: { world: string; place: string } }): PictureRef;
+  /**
+   * The body's check of words before they leave the entity: a url, a header, a body, a command, a picture's name.
+   * Undefined when nothing holds them. A world refuses the act when this answers, and never sends it anyway.
+   */
+  outwardHold(texts: readonly string[]): OutwardHold | undefined;
 };
+
+/** Why the body holds words before they leave: a word on the summoner's privacy list, or a list that cannot be read. */
+export type OutwardHold = { kind: "term"; term: string; category: string } | { kind: "unreadable"; problem: string };
 
 export interface World {
   readonly id: string;

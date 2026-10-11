@@ -3,6 +3,7 @@
 // that place, and writes one row in the self thread so the Lar sees what the summoner did on its next turn. The body
 // never judges what the words mean; a refusal is a plain reason.
 
+import { join } from "node:path";
 import type { Notebook } from "../contracts.js";
 import {
   commitmentBlock,
@@ -18,6 +19,8 @@ import { clearStop, writeStop } from "./stop.js";
 import { loadWebFile, normalizeHost, saveWebFile, WEB_FILE, WEB_SITES_MAX, type WebFile } from "../worlds/web/sites.js";
 import { readVault, removeVaultEntry, validVaultName } from "../worlds/web/vault.js";
 import { isPictureId, type Shelf } from "../media/shelf.js";
+import { CONTACTS_FILE, mentionedUserId, readContacts, writeContacts } from "./contacts.js";
+import { DISCORD_ALIASES_FILE, readUserAliases } from "../worlds/discord/aliases.js";
 
 /** A commitment the Lar proposed and the summoner has not answered yet. */
 export type Proposal = { id: string; text: string; why: string; atMs: number; thread: string };
@@ -43,6 +46,7 @@ export const HELP_TEXT = [
   "!sites: list the sites the Lar may post, log in or make accounts on. !sites add <host> adds one. !sites remove <host> removes one.",
   "!vault: list the names in the Lar's vault, with the host each belongs to (never the values). !vault remove <name> deletes one.",
   "!media: list the newest pictures on the Lar's shelf. !media forget <id> removes one.",
+  "!contacts: list the people who may write to you directly. !contacts add <mention or alias> adds one. !contacts remove <mention or alias> removes one.",
   "!help: this list.",
 ].join("\n");
 
@@ -50,6 +54,7 @@ const UNKNOWN_TEXT = "I don't know that command. !help lists them.";
 const USAGE_HOUSEHOLD = "Use !household, !household add <line>, or !household remove <n>.";
 const USAGE_ADD = "Give the line after add: !household add <line>.";
 const USAGE_REMOVE = "Give the number of the line: !household remove <n>.";
+const USAGE_CONTACTS = "Use !contacts, !contacts add <mention or alias>, or !contacts remove <mention or alias>.";
 const USAGE_APPROVE = "Give the id of the commitment: !approve <id>. !proposals lists them.";
 const USAGE_DECLINE = "Give the id of the commitment: !decline <id> [reason]. !proposals lists them.";
 
@@ -82,6 +87,7 @@ const COMMAND_WORDS: ReadonlySet<string> = new Set([
   "sites",
   "vault",
   "media",
+  "contacts",
   "help",
 ]);
 
@@ -113,6 +119,8 @@ export async function answerSummoner(text: string, desk: SummonerDesk): Promise<
       return vault(rest, desk);
     case "media":
       return media(rest, desk);
+    case "contacts":
+      return contacts(rest, desk);
     case "help":
       desk.record("Your summoner asked for the list of commands.");
       return HELP_TEXT;
@@ -300,6 +308,94 @@ function removeSite(tail: string[], desk: SummonerDesk): string {
   if (failed !== undefined) return `${WEB_FILE} could not be written: ${failed}`;
   desk.record(`Your summoner removed ${host} from the sites you may post, log in or make accounts on.`);
   return `Removed ${host}. The Lar can no longer post, log in or make accounts there.`;
+}
+
+// --- the contacts -----------------------------------------------------------------------------
+
+/** Who may write to the Lar in a direct message besides the summoner. The Discord world reads the same file live. */
+function contacts(rest: string, desk: SummonerDesk): string {
+  const [sub, ...tail] = words(rest);
+  if (sub === undefined || sub.toLowerCase() === "list") return contactsList(desk);
+  if (sub.toLowerCase() === "add") return addContact(tail, desk);
+  if (sub.toLowerCase() === "remove") return removeContact(tail, desk);
+  return USAGE_CONTACTS;
+}
+
+/** A person named by a mention or by an alias the world knows: the id, and the alias when there is one. */
+type ContactTarget = { id: string; alias?: string };
+
+function aliasUsers(desk: SummonerDesk): { users: Record<string, string> } | { problem: string } {
+  try {
+    return { users: readUserAliases(join(desk.dir, DISCORD_ALIASES_FILE)) };
+  } catch {
+    // The file's own message can name its folder; the summoner needs only the fact.
+    return { problem: "the names the Lar knows cannot be read right now" };
+  }
+}
+
+function contactTarget(word: string, desk: SummonerDesk): ContactTarget | string {
+  const named = aliasUsers(desk);
+  if ("problem" in named) return `${named.problem}. Nothing was changed.`;
+  const mention = mentionedUserId(word);
+  if (mention !== undefined) {
+    const alias = named.users[mention];
+    return alias === undefined ? { id: mention } : { id: mention, alias };
+  }
+  const id = Object.keys(named.users).find((known) => named.users[known] === word);
+  if (id === undefined) {
+    return `I don't know anyone called ${word}. Give their @ mention, or the alias the Lar knows them by.`;
+  }
+  return { id, alias: word };
+}
+
+function contactsList(desk: SummonerDesk): string {
+  const named = aliasUsers(desk);
+  if ("problem" in named) return `${named.problem}.`;
+  const load = readContacts(join(desk.dir, CONTACTS_FILE));
+  if (load.problem !== undefined) return `${CONTACTS_FILE} is damaged: ${load.problem}. Nothing was changed.`;
+  if (load.contacts.discord.length === 0) return "Nobody but your summoner may write to the Lar directly.";
+  const names = load.contacts.discord.map((id) => named.users[id] ?? "a person with no alias yet");
+  return `Contacts who may write to the Lar directly: ${names.join(", ")}.`;
+}
+
+function addContact(tail: string[], desk: SummonerDesk): string {
+  if (tail.length !== 1) return USAGE_CONTACTS;
+  const target = contactTarget(tail[0] ?? "", desk);
+  if (typeof target === "string") return target;
+  const load = readContacts(join(desk.dir, CONTACTS_FILE));
+  if (load.problem !== undefined) return `${CONTACTS_FILE} is damaged: ${load.problem}. Nothing was changed.`;
+  if (load.contacts.discord.includes(target.id)) return "That person is already a contact.";
+  const failed = writeContactIds(desk, [...load.contacts.discord, target.id]);
+  if (failed !== undefined) return `${CONTACTS_FILE} could not be written: ${failed}`;
+  const label = target.alias ?? "a person with no alias yet";
+  desk.record(`Your summoner added a contact: ${label}.`);
+  return `Added ${label}. They may write to the Lar directly from now on.`;
+}
+
+function removeContact(tail: string[], desk: SummonerDesk): string {
+  if (tail.length !== 1) return USAGE_CONTACTS;
+  const target = contactTarget(tail[0] ?? "", desk);
+  if (typeof target === "string") return target;
+  const load = readContacts(join(desk.dir, CONTACTS_FILE));
+  if (load.problem !== undefined) return `${CONTACTS_FILE} is damaged: ${load.problem}. Nothing was changed.`;
+  const label = target.alias ?? "a person with no alias yet";
+  if (!load.contacts.discord.includes(target.id)) {
+    return `${target.alias ?? "That person"} is not a contact. !contacts list shows them.`;
+  }
+  const failed = writeContactIds(desk, load.contacts.discord.filter((id) => id !== target.id));
+  if (failed !== undefined) return `${CONTACTS_FILE} could not be written: ${failed}`;
+  desk.record(`Your summoner removed a contact: ${label}.`);
+  return `Removed ${label}. They can no longer write to the Lar directly.`;
+}
+
+/** Writes the contacts file as the summoner's act; a failure is returned as plain words, never thrown. */
+function writeContactIds(desk: SummonerDesk, discord: string[]): string | undefined {
+  try {
+    writeContacts(join(desk.dir, CONTACTS_FILE), { version: 1, discord });
+    return undefined;
+  } catch (error) {
+    return plainError(error);
+  }
 }
 
 function vault(rest: string, desk: SummonerDesk): string {

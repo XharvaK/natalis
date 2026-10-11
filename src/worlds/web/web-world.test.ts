@@ -8,6 +8,8 @@ import type { ResolveHost, WebFetchRequest, WebFetchResponse } from "./network.j
 import { checkArgs, createWebWorld, HIDDEN_TEXT, REQUEST_BODY_MAX, SHOWN_CHARS_MAX, webUrl } from "./web-world.js";
 import { saveWebFile } from "./sites.js";
 import { keepVaultEntry, readVaultEntry } from "./vault.js";
+import { privacyBody } from "../../testing/privacy-body.js";
+import { PRIVACY_UNREADABLE_REASON } from "../../entity/privacy.js";
 
 // Invented fixtures. Secret-shaped strings are built from parts at runtime; no token-shaped literal sits in this file.
 const SECRET = ["fixture", "secret", "value", "0123456789"].join("-");
@@ -55,9 +57,11 @@ function fetchFake(request: WebFetchRequest): Promise<WebFetchResponse> {
   return Promise.resolve(next);
 }
 
-function build(): void {
+/** A world started the way the runtime starts it: the body gives it the Lar's privacy check. */
+async function build(): Promise<void> {
   scanner = createSecretScanner();
   world = createWebWorld({ dir, scanner, fetch: fetchFake, resolve, nowMs: () => clock.now });
+  await world.start(() => undefined, privacyBody(dir));
 }
 
 async function run(args: Record<string, unknown>): Promise<Receipt> {
@@ -68,16 +72,16 @@ async function run(args: Record<string, unknown>): Promise<Receipt> {
 /** A vault entry bound to example.org, registered with the scanner the way the world does at start. */
 async function seedVault(host = "example.org"): Promise<void> {
   keepVaultEntry(dir, "site_key", { host, value: SECRET });
-  await world.start(() => undefined);
+  await world.start(() => undefined, privacyBody(dir));
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "natalis-web-world-"));
   saveWebFile(dir, { sites: ["example.org"] });
   calls = [];
   queue = [];
   clock = { now: NOW };
-  build();
+  await build();
 });
 
 afterEach(() => {
@@ -197,6 +201,48 @@ describe("redirects", () => {
     expect(calls[0]!.method).toBe("POST");
     expect(calls[1]!.method).toBe("GET");
     expect(calls[1]!.body).toBeUndefined();
+  });
+});
+
+describe("the privacy list", () => {
+  it("refuses a request whose url, header or body carries a listed term, and sends nothing", async () => {
+    writeFileSync(join(dir, "privacy.json"), JSON.stringify({ terms: [{ term: "Lantern Yard", category: "home" }] }));
+    const cases: Record<string, unknown>[] = [
+      { url: "https://example.org/search?q=Lantern%20Yard" },
+      { url: "https://example.org/", headers: { "x-note": "by the lantern   yard" } },
+      { url: "https://example.org/", method: "POST", body: "meet at the Lantern Yard" },
+    ];
+    for (const args of cases) {
+      const r = await run(args);
+      expect(r.ok).toBe(false);
+      expect(r.refused?.code).toBe("held_privacy");
+      expect(r.refused?.reason).toContain("(home)");
+      expect(JSON.stringify(r)).not.toContain("Lantern");
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses every request while the privacy list cannot be read, and says why", async () => {
+    writeFileSync(join(dir, "privacy.json"), "{ not json");
+    const r = await run({ url: "https://example.org/" });
+    expect(r.ok).toBe(false);
+    expect(r.refused?.code).toBe("privacy_unreadable");
+    expect(r.refused?.reason).toContain(PRIVACY_UNREADABLE_REASON);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("allows a request when the privacy list was never created", async () => {
+    const r = await run({ url: "https://example.org/" });
+    expect(r.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("refuses every request when the world has not been started, so the list is never skipped", async () => {
+    const unstarted = createWebWorld({ dir, scanner, fetch: fetchFake, resolve, nowMs: () => clock.now });
+    const r = await unstarted.tools()[0]!.run({ url: "https://example.org/" }, {} as never);
+    expect(r.ok).toBe(false);
+    expect(r.refused?.code).toBe("not_started");
+    expect(calls).toHaveLength(0);
   });
 });
 
@@ -357,6 +403,7 @@ describe("the vault", () => {
       },
       nowMs: () => clock.now,
     });
+    await world.start(() => undefined, privacyBody(dir));
     const r = await run({
       url: "https://example.org/login",
       keep: [
@@ -386,7 +433,7 @@ describe("the vault", () => {
     const fresh = createSecretScanner();
     const started = createWebWorld({ dir, scanner: fresh, fetch: fetchFake, resolve });
     expect(fresh.scan(SECRET)).toHaveLength(0);
-    await started.start(() => undefined);
+    await started.start(() => undefined, privacyBody(dir));
     expect(fresh.scan(SECRET).length).toBeGreaterThan(0);
   });
 });

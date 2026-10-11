@@ -45,6 +45,9 @@ summoner is the alias the Lar knows you by:
 }
 ```
 
+Optional: `~/lares/<name>/nature.md` replaces the default nature every Lar starts with (its voice and manners) for this Lar.
+An empty file removes that section. Without the file the default stays. The Lar reads it on each turn, so an edit needs no restart.
+
 Optional in the `model` block: `"vision": true` when the model can see pictures, and a backup for when the main model
 cannot answer (rate limited, down, or no reply in time), on the same address and key:
 `"fallback": { "model": "<model name>", "effort": "xhigh", "vision": true }`. After a failure, calls go to the backup
@@ -63,6 +66,12 @@ the token itself:
   "rooms": []
 }
 ```
+
+Who may write to the Lar directly is the summoner's list, kept in `~/lares/<name>/contacts.json`. Only you may write in a
+direct message until you add someone: in your own DM with the Lar, send `!contacts add <@mention>` or `!contacts add <alias>`,
+and `!contacts remove <@mention or alias>` or `!contacts list` the same way. A room named in `discord.json` admits its
+members as before. The file holds Discord user ids, so it stays on this host, like the alias file beside it. A damaged
+`contacts.json` admits nobody but you until it is fixed.
 
 Check the Lar in a terminal before you run it as a service: `node ~/natalis/dist/bin/natalis.js chat --dir ~/lares/<name>`.
 Ctrl+C stops it.
@@ -123,9 +132,17 @@ journalctl --user -u natalis-backup@<name> -n 30
 ls ~/lar-backups/
 ```
 
-A backup holds the river (the Lar's whole record), the notebook as a git bundle, the Lar's small files and a manifest
-with hashes. It holds no keys and no emergency-stop file. Backups contain private conversations: keep them off shared
-folders, and copy them somewhere safe off this host, as sealed copies (below).
+What each kind of backup holds, exactly:
+
+- A plain backup folder holds the river (the Lar's whole record), the notebook as a git bundle, the Lar's small files
+  (entity.json, discord.json, its aliases, privacy.json, contacts.json, nature.md, web.json and the rest), the shelf of
+  pictures, the sandbox's home (without caches or names that look like env files) and the game's database, with a
+  manifest of sizes and hashes. It leaves out the vault, the keys file and the emergency-stop file.
+- A sealed copy holds everything a plain backup holds, and the vault as well (the web's secret values, each kept for one
+  host). It leaves out the keys file and the emergency-stop file, and the seal key is never in it.
+
+Neither kind holds the keys file `~/lares/<name>.env`, the seal key or the emergency-stop file. Backups contain private
+conversations: keep them off shared folders, and copy them somewhere safe off this host, as sealed copies (below).
 
 ### Sealed copies, for storage off the host
 
@@ -194,6 +211,11 @@ systemctl --user start natalis@<name>
 The restore checks every file's hash against the manifest before it writes anything, and checks the river and the
 notebook after. The keys file `~/lares/<name>.env` is not in the backup and is not touched. The Lar starts with its
 emergency stop off, whatever it was when the backup was made.
+
+A restore from a plain backup brings back no vault, because a plain backup holds none. The Lar's web values must then be
+kept again, and until they are the web's logins are not sent. A restore from a sealed copy brings the vault back, at mode
+0600 (see "Opening a sealed copy" below). A restore never writes into a folder that holds anything, so a vault that is
+already in the target folder is never replaced or deleted: the restore is refused and the folder is left as it was.
 
 ### Opening a sealed copy
 
