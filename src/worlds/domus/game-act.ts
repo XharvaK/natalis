@@ -10,7 +10,8 @@ import { findOption, labelOf, optionsOf, refsOf } from "./options.js";
 import { newestObservation, STALE_VIEW_CODE, STALE_VIEW_REASON } from "./store.js";
 
 const REF = /^[A-Za-z0-9._-]{1,16}$/;
-const ARG_KEYS = new Set(["option", "then", "for_summoner", "answer"]);
+const ARG_KEYS = new Set(["option", "then", "for_summoner", "answer", "expect", "expect_then"]);
+const EXPECT_MAX = 200;
 export const GAME_THREAD_PREFIX = "domus:";
 
 /**
@@ -23,6 +24,21 @@ export type GameActContext = {
 
 function refused(code: string, reason: string, summary: string = reason): Receipt {
   return { ok: false, summary, refused: { code, reason } };
+}
+
+/** Whether the words the Lar read for a ref still name it: the act's label contains them, any case, trimmed. */
+function stillNames(found: Found, expected: string): boolean {
+  return labelOf(found).toLowerCase().includes(expected.trim().toLowerCase());
+}
+
+/** The refusal for a ref whose words changed since the Lar read them, saying what it names now. Undefined when it still names them. */
+function refChanged(ref: string, found: Found, expected: string, where: string): Receipt | undefined {
+  if (stillNames(found, expected)) return undefined;
+  const now = labelOf(found);
+  return refused(
+    "ref_changed",
+    `${ref}${where} now names: ${now}. You expected "${expected.trim()}". Refs stay the same for one game session, so a ref that names something else means the game's choice changed; choose again from the newest view.`,
+  );
 }
 
 /** The refs the Lar can name now, as one short sentence. */
@@ -48,6 +64,17 @@ export function gameActTool(open: () => GameActContext): Tool {
             items: { type: "string" },
             maxItems: PLAN_MORE,
             description: "Up to two more refs, each run after the one before it completes.",
+          },
+          expect: {
+            type: "string",
+            maxLength: EXPECT_MAX,
+            description: "Optional. The words of the act as you read them in the view, such as Boil water. If the ref now names something else, the act is refused with what it names now, and nothing is requested.",
+          },
+          expect_then: {
+            type: "array",
+            items: { type: "string", maxLength: EXPECT_MAX },
+            maxItems: PLAN_MORE,
+            description: "Optional. For each ref in then, in order, the words of that act as you read them. Checked the same way as expect; a shorter list checks only the refs it names.",
           },
           for_summoner: { type: "boolean", description: "True only when your summoner asked for this act." },
           answer: {
@@ -100,6 +127,14 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
   if (args.for_summoner !== undefined && typeof args.for_summoner !== "boolean") {
     return refused("bad_args", "for_summoner must be true or false.");
   }
+  if (args.expect !== undefined && !(typeof args.expect === "string" && args.expect.length <= EXPECT_MAX)) {
+    return refused("bad_args", `expect must be the words of the act as you read them, up to ${EXPECT_MAX} characters.`);
+  }
+  const expectThen = args.expect_then;
+  if (expectThen !== undefined && !(Array.isArray(expectThen) && expectThen.length <= PLAN_MORE
+    && expectThen.every((text) => typeof text === "string" && text.length <= EXPECT_MAX))) {
+    return refused("bad_args", `expect_then must be up to ${PLAN_MORE} texts, each the words of a then act as you read them, up to ${EXPECT_MAX} characters.`);
+  }
   if (args.answer !== undefined && !isAnswerClaim(args.answer)) {
     return refused("bad_args", "answer must hold rows (with refs and counts) and/or text (named fields), as the question allows.");
   }
@@ -117,10 +152,19 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
   if (!first) {
     return refused("unknown_option", `${option} is not a choice in the newest view of this game. ${refsSentence(refs)}`);
   }
+  if (typeof args.expect === "string") {
+    const changed = refChanged(option, first, args.expect, "");
+    if (changed) return changed;
+  }
   const then: Array<{ ref: string; found: Found }> = [];
-  for (const ref of thenRefs as string[]) {
+  for (const [index, ref] of (thenRefs as string[]).entries()) {
     const found = findOption(options, ref);
     if (!found) return refused("unknown_option", `${ref} (in then) is not a choice in the newest view of this game. ${refsSentence(refs)}`);
+    const expected = Array.isArray(expectThen) ? expectThen[index] : undefined;
+    if (typeof expected === "string") {
+      const changed = refChanged(ref, found, expected, " (in then)");
+      if (changed) return changed;
+    }
     then.push({ ref, found });
   }
   let label = labelOf(first);

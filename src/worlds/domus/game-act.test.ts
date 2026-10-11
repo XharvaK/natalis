@@ -213,3 +213,49 @@ describe("game_act: requests", () => {
     expect(acts()).toEqual([]);
   });
 });
+
+describe("game_act: the words she read still name the ref", () => {
+  it("requests the act when the ref names the words she read, in any case and with spaces around them", async () => {
+    view(VIEW);
+    expect(await run({ option: "a1", expect: "  boil WATER " })).toMatchObject({ ok: true });
+    expect(acts()).toHaveLength(1);
+  });
+
+  it("refuses with ref_changed when the ref now names something else, says what it names, and requests nothing", async () => {
+    view(VIEW);
+    const receipt = await run({ option: "a1", expect: "Tidy up" });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "ref_changed" } });
+    expect(receipt.refused?.reason).toContain("a1 now names: Boil water (Test kettle).");
+    expect(receipt.refused?.reason).toContain('You expected "Tidy up".');
+    expect(acts()).toEqual([]);
+  });
+
+  it("checks each then ref against expect_then, by its place in the list, and names the then ref that changed", async () => {
+    view(VIEW);
+    const receipt = await run({ option: "a1", then: ["a3", "a4"], expect_then: ["sit down", "Sit"] });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "ref_changed" } });
+    expect(receipt.refused?.reason).toContain("a4 (in then) now names: Stand up (Test bench).");
+    expect(acts()).toEqual([]);
+  });
+
+  it("checks only the then refs that expect_then names when it is shorter", async () => {
+    view(VIEW);
+    expect(await run({ option: "a1", then: ["a3", "a4"], expect_then: ["sit down"] })).toMatchObject({ ok: true });
+  });
+
+  it("refuses a malformed expect or expect_then as bad_args", async () => {
+    view(VIEW);
+    expect(await run({ option: "a1", expect: 5 })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await run({ option: "a1", expect: "x".repeat(201) })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await run({ option: "a1", then: ["a3"], expect_then: "Sit" })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await run({ option: "a1", then: ["a3"], expect_then: ["x".repeat(201)] })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await run({ option: "a1", then: ["a3"], expect_then: ["a", "b", "c"] })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(acts()).toEqual([]);
+  });
+
+  it("describes expect and expect_then in the tool's parameters", () => {
+    const properties = tool.spec.parameters.properties as Record<string, { description?: string }>;
+    expect(properties["expect"]?.description).toContain("as you read them");
+    expect(properties["expect_then"]?.description).toContain("then");
+  });
+});
