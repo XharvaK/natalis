@@ -90,6 +90,17 @@ CREATE TABLE IF NOT EXISTS undos (
   observations INTEGER NOT NULL,
   undone_at_ms INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS snapshots (
+  snapshot_id TEXT PRIMARY KEY,
+  thread TEXT NOT NULL,
+  attachment TEXT NOT NULL,
+  status TEXT NOT NULL,
+  reason TEXT,
+  picture_id TEXT,
+  requested_at_ms INTEGER NOT NULL,
+  settled_at_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS snapshots_thread_status ON snapshots (thread, status);
 `;
 
 export type Row = Record<string, unknown>;
@@ -249,8 +260,13 @@ export class HeartbeatBook {
 
   /** Attached: the latest heartbeat says so and it arrived within ARMED_MS. */
   attachedAt(nowMs: number): boolean {
+    return this.attachedSession(nowMs) !== undefined;
+  }
+
+  /** The helper session that is attached now (see attachedAt), or undefined. */
+  attachedSession(nowMs: number): string | undefined {
     const latest = this.latest();
-    return latest !== undefined && latest.attached && latest.receivedAtMs >= nowMs - ARMED_MS;
+    return latest !== undefined && latest.attached && latest.receivedAtMs >= nowMs - ARMED_MS ? latest.session : undefined;
   }
 
   private prune(): void {
