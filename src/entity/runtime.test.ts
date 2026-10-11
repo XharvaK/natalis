@@ -787,6 +787,20 @@ describe("the owner's privacy list", () => {
     expect(system).not.toContain("Lantern Yard");
   });
 
+  it("shows a Lar's nature after who it is and before how it acts", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    cli.send("Hello?");
+    await entity.idle();
+
+    const system = systemTextOf(model.requests[0]);
+    const nature = system.indexOf("## a lar's nature");
+    expect(nature).toBeGreaterThan(system.indexOf("## who you are"));
+    expect(nature).toBeLessThan(system.indexOf("## how you act"));
+    expect(system).toContain("You are someone, not a service.");
+  });
+
   it("treats a privacy file that is not JSON as empty, and says so on the now board", async () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "privacy.json"), "{ not json", "utf8");

@@ -50,6 +50,7 @@ import {
 import { dayKey, hostZone, msUntilNextDay } from "./day.js";
 import { FLOOR_TEXT } from "./floor.js";
 import { chosenName, NAME_NOTE, whoYouAre } from "./identity.js";
+import { LAR_NATURE } from "./nature.js";
 import { HONESTY_SYSTEM, type HonestyVerdict, parseHonestyReply } from "./honesty.js";
 import {
   createPrivacyWatch,
@@ -1303,6 +1304,7 @@ class Runtime implements Entity {
     // What stays the same from turn to turn comes first, so the provider can reuse it; what changes comes last.
     const sections: ContextSection[] = [
       { name: "who you are", text: this.identityText(nowMs), priority: 100, core: true },
+      { name: "a lar's nature", text: LAR_NATURE, priority: 100, core: true },
       { name: "how you act", text: HOW_YOU_ACT, priority: 100, core: true },
       { name: "pictures", text: pictureAbility(this.config.model.vision === true), priority: 100, core: true },
       { name: "constitution", text: this.constitutionText(), priority: 100, core: true },

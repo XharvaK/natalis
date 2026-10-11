@@ -1,6 +1,6 @@
 // Who you are: the first thing a Lar reads on every turn. It is built from facts the body holds (the name, the
-// engine, the day of summoning, the worlds), never from rules about how to sound. Character is the Lar's own and
-// lives in its notebook; this section only says what a Lar is, so the engine's default voice has no gap to fill.
+// engine, the day of summoning, the worlds). How a Lar sounds at the start is nature.ts; character is the Lar's own
+// and lives in its notebook.
 
 export const NAME_NOTE = "self/name.md";
 const NAME_MAX = 40;
