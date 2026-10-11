@@ -52,8 +52,19 @@ export type SnapshotContext = {
 
 const FAILURE_WORDS: Readonly<Record<SnapshotFailure, string>> = {
   game_minimized: "the game window was minimized",
+  minimized: "the game window was minimized",
+  not_front: "the game window was not the front window",
   no_game_window: "no game window was found",
   capture_failed: "the capture failed",
+};
+
+/**
+ * A failure whose text is the whole note: the helper refused to take a picture that would show an old moment, and the
+ * Lar is told so in plain words. Every other failure keeps the "could not be taken: <reason>" sentence.
+ */
+const PLAIN_FAILURE_TEXT: Partial<Record<SnapshotFailure, string>> = {
+  minimized: "No picture: the game is minimized on the summoner's screen, so it would show an old moment.",
+  not_front: "No picture: the game is not the front window on the summoner's screen, so it would show an old moment.",
 };
 
 function refused(code: string, reason: string): Receipt {
@@ -139,7 +150,7 @@ export function settleFailed(db: DatabaseSync, input: { snapshotId: string; fail
     .run(input.failed, input.nowMs, input.snapshotId);
   return {
     thread: input.thread,
-    text: `Your picture of the game could not be taken: ${FAILURE_WORDS[input.failed]}.`,
+    text: PLAIN_FAILURE_TEXT[input.failed] ?? `Your picture of the game could not be taken: ${FAILURE_WORDS[input.failed]}.`,
     data: { snapshotId: input.snapshotId, status: "failed", reason: input.failed },
     wake: true,
   };

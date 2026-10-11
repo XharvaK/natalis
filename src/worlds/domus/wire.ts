@@ -26,7 +26,8 @@ export const ROOM_MAX = 64;
 const CUT_ROOMS_MAX = 64;
 /** The helper's token must be at least this many bytes. */
 export const MIN_TOKEN_BYTES = 32;
-export const SNAPSHOT_FAILURES = ["game_minimized", "no_game_window", "capture_failed"] as const;
+/** The reasons a picture can fail. "minimized" and "not_front" are the helper's refusals to take a picture of an old moment. */
+export const SNAPSHOT_FAILURES = ["game_minimized", "minimized", "not_front", "no_game_window", "capture_failed"] as const;
 export type SnapshotFailure = (typeof SNAPSHOT_FAILURES)[number];
 
 /** A refusal of the wire: the HTTP status and the short error code the helper reads. */
@@ -327,4 +328,82 @@ export function parseSnapshot(body: unknown): ParsedSnapshot {
 export function gameThreadOf(world: string): string {
   const alias = world.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64) || "unknown";
   return `${DOMUS_WORLD_ID}:${alias}`;
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Memory (the helper's answer to a question she asked the game).
+
+/** The memory route reads at most this many bytes of JSON. */
+export const MEMORY_BODY_LIMIT = 16 * 1024;
+/** The most act lines and people one answer may carry. */
+export const MEMORY_ACTS_MAX = 12;
+export const MEMORY_PEOPLE_MAX = 6;
+const MEMORY_KEYS = new Set(["v", "helper_session", "ask_id", "facts"]);
+const MEMORY_FACTS_KEYS = new Set(["matched", "acts", "people"]);
+const MEMORY_ACT_KEYS = new Set(["act_id", "at", "minutes", "what", "by", "needs", "moodlets", "reactions", "people", "day", "at_ms"]);
+const MEMORY_ACT_PERSON_KEYS = new Set(["who", "role", "tracks"]);
+const MEMORY_PERSON_KEYS = new Set(["who", "acts", "last_at_ms", "tracks"]);
+
+export type ParsedMemory = {
+  helperSession: string;
+  askId: string;
+  facts: { matched: number; acts: Record<string, unknown>[]; people: Record<string, unknown>[] };
+};
+
+/** One act line: the diary's act shape, with the game day and the wall time it was recorded. Unknown keys are refused. */
+function memoryAct(item: unknown): Record<string, unknown> {
+  if (!isRecord(item)) fail(400, "invalid_body");
+  for (const key of Object.keys(item)) if (!MEMORY_ACT_KEYS.has(key)) fail(400, "invalid_body");
+  if ("act_id" in item) textOf(item.act_id, 1, 64);
+  if ("at" in item) textOf(item.at, 1, 64);
+  if ("minutes" in item && (typeof item.minutes !== "number" || !Number.isFinite(item.minutes) || item.minutes < 0)) fail(400, "invalid_body");
+  if ("what" in item) textOf(item.what, 1, 200);
+  if ("by" in item) textOf(item.by, 1, 64);
+  if ("needs" in item) jsonObject(item.needs, 2048);
+  for (const key of ["moodlets", "reactions"] as const) {
+    if (key in item && (!Array.isArray(item[key]) || item[key].length > 32)) fail(400, "invalid_body");
+    if (key in item) for (const name of item[key] as unknown[]) textOf(name, 1, 200);
+  }
+  if ("people" in item) {
+    if (!Array.isArray(item.people) || item.people.length > 16) fail(400, "invalid_body");
+    for (const person of item.people) {
+      if (!isRecord(person)) fail(400, "invalid_body");
+      for (const key of Object.keys(person)) if (!MEMORY_ACT_PERSON_KEYS.has(key)) fail(400, "invalid_body");
+      textOf(person.who, 1, 200);
+      if ("role" in person) textOf(person.role, 1, 32);
+    }
+  }
+  if ("day" in item) safeInt(item.day);
+  if ("at_ms" in item) safeInt(item.at_ms);
+  return item;
+}
+
+/** A person of the answer: who, how many acts they were in together, and the wall time of the last. */
+function memoryPerson(item: unknown): Record<string, unknown> {
+  if (!isRecord(item)) fail(400, "invalid_body");
+  for (const key of Object.keys(item)) if (!MEMORY_PERSON_KEYS.has(key)) fail(400, "invalid_body");
+  textOf(item.who, 1, 200);
+  safeInt(item.acts);
+  if ("last_at_ms" in item) safeInt(item.last_at_ms);
+  return item;
+}
+
+/** POST /domus/memory: the helper's answer for one question. Throws WireError for every refusal. */
+export function parseMemory(body: unknown): ParsedMemory {
+  if (!isRecord(body)) fail(400, "invalid_body");
+  for (const key of Object.keys(body)) if (!MEMORY_KEYS.has(key)) fail(400, "invalid_body");
+  if (body.v !== 1) fail(400, "invalid_body");
+  const helperSession = textOf(body.helper_session, 1, 64);
+  const askId = textOf(body.ask_id, 1, 64, /^[A-Za-z0-9-]+$/);
+  const facts = body.facts;
+  if (!isRecord(facts)) fail(400, "invalid_body");
+  for (const key of Object.keys(facts)) if (!MEMORY_FACTS_KEYS.has(key)) fail(400, "invalid_body");
+  const matched = safeInt(facts.matched);
+  if (!Array.isArray(facts.acts) || facts.acts.length > MEMORY_ACTS_MAX) fail(400, "invalid_body");
+  if (!Array.isArray(facts.people) || facts.people.length > MEMORY_PEOPLE_MAX) fail(400, "invalid_body");
+  return {
+    helperSession,
+    askId,
+    facts: { matched, acts: facts.acts.map(memoryAct), people: facts.people.map(memoryPerson) },
+  };
 }

@@ -117,6 +117,22 @@ CREATE TABLE IF NOT EXISTS looks (
   owed INTEGER NOT NULL,
   last_handed_ms INTEGER
 );
+CREATE TABLE IF NOT EXISTS overlay_lines (
+  line_id TEXT PRIMARY KEY,
+  at_ms INTEGER NOT NULL,
+  thread TEXT NOT NULL,
+  line TEXT
+);
+CREATE TABLE IF NOT EXISTS memory_asks (
+  ask_id TEXT PRIMARY KEY,
+  thread TEXT NOT NULL,
+  about TEXT NOT NULL,
+  status TEXT NOT NULL,
+  requested_at_ms INTEGER NOT NULL,
+  handed_session TEXT,
+  settled_at_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS memory_asks_status ON memory_asks (status);
 `;
 
 /** How the game's changes reach the Lar's turns. A quiet mode reverts to resumeMode when quietUntilMs passes. */
@@ -264,6 +280,8 @@ const FORGET_TABLES: ReadonlyArray<{ table: string; columns: readonly ForgetColu
   { table: "act_events", columns: [{ name: "detail_json", json: true, erased: "{}" }] },
   { table: "plan_steps", columns: [{ name: "label", json: false, erased: FORGOTTEN_LINE }] },
   { table: "undos", columns: [{ name: "reason", json: false, erased: FORGOTTEN_LINE }] },
+  { table: "overlay_lines", columns: [{ name: "line", json: false, erased: FORGOTTEN_LINE }] },
+  { table: "memory_asks", columns: [{ name: "about", json: false, erased: FORGOTTEN_LINE }] },
 ];
 
 /** The form words are compared in: NFKC and lower case, as the notebook and the river fold them. */
@@ -306,6 +324,10 @@ function withdrawForgotten(db: DatabaseSync, table: string, rowid: number, nowMs
       .run(nowMs, actId);
   } else if (table === "plan_steps") {
     db.prepare("UPDATE plan_steps SET state = 'dropped', reason = 'forgotten', updated_at_ms = ? WHERE rowid = ? AND state = 'planned'")
+      .run(nowMs, rowid);
+  } else if (table === "memory_asks") {
+    // A question still waiting to be handed over is withdrawn, so the helper never receives the erased words.
+    db.prepare("UPDATE memory_asks SET status = 'withdrawn', settled_at_ms = ? WHERE rowid = ? AND status IN ('owed', 'handed')")
       .run(nowMs, rowid);
   }
 }

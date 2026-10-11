@@ -112,6 +112,17 @@ describe("the helper's answer", () => {
       data: { snapshotId: failed.snapshotId, status: "failed", reason: "no_game_window" },
       wake: true,
     });
+    const minimized = askAt(T0 + 4_000, "domus:slot5") as { snapshotId: string };
+    expect(settleFailed(db, { snapshotId: minimized.snapshotId, failed: "minimized", thread: "domus:slot5", nowMs: T0 + 5 })).toEqual({
+      thread: "domus:slot5",
+      text: "No picture: the game is minimized on the summoner's screen, so it would show an old moment.",
+      data: { snapshotId: minimized.snapshotId, status: "failed", reason: "minimized" },
+      wake: true,
+    });
+    const notFront = askAt(T0 + 6_000, "domus:slot6") as { snapshotId: string };
+    expect(settleFailed(db, { snapshotId: notFront.snapshotId, failed: "not_front", thread: "domus:slot6", nowMs: T0 + 7 })).toMatchObject({
+      text: "No picture: the game is not the front window on the summoner's screen, so it would show an old moment.",
+    });
     const taken = askAt(T0 + 2_000, "domus:slot4") as { snapshotId: string };
     expect(settleTaken(db, { snapshotId: taken.snapshotId, thread: "domus:slot4", pictureId: "m-ABCD2345", nowMs: T0 + 3 })).toMatchObject({
       text: "Your picture of the game is on your shelf as m-ABCD2345.",
