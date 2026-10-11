@@ -287,6 +287,30 @@ describe.each(modes)("forget ($label)", ({ forceNoFts }) => {
     expect(tomb?.data).toMatchObject({ count: 2, seqs: [1, 4] });
   });
 
+  it("erases every row whose text holds all the words, in any order and any case, and not one with only some", () => {
+    const river = open({ forceNoFts });
+    river.append({ thread: "room:lantern", kind: "event", source: "outside", text: "The lamp flickered at Dusk." });
+    river.append({ thread: "room:lantern", kind: "say", source: "self", text: "Dusk came; the lamp was lit." });
+    river.append({ thread: "room:lantern", kind: "say", source: "self", text: "The lamp is lit." });
+    river.append({ thread: "room:lantern", kind: "say", source: "self", text: "Dusk was quiet." });
+    expect(river.forget({ text: "DUSK  lamp" }, "owner", "Owner asked")).toBe(2);
+    expect(river.read({ thread: "room:lantern" }).map((r) => r.forgotten)).toEqual([true, true, false, false]);
+    expect(river.search("lamp").map((h) => h.row.seq)).toEqual([3]);
+  });
+
+  it("blanks the actor of an erased row whose actor holds a forgotten word, and keeps the others", () => {
+    const river = open({ forceNoFts });
+    river.append({ thread: "dm:owner", kind: "event", source: "owner", actor: "Mira Vale", text: "Mira's phone is 555 0100." });
+    river.append({ thread: "room:lantern", kind: "event", source: "outside", actor: "Tovan", text: "Mira is at the door." });
+    river.append({ thread: "room:lantern", kind: "say", source: "self", actor: "Mira", text: "Dinner was good." });
+    expect(river.forget({ text: "Mira" }, "owner", "Owner asked")).toBe(2);
+    const rows = river.read({});
+    expect(rows[0]).toMatchObject({ seq: 1, forgotten: true });
+    expect(rows[0]?.actor).toBeUndefined();
+    expect(rows[1]).toMatchObject({ seq: 2, forgotten: true, actor: "Tovan" });
+    expect(rows[2]).toMatchObject({ seq: 3, forgotten: false, actor: "Mira" });
+  });
+
   it("does not put the forgotten text into the tombstone", () => {
     const river = seeded();
     river.forget({ text: "555 0100" }, "owner", "Owner asked");
@@ -386,6 +410,33 @@ describe("file-backed river", () => {
     expect(second.searchMode).toBe("fts5");
     expect(second.search("ferry").map((h) => h.row.seq)).toEqual([1]);
     expect(second.search("cancelled")).toEqual([]);
+  });
+
+  it("leaves a forgotten word in no byte of the file, nor of its log, after a forget and a close", () => {
+    const file = path.join(tempDir, "river.db");
+    // Built from parts so the distinctive word is not one a search would find by accident.
+    const word = ["zan", "vori", "lpax", "quo"].join("");
+    const first = openRiver(file, { nowMs });
+    first.append({
+      thread: "dm:owner",
+      kind: "event",
+      source: "owner",
+      actor: "Mira",
+      text: `The gate word is ${word} for the lane.`,
+      data: { note: `also ${word}` },
+    });
+    first.append({ thread: "dm:owner", kind: "say", source: "self", text: "Other words stay here." });
+    first.append({ thread: "dm:owner", kind: "say", source: "self", text: "More plain words." });
+    expect(first.forget({ text: word }, "owner", "Owner asked")).toBe(1);
+    first.close();
+
+    const needle = Buffer.from(word);
+    for (const name of ["river.db", "river.db-wal", "river.db-shm"]) {
+      const target = path.join(tempDir, name);
+      if (!fs.existsSync(target)) continue;
+      expect(fs.readFileSync(target).includes(needle), name).toBe(false);
+    }
+    expect(fs.readFileSync(file).includes(Buffer.from("Other words stay here."))).toBe(true);
   });
 
   it("refuses to use a closed river", () => {

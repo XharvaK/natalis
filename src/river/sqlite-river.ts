@@ -1,5 +1,6 @@
 // The river in SQLite: one append-only log. Rows are never updated except by forget, never deleted.
 // Forgetting erases text and data in place, removes the text from the search index, and leaves a tombstone.
+// Then the file is compacted, so the forgotten words are not left in its bytes or its write-ahead log.
 
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import type {
@@ -167,9 +168,21 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
       const ftsInsert = fts ? db.prepare("INSERT INTO river_fts(rowid, text) VALUES (?, ?)") : null;
       const ftsDelete = fts ? db.prepare("DELETE FROM river_fts WHERE rowid = ?") : null;
       const eraseStmt = db.prepare("UPDATE rows SET text = NULL, data_json = NULL, forgotten = 1 WHERE seq = ?");
+      const blankActorStmt = db.prepare("UPDATE rows SET actor = NULL WHERE seq = ?");
       const scanTextStmt = db.prepare(
-        "SELECT seq, text, data_json FROM rows WHERE forgotten = 0 AND kind != 'tombstone'",
+        "SELECT seq, text, data_json, actor FROM rows WHERE forgotten = 0 AND kind != 'tombstone'",
       );
+
+      /**
+       * Forgotten words must not stay in the file's bytes. The search index is merged first (FTS5 keeps deleted
+       * terms until it is), the file is rebuilt without its free pages, and the write-ahead log is folded in and
+       * emptied. Runs after the forget's transaction has committed, because VACUUM cannot run inside one.
+       */
+      const compact = (): void => {
+        if (fts) db.exec("INSERT INTO river_fts(river_fts) VALUES('optimize')");
+        db.exec("VACUUM");
+        db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      };
 
       const ensureOpen = (): void => {
         if (closed) throw new RiverError("the river is closed");
@@ -332,8 +345,9 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
             if (match.text.trim() === "") throw new RiverError("forget: text must not be blank");
           }
 
-          return inTransaction(() => {
+          const count = inTransaction(() => {
             const targets = new Set<number>();
+            const actorBlanks = new Set<number>();
 
             for (const seq of match.seqs ?? []) {
               const record = getStmt.get(seq) as RowRecord | undefined;
@@ -345,17 +359,20 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
             }
 
             if (match.text !== undefined) {
-              // Case-insensitive over the text and the data. Tombstones are never matched.
-              const needle = match.text.toLowerCase();
-              const escapedNeedle = JSON.stringify(match.text).slice(1, -1).toLowerCase();
+              // Every word, case-insensitive, in any order. A row matches when its text holds all the words, or
+              // its data does. Tombstones are never matched. An erased row whose actor holds a word loses its actor.
+              const words = forgetWords(match.text);
+              const escapedWords = words.map((word) => JSON.stringify(word).slice(1, -1));
               for (const record of scanTextStmt.iterate() as Iterable<RowRecord>) {
-                if (targets.has(record.seq)) continue;
-                const inText = record.text !== null && record.text.toLowerCase().includes(needle);
+                const inText = record.text !== null && holdsWords(foldText(record.text), words);
+                // Data is JSON text, so a word is also looked for in its escaped form.
+                const data = record.data_json === null ? "" : foldText(record.data_json);
                 const inData =
-                  record.data_json !== null &&
-                  (record.data_json.toLowerCase().includes(needle) ||
-                    record.data_json.toLowerCase().includes(escapedNeedle));
-                if (inText || inData) targets.add(record.seq);
+                  data !== "" && words.every((word, i) => data.includes(word) || data.includes(escapedWords[i] ?? word));
+                if (!inText && !inData) continue;
+                targets.add(record.seq);
+                const actor = record.actor === null ? "" : foldText(record.actor);
+                if (actor !== "" && words.some((word) => actor.includes(word))) actorBlanks.add(record.seq);
               }
             }
 
@@ -363,6 +380,7 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
             if (erased.length === 0) return 0;
             for (const seq of erased) {
               eraseStmt.run(seq);
+              if (actorBlanks.has(seq)) blankActorStmt.run(seq);
               if (ftsDelete) ftsDelete.run(seq);
             }
 
@@ -378,6 +396,8 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
             });
             return erased.length;
           });
+          if (count > 0) compact();
+          return count;
         },
 
         lastSeq(): number {
@@ -518,6 +538,23 @@ function checkInput(row: RiverRowInput, nowMs: () => number): CheckedInput {
   if (row.actor !== undefined) checked.actor = row.actor;
   if (row.text !== undefined) checked.text = row.text;
   return checked;
+}
+
+/** The form forget and the notebook compare text in: NFKC and lower case. */
+function foldText(text: string): string {
+  return text.normalize("NFKC").toLowerCase();
+}
+
+/** The words of a forget, folded. Empty when there are none. */
+function forgetWords(text: string): string[] {
+  return foldText(text)
+    .split(/\s+/)
+    .filter((word) => word.length > 0);
+}
+
+/** True when the folded text holds every word. */
+function holdsWords(folded: string, words: readonly string[]): boolean {
+  return words.length > 0 && words.every((word) => folded.includes(word));
 }
 
 /** Words of a search, with pure punctuation dropped. Shared by the FTS and LIKE paths. */
