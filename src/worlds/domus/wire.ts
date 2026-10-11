@@ -26,7 +26,8 @@ export const ROOM_MAX = 64;
 const CUT_ROOMS_MAX = 64;
 /** The helper's token must be at least this many bytes. */
 export const MIN_TOKEN_BYTES = 32;
-export const SNAPSHOT_FAILURES = ["game_minimized", "no_game_window", "capture_failed"] as const;
+/** The reasons a picture can fail. "minimized" and "not_front" are the helper's refusals to take a picture of an old moment. */
+export const SNAPSHOT_FAILURES = ["game_minimized", "minimized", "not_front", "no_game_window", "capture_failed"] as const;
 export type SnapshotFailure = (typeof SNAPSHOT_FAILURES)[number];
 
 /** A refusal of the wire: the HTTP status and the short error code the helper reads. */

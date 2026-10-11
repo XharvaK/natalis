@@ -184,6 +184,8 @@ describe("acts sync and snapshot (v1)", () => {
       helperSession: "h1", snapshotId: "snap-1", failed: "no_game_window",
     });
     expect(refusal(() => parseSnapshot({ v: 1, helper_session: "h1", snapshot_id: "snap-1" })).code).toBe("invalid_body");
+    expect(parseSnapshot({ v: 1, helper_session: "h1", snapshot_id: "snap-1", failed: "minimized" })).toMatchObject({ failed: "minimized" });
+    expect(parseSnapshot({ v: 1, helper_session: "h1", snapshot_id: "snap-1", failed: "not_front" })).toMatchObject({ failed: "not_front" });
     expect(refusal(() => parseSnapshot({ v: 1, helper_session: "h1", snapshot_id: "snap-1", failed: "x", png_base64: "AA==" })).code).toBe("invalid_body");
     expect(refusal(() => parseSnapshot({ v: 1, helper_session: "h1", snapshot_id: "snap 1", failed: "capture_failed" })).code).toBe("invalid_body");
   });
