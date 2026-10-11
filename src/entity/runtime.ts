@@ -1045,7 +1045,8 @@ class Runtime implements Entity {
             { role: "user", content: `Record:\n${record}\n\nMessage:\n${text}` },
           ],
           effort: "low",
-          maxOutputTokens: 400,
+          // Room for a reasoning model's hidden thinking as well as the short JSON reply.
+          maxOutputTokens: 4000,
         },
         this.abort.signal,
       );
