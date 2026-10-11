@@ -1908,3 +1908,30 @@ describe("repeating wakes", () => {
     expect(readStateFile().wakes).toHaveLength(100);
   });
 });
+
+describe("a world with a model of its own", () => {
+  it("runs that world's turns on its model at its effort, and leaves the main model for the rest", async () => {
+    const main = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const gameModel = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const game = fakeWorld("game");
+    const room = fakeWorld("room");
+    const { entity } = await open(
+      main,
+      { config: { ...CONFIG, effort: "high", worldModels: { game: { model: "fast", effort: "low" } } }, worldModels: { game: gameModel } },
+      [game.world, room.world],
+    );
+    await entity.start();
+
+    game.push("game:slot1", "The kettle is boiling.");
+    await entity.idle();
+    expect(gameModel.requests).toHaveLength(1);
+    expect(gameModel.requests[0]?.effort).toBe("low");
+    expect(main.requests).toHaveLength(0);
+
+    room.push("room:hall", "Anyone home?");
+    await entity.idle();
+    expect(main.requests).toHaveLength(1);
+    expect(main.requests[0]?.effort).toBe("high");
+    expect(gameModel.requests).toHaveLength(1);
+  });
+});

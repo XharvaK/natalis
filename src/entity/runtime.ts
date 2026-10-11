@@ -138,6 +138,8 @@ export type OpenEntityOptions = {
   dir: string;
   config: EntityConfig;
   model: ModelPort;
+  /** A model of its own for one world's turns, keyed by world id (entity.json worldModels). The rest use model. */
+  worldModels?: Record<string, ModelPort>;
   worlds: World[];
   nowMs?: () => number;
   /** Defaults to a scanner with the built-in shapes and no known values. */
@@ -213,6 +215,9 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
   const runtime = new Runtime({
     config,
     model: guardModel(model, scanner),
+    worldModels: Object.fromEntries(
+      Object.entries(options.worldModels ?? {}).map(([world, port]) => [world, guardModel(port, scanner)]),
+    ),
     worlds,
     nowMs,
     scanner,
@@ -428,6 +433,7 @@ type Checked<T> = { ok: true; value: T } | { ok: false; receipt: Receipt };
 type RuntimeInit = {
   config: EntityConfig;
   model: ModelPort;
+  worldModels: Record<string, ModelPort>;
   worlds: World[];
   nowMs: () => number;
   scanner: SecretScanner;
@@ -448,6 +454,7 @@ class Runtime implements Entity {
 
   private readonly config: EntityConfig;
   private readonly model: ModelPort;
+  private readonly worldModels: Record<string, ModelPort>;
   private readonly worlds: World[];
   private readonly worldIds: Map<string, World>;
   private readonly nowMs: () => number;
@@ -501,6 +508,7 @@ class Runtime implements Entity {
   constructor(init: RuntimeInit) {
     this.config = init.config;
     this.model = init.model;
+    this.worldModels = init.worldModels;
     this.worlds = init.worlds;
     this.worldIds = new Map(init.worlds.map((world) => [world.id, world]));
     this.nowMs = init.nowMs;
@@ -798,8 +806,12 @@ class Runtime implements Entity {
     ].join("\n");
 
     this.turnSnapshots.set(turnId, snapshot);
+    // A world with a model of its own runs its turns on that model. A place is named for its world ("domus:...").
+    const world = this.worldFor(thread)?.id ?? "";
+    const worldModel = this.worldModels[world];
+    const effort = worldModel === undefined ? this.config.effort : (this.config.worldModels?.[world]?.effort ?? this.config.effort);
     const { result } = await runTurnWithMessages({
-      model: this.model,
+      model: worldModel ?? this.model,
       tools: this.tools,
       system: this.scanner.redact(system),
       history: [],
@@ -811,7 +823,7 @@ class Runtime implements Entity {
       nowMs: () => this.nowMs(),
       turnId,
       signal: this.abort.signal,
-      ...(this.config.effort === undefined ? {} : { effort: this.config.effort }),
+      ...(effort === undefined ? {} : { effort }),
     }).finally(() => this.turnSnapshots.delete(turnId));
 
     if (result.endedBy === "aborted") {

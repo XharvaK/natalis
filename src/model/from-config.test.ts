@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ModelRequest } from "../contracts.js";
-import { modelFromConfig } from "./from-config.js";
+import { modelFromConfig, worldModelsFromConfig } from "./from-config.js";
 
 // Built at runtime so no token-shaped literal sits in the repository.
 const KEY = ["sk", "test", "abc123"].join("-");
@@ -195,5 +195,23 @@ describe("a backup model named in the model block", () => {
     const port = modelFromConfig(config, { [KEY_VAR]: KEY });
     await expect(port.complete(ask)).rejects.toMatchObject({ kind: "unavailable" });
     expect(sent.map((call) => call.model)).toEqual(["test-model", "test-model", "test-model", "test-model"]);
+  });
+});
+
+describe("worldModelsFromConfig", () => {
+  it("gives each listed world its own model on the same service, without pictures unless it can see", async () => {
+    const sent = stubFetch();
+    const ports = worldModelsFromConfig({ ...config, vision: true }, "high", { game: { model: "fast-model" } }, { [KEY_VAR]: KEY });
+    expect(Object.keys(ports)).toEqual(["game"]);
+    await ports["game"]?.complete({
+      messages: [{ role: "user", content: "look", images: [{ type: "image", mime: "image/png", dataBase64: "AAAA" }] }],
+    });
+    expect(sent[0]?.body["model"]).toBe("fast-model");
+    expect(JSON.stringify(sent[0]?.body)).not.toContain("image_url");
+    expect(JSON.stringify(sent[0]?.body)).toContain("the backup model cannot see it");
+  });
+
+  it("gives no ports when no world has a model of its own", () => {
+    expect(worldModelsFromConfig(config, undefined, undefined, { [KEY_VAR]: KEY })).toEqual({});
   });
 });

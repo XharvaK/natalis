@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 import type { World } from "../../contracts.js";
 import { loadEntityConfig } from "../../entity/config.js";
 import { openEntity } from "../../entity/runtime.js";
-import { modelFromConfig } from "../../model/from-config.js";
+import { modelFromConfig, worldModelsFromConfig } from "../../model/from-config.js";
 import { createSecretScanner } from "../../secrets/index.js";
 import { createDiscordWorld } from "../../worlds/discord/index.js";
 import { createDomusWorld, DOMUS_FILE, parseDomusFile } from "../../worlds/domus/index.js";
@@ -99,7 +99,11 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
     return 1;
   }
 
-  const entity = await openEntity({ dir, config, model: modelFromConfig(config.model), worlds, scanner });
+  const entity = await openEntity({ dir, config, model: modelFromConfig(config.model),
+    worldModels: worldModelsFromConfig(config.model, config.effort, config.worldModels),
+    worlds,
+    scanner,
+  });
   const stopped = new Promise<void>((resolveStopped) => {
     process.once("SIGINT", () => resolveStopped());
     process.once("SIGTERM", () => resolveStopped());

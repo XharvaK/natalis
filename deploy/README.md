@@ -48,7 +48,9 @@ summoner is the alias the Lar knows you by:
 Optional in the `model` block: `"vision": true` when the model can see pictures, and a backup for when the main model
 cannot answer (rate limited, down, or no reply in time), on the same address and key:
 `"fallback": { "model": "<model name>", "effort": "xhigh", "vision": true }`. After a failure, calls go to the backup
-for 10 minutes before the main model is tried again, and the Lar reads a note saying the backup answered. The honesty
+for 10 minutes before the main model is tried again, and the Lar reads a note saying the backup answered. A world can have a model of its own for its turns, on the same address and key, with the main
+model as its backup: `"worldModels": { "domus": { "model": "<model name>", "effort": "medium", "vision": true } }` at
+the top level of entity.json. The honesty
 check (a second model call on each reply) is off unless the entity sets `"holds": { "honesty": true }`.
 
 To connect the Lar to Discord, add `~/lares/<name>/discord.json`. It names the variable that holds the bot token, never

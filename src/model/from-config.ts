@@ -3,7 +3,7 @@
 
 import { withEmulatedTools } from "./emulated-tools.js";
 import { createOpenAICompatiblePort, type OpenAICompatibleOptions } from "./openai-compatible.js";
-import { withBackup } from "./backup.js";
+import { withBackup, withoutPictures } from "./backup.js";
 import type { ModelPort, ModelRequest } from "../contracts.js";
 
 export type ModelConfig = {
@@ -83,4 +83,37 @@ export function modelFromConfig(
 
 function withEmulated(port: ModelPort, config: ModelConfig): ModelPort {
   return config.nativeTools === false ? withEmulatedTools(port) : port;
+}
+
+/** A world's own model, as entity.json's worldModels gives it. */
+export type WorldModelSpec = { model: string; effort?: NonNullable<ModelRequest["effort"]>; vision?: boolean };
+
+/**
+ * One port per world that has a model of its own. Each uses the main model's service, key, context and timeout, and
+ * falls back to the main model itself (at the entity's effort) when it cannot answer.
+ */
+export function worldModelsFromConfig(
+  main: ModelConfig,
+  mainEffort: ModelRequest["effort"] | undefined,
+  worlds: Record<string, WorldModelSpec> | undefined,
+  env: Record<string, string | undefined> = process.env,
+): Record<string, ModelPort> {
+  const ports: Record<string, ModelPort> = {};
+  for (const [world, spec] of Object.entries(worlds ?? {})) {
+    const port = modelFromConfig({
+      ...main,
+      model: spec.model,
+      vision: spec.vision === true,
+      fallback: {
+        model: main.model,
+        ...(mainEffort === undefined ? {} : { effort: mainEffort }),
+        ...(main.vision === undefined ? {} : { vision: main.vision }),
+      },
+    }, env);
+    // The look tool is offered on the main model's word; a world model that cannot see gets a plain line instead.
+    ports[world] = spec.vision === true
+      ? port
+      : { info: port.info, complete: (request, signal) => port.complete(withoutPictures(request), signal) };
+  }
+  return ports;
 }

@@ -27,6 +27,19 @@ export type EntityConfig = {
   holds?: { honesty?: boolean };
   /** Daily limits. Left out, there is none. */
   limits?: { turnsPerDay?: number };
+  /**
+   * A model of its own for the turns of one world (keyed by world id, e.g. "domus"): same service and key as the main
+   * model. Its backup is the main model at the entity's effort. Left out, every world uses the main model.
+   */
+  worldModels?: Record<string, WorldModelConfig>;
+};
+
+export type WorldModelConfig = {
+  model: string;
+  /** Effort for this world's turns. Left out, the entity's effort. */
+  effort?: Effort;
+  /** True when this model can see pictures. Never assumed. */
+  vision?: boolean;
 };
 
 export const ENTITY_FILE = "entity.json";
@@ -54,7 +67,7 @@ export function parseEntityConfig(value: unknown): EntityConfig {
   const root = objectOf(value, ENTITY_FILE);
   onlyKeys(
     root,
-    ["name", "timeZone", "model", "effort", "ceiling", "summoner", "owner", "holds", "limits"],
+    ["name", "timeZone", "model", "effort", "ceiling", "summoner", "owner", "holds", "limits", "worldModels"],
     ENTITY_FILE,
   );
   if (root["summoner"] !== undefined && root["owner"] !== undefined) {
@@ -80,7 +93,27 @@ export function parseEntityConfig(value: unknown): EntityConfig {
   }
   if (root["holds"] !== undefined) config.holds = parseHolds(root["holds"]);
   if (root["limits"] !== undefined) config.limits = parseLimits(root["limits"]);
+  if (root["worldModels"] !== undefined) config.worldModels = parseWorldModels(root["worldModels"]);
   return config;
+}
+
+function parseWorldModels(value: unknown): Record<string, WorldModelConfig> {
+  const block = objectOf(value, "worldModels");
+  const models: Record<string, WorldModelConfig> = {};
+  for (const [world, entry] of Object.entries(block)) {
+    const where = `worldModels.${world}`;
+    if (!/^[a-z][a-z0-9-]*$/.test(world)) throw new Error(`${where}: a world id is lower-case letters, digits and dashes.`);
+    const item = objectOf(entry, where);
+    onlyKeys(item, ["model", "effort", "vision"], where);
+    const model: WorldModelConfig = { model: textOf(item["model"], `${where}.model`) };
+    if (item["effort"] !== undefined) {
+      if (!isEffort(item["effort"])) throw new Error(`${where}.effort must be one of ${EFFORTS.join(", ")}.`);
+      model.effort = item["effort"];
+    }
+    if (item["vision"] !== undefined) model.vision = flagOf(item["vision"], `${where}.vision`);
+    models[world] = model;
+  }
+  return models;
 }
 
 function parseLimits(value: unknown): { turnsPerDay?: number } {
