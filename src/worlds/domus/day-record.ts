@@ -182,3 +182,25 @@ export function personLine(person: unknown, stamp: (ms: number) => string): stri
   ].filter(defined).join(", ");
   return tail === "" ? `${who}.` : `${who}: ${tail}.`;
 }
+
+/** One act of a memory answer as a line: the act's day in front of its time. Undefined when the act has no readable name. */
+export function memoryActLine(act: unknown): string | undefined {
+  const day = whole(rec(act)?.day);
+  return actText(act, day === undefined ? undefined : `Day ${day}`);
+}
+
+/** A wall time as "2026-10-12 14:20" in the Lar's zone (the host's zone when none is given, or the zone is not known). */
+export function localStamp(ms: number, timeZone?: string): string {
+  const options: Intl.DateTimeFormatOptions = {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  };
+  let format: Intl.DateTimeFormat;
+  try {
+    format = new Intl.DateTimeFormat("en-GB", { ...options, ...(timeZone === undefined ? {} : { timeZone }) });
+  } catch {
+    format = new Intl.DateTimeFormat("en-GB", options);
+  }
+  const parts: Record<string, string> = {};
+  for (const part of format.formatToParts(new Date(ms))) parts[part.type] = part.value;
+  return `${parts["year"]}-${parts["month"]}-${parts["day"]} ${parts["hour"]}:${parts["minute"]}`;
+}

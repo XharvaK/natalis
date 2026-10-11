@@ -12,8 +12,10 @@ import { gameActTool, type GameActContext } from "./game-act.js";
 import { hasDayRecord } from "./day-record.js";
 import { gameLookTool, type LookContext } from "./look.js";
 import { gameOverlaySayTool, type OverlayContext, overlayItems } from "./overlay.js";
+import { expireMemory, gameMemoryTool, handMemory, type MemoryContext, settleMemory, withdrawMemory } from "./memory.js";
 import { isStopOn } from "../../entity/stop.js";
 import { expireDue, pendingCounts, syncActs, type ThreadNote, withdrawUndone, withholdForStop } from "./acts.js";
+import { localStamp } from "./day-record.js";
 import { choicesSignature, optionsOf, renderView, viewBrief } from "./options.js";
 import {
   checkSnapshot, expireSnapshots, gameSnapshotTool, openSnapshots, SNAPSHOT_PICTURE_NAME, SNAPSHOT_STATUS, settleFailed,
@@ -24,8 +26,8 @@ import {
   takeLook, writeAttention,
 } from "./store.js";
 import {
-  BODY_LIMIT, canonicalJson, DOMUS_WORLD_ID, gameThreadOf, MIN_TOKEN_BYTES, observationDigest, parseActSync, parseFeed,
-  parseHeartbeat, parseObservation, parseSnapshot, parseUndo, type ParsedObservation, SNAPSHOT_BODY_LIMIT, tokenProblem,
+  BODY_LIMIT, canonicalJson, DOMUS_WORLD_ID, gameThreadOf, MEMORY_BODY_LIMIT, MIN_TOKEN_BYTES, observationDigest, parseActSync, parseFeed,
+  parseHeartbeat, parseMemory, parseObservation, parseSnapshot, parseUndo, type ParsedObservation, SNAPSHOT_BODY_LIMIT, tokenProblem,
   tokensEqual, WireError,
 } from "./wire.js";
 
@@ -65,7 +67,7 @@ const TOKEN_MESSAGE: Record<"missing" | "too_short" | "matches_other", string> =
 };
 
 const ROUTES = new Set([
-  "/domus/observation", "/domus/heartbeat", "/domus/acts/sync", "/domus/snapshot", "/domus/feed", "/domus/undo",
+  "/domus/observation", "/domus/heartbeat", "/domus/acts/sync", "/domus/snapshot", "/domus/feed", "/domus/undo", "/domus/memory",
 ]);
 
 function send(res: ServerResponse, status: number, body: unknown): void {
@@ -159,6 +161,11 @@ function observationEvent(
     view: GAME_VIEW,
     brief: viewBrief(parsed.percepts, hasDayRecord(parsed.normalized.day)),
   };
+}
+
+/** The answer to a question she asked the game: one event on her thread, from the game, that wakes her. */
+function answerEvent(note: ThreadNote, atMs: number): WorldEvent {
+  return { world: DOMUS_WORLD_ID, place: note.thread, thread: note.thread, actor: "game", source: "outside", text: note.text, data: note.data, atMs, wake: note.wake };
 }
 
 /** The game thread hears once that the game stopped being attached (the helper said so, or went quiet). */
@@ -273,6 +280,20 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     return { db: current, nowMs, stopped: () => isStopOn(options.dir), outwardHold: (texts) => shelf.outwardHold(texts) };
   };
 
+  /** What the game_memory tool reads on each call: null while the world is not running. */
+  const openMemory = (): MemoryContext => {
+    const current = db;
+    const heartbeats = book;
+    if (!current || !heartbeats) return null;
+    return {
+      db: current,
+      nowMs,
+      stopped: () => isStopOn(options.dir),
+      attachedSession: (at: number) => heartbeats.attachedSession(at),
+      lastAttachedMs: () => heartbeats.lastAttachedAt(),
+    };
+  };
+
   /** What the game_attention tool reads on each call: null while the world is not running. */
   const openAttention = (): AttentionContext => {
     const current = db;
@@ -355,14 +376,18 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     const stopped = isStopOn(options.dir);
     const withheld = stopped ? withholdForStop(requireDb(), now) : [];
     const pictures = stopped ? withdrawSnapshots(requireDb(), now) : expireSnapshots(requireDb(), now);
+    const questions = stopped ? withdrawMemory(requireDb(), now) : expireMemory(requireDb(), now);
     const result = syncActs(requireDb(), { attachment: parsed.helperSession, events: parsed.events, nowMs: now });
     const snapshots = stopped ? [] : openSnapshots(requireDb(), { helperSession: parsed.helperSession, nowMs: now });
+    // The questions owed are handed to this helper, which answers them on its own time (POST /domus/memory).
+    const memory = stopped ? [] : handMemory(requireDb(), { helperSession: parsed.helperSession, nowMs: now });
     reviewAttention(requireDb(), now, requireBook().attachedSession(now));
     const look = stopped ? false : takeLook(requireDb(), parsed.helperSession, now);
     for (const note of withheld) deliver(noteEvent(note, now));
     for (const note of pictures) deliver(noteEvent(note, now));
+    for (const note of questions) deliver(noteEvent(note, now));
     send(res, 200, {
-      status: "ok", applied: result.applied, acts: result.acts, planned: result.planned, snapshots, ...(look ? { look: true } : {}),
+      status: "ok", applied: result.applied, acts: result.acts, planned: result.planned, snapshots, memory, ...(look ? { look: true } : {}),
     });
     for (const note of result.notes) deliver(noteEvent(note, now));
   }
@@ -390,6 +415,26 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       wake: false,
     });
     for (const note of withdrawn) deliver(noteEvent(note, now));
+  }
+
+  /**
+   * The helper's answer to a question she asked: applied once, to the session it was handed to, and only within its two
+   * minutes and while the summoner's stop is off (the stop withdraws what is open first). The answer wakes her.
+   */
+  function memoryRoute(body: unknown, res: ServerResponse): void {
+    const parsed = parseMemory(body);
+    const now = nowMs();
+    const db = requireDb();
+    for (const note of isStopOn(options.dir) ? withdrawMemory(db, now) : expireMemory(db, now)) deliver(noteEvent(note, now));
+    const result = settleMemory(db, {
+      askId: parsed.askId,
+      helperSession: parsed.helperSession,
+      facts: parsed.facts,
+      nowMs: now,
+      stamp: (ms) => localStamp(ms, options.timeZone),
+    });
+    send(res, 200, { status: "ok", applied: result.applied });
+    if (result.applied) deliver(answerEvent(result.note, now));
   }
 
   /** The helper's answer to a picture request: the picture goes on the shelf and the request is marked taken, or the reason is kept. */
@@ -443,7 +488,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
         send(res, 404, { error: "not_found" });
         return;
       }
-      const raw = await readBody(req, path === "/domus/snapshot" ? SNAPSHOT_BODY_LIMIT : BODY_LIMIT);
+      const raw = await readBody(req, path === "/domus/snapshot" ? SNAPSHOT_BODY_LIMIT : path === "/domus/memory" ? MEMORY_BODY_LIMIT : BODY_LIMIT);
       if (raw === "too_large") {
         send(res, 413, { error: "payload_too_large" });
         return;
@@ -461,6 +506,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
           return;
         }
         case "/domus/snapshot": return snapshotRoute(body, res);
+        case "/domus/memory": return memoryRoute(body, res);
       }
     } catch (error) {
       if (error instanceof WireError) {
@@ -500,6 +546,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       if (isStopOn(options.dir)) for (const note of withholdForStop(db, now)) deliver(noteEvent(note, now));
       for (const note of expireDue(db, now)) deliver(noteEvent(note, now));
       for (const note of isStopOn(options.dir) ? withdrawSnapshots(db, now) : expireSnapshots(db, now)) deliver(noteEvent(note, now));
+      for (const note of isStopOn(options.dir) ? withdrawMemory(db, now) : expireMemory(db, now)) deliver(noteEvent(note, now));
       reviewAttention(db, now, book?.attachedSession(now));
       if (now - lastPruneMs >= PRUNE_MS) {
         lastPruneMs = now;
@@ -577,7 +624,10 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     },
 
     tools() {
-      return [gameActTool(open), gameSnapshotTool(openSnapshot), gameAttentionTool(openAttention), gameLookTool(openLook), gameOverlaySayTool(openOverlay)];
+      return [
+        gameActTool(open), gameSnapshotTool(openSnapshot), gameAttentionTool(openAttention), gameLookTool(openLook),
+        gameOverlaySayTool(openOverlay), gameMemoryTool(openMemory),
+      ];
     },
 
     about() {

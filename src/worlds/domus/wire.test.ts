@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BODY_LIMIT, canonicalJson, gameThreadOf, isActPhase, MAX_SKEW_MS, MAX_WINDOW_MS, MIN_TOKEN_BYTES, observationDigest,
-  parseActSync, parseFeed, parseHeartbeat, parseObservation, parseSnapshot, parseUndo, tokenProblem, WireError,
+  MEMORY_BODY_LIMIT, parseActSync, parseFeed, parseHeartbeat, parseMemory, parseObservation, parseSnapshot, parseUndo, tokenProblem, WireError,
 } from "./wire.js";
 
 const NOW = 1_800_000_000_000;
@@ -205,5 +205,38 @@ describe("tokens and game threads", () => {
     expect(gameThreadOf("slot3")).toBe("domus:slot3");
     expect(gameThreadOf("My Town/1")).toBe("domus:My_Town_1");
     expect(gameThreadOf("")).toBe("domus:unknown");
+  });
+});
+
+describe("the memory answer (v1)", () => {
+  const ACT = { act_id: "a-1", at: "14:20:00.000 day:3 week:0", minutes: 45, what: "Brew Glimmer", by: "user_intent", needs: { Gloop: 30 }, moodlets: ["Zingy"], reactions: ["Flurbed"], people: [{ who: "Mara Quill", role: "target" }], day: 3, at_ms: NOW - 1000 };
+  const body = (facts: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({ v: 1, helper_session: "h1", ask_id: "ask-1", facts, ...extra });
+
+  it("accepts the answer as the helper sends it, with the act lines and the people as they are", () => {
+    expect(parseMemory(body({ matched: 2, acts: [ACT], people: [{ who: "Mara Quill", acts: 12, last_at_ms: NOW - 1000 }] }))).toEqual({
+      helperSession: "h1", askId: "ask-1", facts: { matched: 2, acts: [ACT], people: [{ who: "Mara Quill", acts: 12, last_at_ms: NOW - 1000 }] },
+    });
+    expect(parseMemory(body({ matched: 0, acts: [], people: [] })).facts).toEqual({ matched: 0, acts: [], people: [] });
+  });
+
+  it("refuses an unknown key, a wrong version, a bad ask id, a bad count, and a fact it does not know", () => {
+    expect(refusal(() => parseMemory({ ...body({ matched: 0, acts: [], people: [] }), extra: 1 })).code).toBe("invalid_body");
+    expect(refusal(() => parseMemory({ ...body({ matched: 0, acts: [], people: [] }), v: 2 })).code).toBe("invalid_body");
+    expect(refusal(() => parseMemory(body({ matched: 0, acts: [], people: [] }, { ask_id: "a b" }))).code).toBe("invalid_body");
+    expect(refusal(() => parseMemory(body({ matched: -1, acts: [], people: [] }))).code).toBe("invalid_body");
+    expect(refusal(() => parseMemory(body({ matched: 0, acts: [], people: [], score: 9 }))).code).toBe("invalid_body");
+    expect(refusal(() => parseMemory(body({ matched: 0, acts: [{ ...ACT, verdict: "good" }], people: [] }))).code).toBe("invalid_body");
+    expect(refusal(() => parseMemory(body({ matched: 0, acts: [], people: [{ who: "Mara", acts: "many" }] }))).code).toBe("invalid_body");
+    expect(refusal(() => parseMemory(body({ matched: 0, acts: [], people: [] }, { facts: undefined, helper_session: "" }))).code).toBe("invalid_body");
+  });
+
+  it("holds at most twelve act lines and six people", () => {
+    expect(parseMemory(body({ matched: 12, acts: Array.from({ length: 12 }, () => ACT), people: [] })).facts.acts).toHaveLength(12);
+    expect(refusal(() => parseMemory(body({ matched: 13, acts: Array.from({ length: 13 }, () => ACT), people: [] }))).code).toBe("invalid_body");
+    expect(refusal(() => parseMemory(body({ matched: 0, acts: [], people: Array.from({ length: 7 }, () => ({ who: "Mara" })) }))).code).toBe("invalid_body");
+  });
+
+  it("reads at most sixteen kilobytes of body, in the route's own limit", () => {
+    expect(MEMORY_BODY_LIMIT).toBe(16 * 1024);
   });
 });

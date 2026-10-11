@@ -534,8 +534,8 @@ describe("game pictures: the Lar asks, the helper takes, the shelf keeps", () =>
 describe("the world's surface", () => {
   it("offers one game tool, says what it is about, and refuses words", async () => {
     expect(world?.id).toBe("domus");
-    expect(world?.tools().map((item) => item.spec.name)).toEqual(["game_act", "game_snapshot", "game_attention", "game_look", "game_overlay_say"]);
-    expect(world?.tools().map((item) => item.spec.safeWhenStopped)).toEqual([undefined, undefined, undefined, undefined, undefined]);
+    expect(world?.tools().map((item) => item.spec.name)).toEqual(["game_act", "game_snapshot", "game_attention", "game_look", "game_overlay_say", "game_memory"]);
+    expect(world?.tools().map((item) => item.spec.safeWhenStopped)).toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
     expect(world?.about?.()).toBe("The Sims 4 (Domus): your household's game, at domus:<world>, while your summoner's helper is attached.");
     expect(await world?.say("domus:slot3", "hello")).toMatchObject({ ok: false, refused: { code: "no_words" } });
   });
@@ -771,5 +771,89 @@ describe("the game overlay: her line reaches the helper's feed", () => {
 
   it("refuses the feed's body that is not a feed, as before", async () => {
     expect(await call("/domus/feed", { v: 1 })).toEqual({ status: 400, body: { error: "invalid_body" } });
+  });
+});
+
+describe("game memory: she asks the game, the helper answers from its record", () => {
+  const askMemory = (about: string, thread = "domus:slot3"): Promise<Receipt> =>
+    tool("game_memory").run({ about }, { thread, turnId: "t-memory", nowMs: clock } as ToolContext);
+  const sync = (session = "helper-1") => call("/domus/acts/sync", { v: 1, helper_session: session, events: [] });
+  const answer = (askId: string, facts: Record<string, unknown>, session = "helper-1") =>
+    call("/domus/memory", { v: 1, helper_session: session, ask_id: askId, facts });
+  const askIdOf = (body: Record<string, unknown>): string => ((body.memory as Array<{ ask_id: string }>)[0]?.ask_id) ?? "";
+  const MEMORY_ACT = { act_id: "a-1", at: "14:20:00.000 day:3 week:0", minutes: 45, what: "Brew Glimmer", by: "user_intent", needs: { Gloop: 30 }, day: 3, at_ms: T0 };
+
+  it("hands her question to the helper's sync once, with its id and its words", async () => {
+    await attach();
+    expect(await askMemory("Brew Glimmer")).toMatchObject({ ok: true });
+    const first = await sync();
+    expect(first.body.memory).toEqual([{ ask_id: expect.any(String), about: "Brew Glimmer" }]);
+    expect((await sync()).body.memory).toEqual([]);
+  });
+
+  it("applies the helper's answer once, as one event on her thread that wakes her, and says what matched", async () => {
+    await attach();
+    await askMemory("Brew Glimmer");
+    const askId = askIdOf((await sync()).body);
+    const before = events.length;
+    const reply = await answer(askId, { matched: 1, acts: [MEMORY_ACT], people: [{ who: "Mara Quill", acts: 1, last_at_ms: T0 }] });
+    expect(reply).toEqual({ status: 200, body: { status: "ok", applied: true } });
+    expect(events).toHaveLength(before + 1);
+    expect(events[before]).toMatchObject({ world: "domus", thread: "domus:slot3", actor: "game", source: "outside", wake: true });
+    expect(events[before]?.text).toContain("What the game remembers about \"Brew Glimmer\" (1 matched, newest first):");
+    expect(events[before]?.text).toContain("- Day 3, 14:20, 45 min: brew glimmer (your act); gloop +30.");
+    expect(events[before]?.text).toContain("- Mara Quill: 1 act together, last at ");
+    expect(await answer(askId, { matched: 0, acts: [], people: [] })).toEqual({ status: 200, body: { status: "ok", applied: false } });
+    expect(events).toHaveLength(before + 1);
+  });
+
+  it("says the game remembers nothing when nothing matched", async () => {
+    await attach();
+    await askMemory("Lark");
+    const askId = askIdOf((await sync()).body);
+    await answer(askId, { matched: 0, acts: [], people: [] });
+    expect(events.at(-1)?.text).toBe("The game remembers nothing about \"Lark\".");
+  });
+
+  it("answers an unknown or a settled question with applied false, and refuses a wrong body as invalid", async () => {
+    await attach();
+    expect(await answer("never-asked", { matched: 0, acts: [], people: [] })).toEqual({ status: 200, body: { status: "ok", applied: false } });
+    expect(await call("/domus/memory", { v: 1, helper_session: "helper-1", ask_id: "x-1", facts: { matched: 0, acts: [], people: [], score: 1 } }))
+      .toEqual({ status: 400, body: { error: "invalid_body" } });
+  });
+
+  it("refuses a body over sixteen kilobytes as too large", async () => {
+    await attach();
+    const huge = "m".repeat(17 * 1024);
+    expect(await answer("x-2", { matched: 0, acts: [], people: [{ who: huge, acts: 1, last_at_ms: T0 }] }))
+      .toEqual({ status: 413, body: { error: "payload_too_large" } });
+  });
+
+  it("expires a question two minutes after she asked, with a note and no wake, and no longer hands it over", async () => {
+    await attach();
+    await askMemory("Brew Glimmer");
+    clock += 119_000;
+    expect((await sync()).body.memory).toEqual([{ ask_id: expect.any(String), about: "Brew Glimmer" }]);
+    expect(events.some((event) => event.text?.includes("did not answer"))).toBe(false);
+    clock += 1_000;
+    const reply = await sync();
+    expect(reply.body.memory).toEqual([]);
+    expect(events.at(-1)).toMatchObject({ text: "The game did not answer about \"Brew Glimmer\".", source: "body", wake: false });
+  });
+
+  it("withdraws her open question when the summoner's stop is on, and hands over nothing while it is on", async () => {
+    await attach();
+    await askMemory("Brew Glimmer");
+    writeStop(dir, "test");
+    const reply = await sync();
+    expect(reply.body.memory).toEqual([]);
+    expect(events.at(-1)).toMatchObject({ text: "Your question to the game about \"Brew Glimmer\" was withdrawn: your summoner's emergency stop is on.", wake: false });
+    expect(await askMemory("Pim")).toMatchObject({ ok: false, refused: { code: "stopped" } });
+  });
+
+  it("refuses a second question on the same thread while one is open", async () => {
+    await attach();
+    expect(await askMemory("Brew Glimmer")).toMatchObject({ ok: true });
+    expect(await askMemory("Pim")).toMatchObject({ ok: false, refused: { code: "already_asked" } });
   });
 });
