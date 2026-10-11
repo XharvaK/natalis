@@ -10,7 +10,7 @@ import type { AttachmentNow } from "./body.js";
 import { gameActTool, type GameActContext } from "./game-act.js";
 import { isStopOn } from "../../entity/stop.js";
 import { expireDue, pendingCounts, syncActs, type ThreadNote, withdrawUndone, withholdForStop } from "./acts.js";
-import { choicesSignature, optionsOf, renderView } from "./options.js";
+import { choicesSignature, optionsOf, renderView, viewBrief } from "./options.js";
 import {
   checkSnapshot, expireSnapshots, gameSnapshotTool, openSnapshots, SNAPSHOT_PICTURE_NAME, SNAPSHOT_STATUS, settleFailed,
   settleTaken, type SnapshotContext, withdrawSnapshots,
@@ -114,6 +114,9 @@ function listen(server: Server, host: string, port: number): Promise<void> {
   });
 }
 
+/** The view key of every game view (WorldEvent.view): an older one on a game thread shows its brief in her turn. */
+export const GAME_VIEW = "domus";
+
 /** An admitted view becomes one event on its game thread: outside text (the game's), with the choices and their refs. */
 function observationEvent(parsed: ParsedObservation, attachment: AttachmentNow, lastChoices: string | undefined): WorldEvent {
   const thread = gameThreadOf(parsed.fields.world);
@@ -140,6 +143,8 @@ function observationEvent(parsed: ParsedObservation, attachment: AttachmentNow, 
     data,
     atMs: parsed.fields.sourceTimeMs,
     wake: true,
+    view: GAME_VIEW,
+    brief: viewBrief(parsed.percepts),
   };
 }
 

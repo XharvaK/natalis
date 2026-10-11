@@ -179,6 +179,16 @@ describe("observations", () => {
     expect(event?.data).toMatchObject({ observationId: "helper-1.1", world: "slot3", options: VIEW });
   });
 
+  it("names every view one domus view, with a brief of its percept lines only, so an older view shrinks in her turn", async () => {
+    await attach();
+    await call("/domus/observation", viewBody({ portrait: { zone: { room_label: "Test kitchen" } } }));
+    const [event] = events;
+    expect(event).toMatchObject({ view: "domus", brief: "- sim arrives: subject Pim Dorrow" });
+    expect(event?.brief).not.toContain("Your body now");
+    expect(event?.brief).not.toContain("Choices");
+    expect(event?.text).toContain("Your body now:");
+  });
+
   it("answers the same id and digest 200 duplicate with the first receipt time, and emits nothing again", async () => {
     const body = viewBody();
     await call("/domus/observation", body);

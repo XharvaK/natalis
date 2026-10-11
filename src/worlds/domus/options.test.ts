@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { OptionObject } from "./answers.js";
-import { choicesSignature, findOption, labelOf, optionsOf, refsOf, renderView, VIEW_TEXT_MAX } from "./options.js";
+import { BRIEF_MAX, choicesSignature, findOption, labelOf, optionsOf, refsOf, renderView, VIEW_TEXT_MAX, viewBrief } from "./options.js";
 
 const TABLE: OptionObject[] = [
   { object: "Test kettle", object_id: "obj-kettle", where: "here, 2.0 m", acts: [
@@ -171,5 +171,27 @@ describe("rendering the choices of a whole lot", () => {
 
   it("names the view's size as twenty thousand characters", () => {
     expect(VIEW_TEXT_MAX).toBe(20_000);
+  });
+});
+
+describe("the brief of an older view", () => {
+  it("gives the percept lines only, in the words the view shows them, with no body and no choices", () => {
+    const brief = viewBrief([
+      { kind: "sim_arrives", salience: 0, facts: { subject: "Pim Dorrow" } },
+      { kind: "sleep_onset", salience: 0, facts: {} },
+    ]);
+    expect(brief).toBe("- sim arrives: subject Pim Dorrow\n- She fell asleep.");
+  });
+
+  it("says An earlier view. when there are no percept lines", () => {
+    expect(viewBrief([])).toBe("An earlier view.");
+  });
+
+  it("stays short, and says how many percepts it left out", () => {
+    const long = "z".repeat(80);
+    const percepts = Array.from({ length: 100 }, (_, index) => ({ kind: `kind_${index}`, salience: 0, facts: { a: long, b: long } }));
+    const brief = viewBrief(percepts);
+    expect(brief.length).toBeLessThanOrEqual(BRIEF_MAX + 100);
+    expect(brief).toMatch(/more not shown\)/);
   });
 });
