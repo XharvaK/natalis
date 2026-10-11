@@ -16,7 +16,7 @@ import { bodyRefusal, createSandboxWorld, defaultBodyRoot, parseSandboxFile, SAN
 import { createWebWorld, loadWebFile, WEB_FILE } from "../../worlds/web/index.js";
 import { flagValue } from "./args.js";
 import { DISCORD_FILE, parseDiscordFile } from "./discord-file.js";
-import { heldValues, knownValueList } from "./known-values.js";
+import { heldValues, knownValueList, otherThanHelper } from "./known-values.js";
 
 export const RUN_USAGE = "Usage: natalis run --dir <entity folder>";
 export { DISCORD_FILE, parseDiscordFile, type DiscordFile } from "./discord-file.js";
@@ -83,8 +83,14 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
       err(`${DOMUS_FILE} names ${domus.tokenEnv} for the helper token, but it is not set.`);
       return 1;
     }
-    // The helper's token must differ from every other token the body holds: the model key and the bot token.
-    const otherTokens = knownValueList({ model: held.model, discord: held.discord, vault: [] });
+    // The helper's token must differ from every other token the body holds: the model key, the bot token and the vault.
+    let otherTokens: string[];
+    try {
+      otherTokens = otherThanHelper(dir, config, held);
+    } catch (error) {
+      err(error instanceof Error ? error.message : String(error));
+      return 1;
+    }
     worlds.push(createDomusWorld({ dir, token, ...(domus.host !== undefined ? { host: domus.host } : {}),
       ...(domus.port !== undefined ? { port: domus.port } : {}), otherTokens }));
   }

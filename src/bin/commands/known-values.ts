@@ -62,3 +62,12 @@ export function knownValueList(held: HeldValues): string[] {
 function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
 }
+
+/**
+ * The values the helper's token must differ from: the model key, the bot token and every web vault value. A helper token
+ * equal to a vault value would let one leak expose the other, so the vault is read here as well.
+ */
+export function otherThanHelper(dir: string, config: EntityConfig, held: HeldValues): string[] {
+  const vault = heldValues(dir, config, { vault: true }).vault;
+  return knownValueList({ model: held.model, discord: held.discord, vault });
+}
