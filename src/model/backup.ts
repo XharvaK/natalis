@@ -28,16 +28,37 @@ export type BackupOptions = {
    * be larger is not sent to the backup: the backup is not tried and the error says why, rather than overflowing it.
    */
   backupContextTokens?: number;
+  /** After the main model fails, how long calls go straight to the backup before the main one is tried again. Default 10 minutes. */
+  holdMs?: number;
+  /** The clock. Injected in tests. */
+  nowMs?: () => number;
 };
 
+/** How long, after the main model failed, calls go straight to the backup. A turn's later calls do not wait out the main model's retries again. */
+export const BACKUP_HOLD_MS = 10 * 60_000;
+
 export function withBackup(options: BackupOptions): ModelPort {
+  const now = options.nowMs ?? Date.now;
+  const holdMs = options.holdMs ?? BACKUP_HOLD_MS;
+  /** Until this time, the main model is skipped: it failed a moment ago. */
+  let skipMainUntil = 0;
   return {
     info: options.primary.info,
     async complete(request: ModelRequest, signal?: AbortSignal): Promise<ModelResponse> {
       try {
-        return await options.primary.complete(request, signal);
+        if (now() < skipMainUntil) {
+          throw new ModelError(
+            `the main model failed less than ${Math.round(holdMs / 60_000)} minutes ago, so this call went to the backup`,
+            "unavailable",
+            0,
+          );
+        }
+        const answer = await options.primary.complete(request, signal);
+        skipMainUntil = 0;
+        return answer;
       } catch (err) {
         if (!isServiceFailure(err) || signal?.aborted) throw err;
+        if (now() >= skipMainUntil) skipMainUntil = now() + holdMs;
         const sent = toBackupRequest(request, options);
         if (options.backupContextTokens !== undefined) {
           const estimate = estimateTokens(sent);

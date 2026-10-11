@@ -208,6 +208,38 @@ describe("the backup model", () => {
   });
 });
 
+describe("the backup hold", () => {
+  it("sends calls straight to the backup for a while after the main model failed, then tries the main one again", async () => {
+    let clock = 1_000;
+    let mainDown = true;
+    const mainCalls: ModelRequest[] = [];
+    const main: ModelPort = {
+      info: { id: "fake:main", contextTokens: 8000, nativeTools: true },
+      async complete(sent: ModelRequest): Promise<ModelResponse> {
+        mainCalls.push(sent);
+        if (mainDown) throw new ModelError("service is down", "unavailable", 4);
+        return answer("from the main model");
+      },
+    };
+    const backup = port("backup", answer("from the backup"));
+    const model = withBackup({ primary: main, backup, backupName: "backup-model", backupSeesPictures: true, holdMs: 60_000, nowMs: () => clock });
+
+    await model.complete(request);
+    expect(mainCalls).toHaveLength(1);
+
+    clock += 30_000;
+    mainDown = false;
+    expect(await model.complete(request)).toMatchObject({ content: "from the backup", servedBy: "backup-model" });
+    expect(mainCalls).toHaveLength(1);
+
+    clock += 31_000;
+    const back = await model.complete(request);
+    expect(back.content).toBe("from the main model");
+    expect(back.servedBy).toBeUndefined();
+    expect(mainCalls).toHaveLength(2);
+  });
+});
+
 describe("estimateTokens", () => {
   it("counts characters over 4, the context's own rough size, plus the output allowance", () => {
     expect(estimateTokens({ messages: [{ role: "user", content: "x".repeat(40) }] })).toBe(10);
