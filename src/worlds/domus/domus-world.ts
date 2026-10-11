@@ -22,7 +22,7 @@ import {
 } from "./snapshot.js";
 import {
   admitObservation, forgetInDomusFile, forgetText, HeartbeatBook, inTransaction, markSpanUndoneIn, openDomusDb, pruneObservations,
-  takeLook, writeAttention,
+  takeLook, takeLookAskers, writeAttention,
 } from "./store.js";
 import {
   BODY_LIMIT, canonicalJson, DOMUS_WORLD_ID, gameThreadOf, MEMORY_BODY_LIMIT, MIN_TOKEN_BYTES, observationDigest, parseActSync, parseFeed,
@@ -127,13 +127,16 @@ export const GAME_VIEW = "domus";
 
 /**
  * An admitted view becomes one event on its game thread: outside text (the game's), with the choices and their refs.
- * It wakes her only when her attention says so (wake); the body block starts with her attention line.
+ * It wakes her only when her attention says so (wake); the body block starts with her attention line. A copy for another
+ * thread (onThread: the thread that asked for a look) carries no attention line and no "same choices" shorthand.
  */
 function observationEvent(
-  parsed: ParsedObservation, attachment: AttachmentNow, lastChoices: string | undefined, attention: { line: string; wake: boolean },
+  parsed: ParsedObservation, attachment: AttachmentNow, lastChoices: string | undefined, attention: { line?: string; wake: boolean },
+  onThread?: string,
 ): WorldEvent {
-  const thread = gameThreadOf(parsed.fields.world);
-  const alias = thread.slice(DOMUS_WORLD_ID.length + 1);
+  const gameThread = gameThreadOf(parsed.fields.world);
+  const thread = onThread ?? gameThread;
+  const alias = gameThread.slice(DOMUS_WORLD_ID.length + 1);
   const options = optionsOf(parsed.options ?? []);
   const data: Record<string, unknown> = {
     observationId: parsed.observationId,
@@ -296,8 +299,9 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
   /** What the game_attention tool reads on each call: null while the world is not running. */
   const openAttention = (): AttentionContext => {
     const current = db;
-    if (!current) return null;
-    return { db: current, nowMs, timeZone: options.timeZone };
+    const heartbeats = book;
+    if (!current || !heartbeats) return null;
+    return { db: current, nowMs, timeZone: options.timeZone, attachedSession: (at: number) => heartbeats.attachedSession(at) };
   };
 
   /**
@@ -352,6 +356,13 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       const attention = attendView(thread, parsed, now);
       deliver(observationEvent(parsed, attachmentAt(now), choicesShown.get(thread), attention));
       choicesShown.set(thread, choicesSignature(optionsOf(parsed.options ?? [])));
+      // A look view answers the looks asked for this helper session, from any thread: each thread that asked hears it too.
+      if (parsed.percepts.some((item) => item.kind === "look")) {
+        for (const asker of takeLookAskers(requireDb(), parsed.fields.attachment, now)) {
+          if (asker === thread) continue;
+          deliver(observationEvent(parsed, attachmentAt(now), undefined, { wake: true }, asker));
+        }
+      }
     }
   }
 

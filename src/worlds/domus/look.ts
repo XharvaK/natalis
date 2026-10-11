@@ -4,8 +4,7 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
-import { GAME_THREAD_PREFIX } from "./game-act.js";
-import { lookOwed, oweLook } from "./store.js";
+import { lookOwed, oweLook, recordLookAsk } from "./store.js";
 
 /**
  * What the tool reads on each call: the open database, the world's clock, the helper session attached now (undefined
@@ -25,7 +24,7 @@ export function gameLookTool(open: () => LookContext): Tool {
       name: "game_look",
       description:
         "Ask the game for a fresh view of how things are now, when you want to look rather than wait for a change. " +
-        "The game shows it on its next sync, and that view wakes you. This only asks; nothing in the game changes.",
+        "The game shows it on its next sync. That view wakes you, and it comes to this thread too. This only asks; nothing in the game changes.",
       parameters: { type: "object", properties: {} },
     },
     async run(args: Record<string, unknown>, context: ToolContext): Promise<Receipt> {
@@ -37,9 +36,6 @@ export function gameLookTool(open: () => LookContext): Tool {
 function gameLook(open: () => LookContext, args: Record<string, unknown>, context: ToolContext): Receipt {
   const game = open();
   if (!game) return refused("not_running", "The game is not connected to you right now.");
-  if (!context.thread.startsWith(GAME_THREAD_PREFIX)) {
-    return refused("not_a_game_thread", "game_look works in a game thread (domus:...). This is not one.");
-  }
   if (Object.keys(args).length > 0) return refused("bad_args", "game_look takes no fields.");
   // Nothing is owed to a game that is not there: the look would only wait for a helper that is not asking.
   const session = game.attachedSession(game.nowMs());
@@ -48,6 +44,8 @@ function gameLook(open: () => LookContext, args: Record<string, unknown>, contex
     const when = last === undefined ? "It has not been attached since this world started." : `It was last attached at ${new Date(last).toISOString()}.`;
     return refused("not_attached", `The game is not attached, so nothing was requested. ${when}`);
   }
+  // The thread that asked is kept, so the look view comes to it as well as to the game's thread.
+  recordLookAsk(game.db, session, context.thread, game.nowMs());
   if (lookOwed(game.db, session)) {
     return { ok: true, summary: "You already asked for a fresh view of now. It comes on the game's next sync.", data: { owed: true } };
   }

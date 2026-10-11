@@ -282,6 +282,17 @@ describe("acts: the Lar asks, the helper pulls, the game reports", () => {
     events = [];
   });
 
+  it("takes an act asked from another thread: the game gets it, and its reports come to the thread that asked", async () => {
+    const receipt = await tool("game_act").run({ option: "a1" }, { thread: "discord:dm:owner", turnId: "t-discord", nowMs: clock } as ToolContext);
+    expect(receipt).toMatchObject({ ok: true });
+    const sync = await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [] });
+    const actId = (sync.body.acts as Array<{ act_id: string }>)[0]?.act_id;
+    await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [{ act_id: actId, phase: "received", at_ms: T0 + 10 }] });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ place: "discord:dm:owner", thread: "discord:dm:owner", source: "body", wake: false });
+    expect(events[0]?.text).toContain('Your act "Boil water (Test kettle)" (a1): your helper took it up');
+  });
+
   it("serves a requested act to its own helper in the wire's shape, then keeps the report as a note", async () => {
     const receipt = await gameAct({ option: "a1" }, "t-1");
     expect(receipt.ok).toBe(true);
@@ -457,9 +468,13 @@ describe("game pictures: the Lar asks, the helper takes, the shelf keeps", () =>
     expect(await askForPicture("domus:other")).toMatchObject({ ok: true });
   });
 
-  it("refuses the tool outside a game thread", async () => {
+  it("takes a request from any thread, and the picture comes to the thread that asked", async () => {
     await attach();
-    expect(await askForPicture("cli:summoner")).toMatchObject({ ok: false, refused: { code: "not_a_game_thread" } });
+    expect(await askForPicture("cli:summoner")).toMatchObject({ ok: true });
+    const id = await pendingSnapshotId();
+    expect(await call("/domus/snapshot", { v: 1, helper_session: "helper-1", snapshot_id: id, failed: "game_minimized" }))
+      .toEqual({ status: 200, body: { status: "ok" } });
+    expect(events.at(-1)).toMatchObject({ thread: "cli:summoner", wake: true });
   });
 
   it("lists the request in the next sync, keeps the picture the helper sends, and wakes the thread", async () => {
@@ -652,23 +667,36 @@ describe("her attention: which views wake her, and the setting she keeps", () =>
 
   it("when called, keeps an ordinary change for her turn without waking her, and wakes her for a call", async () => {
     await attach();
+    await call("/domus/observation", viewBody());
+    events.length = 0;
     expect(await setAttention({ mode: "when_called" })).toMatchObject({ ok: true, summary: "Your attention is now: when something calls you." });
     await call("/domus/observation", viewBody({ percepts: ORDINARY }));
     await call("/domus/observation", viewBody({ percepts: ORDINARY }));
     await call("/domus/observation", viewBody({ percepts: CALL }));
-    expect(events.map((event) => event.wake)).toEqual([true, false, true]);
+    expect(events.map((event) => event.wake)).toEqual([false, false, true]);
     expect(events[1]?.text).toContain("Your attention: when something calls you.");
     expect(events[1]?.brief).toBe("- Hunger: fine.");
   });
 
   it("when quiet, wakes her for a question with a deadline and a window held for her, and for nothing else", async () => {
     await attach();
+    await call("/domus/observation", viewBody());
+    events.length = 0;
     await setAttention({ mode: "quiet", until: iso(clock + 3_600_000) });
     await call("/domus/observation", viewBody({ percepts: CALL }));
     await call("/domus/observation", viewBody({ percepts: ORDINARY, portrait: { asked: [{ title: "Pick", whose: "hers", held: false }] } }));
     await call("/domus/observation", viewBody({ percepts: ORDINARY, portrait: HELD }));
     await call("/domus/observation", viewBody({ percepts: [{ kind: "env", salience: 0, facts: { bucket: "asked", title_key: "pick" } }] }));
     expect(events.map((event) => event.wake)).toEqual([false, false, true, true]);
+  });
+
+  it("sets her attention on the game's thread from another thread, and says no view when the game has shown none", async () => {
+    await attach();
+    expect(await setAttention({ mode: "when_called" }, "discord:dm:owner")).toMatchObject({ ok: false, refused: { code: "no_view" } });
+    await call("/domus/observation", viewBody());
+    expect(await setAttention({ mode: "when_called" }, "discord:dm:owner")).toMatchObject({ ok: true });
+    await call("/domus/observation", viewBody({ percepts: ORDINARY }));
+    expect(events.at(-1)).toMatchObject({ thread: "domus:slot3", wake: false });
   });
 
   it("keeps her setting across a restart of the world", async () => {
@@ -698,6 +726,7 @@ describe("her attention: which views wake her, and the setting she keeps", () =>
 
   it("asks for a look after the gap while the game is attached, once, and not while it is not", async () => {
     await attach();
+    await call("/domus/observation", viewBody());
     await setAttention({ look_every_minutes: 5 });
     clock += 4 * 60_000;
     await attach();
@@ -710,6 +739,7 @@ describe("her attention: which views wake her, and the setting she keeps", () =>
 
   it("owes no look while the game is not attached, and owes one once it is attached again after the gap", async () => {
     await attach();
+    await call("/domus/observation", viewBody());
     await setAttention({ look_every_minutes: 5 });
     clock += 10 * 60_000;
     expect((await syncBody()).look).toBeUndefined();
@@ -746,6 +776,29 @@ describe("a fresh look: she asks, the helper answers on its sync, and the answer
     } as ToolContext);
     await call("/domus/observation", viewBody({ percepts: [{ kind: "look", salience: 0, facts: { bucket: "asked" } }] }));
     expect(events[0]).toMatchObject({ wake: true, view: "domus" });
+  });
+
+  it("asked from another thread: the look view goes to the game's thread and to the thread that asked, and both wake", async () => {
+    await attach();
+    await call("/domus/observation", viewBody());
+    events = [];
+    expect(await look("discord:dm:owner")).toMatchObject({ ok: true });
+    await call("/domus/observation", viewBody({ percepts: [{ kind: "look", salience: 0, facts: { bucket: "asked" } }] }));
+    const onGame = events.filter((event) => event.thread === "domus:slot3");
+    const onAsker = events.filter((event) => event.thread === "discord:dm:owner");
+    expect(onGame).toHaveLength(1);
+    expect(onAsker).toEqual([expect.objectContaining({ wake: true, view: "domus", actor: "game", source: "outside" })]);
+    expect(onAsker[0]?.text).toContain("This is the look you asked for.");
+    expect(onAsker[0]?.text).toContain("Choices you can name with game_act, by ref:");
+  });
+
+  it("asked from the game's own thread: the look view is heard once, on that thread", async () => {
+    await attach();
+    await call("/domus/observation", viewBody());
+    events = [];
+    await look("domus:slot3");
+    await call("/domus/observation", viewBody({ percepts: [{ kind: "look", salience: 0, facts: { bucket: "asked" } }] }));
+    expect(events.map((event) => event.thread)).toEqual(["domus:slot3"]);
   });
 });
 

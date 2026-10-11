@@ -7,12 +7,11 @@ import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import { answerFor, isAnswerClaim, type AnswerClaim, type Found } from "./answers.js";
 import { PLAN_MORE, requestAct } from "./acts.js";
 import { findOption, labelOf, optionsOf, refsOf } from "./options.js";
-import { newestObservation, STALE_VIEW_CODE, STALE_VIEW_REASON } from "./store.js";
+import { gameThreadNow, newestObservation, STALE_VIEW_CODE, STALE_VIEW_REASON } from "./store.js";
 
 const REF = /^[A-Za-z0-9._-]{1,16}$/;
 const ARG_KEYS = new Set(["option", "then", "for_summoner", "answer", "expect", "expect_then"]);
 const EXPECT_MAX = 200;
-export const GAME_THREAD_PREFIX = "domus:";
 
 /**
  * What the tool needs from the world: the open database, the world's clock, the helper session that is attached now
@@ -51,7 +50,7 @@ export function gameActTool(open: () => GameActContext): Tool {
     spec: {
       name: "game_act",
       description:
-        "Ask the game to do one of the choices in the newest view of this game thread, by its ref (for example a3). " +
+        "Ask the game to do one of the choices in its newest view, by the ref (for example a3). " +
         "Put up to two more refs in then; each runs only after the one before it completes. Set for_summoner only when " +
         "your summoner asked for this act. Answer a game question with answer: rows by ref (with a count where the question allows it) " +
         "and typed fields, as the question's rules allow. This only requests the act; what the game does comes back here as notes.",
@@ -105,12 +104,9 @@ export function gameActTool(open: () => GameActContext): Tool {
 function gameAct(open: () => GameActContext, args: Record<string, unknown>, context: ToolContext): Receipt {
   const game = open();
   if (!game) return refused("not_running", "The game is not connected to you right now.");
-  if (!context.thread.startsWith(GAME_THREAD_PREFIX)) {
-    return refused("not_a_game_thread", "game_act works in a game thread (domus:...). This is not one.");
-  }
   // Nothing is queued for a game that is not there: the request would only expire unclaimed.
-  const nowAt = game.nowMs();
-  if (game.attachedSession(nowAt) === undefined) {
+  const attached = game.attachedSession(game.nowMs());
+  if (attached === undefined) {
     const last = game.lastAttachedMs();
     const when = last === undefined ? "It has not been attached since this world started." : `It was last attached at ${new Date(last).toISOString()}.`;
     return refused("not_attached", `The game is not attached, so nothing was requested. ${when}`);
@@ -141,11 +137,11 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
   const claim = args.answer as AnswerClaim | undefined;
 
   const nowMs = game.nowMs();
-  const newest = newestObservation(game.db, context.thread);
-  if (!newest) return refused("no_view", "The game has not shown you a view of this thread yet, so there is nothing to choose.");
+  const gameThread = gameThreadNow(game.db, attached);
+  const newest = gameThread === undefined ? undefined : newestObservation(game.db, gameThread);
+  if (!newest) return refused("no_view", "The game has not shown you a view yet, so there is nothing to choose.");
   // The refs come from a view of a helper session that is no longer attached: that game restarted, and its new view has not come.
-  const attached = game.attachedSession(nowMs);
-  if (attached !== undefined && newest.attachment !== attached) return refused(STALE_VIEW_CODE, STALE_VIEW_REASON);
+  if (newest.attachment !== attached) return refused(STALE_VIEW_CODE, STALE_VIEW_REASON);
   const options = optionsOf(newest.payload.options);
   const refs = refsOf(options);
   const first = findOption(options, option);

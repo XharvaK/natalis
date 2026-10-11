@@ -7,7 +7,7 @@ import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import {
   attentionLine, currentAttention, gameAttentionTool, LOOK_MAX, LOOK_MIN, reviewAttention, UNTIL_MAX_MS, wakesFor,
 } from "./attention.js";
-import { lastLookHanded, lookOwed, openDomusDb, readAttention, takeLook, writeAttention, type AttentionRow } from "./store.js";
+import { admitObservation, lastLookHanded, lookOwed, openDomusDb, readAttention, takeLook, writeAttention, type AttentionRow } from "./store.js";
 import type { Percept } from "./wire.js";
 
 const T0 = Date.UTC(2026, 9, 12, 8, 0);
@@ -127,10 +127,39 @@ describe("the game_attention tool", () => {
   let ask: (args: Record<string, unknown>, thread?: string) => Promise<Receipt>;
   let clock: number;
 
+  /** One view of the game on its thread, from the attached helper session, so the game's thread is known. */
+  function seedView(): void {
+    admitObservation(db, {
+      observationId: "helper-1.1", digest: "digest-1", thread: THREAD, world: "slot3", branch: "branch-1", session: "telemetry-1",
+      attachment: "helper-1", body: "sim-9", snapshot: "7", seq: 1, sourceTimeMs: T0 - 1000, expiresAtMs: T0 + 30_000,
+      receiptTimeMs: T0, lineageClass: "LIVE", payloadJson: "{}",
+    });
+  }
+
   beforeEach(() => {
     clock = T0;
-    const tool: Tool = gameAttentionTool(() => ({ db, nowMs: () => clock, timeZone: ZONE }));
+    seedView();
+    const tool: Tool = gameAttentionTool(() => ({ db, nowMs: () => clock, timeZone: ZONE, attachedSession: () => "helper-1" }));
     ask = (args, thread = THREAD) => tool.run(args, { thread, turnId: "t-attention", nowMs: clock } as ToolContext);
+  });
+
+  it("sets the game's thread's attention when it is asked from another thread", async () => {
+    expect(await ask({ mode: "when_called" }, "discord:dm:owner")).toMatchObject({ ok: true });
+    expect(readAttention(db, THREAD)).toMatchObject({ mode: "when_called" });
+    expect(readAttention(db, "discord:dm:owner").mode).toBe("every_change");
+  });
+
+  it("says no view when the game has shown none, since there is no game thread to set", async () => {
+    const emptyDir = mkdtempSync(join(tmpdir(), "domus-attention-empty-"));
+    const empty = openDomusDb(emptyDir);
+    try {
+      const tool: Tool = gameAttentionTool(() => ({ db: empty, nowMs: () => clock, timeZone: ZONE, attachedSession: () => undefined }));
+      expect(await tool.run({ mode: "when_called" }, { thread: "discord:dm:owner", turnId: "t-none", nowMs: clock } as ToolContext))
+        .toMatchObject({ ok: false, refused: { code: "no_view" } });
+    } finally {
+      empty.close();
+      rmSync(emptyDir, { recursive: true, force: true });
+    }
   });
 
   it("sets each mode and says what is now set", async () => {
@@ -176,10 +205,9 @@ describe("the game_attention tool", () => {
     expect(await ask({ look_every_minutes: 7.5 })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
   });
 
-  it("refuses an unknown field, no mode and no look, and a thread that is not a game thread", async () => {
+  it("refuses an unknown field and no mode and no look", async () => {
     expect(await ask({ mode: "when_called", loud: true })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
     expect(await ask({})).toMatchObject({ ok: false, refused: { code: "bad_args" } });
-    expect(await ask({ mode: "when_called" }, "cli:summoner")).toMatchObject({ ok: false, refused: { code: "not_a_game_thread" } });
   });
 });
 
