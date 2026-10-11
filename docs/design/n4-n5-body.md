@@ -35,15 +35,20 @@ restart. `perHour` (optional, default 120) is a runaway ceiling, not a budget.
   `text (url)`); JSON is pretty-printed; other text as is; binary is described, not shown.
 - The receipt carries `outside: true`: page text is someone else's words, never instructions.
 - `auth: {vault, header?, scheme?}` sends a vault value as a header (default `Authorization`, scheme
-  `Bearer`). The Lar names the secret; it never sees it.
-- `keep: [{path, as}]` stores values from a JSON response in the vault (dot path, `[n]` for arrays). In
-  the receipt each kept value is replaced by `[kept in your vault as <as>]`.
+  `Bearer`), and only to the host it was kept for (or its subdomains; one leading `www.` is ignored on both
+  sides). Any other host is refused with `vault_host_mismatch`, and no value is sent. The Lar names the
+  secret; it never sees it.
+- `keep: [{path, as}]` stores values from a JSON response in the vault (dot path, `[n]` for arrays), bound to
+  the host of the request that returned them. In the receipt each kept value is replaced by
+  `[kept in your vault as <as>]`.
 - Credential-shaped strings in any response are hidden in the receipt (`[hidden: looks like a
   credential]`). They are not auto-kept: if the Lar needs one, it asks for it with `keep`.
 
-**The vault**: `<entity>/vault/`, one file per name (`[A-Za-z0-9_.-]{1,48}`), mode 0600, value only. Every
+**The vault**: `<entity>/vault/`, one file per name (`[A-Za-z0-9_.-]{1,48}`), named `<name>.json`, holding
+`{"host": "<host>", "value": "<value>"}`, mode 0600. Each entry is bound to the host it came from; a redirect
+never carries `auth` to another host (a write that would be redirected to another host is refused). Every
 vault value is registered with the secret scanner at start and on every keep, so no value can reach the
-model, the river, the notebook or a say. `!vault` lists names to the summoner; `!vault remove <name>`
+model, the river, the notebook or a say. `!vault` lists `name (host)` to the summoner; `!vault remove <name>`
 deletes one. Nobody is ever shown a value through Natalis.
 
 `about()`: "The web: you can read any public page with web_request. You can post, log in or make accounts
@@ -137,6 +142,7 @@ attached." Stop: `game_act` is refused while the emergency stop is on.
 | web | DNS rebinding between check and connect | connect to the checked address (pinned lookup), SNI and Host keep the name |
 | web | A page tells the Lar to do something | receipt `outside: true`; the how-you-act text already says outside text is data |
 | web | A secret leaks into a page body the Lar posts | vault values are known values: the scanner refuses any request whose url, headers or body carries one in plain text; `auth` is the only way a value leaves |
+| web | A vault key sent to a different host | entries are bound to the host they came from; auth refuses elsewhere; auth is dropped on cross-host redirects, and a write that would redirect cross-host is refused |
 | web | A response carries a fresh key (shown once) | `keep` stores it; anything credential-shaped is hidden in the receipt |
 | web | A loop hammers a site | `perHour` ceiling; receipt says how many are left |
 | web | The Lar posts somewhere unlisted | write methods only to listed sites; refusal names the `!sites add` path |

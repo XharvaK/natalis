@@ -15,6 +15,8 @@ import {
 } from "./commitments.js";
 import { dayKey, hostZone } from "./day.js";
 import { clearStop, writeStop } from "./stop.js";
+import { loadWebFile, normalizeHost, saveWebFile, WEB_FILE, WEB_SITES_MAX, type WebFile } from "../worlds/web/sites.js";
+import { readVault, removeVaultEntry, validVaultName } from "../worlds/web/vault.js";
 
 /** A commitment the Lar proposed and the summoner has not answered yet. */
 export type Proposal = { id: string; text: string; why: string; atMs: number; thread: string };
@@ -37,6 +39,8 @@ export const HELP_TEXT = [
   "!household: show the household note. !household add <line> adds a line. !household remove <n> removes line n.",
   "!proposals: list the commitments the Lar has proposed.",
   "!approve <id>: agree to one. !decline <id> [reason]: decline it.",
+  "!sites: list the sites the Lar may post, log in or make accounts on. !sites add <host> adds one. !sites remove <host> removes one.",
+  "!vault: list the names in the Lar's vault, with the host each belongs to (never the values). !vault remove <name> deletes one.",
   "!help: this list.",
 ].join("\n");
 
@@ -84,6 +88,10 @@ export async function answerSummoner(text: string, desk: SummonerDesk): Promise<
       return approve(rest, desk);
     case "decline":
       return decline(rest, desk);
+    case "sites":
+      return sites(rest, desk);
+    case "vault":
+      return vault(rest, desk);
     case "help":
       desk.record("Your summoner asked for the list of commands.");
       return HELP_TEXT;
@@ -183,6 +191,133 @@ async function removeHouseholdLine(arg: string | undefined, desk: SummonerDesk):
   if (failed !== undefined) return `The household note could not be saved: ${failed}`;
   desk.record(`Your summoner removed a line from your household note: ${cut.removed}`);
   return `Removed household line ${n}.`;
+}
+
+// --- the web's sites and vault ----------------------------------------------------------------
+
+const USAGE_SITES = "Use !sites, !sites add <host>, or !sites remove <host>.";
+const USAGE_SITE_HOST = "Give one host name, such as example.org: !sites add <host> or !sites remove <host>.";
+const USAGE_VAULT = "Use !vault, or !vault remove <name>.";
+const USAGE_VAULT_NAME = "Give the name of the vault value: !vault remove <name>. !vault lists the names.";
+
+function plainError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function sites(rest: string, desk: SummonerDesk): string {
+  const [sub, ...tail] = words(rest);
+  if (sub === undefined) return sitesList(desk);
+  if (sub.toLowerCase() === "add") return addSite(tail, desk);
+  if (sub.toLowerCase() === "remove") return removeSite(tail, desk);
+  return USAGE_SITES;
+}
+
+function sitesList(desk: SummonerDesk): string {
+  desk.record("Your summoner read the list of sites you may post, log in or make accounts on.");
+  let file: WebFile | undefined;
+  try {
+    file = loadWebFile(desk.dir);
+  } catch (error) {
+    return `${WEB_FILE} is damaged: ${plainError(error)} Nothing was changed.`;
+  }
+  if (file === undefined) {
+    return `The web is off: there is no ${WEB_FILE} in the Lar's folder. !sites add <host> creates it, and the web starts when the Lar next starts.`;
+  }
+  const listed = file.sites.length > 0 ? file.sites.join(", ") : "none yet";
+  return `Sites the Lar may post, log in or make accounts on: ${listed}. Ceiling: ${file.perHour} web requests an hour.`;
+}
+
+/** Writes the sites file as the summoner's act; a failure is returned as plain words, never thrown. */
+function writeSites(desk: SummonerDesk, sites: string[], perHour?: number): string | undefined {
+  try {
+    saveWebFile(desk.dir, perHour === undefined ? { sites } : { sites, perHour });
+    return undefined;
+  } catch (error) {
+    return plainError(error);
+  }
+}
+
+function addSite(tail: string[], desk: SummonerDesk): string {
+  if (tail.length !== 1) return USAGE_SITE_HOST;
+  const host = normalizeHost(tail[0] ?? "");
+  if (host === undefined) return `"${tail[0] ?? ""}" is not a host name. Give the bare host, such as example.org.`;
+  let file: WebFile | undefined;
+  try {
+    file = loadWebFile(desk.dir);
+  } catch (error) {
+    return `${WEB_FILE} is damaged: ${plainError(error)} Nothing was changed.`;
+  }
+  if (file === undefined) {
+    const failed = writeSites(desk, [host]);
+    if (failed !== undefined) return `${WEB_FILE} could not be written: ${failed}`;
+    desk.record(`Your summoner added ${host} to the sites you may post, log in or make accounts on. The web starts when you next start.`);
+    return `Created ${WEB_FILE} with ${host}. The web starts when the Lar next starts.`;
+  }
+  if (file.sites.includes(host)) return `${host} is already listed.`;
+  if (file.sites.length >= WEB_SITES_MAX) return `The list is full: at most ${WEB_SITES_MAX} sites. Nothing was added.`;
+  const failed = writeSites(desk, [...file.sites, host], file.perHour);
+  if (failed !== undefined) return `${WEB_FILE} could not be written: ${failed}`;
+  desk.record(`Your summoner added ${host} to the sites you may post, log in or make accounts on.`);
+  return `Added ${host}. The Lar may now post, log in or make accounts there.`;
+}
+
+function removeSite(tail: string[], desk: SummonerDesk): string {
+  if (tail.length !== 1) return USAGE_SITE_HOST;
+  const host = normalizeHost(tail[0] ?? "");
+  if (host === undefined) return `"${tail[0] ?? ""}" is not a host name. Give the bare host, such as example.org.`;
+  let file: WebFile | undefined;
+  try {
+    file = loadWebFile(desk.dir);
+  } catch (error) {
+    return `${WEB_FILE} is damaged: ${plainError(error)} Nothing was changed.`;
+  }
+  if (file === undefined || !file.sites.includes(host)) {
+    desk.record(`Your summoner tried to remove ${host} from the sites you may post, log in or make accounts on, but it was not listed.`);
+    return `${host} is not listed. !sites shows the list.`;
+  }
+  const failed = writeSites(desk, file.sites.filter((site) => site !== host), file.perHour);
+  if (failed !== undefined) return `${WEB_FILE} could not be written: ${failed}`;
+  desk.record(`Your summoner removed ${host} from the sites you may post, log in or make accounts on.`);
+  return `Removed ${host}. The Lar can no longer post, log in or make accounts there.`;
+}
+
+function vault(rest: string, desk: SummonerDesk): string {
+  const [sub, ...tail] = words(rest);
+  if (sub === undefined) return vaultList(desk);
+  if (sub.toLowerCase() === "remove") return removeVault(tail, desk);
+  return USAGE_VAULT;
+}
+
+function vaultList(desk: SummonerDesk): string {
+  desk.record("Your summoner looked at the names in your vault.");
+  let entries: ReturnType<typeof readVault>;
+  try {
+    entries = readVault(desk.dir);
+  } catch (error) {
+    return `The vault is damaged: ${plainError(error)}`;
+  }
+  const names = Object.keys(entries).sort();
+  if (names.length === 0) return "The vault is empty.";
+  const listed = names.map((name) => `${name} (${entries[name]?.host ?? "unknown host"})`).join(", ");
+  return `Vault names, with the host each belongs to (values are never shown): ${listed}.`;
+}
+
+function removeVault(tail: string[], desk: SummonerDesk): string {
+  if (tail.length !== 1) return USAGE_VAULT_NAME;
+  const name = tail[0] ?? "";
+  if (!validVaultName(name)) return "A vault name is letters, digits, dots, dashes and underscores, up to 48 characters.";
+  let removed: boolean;
+  try {
+    removed = removeVaultEntry(desk.dir, name);
+  } catch (error) {
+    return `The vault value could not be removed: ${plainError(error)}`;
+  }
+  if (!removed) {
+    desk.record(`Your summoner tried to remove the vault value named ${name}, which is not there.`);
+    return `There is no vault value named ${name}. !vault lists the names.`;
+  }
+  desk.record(`Your summoner removed the vault value named ${name}. You can no longer send it with auth.`);
+  return `Removed the vault value named ${name}. The Lar can no longer send it.`;
 }
 
 // --- the Lar's proposed commitments -----------------------------------------------------------
