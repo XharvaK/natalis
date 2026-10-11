@@ -109,6 +109,23 @@ function gameAct(args: Record<string, unknown>, turnId: string): Promise<Receipt
   return tool("game_act").run(args, { thread: "domus:slot3", turnId, nowMs: clock } as ToolContext);
 }
 
+describe("forget", () => {
+  it("erases the words from the game store while the world runs, so the newest view offers no choices", async () => {
+    await call("/domus/observation", viewBody({ observation_id: "helper-1.f1", seq: 600 }));
+    expect((await gameAct({ option: "a1" }, "t-before")).ok).toBe(true);
+    expect(world!.forget(["PIM", "dorrow"])).toBe(1);
+    expect(world!.forget(["pim"])).toBe(0);
+    expect(await gameAct({ option: "a1" }, "t-after")).toMatchObject({ ok: false, refused: { code: "unknown_option" } });
+  });
+
+  it("erases the words from the game store file when the world is not running", async () => {
+    await call("/domus/observation", viewBody({ observation_id: "helper-1.f2", seq: 601 }));
+    await world!.stop();
+    world = undefined;
+    expect(make().forget(["dorrow"])).toBe(1);
+  });
+});
+
 describe("start and the token", () => {
   it("refuses a missing, short, or other-token-equal helper token, and listens for nothing", async () => {
     await world?.stop();

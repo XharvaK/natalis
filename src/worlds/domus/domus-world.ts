@@ -14,7 +14,9 @@ import {
   checkSnapshot, expireSnapshots, gameSnapshotTool, openSnapshots, SNAPSHOT_PICTURE_NAME, SNAPSHOT_STATUS, settleFailed,
   settleTaken, type SnapshotContext, withdrawSnapshots,
 } from "./snapshot.js";
-import { admitObservation, HeartbeatBook, inTransaction, markSpanUndoneIn, openDomusDb, pruneObservations } from "./store.js";
+import {
+  admitObservation, forgetInDomusFile, forgetText, HeartbeatBook, inTransaction, markSpanUndoneIn, openDomusDb, pruneObservations,
+} from "./store.js";
 import {
   BODY_LIMIT, canonicalJson, DOMUS_WORLD_ID, gameThreadOf, MIN_TOKEN_BYTES, observationDigest, parseActSync, parseFeed,
   parseHeartbeat, parseObservation, parseSnapshot, parseUndo, type ParsedObservation, SNAPSHOT_BODY_LIMIT, tokenProblem,
@@ -44,6 +46,8 @@ export type DomusWorldOptions = {
 export interface DomusWorld extends World {
   /** Where the listener is bound (the real port, when 0 was asked for); null when it is not listening. */
   listeningAddress(): { host: string; port: number } | null;
+  /** The Lar's forget of words: erases them from the game's store, running or not. Returns how many rows were erased. */
+  forget(words: string[]): number;
 }
 
 const TOKEN_MESSAGE: Record<"missing" | "too_short" | "matches_other", string> = {
@@ -467,6 +471,10 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
 
     listeningAddress() {
       return bound;
+    },
+
+    forget(words) {
+      return db ? forgetText(db, words) : forgetInDomusFile(options.dir, words);
     },
   };
 }

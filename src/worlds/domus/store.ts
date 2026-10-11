@@ -5,6 +5,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { FORGOTTEN_LINE } from "../../notebook/forget.js";
 
 export const DOMUS_FOLDER = "domus";
 export const DOMUS_DB_FILE = "domus.sqlite";
@@ -218,6 +219,88 @@ export function markSpanUndoneIn(db: DatabaseSync, span: UndoSpan, nowMs: number
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(span.thread, span.world, span.branch, span.session, span.afterSourceTimeMs,
     span.reason, count, nowMs);
   return count;
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Forgetting the game's own words (the summoner's forget, and the Lar's). Ids, digests and times stay: rows keep their
+// place, and only the text they hold is replaced.
+
+type ForgetColumn = { name: string; json: boolean; erased: string };
+
+/** Every table that keeps game or Lar text, its text columns, and what a forgotten cell holds instead. */
+const FORGET_TABLES: ReadonlyArray<{ table: string; columns: readonly ForgetColumn[] }> = [
+  { table: "observations", columns: [{ name: "payload_json", json: true, erased: "{}" }] },
+  { table: "acts", columns: [{ name: "label", json: false, erased: FORGOTTEN_LINE }, { name: "answer_json", json: true, erased: "{}" }] },
+  { table: "act_events", columns: [{ name: "detail_json", json: true, erased: "{}" }] },
+  { table: "plan_steps", columns: [{ name: "label", json: false, erased: FORGOTTEN_LINE }] },
+  { table: "undos", columns: [{ name: "reason", json: false, erased: FORGOTTEN_LINE }] },
+];
+
+/** The form words are compared in: NFKC and lower case, as the notebook and the river fold them. */
+function foldForget(text: string): string {
+  return text.normalize("NFKC").toLowerCase();
+}
+
+/** The text of one cell to search: a JSON cell by its strings (not its keys or shape), any other cell as it is. */
+function searchableCell(value: string, json: boolean): string {
+  if (!json) return value;
+  try {
+    const parts: string[] = [];
+    collectStrings(JSON.parse(value) as unknown, parts);
+    return parts.join("\n");
+  } catch {
+    return value;
+  }
+}
+
+function collectStrings(value: unknown, parts: string[]): void {
+  if (typeof value === "string") parts.push(value);
+  else if (Array.isArray(value)) for (const item of value) collectStrings(item, parts);
+  else if (value !== null && typeof value === "object") for (const item of Object.values(value)) collectStrings(item, parts);
+}
+
+/**
+ * Forgets words in the game's store. In every table that keeps game or Lar text, each row whose live text holds all the
+ * words (case and form aside) has that text replaced: a marker for plain text, an empty object for JSON. Rows already
+ * forgotten are not counted again. Returns how many rows were erased; the file is then vacuumed.
+ */
+export function forgetText(db: DatabaseSync, words: readonly string[]): number {
+  const wanted = words.map(foldForget).filter((word) => word.length > 0);
+  if (wanted.length === 0) return 0;
+  let erased = 0;
+  inTransaction(db, () => {
+    for (const spec of FORGET_TABLES) {
+      const names = spec.columns.map((column) => column.name).join(", ");
+      const rows = db.prepare(`SELECT rowid AS rid, ${names} FROM ${spec.table}`).all() as Row[];
+      for (const row of rows) {
+        const live = spec.columns.filter((column) => typeof row[column.name] === "string" && row[column.name] !== column.erased);
+        if (live.length === 0) continue;
+        const haystack = foldForget(live.map((column) => searchableCell(String(row[column.name]), column.json)).join("\n"));
+        if (!wanted.every((word) => haystack.includes(word))) continue;
+        const sets = live.map((column) => `${column.name} = ?`).join(", ");
+        db.prepare(`UPDATE ${spec.table} SET ${sets} WHERE rowid = ?`).run(...live.map((column) => column.erased), row.rid as number);
+        erased += 1;
+      }
+    }
+  });
+  db.exec("VACUUM");
+  return erased;
+}
+
+/**
+ * The summoner's forget in the game's store when no world is running: opens domus/domus.sqlite if it exists (it is not
+ * created here), forgets, and closes it. Returns how many rows were erased; 0 when there is no store.
+ */
+export function forgetInDomusFile(dir: string, words: readonly string[]): number {
+  const path = join(dir, DOMUS_FOLDER, DOMUS_DB_FILE);
+  if (!existsSync(path)) return 0;
+  const db = new DatabaseSync(path);
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    return forgetText(db, words);
+  } finally {
+    db.close();
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------

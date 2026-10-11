@@ -1,10 +1,12 @@
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { FORGOTTEN_LINE } from "../../notebook/forget.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  ARMED_MS, admitObservation, DOMUS_STATE_FILE, HeartbeatBook, markSpanUndone, newestObservation, openDomusDb, pruneObservations,
+  ARMED_MS, admitObservation, DOMUS_DB_FILE, DOMUS_STATE_FILE, forgetInDomusFile, forgetText, HeartbeatBook, markSpanUndone, newestObservation,
+  openDomusDb, pruneObservations, type Row,
   type ObservationRow,
 } from "./store.js";
 
@@ -123,5 +125,83 @@ describe("heartbeat state", () => {
     expect(() => new HeartbeatBook(dir)).toThrow(/damaged/);
     writeFileSync(join(dir, "domus", DOMUS_STATE_FILE), JSON.stringify({ version: 2, sessions: {} }));
     expect(() => new HeartbeatBook(dir)).toThrow(/unknown version/);
+  });
+});
+
+describe("forgetText: the game's own words", () => {
+  const THREAD_NAME = "domus:slot3";
+
+  /** Writes one row into each table that keeps game or Lar text, with an invented place name in each. */
+  function seedGameText(database: DatabaseSync): void {
+    admitObservation(database, row({ observationId: "helper-1.1", payloadJson: JSON.stringify({ options: [{ object: "Lantern Yard door", acts: [{ text: "Open it" }] }] }) }));
+    admitObservation(database, row({ observationId: "helper-1.2", seq: 2, digest: "digest-b", payloadJson: JSON.stringify({ note: "The quay is quiet" }) }));
+    const insertAct = database.prepare(`INSERT INTO acts (act_id, turn_id, thread, attachment, observation_id, option_ref, object_id, guid64, label,
+      state, requested_at_ms, expires_at_ms, updated_at_ms, for_summoner, answer_json) VALUES (?, 't', ?, 'helper-1', ?, 'a1', 'obj', '111', ?, 'finished', ?, ?, ?, 0, ?)`);
+    insertAct.run("act-1", THREAD_NAME, "helper-1.1", "Walk to Lantern Yard", NOW, NOW + 90_000, NOW, JSON.stringify({ text: { name: "Lantern" } }));
+    insertAct.run("act-2", THREAD_NAME, "helper-1.2", "Sit down", NOW, NOW + 90_000, NOW, null);
+    database.prepare("INSERT INTO act_events (act_id, phase, at_ms, received_at_ms, detail_json) VALUES ('act-1', 'finished', ?, ?, ?)")
+      .run(NOW, NOW, JSON.stringify({ reason: "the Lantern Yard gate is locked" }));
+    database.prepare(`INSERT INTO plan_steps (plan_id, step, thread, attachment, option_ref, object_id, guid64, label, for_summoner, state,
+      reason, act_id, planned_at_ms, updated_at_ms) VALUES ('act-2', 1, ?, 'helper-1', 'a2', 'obj', '112', 'Lantern Yard walk', 0, 'planned', NULL, NULL, ?, ?)`)
+      .run(THREAD_NAME, NOW, NOW);
+    database.prepare(`INSERT INTO undos (thread, world, branch, session, after_source_time_ms, reason, observations, undone_at_ms)
+      VALUES (?, 'slot3', 'branch-1', 'telemetry-1', ?, 'Lantern Yard went away', 1, ?)`).run(THREAD_NAME, NOW, NOW);
+  }
+
+  it("erases the text of every row that holds all the words, in every table, and keeps the rows", () => {
+    db = openDomusDb(dir);
+    seedGameText(db);
+    expect(forgetText(db, ["LANTERN", "yard"])).toBe(5);
+
+    const observations = db.prepare("SELECT observation_id, payload_json FROM observations ORDER BY seq").all() as Row[];
+    expect(observations).toEqual([
+      { observation_id: "helper-1.1", payload_json: "{}" },
+      { observation_id: "helper-1.2", payload_json: JSON.stringify({ note: "The quay is quiet" }) },
+    ]);
+    const acts = db.prepare("SELECT act_id, label, answer_json FROM acts ORDER BY act_id").all() as Row[];
+    expect(acts).toEqual([
+      { act_id: "act-1", label: FORGOTTEN_LINE, answer_json: "{}" },
+      { act_id: "act-2", label: "Sit down", answer_json: null },
+    ]);
+    expect(db.prepare("SELECT detail_json FROM act_events").get()).toEqual({ detail_json: "{}" });
+    expect(db.prepare("SELECT label FROM plan_steps").get()).toEqual({ label: FORGOTTEN_LINE });
+    expect(db.prepare("SELECT reason FROM undos").get()).toEqual({ reason: FORGOTTEN_LINE });
+  });
+
+  it("counts a second forget of the same words as nothing, and forgets nothing for no words", () => {
+    db = openDomusDb(dir);
+    seedGameText(db);
+    expect(forgetText(db, [])).toBe(0);
+    expect(forgetText(db, ["lantern", "yard"])).toBe(5);
+    expect(forgetText(db, ["lantern", "yard"])).toBe(0);
+    expect(forgetText(db, ["forgotten", "summoner"])).toBe(0);
+  });
+
+  it("keeps a row whose text lacks one of the words", () => {
+    db = openDomusDb(dir);
+    seedGameText(db);
+    expect(forgetText(db, ["quay", "lantern"])).toBe(0);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM observations WHERE payload_json = '{}'").get()).toEqual({ n: 0 });
+  });
+
+  it("leaves rows the rest of the code can still read: a forgotten newest view offers no choices", () => {
+    db = openDomusDb(dir);
+    seedGameText(db);
+    expect(forgetText(db, ["quay"])).toBe(1);
+    expect(newestObservation(db, THREAD_NAME)).toMatchObject({ observationId: "helper-1.2", payload: {} });
+  });
+
+  it("does nothing, and creates no file, when the Lar has no game store", () => {
+    expect(forgetInDomusFile(dir, ["lantern"])).toBe(0);
+    expect(existsSync(join(dir, "domus", DOMUS_DB_FILE))).toBe(false);
+  });
+
+  it("forgets in the store file of a Lar that is not running", () => {
+    db = openDomusDb(dir);
+    seedGameText(db);
+    db.close();
+    db = undefined;
+    expect(forgetInDomusFile(dir, ["lantern", "yard"])).toBe(5);
+    expect(forgetInDomusFile(dir, ["lantern", "yard"])).toBe(0);
   });
 });

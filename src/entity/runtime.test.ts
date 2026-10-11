@@ -1283,6 +1283,31 @@ describe("what the state file keeps", () => {
     expect(state.placeClaims["cli:summoner"]).toMatchObject({ text: "[forgotten by the summoner]" });
   });
 
+  it("hands the words of the Lar's forget to every world that keeps text of its own", async () => {
+    const asked: string[][] = [];
+    const keeper: World = {
+      id: "keeper",
+      start: async () => undefined,
+      stop: async () => undefined,
+      say: async () => ({ ok: false, summary: "No.", refused: { code: "no_words", reason: "No." } }),
+      tools: () => [],
+      now: () => "keeper: nothing.",
+      forget: (words) => {
+        asked.push(words);
+        return 1;
+      },
+    };
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("forget", { query: "Bakery Lane", why: "Not mine to keep." }, "f1")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model, {}, [keeper]);
+    await entity.start();
+    cli.send("Go.");
+    await entity.idle();
+    expect(asked).toEqual([["bakery", "lane"]]);
+  });
+
   it("scrubs the same words from the state file when the summoner forgets with no runtime running", async () => {
     const first = await open(
       new ScriptedModel([

@@ -543,7 +543,7 @@ class Runtime implements Entity {
     }
   }
 
-  /** The river the Lar's tools get. Every method is the river's own, except forget, which also scrubs the state. */
+  /** The river the Lar's tools get. Every method is the river's own, except forget, which also scrubs the state and the worlds' stores. */
   private riverForLar(river: River): River {
     return {
       append: (row) => river.append(row),
@@ -551,7 +551,11 @@ class Runtime implements Entity {
       search: (text, options) => river.search(text, options),
       forget: (match, by, reason) => {
         const erased = river.forget(match, by, reason);
-        if (match.text !== undefined) this.forgetInState(match.text);
+        if (match.text !== undefined) {
+          this.forgetInState(match.text);
+          const words = queryWords(match.text);
+          for (const world of this.worlds) world.forget?.(words);
+        }
         return erased;
       },
       lastSeq: () => river.lastSeq(),
