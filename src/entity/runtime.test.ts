@@ -2682,7 +2682,7 @@ describe("what a turn says it leaves out", () => {
 
   it("says one older message in the singular", async () => {
     const user = await twoTurns(30, 0);
-    expect(user).toContain("Recent here:\n(1 older message here is not shown; recall finds them.)\n[");
+    expect(user).toContain("Recent here:\n(1 older message here is not shown; recall finds it.)\n[");
   });
 
   it("says nothing about older rows when the turn shows them all", async () => {

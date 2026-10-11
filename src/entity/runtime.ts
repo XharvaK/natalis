@@ -2580,7 +2580,7 @@ function eventData(event: WorldEvent): Record<string, unknown> | undefined {
 /** The line that says how many older rows of the thread the turn leaves out. */
 function cutLine(count: number): string {
   return count === 1
-    ? "(1 older message here is not shown; recall finds them.)"
+    ? "(1 older message here is not shown; recall finds it.)"
     : `(${count} older messages here are not shown; recall finds them.)`;
 }
 
