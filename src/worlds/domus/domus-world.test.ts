@@ -166,6 +166,16 @@ describe("observations", () => {
     expect(events[0]?.text?.startsWith("Your body now:\nYour attention: every change.\nThe game is attached.\nThe game is paused.\nRoom: Test kitchen.\nMood: flirty.\n\nThe game (slot3) shows:\n")).toBe(true);
   });
 
+  it("gives the full view her You section, and an older view's brief none of it", async () => {
+    await attach();
+    await call("/domus/observation", viewBody({ portrait: { self: { traits: ["Cheerful"] } } }));
+    await call("/domus/observation", viewBody({ portrait: { self: { traits: ["Cheerful"], funds: 40 } } }));
+    expect(events[0]?.text).toContain("You are Cheerful.");
+    expect(events[1]?.text).toContain("Money: §40.");
+    expect(events[0]?.brief).not.toContain("You are");
+    expect(events[1]?.brief).not.toContain("Money:");
+  });
+
   it("admits a new view with 202, and emits one outside event on the game thread with its refs", async () => {
     const reply = await call("/domus/observation", viewBody());
     expect(reply.status).toBe(202);

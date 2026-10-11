@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { bodyLines } from "./body.js";
-import { renderView } from "./options.js";
+import { renderView, viewBrief } from "./options.js";
 
 const BUSY = {
   needs: {
@@ -136,5 +136,86 @@ describe("her attention, the first line of the block", () => {
       attention: "Your attention: when something calls you.",
     });
     expect(text.startsWith("Your body now:\nYour attention: when something calls you.\nThe game is paused.\n\nThe game (slot3) shows:\n")).toBe(true);
+  });
+});
+
+const SELF = {
+  traits: ["Cheerful", "Loyal"],
+  skills: [{ skill: "Cooking", level: 3 }, { skill: "Piano", level: 5 }],
+  funds: 1234,
+  life: { age: "young_adult", pregnant: false, sick: false, dead: false, ghost: false, npc: false },
+  jobs: [{ job: "Chef", title: "Head Chef", level: 3, at_work: true }],
+  wants: [
+    { want: "Learn to cook", fear: false, progress: "2/3", until: "18:00", how: "Practise at the stove" },
+    { want: "Feel loved", fear: false, locked: true },
+    { want: "Being alone", fear: true },
+  ],
+};
+
+describe("the You section of her body, in the full view", () => {
+  it("says who she is, her skills, her money, her job, her wants and her fears, as the game names them", () => {
+    const lines = bodyLines({ self: SELF });
+    expect(lines).toEqual([
+      "You are Cheerful, Loyal.",
+      "Skills: Cooking 3, Piano 5.",
+      "Money: §1,234.",
+      "Job: Head Chef (Chef), level 3; at work now.",
+      "Wants: Learn to cook (2/3, until 18:00) [Practise at the stove]; Feel loved (locked).",
+      "Fears: Being alone.",
+      "Age: young adult.",
+    ]);
+  });
+
+  it("keeps the wants and the fears in the order the game gave them, and never sorts them", () => {
+    const lines = bodyLines({ self: { wants: [...SELF.wants].reverse() } });
+    expect(lines).toEqual([
+      "Wants: Feel loved (locked); Learn to cook (2/3, until 18:00) [Practise at the stove].",
+      "Fears: Being alone.",
+    ]);
+  });
+
+  it("says a job with no title by its job, with no empty brackets, and says so when she is not at work", () => {
+    expect(bodyLines({ self: { jobs: [{ job: "Chef", title: null, level: 3, at_work: true }] } })).toEqual(["Job: Chef, level 3; at work now."]);
+    expect(bodyLines({ self: { jobs: [{ job: "Chef", title: "Head Chef", level: 3, at_work: false }] } })).toEqual(["Job: Head Chef (Chef), level 3."]);
+  });
+
+  it("says No job. for an empty list of jobs, and nothing when the jobs are absent", () => {
+    expect(bodyLines({ self: { jobs: [] } })).toEqual(["No job."]);
+    expect(bodyLines({ self: { traits: ["Cheerful"] } })).toEqual(["You are Cheerful."]);
+  });
+
+  it("writes money with thousands separators, and skips it when it is not a whole number", () => {
+    expect(bodyLines({ self: { funds: 1234567 } })).toEqual(["Money: §1,234,567."]);
+    expect(bodyLines({ self: { funds: 0 } })).toEqual(["Money: §0."]);
+    expect(bodyLines({ self: { funds: null } })).toEqual([]);
+    expect(bodyLines({ self: { funds: "12" } })).toEqual([]);
+  });
+
+  it("says the life facts that are true and the age stage in plain words", () => {
+    const lines = bodyLines({ self: { life: { age: "young_adult", pregnant: true, sick: true, ghost: true } } });
+    expect(lines).toEqual(["You are pregnant.", "You are sick.", "You are a ghost.", "Age: young adult."]);
+    expect(bodyLines({ self: { life: { age: "adult", pregnant: false, sick: false, ghost: false } } })).toEqual(["Age: adult."]);
+  });
+
+  it("skips each part that is absent or malformed, and never throws", () => {
+    expect(bodyLines({ self: { traits: [1, null], skills: [null, { skill: "Cooking" }], wants: [{ fear: false }], jobs: [{ level: 2 }] } })).toEqual([]);
+    expect(bodyLines({ self: null })).toEqual([]);
+    expect(bodyLines({ self: 5 })).toEqual([]);
+    expect(bodyLines({ self: "Cheerful" })).toEqual([]);
+    expect(bodyLines({ self: { traits: "Cheerful", life: "bad", jobs: "Chef" } })).toEqual([]);
+    expect(bodyLines({ self: { skills: [null, { skill: "Piano", level: 5 }] } })).toEqual(["Skills: Piano 5."]);
+  });
+
+  it("uses no advice and no judgment", () => {
+    expect(bodyLines({ self: SELF }).join("\n")).not.toMatch(/could|should|ought|must|better|worse|need to/i);
+  });
+});
+
+describe("the You section is only in the full view", () => {
+  it("is not in the brief of a view, which carries the percept lines only", () => {
+    const brief = viewBrief([{ kind: "sim_arrives", salience: 0, facts: { subject: "Pim Dorrow" } }]);
+    expect(brief).not.toContain("You are");
+    expect(brief).toBe("- sim arrives: subject Pim Dorrow");
+    expect(renderView({ world: "slot3", percepts: [], options: [], portrait: { self: SELF } })).toContain("You are Cheerful, Loyal.");
   });
 });
