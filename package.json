@@ -19,5 +19,8 @@
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0"
   }
 }
