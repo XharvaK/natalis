@@ -14,7 +14,8 @@ import { forgetCommand } from "./commands/forget.js";
 import { runCommand } from "./commands/run.js";
 import { stopCommand } from "./commands/stop.js";
 
-const USAGE = "Usage: natalis chat|run|stop|forget|import|capture|replay|judge|backup|restore|unseal --dir <entity folder>";
+const USAGE =
+  "Usage: natalis chat|run|stop|forget|import|capture|replay|judge|backup|restore|unseal|proposals --dir <entity folder>";
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
