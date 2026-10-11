@@ -31,3 +31,19 @@ export function withoutStop(text: string): string {
 export function capitalised(text: string): string {
   return text.length === 0 ? text : `${text[0]!.toUpperCase()}${text.slice(1)}`;
 }
+
+/** The words for who started an act, as the game's own percepts name it: "your act" for hers, "the game" for the game's. */
+export const ORIGIN_WORDS: Readonly<Record<string, string>> = { her_choice: "your act", script: "your act", game: "the game", native_reaction: "the game, on its own" };
+
+/**
+ * The words for who started an act in the game's record of a day (the helper's outcome origins): the summoner at the
+ * controls, her own continued act, the body's own act, the game's reaction, and the helper's experiment.
+ */
+export const DAY_ORIGIN_WORDS: Readonly<Record<string, string>> = {
+  owner: "the summoner's act",
+  user_intent: "your act",
+  body: "the game, on its own",
+  game_reaction: "the game, on its own",
+  experiment: "an experiment",
+  game: "the game",
+};

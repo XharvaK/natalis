@@ -9,6 +9,7 @@ import type { World, WorldBody, WorldEvent } from "../../contracts.js";
 import type { AttachmentNow } from "./body.js";
 import { attentionLine, type AttentionContext, currentAttention, gameAttentionTool, reviewAttention, wakesFor } from "./attention.js";
 import { gameActTool, type GameActContext } from "./game-act.js";
+import { hasDayRecord } from "./day-record.js";
 import { gameLookTool, type LookContext } from "./look.js";
 import { isStopOn } from "../../entity/stop.js";
 import { expireDue, pendingCounts, syncActs, type ThreadNote, withdrawUndone, withholdForStop } from "./acts.js";
@@ -149,13 +150,13 @@ function observationEvent(
     source: "outside",
     text: renderView({
       world: alias, percepts: parsed.percepts, options, portrait: parsed.normalized.portrait, attachment, lastChoices, optionsCut: parsed.optionsCut,
-      attention: attention.line,
+      attention: attention.line, day: parsed.normalized.day,
     }),
     data,
     atMs: parsed.fields.sourceTimeMs,
     wake: attention.wake,
     view: GAME_VIEW,
-    brief: viewBrief(parsed.percepts),
+    brief: viewBrief(parsed.percepts, hasDayRecord(parsed.normalized.day)),
   };
 }
 

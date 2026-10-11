@@ -189,6 +189,18 @@ describe("observations", () => {
     expect(event?.data).toMatchObject({ observationId: "helper-1.1", world: "slot3", options: VIEW });
   });
 
+  it("shows the game's record of her day in the full view after her body, and says in the brief that it came", async () => {
+    await attach();
+    const day = { v: 1, from_minute: 0, to_minute: 1440, frames: [{ day: 3, acts: 1, slept: ["23:10:00.000 day:2 week:0"], woke: [], company: [], body_on_its_own: {} }], acts: [], also: {}, omitted: 0 };
+    await call("/domus/observation", viewBody({ percepts: [{ kind: "sleep_onset", salience: 1, facts: {} }], day }));
+    expect(events[0]?.text).toContain("Your body now:");
+    expect(events[0]?.text).toContain("\n\nThe game's record of your day (facts only):\n- Day 3: slept 23:10.\n\nThe game (slot3) shows:\n");
+    expect(events[0]?.wake).toBe(true);
+    await call("/domus/observation", viewBody());
+    expect(events[1]?.brief).toBe("- sim arrives: subject Pim Dorrow");
+    expect(events[0]?.brief).toBe("- She fell asleep.\n- The game's record of your day came with this view.");
+  });
+
   it("names every view one domus view, with a brief of its percept lines only, so an older view shrinks in her turn", async () => {
     await attach();
     await call("/domus/observation", viewBody({ portrait: { zone: { room_label: "Test kitchen" } } }));

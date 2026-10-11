@@ -6,7 +6,8 @@ import type { Found, OptionObject, AnswerRules } from "./answers.js";
 import { answerRulesOf } from "./answers.js";
 import type { OptionsCut, Percept } from "./wire.js";
 import { type AttachmentNow, bodyLines } from "./body.js";
-import { BAND_WORDS, capitalised, plainName, textOrUndefined } from "./words.js";
+import { DAY_BRIEF_LINE, dayRecordLines } from "./day-record.js";
+import { BAND_WORDS, capitalised, ORIGIN_WORDS, plainName, textOrUndefined } from "./words.js";
 
 /** The longest the rendered view may be, in characters. The rest is said as a count. */
 export const VIEW_TEXT_MAX = 20_000;
@@ -83,8 +84,6 @@ function factsText(facts: Record<string, unknown>): string {
     })
     .join(", ");
 }
-
-const ORIGIN_WORDS: Readonly<Record<string, string>> = { her_choice: "your act", script: "your act", game: "the game", native_reaction: "the game, on its own" };
 
 /** A text the game sent, trimmed; anything that is not text, or is empty, is undefined. */
 function said(value: unknown): string | undefined {
@@ -194,11 +193,11 @@ export function perceptLine(percept: Percept): string {
 }
 
 /**
- * The brief of an older view, kept in its row: the percept lines only, in the words the view shows them. No body and
- * no choices. "An earlier view." when there are no percept lines.
+ * The brief of an older view, kept in its row: the percept lines only, in the words the view shows them, and one line
+ * when the view carried the game's record of the day. No body and no choices. "An earlier view." when there is neither.
  */
-export function viewBrief(percepts: readonly Percept[]): string {
-  if (percepts.length === 0) return "An earlier view.";
+export function viewBrief(percepts: readonly Percept[], dayRecord = false): string {
+  if (percepts.length === 0 && !dayRecord) return "An earlier view.";
   const lines: string[] = [];
   let used = 0;
   for (const percept of percepts) {
@@ -208,6 +207,7 @@ export function viewBrief(percepts: readonly Percept[]): string {
     used += line.length + 1;
   }
   if (lines.length < percepts.length) lines.push(`- (${percepts.length - lines.length} more not shown)`);
+  if (dayRecord) lines.push(DAY_BRIEF_LINE);
   return lines.join("\n");
 }
 
@@ -219,12 +219,19 @@ export function renderView(input: {
   world: string; percepts: readonly Percept[]; options: readonly OptionObject[]; portrait?: unknown; attachment?: AttachmentNow;
   /** Her attention, the first line of the body block (see attentionLine). */
   attention?: string;
+  /** The game's record of the day, when the view carries one. Its section comes after the body block (see day-record.ts). */
+  day?: unknown;
   /** The choices of the last view rendered on this thread (see choicesSignature), or undefined when there was none. */
   lastChoices?: string;
   optionsCut?: OptionsCut;
 }): string {
   const body = bodyLines(input.portrait, input.attachment, input.attention);
-  const head = [...(body.length ? ["Your body now:", ...body, ""] : []), `The game (${input.world}) shows:`];
+  const record = dayRecordLines(input.day);
+  const head = [
+    ...(body.length ? ["Your body now:", ...body, ""] : []),
+    ...(record.length ? [...record, ""] : []),
+    `The game (${input.world}) shows:`,
+  ];
   const lines: string[] = [...head];
   let shown = 0;
   let used = head.reduce((sum, line) => sum + line.length + 1, 0);

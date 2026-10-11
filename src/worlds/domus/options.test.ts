@@ -249,3 +249,30 @@ describe("the look she asked for", () => {
     expect(perceptSentence({ kind: "look", salience: 1, facts: {} })).toBe("This is the look you asked for.");
   });
 });
+
+describe("the game's record of the day in a view", () => {
+  const DAY = {
+    v: 1, from_minute: 0, to_minute: 1440,
+    frames: [{ day: 3, acts: 1, slept: ["23:10:00.000 day:2 week:0"], woke: [], company: [], body_on_its_own: {} }],
+    acts: [], also: {}, omitted: 0,
+  };
+  const SECTION = "The game's record of your day (facts only):\n- Day 3: slept 23:10.";
+
+  it("comes after her body block and before what the game shows, in the full view", () => {
+    const text = renderView({
+      world: "slot3", percepts: [{ kind: "sleep_onset", salience: 1, facts: {} }], options: [], portrait: { mood: "Zesty" }, day: DAY,
+    });
+    expect(text).toBe(`Your body now:\nMood: zesty.\n\n${SECTION}\n\nThe game (slot3) shows:\n- She fell asleep.\n\nThe game offers no choices in this view.`);
+  });
+
+  it("is not shown when the view carries no record, so the view reads as before", () => {
+    const text = renderView({ world: "slot3", percepts: [], options: [], portrait: { mood: "Zesty" } });
+    expect(text).not.toContain("record of your day");
+  });
+
+  it("gives an older view one brief line that the record came with it, and nothing more of the record", () => {
+    expect(viewBrief([{ kind: "sleep_onset", salience: 0, facts: {} }], true)).toBe("- She fell asleep.\n- The game's record of your day came with this view.");
+    expect(viewBrief([], true)).toBe("- The game's record of your day came with this view.");
+    expect(viewBrief([])).toBe("An earlier view.");
+  });
+});
