@@ -110,6 +110,10 @@ const ACTIVE_WINDOW_MS = 6 * 60 * 60 * 1000;
 const ACTIVE_ROWS_LIMIT = 2_000;
 const NOW_THREAD_LIMIT = 20;
 const SAY_CLIP = 160;
+/** How much of one cut tool call's arguments the retry shows. */
+const DONE_ARGS_CLIP = 400;
+/** The turn ends that did not finish a turn: its cursor stays, and its rows are shown as done on the next try. */
+const CUT_ENDS = new Set(["model_error", "aborted"]);
 const RECENT_LIMIT = 30;
 const RECALL_LIMIT = 8;
 const RECALL_WORDS = 4;
@@ -454,6 +458,8 @@ class Runtime implements Entity {
   /** Retries waiting after a failed turn, per thread. */
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly failures = new Map<string, number>();
+  /** The river seq each running turn started from, by turn id. A say reads it to see which asks the turn saw. */
+  private readonly turnSnapshots = new Map<string, number>();
   private readonly wakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Threads held back by the daily turn limit. They wait for the next local day; idle does not wait for them. */
   private readonly limited = new Set<string>();
@@ -686,6 +692,7 @@ class Runtime implements Entity {
     const nowMs = this.nowMs();
     const recent = this.recentRows(thread, seen, snapshot, fresh.length);
     const shown = new Set<number>([...recent, ...fresh].map((row) => row.seq));
+    const done = this.doneBeforeCut(thread, seen);
     this.countTurn(nowMs);
     const system = this.systemText(thread, fresh, shown, nowMs, snapshot);
     const event = [
@@ -694,8 +701,16 @@ class Runtime implements Entity {
       "",
       "New:",
       ...fresh.map((row) => this.lineFor(row)),
+      ...(done.length === 0
+        ? []
+        : [
+            "",
+            "Already done in an earlier try of this turn (it was cut off before it finished). Do not do these again; carry on from them:",
+            ...done,
+          ]),
     ].join("\n");
 
+    this.turnSnapshots.set(turnId, snapshot);
     const { result } = await runTurnWithMessages({
       model: this.model,
       tools: this.tools,
@@ -710,7 +725,7 @@ class Runtime implements Entity {
       turnId,
       signal: this.abort.signal,
       ...(this.config.effort === undefined ? {} : { effort: this.config.effort }),
-    });
+    }).finally(() => this.turnSnapshots.delete(turnId));
 
     if (result.endedBy === "aborted") {
       // Stopping: the events were not handled, so the cursor stays and they are taken again next start.
@@ -729,6 +744,42 @@ class Runtime implements Entity {
     // The summoner's acts up to this turn were shown to the Lar; acts written during the turn wait for the next one.
     this.state.actsSeenSeq = Math.max(this.state.actsSeenSeq, snapshot);
     this.saveState();
+  }
+
+  /**
+   * The tool calls and receipts of turns in this thread that were cut before they finished (a model error, a stop, a
+   * crash) and that the cursor has not passed. The next try shows them as already done. A turn that finished moved
+   * the cursor past itself, so its own rows are not listed again.
+   */
+  private doneBeforeCut(thread: string, seen: number): string[] {
+    const started = new Set<string>();
+    const finished = new Set<string>();
+    for (const row of this.river.read({ thread, kinds: ["turn"], sinceSeq: seen, limit: ALL_ROWS })) {
+      const turnId = row.data?.["turnId"];
+      if (typeof turnId !== "string") continue;
+      if (row.data?.["phase"] === "start") started.add(turnId);
+      else if (row.data?.["phase"] === "end" && !CUT_ENDS.has(String(row.data?.["endedBy"]))) finished.add(turnId);
+    }
+    const cut = new Set([...started].filter((id) => !finished.has(id)));
+    if (cut.size === 0) return [];
+
+    const rows = this.river.read({ thread, kinds: ["tool_call", "receipt"], sinceSeq: seen, limit: ALL_ROWS });
+    const receipts = new Map<string, RiverRow>();
+    for (const row of rows) {
+      if (row.kind === "receipt" && cut.has(String(row.data?.["turnId"]))) receipts.set(String(row.data?.["callId"]), row);
+    }
+    const lines: string[] = [];
+    for (const row of rows) {
+      if (row.kind !== "tool_call" || !cut.has(String(row.data?.["turnId"]))) continue;
+      const receipt = receipts.get(String(row.data?.["callId"]));
+      const args = clip(oneLine(String(row.data?.["args"] ?? "")), DONE_ARGS_CLIP);
+      const outcome =
+        receipt === undefined
+          ? "no receipt was written, so it may or may not have finished"
+          : `${receipt.data?.["ok"] === true ? "done" : "not done"}: ${receipt.text ?? ""}`;
+      lines.push(`- ${row.text ?? "a tool"} ${args}: ${outcome}`);
+    }
+    return lines;
   }
 
   private failTurn(thread: string, message: string, fromModel: boolean, turnId?: string): void {

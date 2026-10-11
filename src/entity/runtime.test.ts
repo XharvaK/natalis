@@ -448,6 +448,32 @@ describe("failures", () => {
     // The retry saw the same new event again.
     expect(userTextOf(model.requests[1])).toContain("owner] Are you there?");
   });
+
+  it("shows a retried turn the say and the wake its cut attempt already made, so it does not repeat them", async () => {
+    const model = new ScriptedModel([
+      reply({
+        toolCalls: [
+          call("say", { place: "cli:summoner", text: "On my way." }, "call_say"),
+          call("schedule_wake", { in_minutes: 60, why: "check the kettle" }, "call_wake"),
+        ],
+      }),
+      new ModelError("The model service is down.", "unavailable", 1),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli, said } = await open(model, { retryDelaysMs: [5] });
+    await entity.start();
+
+    cli.send("Are you coming?");
+    await entity.idle();
+
+    expect(said).toEqual([{ place: "cli:summoner", text: "On my way." }]);
+    expect(readStateFile().wakes).toHaveLength(1);
+    const retry = userTextOf(model.requests[2]);
+    expect(retry).toContain("Already done");
+    expect(retry).toContain("On my way.");
+    expect(retry).toContain("check the kettle");
+    expect(retry).toContain("owner] Are you coming?");
+  });
 });
 
 describe("what the Lar sends and what it is shown", () => {
