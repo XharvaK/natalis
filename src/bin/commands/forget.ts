@@ -18,7 +18,7 @@ const TRASH = "trash";
 
 export type ForgetRequest = {
   dir: string;
-  /** Words: every note line with all of them, and every river row with the phrase. */
+  /** Words: every note line and every river row that holds all of them. */
   query?: string;
   /** River row numbers to forget. Only the river is touched in this mode. */
   seqs?: number[];
