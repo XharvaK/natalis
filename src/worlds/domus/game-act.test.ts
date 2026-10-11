@@ -5,6 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import type { OptionObject } from "./answers.js";
+import { syncActs } from "./acts.js";
 import { gameActTool, type GameActContext } from "./game-act.js";
 import { admitObservation, markSpanUndone, openDomusDb } from "./store.js";
 
@@ -268,5 +269,72 @@ describe("game_act: the words she read still name the ref", () => {
     const properties = tool.spec.parameters.properties as Record<string, { description?: string }>;
     expect(properties["expect"]?.description).toContain("as you read them");
     expect(properties["expect_then"]?.description).toContain("then");
+  });
+});
+
+describe("game_act: one errand, one hand", () => {
+  /** Moves the game's clock: a hold counts the time from the other thread's request to this call. */
+  function atMs(ms: number): void {
+    open = { db, nowMs: () => ms, attachedSession: () => HELPER, lastAttachedMs: () => T0 };
+  }
+
+  it("holds a request while another of her threads asked the game for an act within the last 60 s, and requests nothing", async () => {
+    view(VIEW);
+    expect((await run({ option: "a1" }, "discord:dm:owner")).ok).toBe(true);
+    atMs(T0 + 6000);
+    const receipt = await run({ option: "a2" });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "acted_meanwhile" } });
+    expect(receipt.refused?.reason).toBe("Nothing was requested. Your discord:dm:owner thread asked the game for Boil water (Test kettle) 6 s ago.");
+    expect(receipt.summary).toBe('Your discord:dm:owner thread asked the game for "Boil water (Test kettle)" 6 s ago. Nothing was requested. Ask again with knowingly: true if you want this too.');
+    expect(acts()).toHaveLength(1);
+  });
+
+  it("does not hold a request at 61 s after the other thread's request", async () => {
+    view(VIEW);
+    expect((await run({ option: "a1" }, "discord:dm:owner")).ok).toBe(true);
+    atMs(T0 + 61_000);
+    expect(await run({ option: "a2" })).toMatchObject({ ok: true });
+    expect(acts()).toHaveLength(2);
+  });
+
+  it("does not hold a request from the same thread that asked before", async () => {
+    view(VIEW);
+    expect((await run({ option: "a1" })).ok).toBe(true);
+    atMs(T0 + 5000);
+    expect(await run({ option: "a2" })).toMatchObject({ ok: true });
+    expect(acts()).toHaveLength(2);
+  });
+
+  it("requests the act when it is said knowingly: true, even while another thread's request is recent", async () => {
+    view(VIEW);
+    expect((await run({ option: "a1" }, "discord:dm:owner")).ok).toBe(true);
+    atMs(T0 + 6000);
+    expect(await run({ option: "a2", knowingly: true })).toMatchObject({ ok: true, data: { label: "Tidy up (Test kettle)" } });
+    expect(acts()).toHaveLength(2);
+  });
+
+  it("refuses a knowingly that is not true or false as bad_args, and requests nothing", async () => {
+    view(VIEW);
+    expect(await run({ option: "a1", knowingly: "yes" })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(acts()).toEqual([]);
+  });
+
+  it("holds a request for a plan step another thread released within the last 60 s, since that thread planned it", async () => {
+    view(VIEW);
+    expect((await run({ option: "a1", then: ["a3"] }, "discord:dm:owner")).ok).toBe(true);
+    const first = acts()[0]?.act_id as string;
+    // The first act finishes; the planned step is released, as a request of the thread that planned it.
+    syncActs(db, { attachment: HELPER, events: [{ actId: first, phase: "finished", atMs: T0 + 1000, detail: { finishing_type: "NATURAL" } }], nowMs: T0 + 2000 });
+    expect(acts().map((row) => [row.thread, row.option_ref])).toEqual([["discord:dm:owner", "a1"], ["discord:dm:owner", "a3"]]);
+    atMs(T0 + 3000);
+    const receipt = await run({ option: "a2" });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "acted_meanwhile" } });
+    expect(receipt.refused?.reason).toContain("Your discord:dm:owner thread asked the game for Sit down (Test bench) 1 s ago.");
+  });
+
+  it("mentions knowingly in the tool's description and parameters", () => {
+    const properties = tool.spec.parameters.properties as Record<string, { type?: string; description?: string }>;
+    expect(properties["knowingly"]).toMatchObject({ type: "boolean" });
+    expect(String(tool.spec.description)).toContain("knowingly");
   });
 });

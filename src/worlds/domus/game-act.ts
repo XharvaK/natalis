@@ -5,12 +5,12 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import { answerFor, isAnswerClaim, type AnswerClaim, type Found } from "./answers.js";
-import { PLAN_MORE, requestAct } from "./acts.js";
+import { actRequestedMeanwhile, PLAN_MORE, requestAct } from "./acts.js";
 import { findOption, labelOf, optionsOf, refsOf } from "./options.js";
 import { gameThreadNow, newestObservation, STALE_VIEW_CODE, STALE_VIEW_REASON } from "./store.js";
 
 const REF = /^[A-Za-z0-9._-]{1,16}$/;
-const ARG_KEYS = new Set(["option", "then", "for_summoner", "answer", "expect", "expect_then"]);
+const ARG_KEYS = new Set(["option", "then", "for_summoner", "knowingly", "answer", "expect", "expect_then"]);
 const EXPECT_MAX = 200;
 
 /**
@@ -52,7 +52,9 @@ export function gameActTool(open: () => GameActContext): Tool {
       description:
         "Ask the game to do one of the choices in its newest view, by the ref (for example a3). " +
         "Put up to two more refs in then; each runs only after the one before it completes. Set for_summoner only when " +
-        "your summoner asked for this act. Answer a game question with answer: rows by ref (with a count where the question allows it) " +
+        "your summoner asked for this act. If another of your threads asked the game for an act within the last 60 seconds, " +
+        "the request is refused; set knowingly to true only to ask for this act anyway. " +
+        "Answer a game question with answer: rows by ref (with a count where the question allows it) " +
         "and typed fields, as the question's rules allow. This only requests the act; what the game does comes back here as notes.",
       parameters: {
         type: "object",
@@ -76,6 +78,10 @@ export function gameActTool(open: () => GameActContext): Tool {
             description: "Optional. For each ref in then, in order, the words of that act as you read them. Checked the same way as expect; a shorter list checks only the refs it names.",
           },
           for_summoner: { type: "boolean", description: "True only when your summoner asked for this act." },
+          knowingly: {
+            type: "boolean",
+            description: "True only to request an act that another of your threads asked for in the last 60 seconds, after a refusal that says so.",
+          },
           answer: {
             type: "object",
             description: "Your answer to a game question: rows (option is a row ref, count optional) and/or text (field name to the words you type).",
@@ -122,6 +128,9 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
   }
   if (args.for_summoner !== undefined && typeof args.for_summoner !== "boolean") {
     return refused("bad_args", "for_summoner must be true or false.");
+  }
+  if (args.knowingly !== undefined && typeof args.knowingly !== "boolean") {
+    return refused("bad_args", "knowingly must be true or false.");
   }
   if (args.expect !== undefined && !(typeof args.expect === "string" && args.expect.length <= EXPECT_MAX)) {
     return refused("bad_args", `expect must be the words of the act as you read them, up to ${EXPECT_MAX} characters.`);
@@ -170,6 +179,19 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
     if ("refused" in result) return refused(result.refused.code, result.refused.reason);
     answer = { json: result.json };
     label = result.label;
+  }
+  // One errand, one hand: a request from another of her threads within the last minute is held, so two threads do not
+  // order the same act twice. The receipt says what was asked and when; knowingly: true asks anyway.
+  if (args.knowingly !== true) {
+    const other = actRequestedMeanwhile(game.db, { thread: context.thread, nowMs });
+    if (other) {
+      const seconds = Math.max(0, Math.round((nowMs - other.requestedAtMs) / 1000));
+      return refused(
+        "acted_meanwhile",
+        `Nothing was requested. Your ${other.thread} thread asked the game for ${other.label} ${seconds} s ago.`,
+        `Your ${other.thread} thread asked the game for "${other.label}" ${seconds} s ago. Nothing was requested. Ask again with knowingly: true if you want this too.`,
+      );
+    }
   }
   const requested = requestAct(game.db, {
     thread: context.thread,
