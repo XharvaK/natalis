@@ -62,6 +62,12 @@ const CHARACTER_STUB = "# Character\n\nNothing is written here yet. This is wher
 const LIFE_PATH = "self/life.md";
 const LIFE_STUB =
   "# Life\n\nNothing is written here yet. This is where my life facts go: where I live, my work, my accounts and my places, in my own words.\n";
+/** The stub notes every entity starts with. The importer replaces them with an imported self. */
+export const ENTITY_STUBS: ReadonlyArray<{ path: string; text: string; reason: string }> = [
+  { path: "self/constitution.md", text: CONSTITUTION_STUB, reason: "Start my constitution file" },
+  { path: "self/character.md", text: CHARACTER_STUB, reason: "Start my character file" },
+  { path: LIFE_PATH, text: LIFE_STUB, reason: "Start my life file" },
+];
 const STOPPED_TEXT = "Your owner's emergency stop is on: outward acts are paused. You can still answer your owner.";
 /** How long a say counts as "someone is speaking there" for the place claims. */
 const CLAIM_WINDOW_MS = 2 * 60 * 1000;
@@ -133,9 +139,7 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
 
     notebook = guardNotebook(await openNotebook(join(dir, "notebook")), scanner);
     await seedNotebook(notebook);
-    await seedStub(notebook, "self/constitution.md", CONSTITUTION_STUB, "Start my constitution file");
-    await seedStub(notebook, "self/character.md", CHARACTER_STUB, "Start my character file");
-    await seedStub(notebook, LIFE_PATH, LIFE_STUB, "Start my life file");
+    for (const stub of ENTITY_STUBS) await seedStub(notebook, stub.path, stub.text, stub.reason);
   } catch (err) {
     river.close();
     throw err;
@@ -273,7 +277,7 @@ function writeStateFile(path: string, state: EntityState): void {
   renameSync(tmp, path);
 }
 
-async function seedStub(notebook: Notebook, path: string, text: string, reason: string): Promise<void> {
+export async function seedStub(notebook: Notebook, path: string, text: string, reason: string): Promise<void> {
   if (notebook.read(path) === null) await notebook.write(path, text, reason, "body");
 }
 
