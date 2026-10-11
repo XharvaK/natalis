@@ -203,15 +203,21 @@ const UNDO_KEYS = new Set(["v", "world", "branch", "session", "after_source_time
 export type ParsedUndo = { world: string; branch: string; session: string; afterSourceTimeMs: number; reason: string };
 
 /** POST /domus/undo. */
+/** The widest time a JavaScript Date holds, either side of the epoch, in milliseconds. */
+const DATE_RANGE_MS = 8.64e15;
+
 export function parseUndo(body: unknown): ParsedUndo {
   if (!isRecord(body)) fail(400, "invalid_body");
   for (const key of Object.keys(body)) if (!UNDO_KEYS.has(key)) fail(400, "invalid_body");
   if (body.v !== 1) fail(400, "invalid_body");
+  const afterSourceTimeMs = safeInt(body.after_source_time_ms);
+  // The body words the undo with a date, so a time past the Date range cannot be told and is refused here.
+  if (afterSourceTimeMs > DATE_RANGE_MS) fail(400, "invalid_body");
   return {
     world: textOf(body.world, 1, 64),
     branch: textOf(body.branch, 1, 64),
     session: textOf(body.session, 1, 64),
-    afterSourceTimeMs: safeInt(body.after_source_time_ms),
+    afterSourceTimeMs,
     reason: textOf(body.reason, 1, 32, /^[A-Z_]+$/),
   };
 }

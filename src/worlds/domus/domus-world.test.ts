@@ -319,6 +319,12 @@ describe("snapshot, feed and undo", () => {
     expect(await gameAct({ option: "a1" }, "t-undo-2")).toMatchObject({ ok: true, data: { label: "Boil water (Test kettle)" } });
   });
 
+  it("refuses an undo time outside the JavaScript Date range as invalid_body, and the listener stays up", async () => {
+    expect(await call("/domus/undo", { v: 1, world: "slot3", branch: "b", session: "s", after_source_time_ms: 9e15, reason: "HELPER_UNDO" }))
+      .toEqual({ status: 400, body: { error: "invalid_body" } });
+    expect(await call("/domus/feed", { v: 1, helper_session: "helper-1" })).toEqual({ status: 200, body: { status: "ok", items: [], marks: [] } });
+  });
+
   it("refuses an undo with a bad reason or an unknown key as invalid_body", async () => {
     expect(await call("/domus/undo", { v: 1, world: "slot3", branch: "b", session: "s", after_source_time_ms: T0, reason: "lower" }))
       .toEqual({ status: 400, body: { error: "invalid_body" } });
