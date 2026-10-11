@@ -3,7 +3,7 @@
 Natalis lets you give life to a digital entity: one with its own identity, memory, inner time and a place to be, running on
 the model you choose.
 
-This repository is at the start. Nothing here runs yet.
+This repository is at the start. The core is being built.
 
 ## What a Natalis entity is
 
@@ -26,11 +26,17 @@ The draft is in [docs/charter.md](docs/charter.md).
 
 ## Plan
 
-1. Seams: the mind kernel learns to take its names, data paths, models, clock and budgets from configuration.
-2. Extract the kernel into this repository, with a birth flow and a doctor that checks your setup.
-3. Build in the duties companion law asks for (disclosure, crisis help, data export and delete).
-4. A test entity lives for a while on its own host and shares nothing with anyone else's entity.
-5. Beta.
+The model is the mind; the host is the body. Natalis keeps only what no better model replaces (storage, secrets by
+reference, the creator's stop, forget and privacy list, the irreversible-act line, a loop ceiling, the floor duties) and
+leaves every judgment to the entity: what it notices, when it thinks, what it says and remembers.
+
+1. Core: one append-only river of everything the entity lives, its own notebook in plain text, and a tool loop over any
+   OpenAI-compatible model or local server.
+2. Discord as the first world, with parallel threads that share one self and a live board of what each is doing.
+3. An importer and a replay test, so an existing entity can move in and be shown to be at least as good.
+4. A sandbox of its own (shell, network, installs) and the web, with secrets it can use but never see.
+5. More worlds as plugins, starting with The Sims 4.
+6. Reflection while it sleeps, and a weekly review of the changes it proposes to itself.
 
 ## License
 
