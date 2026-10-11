@@ -936,7 +936,8 @@ class Runtime implements Entity {
         receipt === undefined
           ? "no receipt was written, so it may or may not have finished"
           : `${receipt.data?.["ok"] === true ? "done" : "not done"}: ${receipt.text ?? ""}`;
-      lines.push(`- ${row.text ?? "a tool"} ${args}: ${outcome}`);
+      // A forgotten row keeps its tool name in its data, not its text.
+      lines.push(`- ${String(row.data?.["tool"] ?? row.text ?? "a tool")} ${args}: ${outcome}`);
     }
     return lines;
   }

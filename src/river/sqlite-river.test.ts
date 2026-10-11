@@ -267,6 +267,45 @@ describe.each(modes)("forget ($label)", ({ forceNoFts }) => {
     expect(tomb?.text).toBeUndefined();
   });
 
+  it("keeps a forgotten tool call and its receipt as their kind, tool, time and outcome, and drops the words", () => {
+    const river = open({ forceNoFts });
+    river.append({
+      thread: "dm:owner",
+      kind: "tool_call",
+      source: "self",
+      text: "say",
+      data: { args: '{"text":"Quince jam at dusk"}', turnId: "t1", callId: "c1" },
+      atMs: 1_700_000_000_500,
+    });
+    river.append({
+      thread: "dm:owner",
+      kind: "receipt",
+      source: "body",
+      text: "Said to dm:owner: Quince jam at dusk.",
+      data: { tool: "say", ok: false, refused: { code: "held_secret", reason: "Quince jam is held" }, turnId: "t1", callId: "c1" },
+      atMs: 1_700_000_000_600,
+    });
+    expect(river.forget({ text: "quince jam" }, "self", "I chose to let it go")).toBe(2);
+
+    const [call, receipt] = river.read({ thread: "dm:owner", kinds: ["tool_call", "receipt"] });
+    expect(call).toMatchObject({
+      kind: "tool_call",
+      source: "self",
+      atMs: 1_700_000_000_500,
+      text: "(forgotten)",
+      forgotten: true,
+      data: { tool: "say", forgotten: "(forgotten)", turnId: "t1", callId: "c1" },
+    });
+    expect(receipt).toMatchObject({
+      kind: "receipt",
+      atMs: 1_700_000_000_600,
+      text: "(forgotten)",
+      forgotten: true,
+      data: { tool: "say", ok: false, refused: { code: "held_secret" }, turnId: "t1", callId: "c1" },
+    });
+    expect(JSON.stringify([call, receipt])).not.toMatch(/quince|jam/i);
+  });
+
   it("uses source self for a self-forget", () => {
     const river = seeded();
     river.forget({ seqs: [2] }, "self", "I chose to let it go");
