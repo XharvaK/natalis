@@ -7,6 +7,7 @@ import {
   ModelError,
   type Ceiling,
   type ChatMessage,
+  type ImagePart,
   type ModelPort,
   type ModelRequest,
   type ModelResponse,
@@ -94,6 +95,8 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
     { role: "user", content: event },
   ];
   const thoughts: string[] = [];
+  /** Pictures a tool handed over for the model to see on its next call. Shown once, then gone. */
+  const pictures: ImagePart[] = [];
   const receipts: TurnResult["receipts"] = [];
   const skipped: string[] = [];
   let modelCalls = 0;
@@ -130,7 +133,9 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
   const runCall = async (call: ToolCall): Promise<Receipt> => {
     toolCalls += 1;
     write({ kind: "tool_call", source: "self", text: call.name, data: { args: call.arguments, turnId, callId: call.id } });
-    const receipt = await execute(call);
+    // Pictures never go into the record or the tool message: only the model sees them, on the next call.
+    const { images, ...receipt } = await execute(call);
+    if (images !== undefined) pictures.push(...images);
     write({
       kind: "receipt",
       source: "body",
@@ -175,7 +180,8 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
       modelCalls += 1;
       let response: ModelResponse;
       try {
-        response = await model.complete({ messages: messages.slice(), tools: specs, toolChoice: "auto", effort }, signal);
+        const shown: ChatMessage[] = pictures.length === 0 ? messages.slice() : [...messages, pictureMessage(pictures.splice(0))];
+        response = await model.complete({ messages: shown, tools: specs, toolChoice: "auto", effort }, signal);
       } catch (err) {
         if (signal?.aborted || (err instanceof ModelError && err.kind === "aborted")) {
           endedBy = "aborted";
@@ -263,6 +269,15 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
     ...(error === undefined ? {} : { error }),
   };
   return { result, messages };
+}
+
+/** The one call that carries pictures the tools handed over: they are not added to the messages kept for the turn. */
+function pictureMessage(images: ImagePart[]): ChatMessage {
+  return {
+    role: "user",
+    content: `Here ${images.length === 1 ? "is the picture" : "are the pictures"} you asked to look at. You see ${images.length === 1 ? "it" : "them"} on this call only.`,
+    images,
+  };
 }
 
 type Parsed = { ok: true; value: Record<string, unknown> } | { ok: false; receipt: Receipt };

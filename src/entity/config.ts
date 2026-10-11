@@ -105,7 +105,7 @@ function parseHolds(value: unknown): { honesty?: boolean } {
 /** Validates a model block (the `model` part of entity.json). Also used for the judge's config file. */
 export function parseModel(value: unknown): ModelConfig {
   const block = objectOf(value, "model");
-  onlyKeys(block, ["baseUrl", "model", "apiKeyEnv", "contextTokens", "nativeTools", "effortParam", "timeoutMs"], "model");
+  onlyKeys(block, ["baseUrl", "model", "apiKeyEnv", "contextTokens", "nativeTools", "effortParam", "timeoutMs", "vision"], "model");
 
   const baseUrl = textOf(block["baseUrl"], "model.baseUrl");
   let protocol: string;
@@ -141,6 +141,10 @@ export function parseModel(value: unknown): ModelConfig {
     model.effortParam = block["effortParam"];
   }
   if (block["timeoutMs"] !== undefined) model.timeoutMs = positiveInt(block["timeoutMs"], "model.timeoutMs");
+  if (block["vision"] !== undefined) {
+    if (typeof block["vision"] !== "boolean") throw new Error("model.vision must be true or false.");
+    model.vision = block["vision"];
+  }
   return model;
 }
 

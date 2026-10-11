@@ -91,14 +91,18 @@ function pictureWorld(carriesFiles: boolean): {
   };
 }
 
-async function open(model: ScriptedModel, worlds: World[]): Promise<{ entity: Entity; send: (text: string) => void; said: string[] }> {
+async function open(
+  model: ScriptedModel,
+  worlds: World[],
+  config: EntityConfig = CONFIG,
+): Promise<{ entity: Entity; send: (text: string) => void; said: string[] }> {
   if (!existsSync(join(dir, "notebook"))) {
     mkdirSync(dir, { recursive: true });
     cpSync(join(templateRoot, "seeded", "notebook"), join(dir, "notebook"), { recursive: true });
   }
   const said: string[] = [];
   const cli = createCliWorld({ onSay: (_place, text) => said.push(text) });
-  const entity = await openEntity({ dir, config: CONFIG, model, worlds: [cli, ...worlds] });
+  const entity = await openEntity({ dir, config, model, worlds: [cli, ...worlds] });
   opened.push(entity);
   return { entity, send: (text) => cli.send(text), said };
 }
@@ -237,5 +241,61 @@ describe("the summoner's pictures", () => {
     await entity.idle();
     expect(said.at(-1)).toBe(`[natalis] There is no picture ${kept} on your shelf. !media lists them.`);
     expect(model.requests).toHaveLength(0);
+  });
+});
+
+describe("look: a picture the model can see", () => {
+  const SEEING: EntityConfig = { ...CONFIG, model: { ...CONFIG.model, vision: true } };
+
+  it("is offered only with vision, and shows the picture on the next call, once", async () => {
+    const fake = pictureWorld(true);
+    let picture = "";
+    const model = new ScriptedModel([
+      () => reply({ toolCalls: [call("look", { id: picture }, "call_look")] }),
+      reply({ content: "I see a cat." }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, send } = await open(model, [fake.world], SEEING);
+    await entity.start();
+    picture = fake.body().keepPicture({ bytes: png(), name: "cat.png", from: FROM }).id;
+
+    send("Look at the picture.");
+    await entity.idle();
+    send("Anything else?");
+    await entity.idle();
+
+    const names = (model.requests[0]?.tools ?? []).map((spec) => spec.name);
+    expect(names).toContain("look");
+    expect(String(model.requests[0]?.messages[0]?.content)).toContain("You can see pictures");
+    const base64 = Buffer.from(png()).toString("base64");
+    expect(model.requests[1]?.messages.at(-1)).toMatchObject({ role: "user", images: [{ type: "image", mime: "image/png", dataBase64: base64 }] });
+    expect(model.requests[2]?.messages.some((m) => m.role === "user" && m.images !== undefined)).toBe(false);
+    expect(JSON.stringify(entity.river.read({ limit: 1000 }))).not.toContain(base64);
+  });
+
+  it("is not offered without vision, and the Lar is told it cannot see pictures", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, send } = await open(model, []);
+    await entity.start();
+    send("Hello.");
+    await entity.idle();
+    const names = (model.requests[0]?.tools ?? []).map((spec) => spec.name);
+    expect(names).not.toContain("look");
+    expect(String(model.requests[0]?.messages[0]?.content)).toContain("You cannot see pictures with your current model; you can keep and send them.");
+  });
+
+  it("refuses a picture that is not on the shelf, and names the newest", async () => {
+    const fake = pictureWorld(true);
+    let kept = "";
+    const model = new ScriptedModel([
+      () => reply({ toolCalls: [call("look", { id: "m-AAAAAAAA" }, "call_look")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, send } = await open(model, [fake.world], SEEING);
+    await entity.start();
+    kept = fake.body().keepPicture({ bytes: png(), name: "dog.png", from: FROM }).id;
+    send("Look.");
+    await entity.idle();
+    expect(receiptsIn(model.requests[1]).join("\n")).toContain(`There is no picture m-AAAAAAAA on your shelf. The newest on your shelf are: ${kept}.`);
   });
 });

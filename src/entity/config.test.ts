@@ -159,3 +159,13 @@ describe("the daily turn limit", () => {
     expect(() => parseEntityConfig({ ...MINIMAL, limits: 20 })).toThrow(/limits must be an object/);
   });
 });
+
+describe("model.vision", () => {
+  const model = { baseUrl: "http://127.0.0.1:9/v1", model: "seeing", contextTokens: 32_000 };
+
+  it("is off unless the model block says true, and says so plainly when it is not true or false", () => {
+    expect(parseEntityConfig({ model, summoner: { alias: "owner" } }).model.vision).toBeUndefined();
+    expect(parseEntityConfig({ model: { ...model, vision: true }, summoner: { alias: "owner" } }).model.vision).toBe(true);
+    expect(() => parseEntityConfig({ model: { ...model, vision: "yes" }, summoner: { alias: "owner" } })).toThrow("model.vision must be true or false.");
+  });
+});

@@ -978,6 +978,25 @@ class Runtime implements Entity {
       .reverse();
   }
 
+  /** Hands one picture from the shelf to the model on its next call, once. Only offered when the model can see. */
+  private look(args: Args): Receipt {
+    const id = requireText(args, "id", "The picture id");
+    if (!id.ok) return id.receipt;
+    const meta = this.shelf.get(id.value);
+    const base64 = meta === undefined ? undefined : this.shelf.base64Of(id.value);
+    if (meta === undefined || base64 === undefined) {
+      const newest = this.newestPictureIds();
+      const listed = newest.length === 0 ? "Your shelf is empty." : `The newest on your shelf are: ${newest.join(", ")}.`;
+      return refuse("no_picture", `There is no picture ${id.value} on your shelf. ${listed}`, `no picture ${id.value}`);
+    }
+    return {
+      ok: true,
+      summary: `Here is picture ${meta.id} (${meta.name}). You see it on your next call, once.`,
+      data: { id: meta.id, mime: meta.mime, bytes: meta.bytes, name: meta.name },
+      images: [{ type: "image", mime: meta.mime, dataBase64: base64 }],
+    };
+  }
+
   private proposeCommitment(args: Args, context: ToolContext): Receipt {
     const text = requireText(args, "text", "The commitment");
     if (!text.ok) return text.receipt;
@@ -1024,6 +1043,7 @@ class Runtime implements Entity {
     const sections: ContextSection[] = [
       { name: "who you are", text: this.identityText(nowMs), priority: 100, core: true },
       { name: "how you act", text: HOW_YOU_ACT, priority: 100, core: true },
+      { name: "pictures", text: pictureAbility(this.config.model.vision === true), priority: 100, core: true },
       { name: "constitution", text: this.constitutionText(), priority: 100, core: true },
       { name: "character", text: this.noteOr("self/character.md", CHARACTER_STUB), priority: 100, core: true },
       { name: "your life", text: this.noteOr(LIFE_PATH, LIFE_STUB), priority: 100, core: true },
@@ -1310,6 +1330,24 @@ class Runtime implements Entity {
         },
         (args, context) => this.letGo(args, context),
       ),
+      // Only with a model that can see: a model without vision is never sent a picture.
+      ...(this.config.model.vision === true
+        ? [
+            make(
+              {
+                name: "look",
+                description:
+                  "Look at one picture on your shelf by its id. It is shown to you on your next call, once, and then it is only in your record as its name.",
+                parameters: {
+                  type: "object",
+                  properties: { id: { type: "string", description: "The picture's id, such as m-ABCD2345." } },
+                  required: ["id"],
+                },
+              },
+              (args) => this.look(args),
+            ),
+          ]
+        : []),
       make(
         {
           name: "propose_commitment",
@@ -1724,6 +1762,13 @@ function privacyText(load: PrivacyLoad): string {
   return categories.length === 0
     ? `${head}\nNo categories are on the list right now.`
     : `${head}\nCategories on the list: ${categories.join(", ")}.`;
+}
+
+/** What the Lar can do with pictures, as one plain line for its "how you act" part. */
+function pictureAbility(vision: boolean): string {
+  return vision
+    ? "You can see pictures: look shows one picture from your shelf to you, once, on your next call. You can also keep and send them."
+    : "You cannot see pictures with your current model; you can keep and send them.";
 }
 
 function who(row: RiverRow): string {
