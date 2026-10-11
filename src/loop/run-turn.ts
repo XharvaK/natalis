@@ -105,6 +105,8 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
   let endedBy: TurnEndReason | undefined;
   let error: string | undefined;
   let thrown: { error: unknown } | undefined;
+  // The backup model answers for one turn at most; the river says so once, not once per call.
+  let backupNoted = false;
 
   const write = (row: Omit<RiverRowInput, "thread" | "atMs">): void => {
     river.append({ ...row, thread, atMs: nowMs() });
@@ -211,6 +213,15 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
         break;
       }
 
+      if (response.servedBy !== undefined && !backupNoted) {
+        backupNoted = true;
+        write({
+          kind: "note",
+          source: "body",
+          text: `Your main model did not answer; your backup model (${response.servedBy}) answered this turn.`,
+          data: { turnId, kind: "backup_model", model: response.servedBy },
+        });
+      }
       const calls = response.toolCalls ?? [];
       const content = response.content;
       // The reasoning summary is part of the Lar's thinking record; it is kept, never shown to anyone as speech.

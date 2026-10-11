@@ -267,6 +267,16 @@ describe("acts: the Lar asks, the helper pulls, the game reports", () => {
     expect(events[0]?.text).toContain("the game refused it (NOT_ATTACHED)");
   });
 
+  it("wakes the thread when the game finishes an act, and the note says it finished", async () => {
+    const receipt = await gameAct({ option: "a2" }, "t-2b");
+    const actId = (receipt.data as { actId: string }).actId;
+    await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [
+      { act_id: actId, phase: "finished", at_ms: T0 + 1, detail: { finishing_type: "NATURAL", started: true } },
+    ] });
+    expect(events.at(-1)).toMatchObject({ wake: true, source: "body" });
+    expect(events.at(-1)?.text).toContain("it finished");
+  });
+
   it("runs a plan: the next step is served only after the one before it finished", async () => {
     const receipt = await gameAct({ option: "a1", then: ["a3"] }, "t-3");
     const actId = (receipt.data as { actId: string }).actId;

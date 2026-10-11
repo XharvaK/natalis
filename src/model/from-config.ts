@@ -2,8 +2,9 @@
 // variable, and the value is never written into the config, an error, or a log.
 
 import { withEmulatedTools } from "./emulated-tools.js";
-import { createOpenAICompatiblePort } from "./openai-compatible.js";
-import type { ModelPort } from "../contracts.js";
+import { createOpenAICompatiblePort, type OpenAICompatibleOptions } from "./openai-compatible.js";
+import { withBackup } from "./backup.js";
+import type { ModelPort, ModelRequest } from "../contracts.js";
 
 export type ModelConfig = {
   baseUrl: string;
@@ -16,6 +17,24 @@ export type ModelConfig = {
   timeoutMs?: number;
   /** True when the model can see pictures. Only then is the look tool offered to the Lar. Never assumed. */
   vision?: boolean;
+  /**
+   * A backup for when the main model cannot answer (rate limited, unavailable, unreachable or no reply in time). It
+   * uses the same baseUrl, key, context size, timeout and tool setting as the main model.
+   */
+  fallback?: FallbackModelConfig;
+};
+
+export type FallbackModelConfig = {
+  /** The backup's model name. */
+  model: string;
+  /** The effort field the backup gets effort in. Left out, the main model's effortParam is used. */
+  effortParam?: "reasoning_effort" | null;
+  /** True when the backup can see pictures. Otherwise it gets the request without them, and a plain line in their place. */
+  vision?: boolean;
+  /** The backup's effort, in the same values as the entity's effort. Left out, the request's own effort is used. */
+  effort?: NonNullable<ModelRequest["effort"]>;
+  /** The backup's context window in tokens. Left out, it is the main model's. A request too big for it is not sent to it. */
+  contextTokens?: number;
 };
 
 export function modelFromConfig(
@@ -32,7 +51,7 @@ export function modelFromConfig(
     }
     apiKey = value;
   }
-  const port = createOpenAICompatiblePort({
+  const connection: OpenAICompatibleOptions = {
     baseUrl: config.baseUrl,
     model: config.model,
     apiKey,
@@ -40,6 +59,28 @@ export function modelFromConfig(
     nativeTools: config.nativeTools,
     effortParam: config.effortParam,
     timeoutMs: config.timeoutMs,
+  };
+  const primary = withEmulated(createOpenAICompatiblePort(connection), config);
+  if (config.fallback === undefined) return primary;
+  const backup = withEmulated(
+    createOpenAICompatiblePort({
+      ...connection,
+      model: config.fallback.model,
+      effortParam: config.fallback.effortParam ?? config.effortParam,
+      contextTokens: config.fallback.contextTokens ?? config.contextTokens,
+    }),
+    config,
+  );
+  return withBackup({
+    primary,
+    backup,
+    backupName: config.fallback.model,
+    backupSeesPictures: config.fallback.vision === true,
+    ...(config.fallback.effort === undefined ? {} : { backupEffort: config.fallback.effort }),
+    ...(config.fallback.contextTokens === undefined ? {} : { backupContextTokens: config.fallback.contextTokens }),
   });
+}
+
+function withEmulated(port: ModelPort, config: ModelConfig): ModelPort {
   return config.nativeTools === false ? withEmulatedTools(port) : port;
 }

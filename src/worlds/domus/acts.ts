@@ -29,8 +29,11 @@ const RANK: Readonly<Record<string, number>> = { requested: 0, received: 1, acce
 /** An unknown the helper guessed (the game was detached, or it never answered) is not final. */
 const GUESSED_UNKNOWN_CODES: ReadonlySet<string> = new Set(["GAME_DETACHED", "NO_PROBE_REPLY"]);
 const REPLACES_GUESS: ReadonlySet<string> = new Set(["received", "accepted", "pushed", "finished", "rejected"]);
-/** Phases that wake the Lar's thread. The others are kept as notes for its next turn. */
-const WAKING: ReadonlySet<string> = new Set(["rejected", "unknown", "expired"]);
+/**
+ * Every final phase wakes the Lar's thread, a finished act included: whatever way an act ended, the Lar should act on it.
+ * The phases before the end (received, accepted, pushed) are kept as notes for its next turn and do not wake it.
+ */
+const WAKING: ReadonlySet<string> = new Set(["rejected", "finished", "unknown", "expired"]);
 
 /** A note for the game thread: an act's report, or a plan that stopped. It becomes a body row there. */
 export type ThreadNote = { thread: string; text: string; data: Record<string, unknown>; wake: boolean };

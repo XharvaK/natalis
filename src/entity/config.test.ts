@@ -169,3 +169,48 @@ describe("model.vision", () => {
     expect(() => parseEntityConfig({ model: { ...model, vision: "yes" }, summoner: { alias: "owner" } })).toThrow("model.vision must be true or false.");
   });
 });
+
+describe("model.fallback, the backup model", () => {
+  const model = { baseUrl: ["http://", ["127", "0", "0", "1"].join("."), ":9/v1"].join(""), model: "main", contextTokens: 32_000 };
+  const parse = (fallback: unknown) => parseEntityConfig({ model: { ...model, fallback }, summoner: { alias: "owner" } });
+
+  it("is off unless the model block names one, and keeps its name, effort field and vision switch", () => {
+    expect(parseEntityConfig({ model, summoner: { alias: "owner" } }).model.fallback).toBeUndefined();
+    expect(parse({ model: "backup" }).model.fallback).toEqual({ model: "backup" });
+    expect(parse({ model: "backup", effortParam: null, vision: true }).model.fallback).toEqual({
+      model: "backup",
+      effortParam: null,
+      vision: true,
+    });
+    expect(parse({ model: "backup", effortParam: "reasoning_effort" }).model.fallback?.effortParam).toBe("reasoning_effort");
+  });
+
+  it("refuses an unknown field, and in particular a second key or service of its own", () => {
+    expect(() => parse({ model: "backup", apiKeyEnv: "OTHER_KEY" })).toThrow(/Unknown field "apiKeyEnv" in model.fallback/);
+    expect(() => parse({ model: "backup", baseUrl: "http://127.0.0.1:9/v1" })).toThrow(/Unknown field "baseUrl" in model.fallback/);
+    expect(() => parse({ model: "backup", nativeTools: false })).toThrow(/Unknown field "nativeTools" in model.fallback/);
+  });
+
+  it("refuses a model name that is not text, and says which field", () => {
+    expect(() => parse({ model: 7 })).toThrow("model.fallback.model must be a non-empty text.");
+    expect(() => parse({})).toThrow("model.fallback.model must be a non-empty text.");
+    expect(() => parse({ model: "  " })).toThrow("model.fallback.model must be a non-empty text.");
+  });
+
+  it("takes the backup's own effort and context size, and refuses values outside their rules", () => {
+    expect(parse({ model: "backup", effort: "xhigh", contextTokens: 64_000 }).model.fallback).toEqual({
+      model: "backup",
+      effort: "xhigh",
+      contextTokens: 64_000,
+    });
+    expect(() => parse({ model: "backup", effort: "max" })).toThrow("model.fallback.effort must be one of low, medium, high, xhigh.");
+    expect(() => parse({ model: "backup", contextTokens: 0 })).toThrow("model.fallback.contextTokens must be a whole number, 1 or more.");
+    expect(() => parse({ model: "backup", contextTokens: "big" })).toThrow("model.fallback.contextTokens must be a whole number, 1 or more.");
+  });
+
+  it("refuses a wrong effort field or vision value, and a block that is not an object", () => {
+    expect(() => parse({ model: "backup", effortParam: "effort" })).toThrow('model.fallback.effortParam must be "reasoning_effort" or null.');
+    expect(() => parse({ model: "backup", vision: "yes" })).toThrow("model.fallback.vision must be true or false.");
+    expect(() => parse("backup")).toThrow("model.fallback must be an object.");
+  });
+});

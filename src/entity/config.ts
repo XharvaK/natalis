@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Ceiling } from "../contracts.js";
-import type { ModelConfig } from "../model/from-config.js";
+import type { FallbackModelConfig, ModelConfig } from "../model/from-config.js";
 
 export const EFFORTS = ["low", "medium", "high", "xhigh"] as const;
 export type Effort = (typeof EFFORTS)[number];
@@ -23,7 +23,7 @@ export type EntityConfig = {
   ceiling?: Ceiling;
   /** The summoner: the alias they appear under. Written as "summoner" in entity.json ("owner" is still read). */
   owner: { alias: string };
-  /** Body checks on what the Lar says. Each one is on unless the block says false. */
+  /** Body checks on what the Lar says. Each one is off unless the block says true. */
   holds?: { honesty?: boolean };
   /** Daily limits. Left out, there is none. */
   limits?: { turnsPerDay?: number };
@@ -105,7 +105,11 @@ function parseHolds(value: unknown): { honesty?: boolean } {
 /** Validates a model block (the `model` part of entity.json). Also used for the judge's config file. */
 export function parseModel(value: unknown): ModelConfig {
   const block = objectOf(value, "model");
-  onlyKeys(block, ["baseUrl", "model", "apiKeyEnv", "contextTokens", "nativeTools", "effortParam", "timeoutMs", "vision"], "model");
+  onlyKeys(
+    block,
+    ["baseUrl", "model", "apiKeyEnv", "contextTokens", "nativeTools", "effortParam", "timeoutMs", "vision", "fallback"],
+    "model",
+  );
 
   const baseUrl = textOf(block["baseUrl"], "model.baseUrl");
   let protocol: string;
@@ -130,22 +134,41 @@ export function parseModel(value: unknown): ModelConfig {
     }
     model.apiKeyEnv = envName;
   }
-  if (block["nativeTools"] !== undefined) {
-    if (typeof block["nativeTools"] !== "boolean") throw new Error("model.nativeTools must be true or false.");
-    model.nativeTools = block["nativeTools"];
-  }
-  if (block["effortParam"] !== undefined) {
-    if (block["effortParam"] !== null && block["effortParam"] !== "reasoning_effort") {
-      throw new Error('model.effortParam must be "reasoning_effort" or null.');
-    }
-    model.effortParam = block["effortParam"];
-  }
+  if (block["nativeTools"] !== undefined) model.nativeTools = flagOf(block["nativeTools"], "model.nativeTools");
+  if (block["effortParam"] !== undefined) model.effortParam = effortParamOf(block["effortParam"], "model.effortParam");
   if (block["timeoutMs"] !== undefined) model.timeoutMs = positiveInt(block["timeoutMs"], "model.timeoutMs");
-  if (block["vision"] !== undefined) {
-    if (typeof block["vision"] !== "boolean") throw new Error("model.vision must be true or false.");
-    model.vision = block["vision"];
-  }
+  if (block["vision"] !== undefined) model.vision = flagOf(block["vision"], "model.vision");
+  if (block["fallback"] !== undefined) model.fallback = parseFallback(block["fallback"]);
   return model;
+}
+
+/** The backup model block: the same service, key and timeout as the main model, so only its own settings are given. */
+function parseFallback(value: unknown): FallbackModelConfig {
+  const block = objectOf(value, "model.fallback");
+  onlyKeys(block, ["model", "effortParam", "vision", "effort", "contextTokens"], "model.fallback");
+  const fallback: FallbackModelConfig = { model: textOf(block["model"], "model.fallback.model") };
+  if (block["effortParam"] !== undefined) {
+    fallback.effortParam = effortParamOf(block["effortParam"], "model.fallback.effortParam");
+  }
+  if (block["vision"] !== undefined) fallback.vision = flagOf(block["vision"], "model.fallback.vision");
+  if (block["effort"] !== undefined) {
+    if (!isEffort(block["effort"])) throw new Error(`model.fallback.effort must be one of ${EFFORTS.join(", ")}.`);
+    fallback.effort = block["effort"];
+  }
+  if (block["contextTokens"] !== undefined) {
+    fallback.contextTokens = positiveInt(block["contextTokens"], "model.fallback.contextTokens");
+  }
+  return fallback;
+}
+
+function flagOf(value: unknown, where: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`${where} must be true or false.`);
+  return value;
+}
+
+function effortParamOf(value: unknown, where: string): "reasoning_effort" | null {
+  if (value === null || value === "reasoning_effort") return value;
+  throw new Error(`${where} must be "reasoning_effort" or null.`);
 }
 
 function parseOwner(value: unknown): { alias: string } {

@@ -1593,7 +1593,8 @@ class Runtime implements Entity {
 
   /**
    * The checks run in this order, and the first one that holds the words ends the say with a receipt: the emergency
-   * stop (outward places only), secrets, the privacy list (outward places only), the world, and the honesty check.
+   * stop (outward places only), secrets, the privacy list (outward places only), the world, and the honesty check (only
+   * when entity.json sets holds.honesty to true).
    * Holds are checks on bytes, lists and the model's yes or no; the body never rewrites the words.
    */
   private async say(args: Args, context: ToolContext): Promise<Receipt> {
@@ -1831,11 +1832,12 @@ class Runtime implements Entity {
   }
 
   /**
-   * Asks the model once whether the words contradict the Lar's own life record. Only when the record has real content and
-   * the check is switched on. If the check cannot run, the words go on and a river note says so (fail open, recorded).
+   * Asks the model once whether the words contradict the Lar's own life record. Only when entity.json sets
+   * holds.honesty to true, and the record has real content. If the check cannot run, the words go on and a river note
+   * says so (fail open, recorded).
    */
   private async honestyHold(text: string, thread: string): Promise<Receipt | undefined> {
-    if (this.config.holds?.honesty === false) return undefined;
+    if (this.config.holds?.honesty !== true) return undefined;
     const record = this.lifeRecord();
     if (record === undefined) return undefined;
 
