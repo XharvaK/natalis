@@ -745,7 +745,10 @@ describe("what the Lar sends and what it is shown", () => {
 
   it("shows the day's tokens on the now board, and the cost at the configured price", async () => {
     const model = new ScriptedModel([
-      { ...reply({ toolCalls: [call("end_turn")] }), usage: { inputTokens: 1_000_000, outputTokens: 500_000, totalTokens: 1_500_000 } },
+      {
+        ...reply({ toolCalls: [call("end_turn")] }),
+        usage: { inputTokens: 1_000_000, outputTokens: 500_000, totalTokens: 1_500_000, cacheHitTokens: 700 },
+      },
       reply({ toolCalls: [call("end_turn")] }),
     ]);
     const priced: EntityConfig = { ...CONFIG, model: { ...CONFIG.model, price: { inputPerMillion: 2, outputPerMillion: 4 } } };
@@ -759,6 +762,7 @@ describe("what the Lar sends and what it is shown", () => {
     const board = systemTextOf(model.requests[1]);
     expect(board).toContain("Tokens today: 1500000 in total, as the provider reported them (prompt 1000000, completion 500000).");
     expect(board).toContain("Cost today: 4.0000 at the prices in your model config.");
+    expect(board).toContain("Cache hits today: 700 prompt token(s), as the provider reported them.");
   });
 
   it("shows the Lar's mood on the now board", async () => {

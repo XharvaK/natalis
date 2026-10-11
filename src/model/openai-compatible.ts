@@ -283,6 +283,11 @@ function parseReply(
     if (typeof parsed.usage.prompt_tokens === "number") usage.inputTokens = parsed.usage.prompt_tokens;
     if (typeof parsed.usage.completion_tokens === "number") usage.outputTokens = parsed.usage.completion_tokens;
     if (typeof parsed.usage.total_tokens === "number") usage.totalTokens = parsed.usage.total_tokens;
+    // DeepSeek-style counts sit at the top of usage; OpenAI-style cached tokens sit in prompt_tokens_details. Neither is derived.
+    const details = isRecord(parsed.usage.prompt_tokens_details) ? parsed.usage.prompt_tokens_details : undefined;
+    if (typeof parsed.usage.prompt_cache_hit_tokens === "number") usage.cacheHitTokens = parsed.usage.prompt_cache_hit_tokens;
+    else if (typeof details?.cached_tokens === "number") usage.cacheHitTokens = details.cached_tokens;
+    if (typeof parsed.usage.prompt_cache_miss_tokens === "number") usage.cacheMissTokens = parsed.usage.prompt_cache_miss_tokens;
     if (Object.keys(usage).length > 0) response.usage = usage;
   }
   return response;

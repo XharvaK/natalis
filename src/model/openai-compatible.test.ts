@@ -199,6 +199,35 @@ describe("reply mapping", () => {
     expect(reply.latencyMs).toBeGreaterThanOrEqual(0);
   });
 
+  it("keeps the cached-prompt counts in both shapes the providers send, and none when they are not reported", async () => {
+    const { port } = harness([
+      // DeepSeek-style: hit and miss counts at the top of usage.
+      ok({
+        choices: [{ message: { content: "a" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 100, completion_tokens: 5, prompt_cache_hit_tokens: 80, prompt_cache_miss_tokens: 20 },
+      }),
+      // OpenAI-style: cached tokens inside the prompt details; no miss count is sent, so none is kept.
+      ok({
+        choices: [{ message: { content: "b" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 100, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 64 } },
+      }),
+      // Neither shape: nothing about the cache is kept.
+      ok({
+        choices: [{ message: { content: "c" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 100, completion_tokens: 5 },
+      }),
+    ]);
+    const asked = asks([{ role: "user", content: "hi" }]);
+    expect((await port.complete(asked)).usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 5,
+      cacheHitTokens: 80,
+      cacheMissTokens: 20,
+    });
+    expect((await port.complete(asked)).usage).toEqual({ inputTokens: 100, outputTokens: 5, cacheHitTokens: 64 });
+    expect((await port.complete(asked)).usage).toEqual({ inputTokens: 100, outputTokens: 5 });
+  });
+
   it("keeps the provider's reported total tokens, and leaves out any count it did not report", async () => {
     const { port } = harness([
       ok({

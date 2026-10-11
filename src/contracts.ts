@@ -53,7 +53,15 @@ export type ModelResponse = {
   toolCalls: ToolCall[];
   finish: FinishReason;
   /** The token counts the provider reported for this call. Each count is absent when the provider did not send it. */
-  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    /** Prompt tokens the provider served from its cache, when it reports them (DeepSeek or OpenAI-style). */
+    cacheHitTokens?: number;
+    /** Prompt tokens the provider did not serve from its cache, when it reports that count. */
+    cacheMissTokens?: number;
+  };
   /** Milliseconds from request to full response. */
   latencyMs: number;
   /** The readable summary of the model's reasoning, when the provider sends one. */
@@ -254,6 +262,10 @@ export type TurnResult = {
   effort?: NonNullable<ModelRequest["effort"]>;
   /** Tokens for every call of the turn that reported any. Absent when no call reported any. */
   tokens?: TokenCount;
+  /** Prompt tokens served from the provider's cache, summed over the turn's calls that reported them. Absent when none did. */
+  cacheHitTokens?: number;
+  /** Prompt tokens not served from the cache, summed over the calls that reported them. Absent when none did. */
+  cacheMissTokens?: number;
   /** The part of `tokens` that the backup model answered. Absent when the backup answered no call that reported any. */
   backupTokens?: TokenCount;
   /** True when the backup model answered at least one call of the turn. */

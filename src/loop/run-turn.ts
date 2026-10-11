@@ -116,6 +116,8 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
   // Tokens the provider reported, summed over the turn's calls; the backup's share is kept apart for the cost.
   let tokens: TokenCount | undefined;
   let backupTokens: TokenCount | undefined;
+  // The cached-prompt counts, kept apart from the meter's token counts and written beside them when reported.
+  let cache: { hit?: number; miss?: number } | undefined;
 
   const write = (row: Omit<RiverRowInput, "thread" | "atMs">): void => {
     river.append({ ...row, thread, atMs: nowMs() });
@@ -227,6 +229,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
       if (response.usage !== undefined) {
         const counted = countOf(response.usage);
         tokens = addTokens(tokens, counted);
+        cache = addCache(cache, response.usage);
         if (response.servedBy !== undefined) backupTokens = addTokens(backupTokens, counted);
       }
       if (response.servedBy !== undefined && !backupNoted) {
@@ -297,6 +300,8 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
     ...(effort === undefined ? {} : { effort }),
     ...(tokens === undefined ? {} : { tokens }),
     ...(backupTokens === undefined ? {} : { backupTokens }),
+    ...(cache?.hit === undefined ? {} : { cacheHitTokens: cache.hit }),
+    ...(cache?.miss === undefined ? {} : { cacheMissTokens: cache.miss }),
   };
   write({
     kind: "turn",
@@ -356,6 +361,18 @@ export function countOf(usage: NonNullable<ModelResponse["usage"]>): TokenCount 
     ...(usage.outputTokens === undefined ? {} : { completion: usage.outputTokens }),
     ...(usage.totalTokens === undefined ? {} : { total: usage.totalTokens }),
   };
+}
+
+/** Adds one call's cached-prompt counts to a turn's. A count nobody reported stays absent. */
+function addCache(
+  sum: { hit?: number; miss?: number } | undefined,
+  usage: NonNullable<ModelResponse["usage"]>,
+): { hit?: number; miss?: number } | undefined {
+  if (usage.cacheHitTokens === undefined && usage.cacheMissTokens === undefined) return sum;
+  const next: { hit?: number; miss?: number } = { ...sum };
+  if (usage.cacheHitTokens !== undefined) next.hit = (next.hit ?? 0) + usage.cacheHitTokens;
+  if (usage.cacheMissTokens !== undefined) next.miss = (next.miss ?? 0) + usage.cacheMissTokens;
+  return next;
 }
 
 /**

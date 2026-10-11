@@ -178,6 +178,26 @@ describe("runTurn: the two-turn tool loop", () => {
     });
   });
 
+  it("puts the cached-prompt counts the provider reported on the end row, summed over the turn's calls", async () => {
+    const { input, river } = await setup({
+      steps: [
+        { ...reply({ toolCalls: [call("read_note", { path: "people/mara.md" })] }), usage: { inputTokens: 10, cacheHitTokens: 8 } },
+        { ...reply({ toolCalls: [call("end_turn")] }), usage: { inputTokens: 12, cacheHitTokens: 4, cacheMissTokens: 8 } },
+      ],
+    });
+    await runTurn(input);
+    const end = rowsOf(river).find((row) => row.kind === "turn" && row.data?.["phase"] === "end");
+    expect(end?.data).toMatchObject({ cacheHitTokens: 12, cacheMissTokens: 8 });
+  });
+
+  it("leaves the cache counts off the end row when no call reported them", async () => {
+    const { input, river } = await setup({ steps: [{ ...reply({ toolCalls: [call("end_turn")] }), usage: { inputTokens: 3 } }] });
+    await runTurn(input);
+    const end = rowsOf(river).find((row) => row.kind === "turn" && row.data?.["phase"] === "end");
+    expect(end?.data?.["cacheHitTokens"]).toBeUndefined();
+    expect(end?.data?.["cacheMissTokens"]).toBeUndefined();
+  });
+
   it("leaves the token counts off the end row when no call reported any", async () => {
     const { input, river } = await setup({ steps: [reply({ toolCalls: [call("end_turn")] })] });
     await runTurn(input);

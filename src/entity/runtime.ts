@@ -1560,6 +1560,13 @@ class Runtime implements Entity {
       );
     }
 
+    let hits: number | undefined;
+    for (const row of ends) {
+      const reported = row.data?.["cacheHitTokens"];
+      if (typeof reported === "number") hits = (hits ?? 0) + reported;
+    }
+    if (hits !== undefined) lines.push(`Cache hits today: ${hits} prompt token(s), as the provider reported them.`);
+
     const price = this.config.model.price;
     if (price === undefined) return lines;
     const backupPrice = this.config.model.fallback?.price;
