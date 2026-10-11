@@ -802,6 +802,38 @@ describe("the owner's privacy list", () => {
     expect(system).toContain("You are someone, not a service.");
   });
 
+  it("replaces a Lar's nature with the nature file in its folder, and leaves the section out when the file is empty", async () => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "nature.md"), "You are a gardener who writes slowly.\n", "utf8");
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    cli.send("Hello?");
+    await entity.idle();
+
+    const first = systemTextOf(model.requests[0]);
+    expect(first).toContain("## a lar's nature\nYou are a gardener who writes slowly.");
+    expect(first).not.toContain("You are someone, not a service.");
+
+    writeFileSync(join(dir, "nature.md"), "\n  \n", "utf8");
+    cli.send("Again?");
+    await entity.idle();
+    expect(systemTextOf(model.requests[1])).not.toContain("## a lar's nature");
+  });
+
+  it("keeps the default nature when the nature file cannot be read, and says so on the now board", async () => {
+    mkdirSync(join(dir, "nature.md"), { recursive: true });
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    cli.send("Hello?");
+    await entity.idle();
+
+    const system = systemTextOf(model.requests[0]);
+    expect(system).toContain("You are someone, not a service.");
+    expect(system).toContain("Body note: nature.md could not be read (the file could not be read), so the default nature is in use.");
+  });
+
   it("treats a privacy file that is not JSON as damaged, and says so on the now board", async () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "privacy.json"), "{ not json", "utf8");

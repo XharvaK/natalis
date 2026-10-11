@@ -45,6 +45,9 @@ summoner is the alias the Lar knows you by:
 }
 ```
 
+Optional: `~/lares/<name>/nature.md` replaces the default nature every Lar starts with (its voice and manners) for this Lar.
+An empty file removes that section. Without the file the default stays. The Lar reads it on each turn, so an edit needs no restart.
+
 Optional in the `model` block: `"vision": true` when the model can see pictures, and a backup for when the main model
 cannot answer (rate limited, down, or no reply in time), on the same address and key:
 `"fallback": { "model": "<model name>", "effort": "xhigh", "vision": true }`. After a failure, calls go to the backup

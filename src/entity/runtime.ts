@@ -50,7 +50,7 @@ import {
 import { dayKey, hostZone, msUntilNextDay } from "./day.js";
 import { FLOOR_TEXT } from "./floor.js";
 import { chosenName, NAME_NOTE, whoYouAre } from "./identity.js";
-import { LAR_NATURE } from "./nature.js";
+import { readNature } from "./nature.js";
 import { HONESTY_SYSTEM, type HonestyVerdict, parseHonestyReply } from "./honesty.js";
 import {
   createPrivacyWatch,
@@ -1336,9 +1336,11 @@ class Runtime implements Entity {
   ): { text: string; sizes: string } {
     const wakes = this.state.wakes.map((wake) => ({ atMs: wake.atMs, why: wake.why, repeat: wake.repeat, clock: wake.clock }));
     // What stays the same from turn to turn comes first, so the provider can reuse it; what changes comes last.
+    // The nature is the default unless the Lar's folder has a nature.md: its text replaces the default, and an empty one leaves the section out.
+    const nature = readNature(this.dir).text;
     const sections: ContextSection[] = [
       { name: "who you are", text: this.identityText(nowMs), priority: 100, core: true },
-      { name: "a lar's nature", text: LAR_NATURE, priority: 100, core: true },
+      ...(nature === undefined ? [] : [{ name: "a lar's nature", text: nature, priority: 100, core: true }]),
       { name: "how you act", text: HOW_YOU_ACT, priority: 100, core: true },
       { name: "pictures", text: pictureAbility(this.config.model.vision === true), priority: 100, core: true },
       { name: "constitution", text: this.constitutionText(), priority: 100, core: true },
@@ -1459,6 +1461,10 @@ class Runtime implements Entity {
     const privacy = this.privacyNow();
     if (privacy.problem !== undefined) {
       lines.push(`Body note: your summoner's privacy list cannot be read, so nothing leaves until it is fixed (${privacy.problem}).`);
+    }
+    const nature = readNature(this.dir);
+    if (nature.problem !== undefined) {
+      lines.push(`Body note: nature.md could not be read (${nature.problem}), so the default nature is in use.`);
     }
     lines.push(`Your mood: ${this.state.mood ?? "not set"}.`);
     const limit = this.config.limits?.turnsPerDay;
