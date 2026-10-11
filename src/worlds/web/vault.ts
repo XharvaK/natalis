@@ -20,12 +20,13 @@ export function validVaultName(name: string): boolean {
 
 /**
  * Whether a request host may receive a vault entry bound to another host. One leading "www." is ignored on both
- * sides; the hosts match when they are equal or one is a subdomain of the other.
+ * sides. The request host must be the bound host or a subdomain of it, so a value kept for api.example.org never
+ * goes to example.org, but a value kept for example.org may go to api.example.org.
  */
 export function hostsMatch(requestHost: string, boundHost: string): boolean {
   const a = stripWww(requestHost.toLowerCase().replace(/\.+$/, ""));
   const b = stripWww(boundHost.toLowerCase().replace(/\.+$/, ""));
-  return a === b || a.endsWith(`.${b}`) || b.endsWith(`.${a}`);
+  return a === b || a.endsWith(`.${b}`);
 }
 
 function stripWww(host: string): string {

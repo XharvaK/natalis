@@ -27,7 +27,7 @@ import {
   formatStamp,
   git,
   errorText,
-  hasEnvName,
+  isEnvFileName,
   readRiverLastSeq,
   sha256File,
   type Manifest,
@@ -92,7 +92,7 @@ export async function backupEntity(options: BackupOptions): Promise<BackupResult
     // read before the river copy never points past the rows that copy holds.
     const plainNames: string[] = [];
     for (const file of PLAIN_FILES) {
-      if (hasEnvName(file)) continue;
+      if (isEnvFileName(file)) continue;
       if (!existsSync(join(dir, file))) continue;
       copyFileSync(join(dir, file), join(partial, file));
       plainNames.push(file);

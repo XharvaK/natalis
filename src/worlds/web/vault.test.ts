@@ -31,13 +31,14 @@ describe("hostsMatch", () => {
   it("matches equal hosts, subdomains and a leading www. on either side", () => {
     expect(hostsMatch("example.org", "example.org")).toBe(true);
     expect(hostsMatch("api.example.org", "example.org")).toBe(true);
-    expect(hostsMatch("example.org", "api.example.org")).toBe(true);
     expect(hostsMatch("www.example.org", "example.org")).toBe(true);
     expect(hostsMatch("example.org", "www.example.org")).toBe(true);
     expect(hostsMatch("example.org.", "EXAMPLE.org")).toBe(true);
   });
 
   it("refuses other hosts, including names that only end the same way", () => {
+    expect(hostsMatch("example.org", "api.example.org")).toBe(false);
+    expect(hostsMatch("example.org", "www.api.example.org")).toBe(false);
     expect(hostsMatch("other.example.net", "example.org")).toBe(false);
     expect(hostsMatch("evilexample.org", "example.org")).toBe(false);
     expect(hostsMatch("www.evil.org", "example.org")).toBe(false);

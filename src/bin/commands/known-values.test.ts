@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { EntityConfig } from "../../entity/config.js";
-import { heldValues, knownValueList } from "./known-values.js";
+import { heldValues, knownValueList, otherThanHelper } from "./known-values.js";
 
 // Values built from parts at run time; the variable names are invented.
 const MODEL_KEY = ["model", "key", "0123456789"].join("-");
@@ -60,5 +60,15 @@ describe("heldValues", () => {
 
     expect(knownValueList(held)).toEqual([MODEL_KEY]);
     expect(knownValueList(withVault)).toEqual([MODEL_KEY, VAULT_VALUE]);
+  });
+});
+
+describe("the tokens the helper's token must differ from", () => {
+  it("includes the model key, the bot token and every web vault value, never the helper's own", () => {
+    mkdirSync(join(dir, "vault"));
+    writeFileSync(join(dir, "vault", "site.json"), JSON.stringify({ host: "example.org", value: VAULT_VALUE }));
+    const held = heldValues(dir, CONFIG, { env: { TEST_MODEL_KEY: MODEL_KEY, TEST_BOT_TOKEN: BOT_TOKEN, TEST_HELPER_TOKEN: HELPER_TOKEN } });
+
+    expect(otherThanHelper(dir, CONFIG, held)).toEqual([MODEL_KEY, BOT_TOKEN, VAULT_VALUE]);
   });
 });

@@ -28,6 +28,24 @@ const MAX_KEPT_REFS = 20_000;
 
 type RefsFile = { version: 1; seq: number; refs: Record<string, [string, string]> };
 
+/** Pictures asked for by anyone but the summoner, counted per local day. */
+type PictureCount = { version: 1; day: string; others: number };
+
+function localDay(ms: number): string {
+  const date = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function readPictureCount(path: string): PictureCount {
+  if (!existsSync(path)) return { version: 1, day: "", others: 0 };
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as PictureCount;
+  if (parsed?.version !== 1 || typeof parsed.day !== "string" || typeof parsed.others !== "number") {
+    throw new Error("The Discord picture count file is damaged; not starting, so a restart cannot reset the day's limit.");
+  }
+  return parsed;
+}
+
 function readRefs(path: string): RefsFile {
   if (!existsSync(path)) return { version: 1, seq: 0, refs: {} };
   const parsed = JSON.parse(readFileSync(path, "utf8")) as RefsFile;
@@ -101,6 +119,8 @@ export type DiscordWorldOptions = {
   aliasesPath: string;
   /** Where message refs are kept so they mean the same message after a restart. Defaults beside the aliases file. */
   refsPath?: string;
+  /** Where the day's count of pictures from others is kept, so a restart does not reset it. Defaults beside the aliases file. */
+  picturesPath?: string;
   /** Injected in tests; the discord.js client is used when absent. */
   client?: PlatformClient;
   debounceMs?: number;
@@ -121,6 +141,8 @@ const EMOJI_MAX = 32;
 /** Discord's own attachment hosts. A picture is fetched from these over https and from nowhere else. */
 const PICTURE_HOSTS: ReadonlySet<string> = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
 const PICTURE_FETCH_MS = 20_000;
+/** Pictures from anyone but the summoner that the Lar may ask for in one local day. */
+const OTHERS_PICTURES_PER_DAY = 50;
 
 function refused(code: string, reason: string, summary: string, data?: Record<string, unknown>): Receipt {
   return { ok: false, summary, ...(data ? { data } : {}), refused: { code, reason: `${code}: ${reason}` } };
@@ -179,6 +201,8 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
   // Opaque refs for messages. They are kept in a file beside the aliases, so a ref the entity remembers
   // means the same message after a restart. Only the newest MAX_KEPT_REFS are kept; numbers are never reused.
   const refsPath = options.refsPath ?? options.aliasesPath.replace(/\.json$/i, "") + ".refs.json";
+  const picturesPath = options.picturesPath ?? options.aliasesPath.replace(/\.json$/i, "") + ".pictures.json";
+  let pictureCount = readPictureCount(picturesPath);
   const messageRefs = new Map<string, { channelId: string; messageId: string }>();
   const refOfMessage = new Map<string, string>();
   let messageSeq = 0;
@@ -372,7 +396,8 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     const ref = refFor(message.channelId, message.id);
     const entry = {
       ref,
-      pictures: pictureLines(message.attachments, `${PLACE_PREFIX}${placeAlias}`),
+      // A message the flood limit turned away is not fetched and not kept.
+      pictures: flooded ? null : pictureLines(message.attachments, `${PLACE_PREFIX}${placeAlias}`, isOwner, nowMs),
       text: readable(message.content, message.mentionedUsers),
       attachments: describeAttachments(message.attachments),
       mentionsHer: message.content.includes(`<@${self.id}>`) || message.content.includes(`<@!${self.id}>`),
@@ -403,10 +428,31 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     arm(burst, nowMs);
   }
 
+  /**
+   * Takes one place in today's count for a picture from anyone but the summoner. It counts when it is asked for, kept or
+   * not, so a burst cannot fetch past the day's limit. False when the day's limit is reached.
+   */
+  function takeOthersPlace(nowMs: number): boolean {
+    const day = localDay(nowMs);
+    if (pictureCount.day !== day) pictureCount = { version: 1, day, others: 0 };
+    if (pictureCount.others >= OTHERS_PICTURES_PER_DAY) return false;
+    pictureCount = { version: 1, day, others: pictureCount.others + 1 };
+    writeJsonAtomic(picturesPath, pictureCount);
+    return true;
+  }
+
   /** One picture line per image attachment: kept on the shelf, or the reason it was not kept. Null when there are none. */
-  function pictureLines(attachments: PlatformAttachment[], place: string): Promise<string[]> | null {
+  function pictureLines(attachments: PlatformAttachment[], place: string, fromOwner: boolean, nowMs: number): Promise<string[]> | null {
     const images = attachments.filter((attachment) => (attachment.contentType ?? "").startsWith("image/"));
-    return images.length === 0 ? null : Promise.all(images.map((attachment) => keepFromDiscord(attachment, place)));
+    if (images.length === 0) return null;
+    return Promise.all(
+      images.map(async (attachment) => {
+        if (!fromOwner && !takeOthersPlace(nowMs)) {
+          return `[attachment: ${scrubIds(attachment.name)} (not kept: today's picture limit for others is reached)]`;
+        }
+        return keepFromDiscord(attachment, place);
+      }),
+    );
   }
 
   /** Fetches one picture from Discord and puts it on the shelf. Never rejects: a picture that is not kept says why. */

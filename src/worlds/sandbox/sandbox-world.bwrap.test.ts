@@ -25,7 +25,10 @@ describe.skipIf(!enabled)("sandbox with real bwrap", () => {
     // A stand-in checkout for the body: one file the sandbox may read at /body and never write.
     checkout = join(dir, "checkout");
     mkdirSync(checkout);
-    writeFileSync(join(checkout, "body-probe.txt"), "the checkout is here\n");
+    mkdirSync(join(checkout, "src"));
+    writeFileSync(join(checkout, "src", "body-probe.txt"), "the checkout is here\n");
+    // Not on the allow-list, so the sandbox must not see it at /body.
+    writeFileSync(join(checkout, "not-listed.txt"), "not for the sandbox\n");
     world = createSandboxWorld({ dir, config: { timeoutSeconds: 30, maxTimeoutSeconds: 60 }, bodyDir: checkout });
     await world.start(() => undefined);
     run = world.tools().find((tool) => tool.spec.name === "run") as Tool;
@@ -58,9 +61,10 @@ describe.skipIf(!enabled)("sandbox with real bwrap", () => {
   });
 
   it("reads the checkout at /body, and cannot write to it", async () => {
-    const receipt = await call({ command: "cat /body/body-probe.txt; echo written > /body/new.txt 2>/dev/null; echo $?" });
+    const receipt = await call({ command: "cat /body/src/body-probe.txt; echo written > /body/new.txt 2>/dev/null; echo $?" });
     const [text, writeCode] = String(receipt.data?.["stdout"]).trim().split("\n");
     expect(text).toBe("the checkout is here");
+    expect((await call({ command: "cat /body/not-listed.txt 2>/dev/null; echo $?" })).data?.["stdout"]).toBe("1\n");
     expect(writeCode).not.toBe("0");
     expect(existsSync(join(checkout, "new.txt"))).toBe(false);
   });

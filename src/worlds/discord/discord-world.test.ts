@@ -824,4 +824,38 @@ describe("pictures in", () => {
     expect(events).toHaveLength(1);
     expect(events[0]?.text).toContain(`[picture ${shelf.list()[0]?.id}: cat.png, 1 KB]`);
   });
+
+  it("fetches and keeps no picture from a message the flood limit turned away", async () => {
+    const fetchFn = fetchReturning(() => pngResponse());
+    const { fake, events } = await startWorld({ fetch: fetchFn });
+    for (let index = 0; index < 5; index++) {
+      fake.deliver(incoming({ author: MARA_AUTHOR, content: `look ${index}`, attachments: [PICTURE] }));
+    }
+    await settle(() => expect(events).toHaveLength(1));
+    expect(events[0]?.data?.flooded).toBe(true);
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps 50 pictures a day from anyone but the summoner, says so past that, counts across a restart, and never counts the summoner", async () => {
+    const quiet = { messages: 1000, perMs: 1000 };
+    const first = await startWorld({ fetch: fetchReturning(() => pngResponse()), guestLimit: quiet });
+    for (let index = 0; index < 51; index++) {
+      first.fake.deliver(incoming({ author: MARA_AUTHOR, content: `pic ${index}`, attachments: [PICTURE] }));
+    }
+    await settle(() => expect(first.events).toHaveLength(1));
+    expect(first.shelf.list()).toHaveLength(50);
+    expect(first.events[0]?.text).toContain("[attachment: cat.png (not kept: today's picture limit for others is reached)]");
+
+    first.fake.deliver(incoming({ author: OWNER_AUTHOR, channelKind: "dm", content: "mine", attachments: [PICTURE] }));
+    await settle(() => expect(first.events).toHaveLength(2));
+    expect(first.events[1]?.text).toMatch(/\[picture .+: cat\.png, 1 KB\]/);
+    await first.world.stop();
+
+    const second = await startWorld({ fetch: fetchReturning(() => pngResponse()), guestLimit: quiet });
+    second.fake.deliver(incoming({ author: MARA_AUTHOR, content: "after a restart", attachments: [PICTURE] }));
+    await settle(() => expect(second.events).toHaveLength(1));
+    expect(second.events[0]?.text).toContain("today's picture limit for others is reached");
+    // The shelf holds the 50 others' pictures and the summoner's one; the refused one is not kept.
+    expect(second.shelf.list()).toHaveLength(51);
+  });
 });

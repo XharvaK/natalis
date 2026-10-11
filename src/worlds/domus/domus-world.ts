@@ -330,8 +330,18 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
         send(res, error.status, { error: error.code });
         return;
       }
-      console.error(`[domus] a request failed: ${error instanceof Error ? error.message : String(error)}`);
-      send(res, 500, { error: "internal_error" });
+      internalError(res, error);
+    }
+  }
+
+  /** The answer to an error nothing else caught: one log line, and a 500 if the reply has not started. Never throws. */
+  function internalError(res: ServerResponse, error: unknown): void {
+    console.error(`[domus] a request failed: ${error instanceof Error ? error.message : String(error)}`);
+    try {
+      if (!res.headersSent) send(res, 500, { error: "internal" });
+      else res.end();
+    } catch {
+      // The reply cannot be written; the log line above is the record.
     }
   }
 
@@ -379,7 +389,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       emitter = emit;
       keeper = worldBody;
       const listener = createServer((req, res) => {
-        void handle(req, res);
+        handle(req, res).catch((error: unknown) => internalError(res, error));
       });
       try {
         await listen(listener, host, port);

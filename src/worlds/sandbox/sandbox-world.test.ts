@@ -375,16 +375,18 @@ describe("measureHome and formatBytes", () => {
   });
 });
 
-describe("the body: the checkout bound read-only at /body", () => {
-  it("binds the checkout read-only at /body, and never writable", async () => {
+describe("the body: the allow-listed parts of the checkout bound read-only at /body", () => {
+  it("binds only the allow-listed names read-only at /body, and never the checkout writable", async () => {
+    mkdirSync(join(checkout, "src"));
+    writeFileSync(join(checkout, "not-listed.txt"), "not for the sandbox\n");
     harness = await started();
     const pending = runTool(harness.world).run({ command: "ls /body" }, context());
     const [, args] = harness.spawn.mock.calls[0] as [string, string[], SpawnOptions];
-    const at = args.indexOf(checkout);
-    expect(at).toBeGreaterThan(0);
-    expect(args[at - 1]).toBe("--ro-bind");
-    expect(args[at + 1]).toBe("/body");
-    expect(args.some((arg, index) => arg === "--bind" && args[index + 1] === checkout)).toBe(false);
+    const at = args.indexOf(`${checkout}/src`);
+    expect(args.slice(at - 1, at + 2)).toEqual(["--ro-bind-try", `${checkout}/src`, "/body/src"]);
+    expect(args).not.toContain(`${checkout}/not-listed.txt`);
+    expect(args).not.toContain(checkout);
+    expect(args.some((arg, index) => arg === "--bind" && String(args[index + 1]).startsWith(checkout))).toBe(false);
     (harness.children[0] as FakeChild).emit("close", 0, null);
     await pending;
   });
@@ -405,21 +407,28 @@ describe("the body: the checkout bound read-only at /body", () => {
     expect(harness.world.about()).toContain("Your own source is at /body, read-only.");
   });
 
-  it("refuses to start, and names the file, when the checkout holds an env file", async () => {
-    writeFileSync(join(checkout, "prod.env"), "placeholder\n");
+  it("refuses to start, and names the folder and file, when an allow-listed folder holds an env file", async () => {
+    mkdirSync(join(checkout, "src"));
+    writeFileSync(join(checkout, "src", "prod.env"), "placeholder\n");
     harness = makeHarness();
-    await expect(harness.world.start(() => undefined)).rejects.toThrow(/holds prod\.env/);
+    await expect(harness.world.start(() => undefined)).rejects.toThrow(/src holds prod\.env/);
     expect(harness.spawn).not.toHaveBeenCalled();
   });
 
-  it("refuses to start when the checkout holds a vault folder", async () => {
-    mkdirSync(join(checkout, "vault"));
+  it("refuses to start when an allow-listed folder holds a vault folder", async () => {
+    mkdirSync(join(checkout, "docs", "vault"), { recursive: true });
     harness = makeHarness();
     await expect(harness.world.start(() => undefined)).rejects.toThrow(/vault folder/);
   });
 
-  it("starts when the checkout holds an env file but the body is off", async () => {
-    writeFileSync(join(checkout, ".env"), "placeholder\n");
+  it("refuses to start when the Lar's folder lies inside the checkout", async () => {
+    harness = makeHarness({ bodyDir: dir });
+    await expect(harness.world.start(() => undefined)).rejects.toThrow(/inside/);
+  });
+
+  it("starts when an allow-listed folder holds an env file but the body is off", async () => {
+    mkdirSync(join(checkout, "src"));
+    writeFileSync(join(checkout, "src", ".env"), "placeholder\n");
     harness = makeHarness({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, body: false } });
     await expect(harness.world.start(() => undefined)).resolves.toBeUndefined();
   });

@@ -32,13 +32,17 @@ rhythm." It says nothing about what a wake should be for.
 
 ## 2. Her body, readable
 
-Sandbox `run` binds the Natalis checkout the Lar runs on, **read-only**, at `/body`. She can read her own source,
-docs and `git log` there, so a proposal can name the exact file and line it is about.
+Sandbox `run` binds part of the Natalis checkout the Lar runs on, **read-only**, at `/body`: an explicit allow-list,
+each name at the same path under `/body`, each only if present: the folders `src`, `docs` and `deploy`, and the files
+`README.md`, `AGENTS.md`, `package.json` and `LICENSE`. She can read her own source, docs and deploy files there, so a
+proposal can name the exact file and line it is about. Git history is not bound: there is no `.git`, so `git log`
+does not run in `/body`. No other top-level name of the checkout is bound (no `dist`, no `node_modules`).
 
 - `sandbox.json` may set `"body": false` to leave it out. Default: on.
 - The path is the running package's root (found from the code's own location), never the entity folder.
-- Nothing secret is in the checkout (no env files, no vault, no entity data). The run command refuses to bind it if
-  the root holds a file named like an env file (`.env`, `*.env`) or an entity's `vault/` folder, and says why.
+- The run command refuses to bind it, and says why, when the Lar's folder lies inside the checkout, or when an
+  allow-listed folder holds an env file (`.env`, `.env.*`, `*.env`) or a `vault` folder at any depth. It reads names
+  only, never file contents.
 
 ## 3. Proposals and the weekly digest
 

@@ -277,6 +277,19 @@ describe("the vault", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("never sends a value kept for a subdomain to its parent, by auth or by a redirect", async () => {
+    await seedVault("api.example.org");
+    const direct = await run({ url: "https://example.org/me", auth: { vault: "site_key" } });
+    expect(direct.refused?.code).toBe("vault_host_mismatch");
+    expect(calls).toHaveLength(0);
+
+    queue.push(reply(302, "", { location: "https://example.org/parent" }), reply(200, "ok"));
+    await run({ url: "https://api.example.org/a", auth: { vault: "site_key" } });
+    expect(calls[0]!.headers["authorization"]).toBe(`Bearer ${SECRET}`);
+    expect(calls[1]!.url.hostname).toBe("example.org");
+    expect(calls[1]!.headers["authorization"]).toBeUndefined();
+  });
+
   it("drops auth on a cross-host redirect, and keeps it on a same-site redirect", async () => {
     await seedVault();
     queue.push(reply(302, "", { location: "https://other.example.net/b" }), reply(200, "ok"));
@@ -327,6 +340,37 @@ describe("the vault", () => {
     const text = await run({ url: "https://example.org/", keep: [{ path: "a", as: "gone" }] });
     expect(text.refused?.code).toBe("keep_not_applied");
     expect(readVaultEntry(dir, "gone")).toBeUndefined();
+  });
+
+  it("hides every value it parsed for keeping when a keep fails part-way, and keeps none of the failed one", async () => {
+    const second = ["fixture", "second", "value", "0123456789"].join("-");
+    queue.push(reply(200, JSON.stringify({ a: { first: SECRET, second } }), { "content-type": "application/json" }));
+    // The second entry's name becomes a folder while the request is resolving, so its write fails after the first is kept.
+    scanner = createSecretScanner();
+    world = createWebWorld({
+      dir,
+      scanner,
+      fetch: fetchFake,
+      resolve: async (name) => {
+        mkdirSync(join(dir, "vault", "second_key.json"), { recursive: true });
+        return resolve(name);
+      },
+      nowMs: () => clock.now,
+    });
+    const r = await run({
+      url: "https://example.org/login",
+      keep: [
+        { path: "a.first", as: "first_key" },
+        { path: "a.second", as: "second_key" },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    expect(r.refused?.code).toBe("vault_write_failed");
+    expect(JSON.stringify(r)).not.toContain(SECRET);
+    expect(JSON.stringify(r)).not.toContain(second);
+    expect(readVaultEntry(dir, "first_key")).toEqual({ host: "example.org", value: SECRET });
+    expect(r.summary).toContain("Kept in your vault: first_key.");
+    expect(r.data?.["keptInVault"]).toEqual(["first_key"]);
   });
 
   it("refuses every request plainly when a vault file is damaged", async () => {

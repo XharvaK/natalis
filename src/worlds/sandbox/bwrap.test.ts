@@ -109,26 +109,30 @@ describe("buildBwrapArgs", () => {
 describe("buildBwrapArgs: the body", () => {
   // An invented checkout folder, away from the entity folder.
   const CHECKOUT = "/opt/natalis-checkout";
+  const ALLOWED = ["src", "docs", "deploy", "README.md", "AGENTS.md", "package.json", "LICENSE"];
 
-  it("binds the checkout read-only at /body, right after the home folder", () => {
+  it("binds only the allow-listed names of the checkout, read-only, each at the same path under /body", () => {
     const args = buildBwrapArgs({ homeDir: HOME, command: "true", bodyDir: CHECKOUT });
-    const at = args.indexOf(CHECKOUT);
-    expect(args.slice(at - 1, at + 2)).toEqual(["--ro-bind", CHECKOUT, "/body"]);
-    expect(args.slice(at - 4, at - 3)).toEqual(["--bind"]);
-    expect(args.slice(at - 3, at - 1)).toEqual([HOME, SANDBOX_HOME]);
+    const block = ALLOWED.flatMap((name) => ["--ro-bind-try", `${CHECKOUT}/${name}`, `/body/${name}`]);
+    const at = args.indexOf("--chdir");
+    expect(args.slice(at - block.length, at)).toEqual(block);
+    // Nothing of the checkout is bound except those names: no .git, dist, node_modules or other top-level name.
+    const checkoutSources = args.filter((arg) => arg.startsWith(CHECKOUT));
+    expect(checkoutSources).toEqual(ALLOWED.map((name) => `${CHECKOUT}/${name}`));
   });
 
   it("never binds the checkout writable", () => {
     const args = buildBwrapArgs({ homeDir: HOME, command: "true", bodyDir: CHECKOUT });
-    expect(args.some((arg, index) => arg === "--bind" && args[index + 1] === CHECKOUT)).toBe(false);
-    expect(args.filter((arg) => arg === "/body")).toEqual(["/body"]);
+    expect(args.some((arg, index) => arg === "--bind" && args[index + 1]?.startsWith(CHECKOUT))).toBe(false);
+    expect(args.some((arg, index) => arg === "--ro-bind" && args[index + 1]?.startsWith(CHECKOUT))).toBe(false);
   });
 
   it("adds nothing for the body when no checkout is given, and the rest of the list is unchanged", () => {
     const without = buildBwrapArgs({ homeDir: HOME, command: "true" });
-    expect(without).not.toContain("/body");
+    expect(without.some((arg) => arg.startsWith("/body"))).toBe(false);
     const withBody = buildBwrapArgs({ homeDir: HOME, command: "true", bodyDir: CHECKOUT });
-    const at = withBody.indexOf(CHECKOUT);
-    expect([...withBody.slice(0, at - 1), ...withBody.slice(at + 2)]).toEqual(without);
+    const block = ALLOWED.flatMap((name) => ["--ro-bind-try", `${CHECKOUT}/${name}`, `/body/${name}`]);
+    const at = without.indexOf("--chdir");
+    expect(withBody).toEqual([...without.slice(0, at), ...block, ...without.slice(at)]);
   });
 });
