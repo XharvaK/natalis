@@ -21,6 +21,23 @@ afterEach(() => {
 });
 
 describe("parseEntityConfig", () => {
+  it("reads an optional price per million tokens for the model and its backup, and none by default", () => {
+    expect(parseEntityConfig(MINIMAL).model.price).toBeUndefined();
+    const priced = parseEntityConfig({
+      ...MINIMAL,
+      model: {
+        ...MINIMAL.model,
+        price: { inputPerMillion: 2, outputPerMillion: 4 },
+        fallback: { model: "backup-model", price: { inputPerMillion: 1, outputPerMillion: 1.5 } },
+      },
+    });
+    expect(priced.model.price).toEqual({ inputPerMillion: 2, outputPerMillion: 4 });
+    expect(priced.model.fallback?.price).toEqual({ inputPerMillion: 1, outputPerMillion: 1.5 });
+    expect(() =>
+      parseEntityConfig({ ...MINIMAL, model: { ...MINIMAL.model, price: { inputPerMillion: -1, outputPerMillion: 4 } } }),
+    ).toThrow(/inputPerMillion must be a number, 0 or more/);
+  });
+
   it("fills the default ceiling when none is given", () => {
     const config = parseEntityConfig(MINIMAL);
     expect(config.name).toBe("Iris");

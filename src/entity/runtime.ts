@@ -12,11 +12,12 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { assembleSystem, formatDuration, timeFacts } from "../context/index.js";
-import { runTurnWithMessages } from "../loop/index.js";
+import { addTokens, runTurnWithMessages } from "../loop/index.js";
 import { openNotebook, seedNotebook } from "../notebook/index.js";
 import { FORGOTTEN_LINE, lineHoldsWords, queryWords } from "../notebook/forget.js";
-import { ModelError } from "../contracts.js";
+import { ModelError, type ModelErrorKind } from "../contracts.js";
 import { openRiver } from "../river/index.js";
+import { openLedger, type Ledger, type LedgerRow, type ThreadKind } from "../river/ledger.js";
 import { checkRiver } from "../river/integrity.js";
 import { createSecretScanner, guardModel, guardNotebook, guardRiver, KNOWN_VALUE_KIND } from "../secrets/index.js";
 import { notebookTools } from "../tools/index.js";
@@ -32,9 +33,11 @@ import type {
   RiverSource,
   SayFile,
   SecretScanner,
+  TokenCount,
   Tool,
   ToolContext,
   ToolSpec,
+  TurnResult,
   World,
   WorldBody,
   WorldEvent,
@@ -47,7 +50,7 @@ import {
   HOUSEHOLD_STUB,
   OLD_COMMITMENTS_STUB,
 } from "./commitments.js";
-import { dayKey, hostZone, msUntilNextDay } from "./day.js";
+import { dayKey, hostZone, msUntilNextDay, startOfDayMs } from "./day.js";
 import { FLOOR_TEXT } from "./floor.js";
 import { chosenName, NAME_NOTE, whoYouAre } from "./identity.js";
 import { readNature } from "./nature.js";
@@ -106,6 +109,17 @@ const CLAIM_WINDOW_MS = 2 * 60 * 1000;
 /** How many of the summoner's acts the board lists at once, and how much of a proposal it shows. */
 const ACTS_LIMIT = 20;
 const PROPOSAL_SHOW = 80;
+/**
+ * The model failures that are an outage: the service did not answer for a reason outside the Lar's words (spent credit,
+ * a rate limit, unavailable, no reply in time). A refused request or key is not an outage; it is shown in the turn's notes.
+ */
+const OUTAGE_KINDS: ReadonlySet<ModelErrorKind> = new Set<ModelErrorKind>(["out_of_credit", "rate_limit", "unavailable", "timeout"]);
+/** How much of the last model error the summoner's outage notice shows. */
+const OUTAGE_DETAIL_CLIP = 240;
+/** Failed turns in a row, over every thread, after which the summoner is told (once, until a turn succeeds). */
+const FAILED_TURNS_ALERT = 5;
+/** The river file holds the ledger table too: a backup of the river carries it. */
+const RIVER_LEDGER_FILE = "river.db";
 /** How many pictures one say may carry, and how many of the newest shelf ids a refusal lists. */
 const SAY_PICTURES_MAX = 4;
 const SHELF_LIST = 10;
@@ -125,12 +139,22 @@ const RECENT_LIMIT = 30;
 const RECALL_LIMIT = 8;
 const RECALL_WORDS = 4;
 const RECALL_CLIP = 300;
+/** How much of a receipt's returned data recall shows. */
+const RECEIPT_SHOW = 200;
 const MOOD_LIMIT = 200;
 /** The most characters a wake's reason may hold, so a wake can never carry a page of text into every later turn. */
 const WAKE_WHY_MAX = 500;
 /** Context-size rejections in a row after which a thread waits for a new event instead of trying the same words again. */
 const OVERSIZE_TRIES = 3;
 const WAKE_LIMIT_MINUTES = 60 * 24 * 365 * 10;
+/** The shortest a wake may be set: a minute from now. */
+const WAKE_MIN_MS = 60_000;
+/**
+ * After this many turns in a row woken only by her own wakes, with nothing from outside between them, a wake she sets
+ * fires no sooner than WAKE_CHAIN_HOLD_MS after it was set. The count is a meter's ceiling, not a judgment of the wake.
+ */
+const WAKE_CHAIN_LIMIT = 6;
+const WAKE_CHAIN_HOLD_MS = 15 * 60_000;
 /** The reason a rhythm wake carries. It names nothing about what the wake is for. */
 const RHYTHM_WHY = "Your daily rhythm.";
 const TIMER_LIMIT_MS = 2_147_483_647;
@@ -280,6 +304,8 @@ type EntityState = {
    * notice for it. The episode ends when the list reads again.
    */
   privacyDamage?: { told: boolean };
+  /** Turns in a row woken only by her own wakes, with nothing from outside or the summoner between them. */
+  selfWakeRun?: number;
 };
 
 function emptyState(): EntityState {
@@ -430,6 +456,11 @@ function checkState(value: unknown): EntityState {
     if (typeof rhythmGiven !== "boolean") bad("rhythmGiven");
     state.rhythmGiven = rhythmGiven as boolean;
   }
+  const selfWakeRun = root["selfWakeRun"];
+  if (selfWakeRun !== undefined) {
+    if (typeof selfWakeRun !== "number" || !Number.isSafeInteger(selfWakeRun) || selfWakeRun < 0) bad("selfWakeRun");
+    state.selfWakeRun = selfWakeRun as number;
+  }
   const summonerPlace = root["summonerPlace"];
   if (summonerPlace !== undefined) {
     if (typeof summonerPlace !== "string" || summonerPlace === "") bad("summonerPlace");
@@ -499,6 +530,10 @@ class Runtime implements Entity {
   private readonly body: WorldBody;
   /** The river as the Lar's tools see it: a forget of words also scrubs them from the state the body keeps. */
   private readonly larRiver: River;
+  /** One row per turn, beside the river's rows (no words). */
+  private readonly ledger: Ledger;
+  /** Failed turns in a row, over every thread. A turn that gets an answer clears it. */
+  private failedRun = 0;
   private readonly ceiling: Ceiling;
   private readonly tools: Tool[];
   private readonly clockFormat: Intl.DateTimeFormat;
@@ -532,6 +567,9 @@ class Runtime implements Entity {
   private readonly idleWaiters: Array<() => void> = [];
   private readonly abort = new AbortController();
 
+  /** Set when the summoner was told of the current outage. A turn that gets an answer ends the outage and clears it. */
+  private outageNoticed = false;
+
   private started = false;
   private stopping = false;
   private closed = false;
@@ -556,6 +594,7 @@ class Runtime implements Entity {
     this.body = shelfBody(init.shelf, init.nowMs, (texts) => outwardHold(this.privacyNow(), texts));
     this.ceiling = init.config.ceiling ?? DEFAULT_CEILING;
     this.river = init.river;
+    this.ledger = openLedger(join(init.dir, RIVER_LEDGER_FILE));
     this.larRiver = this.riverForLar(init.river);
     this.notebook = init.notebook;
     this.clockFormat = new Intl.DateTimeFormat("en-GB", {
@@ -634,6 +673,7 @@ class Runtime implements Entity {
     }, this.stopPollMs);
     this.privacyNow();
     this.seedRhythm();
+    this.noteStart();
     for (const wake of this.state.wakes) this.armWake(wake);
     try {
       for (const world of this.worlds) {
@@ -704,6 +744,7 @@ class Runtime implements Entity {
       }
     }
     await Promise.allSettled([...this.running.values()]);
+    this.ledger.close();
     this.saveState();
     this.closed = true;
     this.river.close();
@@ -726,6 +767,8 @@ class Runtime implements Entity {
     const atMs = event.atMs ?? this.nowMs();
     const thread = event.thread ?? event.place;
     const actor = event.actor ?? (event.source === "owner" ? this.config.owner.alias : undefined);
+    // Words from outside or from the summoner end a run of turns woken only by her own wakes.
+    if (event.source === "owner" || event.source === "outside") this.state.selfWakeRun = 0;
     // Every thread with an event gets a cursor entry, so a restart knows where its events begin.
     this.threadState(thread);
     // A new event is a new chance for a thread the model kept rejecting as too large.
@@ -825,6 +868,7 @@ class Runtime implements Entity {
       .read({ thread, kinds: ["event"], sinceSeq: seen, untilSeq: snapshot, limit: ALL_ROWS })
       .filter((row) => !this.hiddenHere(row, thread));
     if (fresh.length === 0) return;
+    this.noteWakeRun(fresh);
 
     const turnId = randomUUID();
     const nowMs = this.nowMs();
@@ -874,6 +918,7 @@ class Runtime implements Entity {
       this.turnSnapshots.delete(turnId);
       this.turnStarts.delete(turnId);
     });
+    this.writeLedger(thread, result);
 
     if (result.endedBy === "aborted") {
       // Stopping: the events were not handled, so the cursor stays and they are taken again next start.
@@ -884,11 +929,13 @@ class Runtime implements Entity {
       // The cursor stays too, so the retry takes the same events. The owner's asks are not touched.
       const message = result.error ?? "unknown error";
       const oversize = isOversized(message) ? `${sizes}, the new messages and recent lines ${event.length} characters` : undefined;
-      this.failTurn(thread, message, true, turnId, oversize);
+      this.failTurn(thread, message, true, turnId, oversize, result.errorKind);
       return;
     }
     this.failures.delete(thread);
     this.oversized.delete(thread);
+    this.outageNoticed = false;
+    this.failedRun = 0;
     const cursor = this.threadState(thread);
     cursor.seenSeq = snapshot;
     cursor.lastTurnMs = this.nowMs();
@@ -929,7 +976,8 @@ class Runtime implements Entity {
         receipt === undefined
           ? "no receipt was written, so it may or may not have finished"
           : `${receipt.data?.["ok"] === true ? "done" : "not done"}: ${receipt.text ?? ""}`;
-      lines.push(`- ${row.text ?? "a tool"} ${args}: ${outcome}`);
+      // A forgotten row keeps its tool name in its data, not its text.
+      lines.push(`- ${String(row.data?.["tool"] ?? row.text ?? "a tool")} ${args}: ${outcome}`);
     }
     return lines;
   }
@@ -938,7 +986,14 @@ class Runtime implements Entity {
    * Records a failed turn and schedules its retry. A turn the model rejected as too large (`oversize` names the sections
    * and their sizes) is tried again only until OVERSIZE_TRIES rejections in a row; then the thread waits for a new event.
    */
-  private failTurn(thread: string, message: string, fromModel: boolean, turnId?: string, oversize?: string): void {
+  private failTurn(
+    thread: string,
+    message: string,
+    fromModel: boolean,
+    turnId?: string,
+    oversize?: string,
+    kind?: ModelErrorKind,
+  ): void {
     if (this.stopping) return;
     const failed = this.failures.get(thread) ?? 0;
     this.failures.set(thread, failed + 1);
@@ -970,6 +1025,10 @@ class Runtime implements Entity {
       atMs: this.nowMs(),
     });
     this.cancelRetry(thread);
+    // An outage is told at once. Any other run of failed turns is told once it reaches FAILED_TURNS_ALERT in a row.
+    this.failedRun += 1;
+    const outage = fromModel && kind !== undefined && OUTAGE_KINDS.has(kind);
+    if (outage || this.failedRun >= FAILED_TURNS_ALERT) this.noticeOutage(message);
     if (giveUp) return;
     const timer = setTimeout(() => {
       this.retries.delete(thread);
@@ -978,6 +1037,88 @@ class Runtime implements Entity {
       this.pump();
     }, delay);
     this.retries.set(thread, timer);
+  }
+
+  /**
+   * One ledger row for the turn: when, which kind of thread, how it ended, the model, the tokens the provider reported,
+   * and whether the backup answered. No words go in. A failure to write it is noted in the self thread, never silent.
+   */
+  private writeLedger(thread: string, result: TurnResult): void {
+    const row: LedgerRow = {
+      atMs: this.nowMs(),
+      threadKind: this.threadKind(thread),
+      endedBy: result.endedBy,
+      outcome: result.endedBy === "model_error" ? "failed" : result.endedBy === "aborted" ? "aborted" : "answered",
+      model: result.model,
+      backupUsed: result.backupUsed,
+      ...(result.tokens?.prompt === undefined ? {} : { promptTokens: result.tokens.prompt }),
+      ...(result.tokens?.completion === undefined ? {} : { completionTokens: result.tokens.completion }),
+      ...(result.tokens?.total === undefined ? {} : { totalTokens: result.tokens.total }),
+      ...(result.cacheHitTokens === undefined ? {} : { cacheHitTokens: result.cacheHitTokens }),
+      ...(result.cacheMissTokens === undefined ? {} : { cacheMissTokens: result.cacheMissTokens }),
+      ...(result.errorKind === undefined ? {} : { errorKind: result.errorKind }),
+    };
+    try {
+      this.ledger.append(row);
+    } catch (err) {
+      this.river.append({
+        thread: "self",
+        kind: "note",
+        source: "body",
+        text: `The ledger could not take a row for this turn: ${messageOf(err)}`,
+        atMs: this.nowMs(),
+      });
+    }
+  }
+
+  /** The kind of a thread, from where it is: the summoner's place, a contact, a room, the game, or the Lar's own thread. */
+  private threadKind(thread: string): ThreadKind {
+    if (thread === "self") return "self";
+    if (this.isOwnerPlace(thread)) return "summoner";
+    if (this.worldFor(thread)?.id === "domus") return "game";
+    if (thread.includes(":room:")) return "room";
+    if (thread.includes(":dm:")) return "contact";
+    return "other";
+  }
+
+  /**
+   * Tells the summoner once that the model is not answering. The retries that follow are not told again: the outage is
+   * over when a turn gets an answer, and a later outage is told once more. The model's own error goes in, redacted and
+   * short. Only the summoner's place is told; with no such place known yet, the self thread notes it instead.
+   */
+  private noticeOutage(message: string): void {
+    if (this.outageNoticed) return;
+    this.outageNoticed = true;
+    const place = this.state.summonerPlace;
+    const detail = clip(oneLine(this.scanner.redact(message)), OUTAGE_DETAIL_CLIP);
+    if (place === undefined) {
+      this.river.append({
+        thread: "self",
+        kind: "note",
+        source: "body",
+        text: `Your model is not answering, and no summoner place is known yet to tell you: ${detail}`,
+        atMs: this.nowMs(),
+      });
+      return;
+    }
+    const backup = this.config.model.fallback === undefined ? "No backup model is set." : "The backup model did not answer either.";
+    const text =
+      `${SUMMONER_PREFIX}Your Lar could not get an answer from its model. ${backup} The last error was: ${detail} ` +
+      "Your Lar keeps trying on its own. This is the only notice about this outage.";
+    this.saveState();
+    this.queueOutbox(async () => {
+      await this.sayTo(place, text);
+    });
+  }
+
+  /**
+   * Counts the turns in a row woken only by the Lar's own wakes. A turn that its own wakes woke, and nothing from outside
+   * or the summoner, adds one; any other turn starts the count again at zero. A retried turn counts again, which only
+   * makes the limit come sooner for a turn that keeps failing.
+   */
+  private noteWakeRun(fresh: RiverRow[]): void {
+    const woken = fresh.some(isWakeRow) && !fresh.some(isOutsideRow);
+    this.state.selfWakeRun = woken ? (this.state.selfWakeRun ?? 0) + 1 : 0;
   }
 
   private cancelRetry(thread: string): void {
@@ -989,6 +1130,34 @@ class Runtime implements Entity {
   }
 
   // --- wakes ------------------------------------------------------------------------------------
+
+  /**
+   * The body's note at each start, in the self thread (where the body's own notes go): when the Lar was last running, and
+   * how long it was down since. The newest row that is not a start note is the last time it was running; a start note
+   * is skipped, since it was written at the start itself. A new Lar has no rows yet, so it gets no note.
+   */
+  private noteStart(): void {
+    const last = this.lastRunningRow();
+    if (last === undefined) return;
+    const now = this.nowMs();
+    this.river.append({
+      thread: "self",
+      kind: "note",
+      source: "body",
+      text: `You were last running at ${this.stamp(last.atMs)} and were down for ${formatDuration(Math.max(0, now - last.atMs))}.`,
+      data: { bodyNote: "start" },
+      atMs: now,
+    });
+  }
+
+  /** The newest row that is not a start note, read in growing batches until one is found or the river is read through. */
+  private lastRunningRow(): RiverRow | undefined {
+    for (let limit = 64; ; limit *= 4) {
+      const rows = this.river.read({ newestFirst: true, limit });
+      const found = rows.find((row) => row.data?.["bodyNote"] !== "start");
+      if (found !== undefined || rows.length < limit) return found;
+    }
+  }
 
   /**
    * The daily rhythm the body gives a Lar on its first start: one ordinary daily wake per configured clock time, in the
@@ -1245,6 +1414,7 @@ class Runtime implements Entity {
         this.state.proposals = next;
       },
       record: (text) => {
+        this.state.selfWakeRun = 0;
         this.river.append({
           thread: "self",
           kind: "event",
@@ -1472,6 +1642,7 @@ class Runtime implements Entity {
     lines.push(`Your mood: ${this.state.mood ?? "not set"}.`);
     const limit = this.config.limits?.turnsPerDay;
     if (limit !== undefined) lines.push(`Turns today: ${this.turnsToday(nowMs)} of ${limit}.`);
+    lines.push(...this.tokenLines(nowMs));
     if (this.state.proposals.length > 0) {
       lines.push("", "Commitments you proposed, waiting for your summoner:");
       for (const item of this.state.proposals) lines.push(`- ${item.id}: ${firstChars(item.text, PROPOSAL_SHOW)}`);
@@ -1483,6 +1654,58 @@ class Runtime implements Entity {
       lines.push(`Next wakes: ${wakes.map((wake) => `${this.wakeWhen(wake)}: ${wake.why}`).join("; ")}.`);
     }
     return lines.join("\n");
+  }
+
+  /**
+   * Today's tokens, as the provider reported them over the turns that ended today in the Lar's zone, and the cost at the
+   * prices the summoner set in the model config. Only the main model's turns and its backup's calls are priced: a world's
+   * own model has no price in the config, so its tokens are counted but not priced.
+   */
+  private tokenLines(nowMs: number): string[] {
+    const ends = this.river
+      .read({ kinds: ["turn"], sinceMs: startOfDayMs(nowMs, this.config.timeZone), limit: ALL_ROWS })
+      .filter((row) => row.data?.["phase"] === "end");
+    let all: TokenCount | undefined;
+    for (const row of ends) all = addTokens(all, tokenCountOf(row.data?.["tokens"]));
+    const lines: string[] = [];
+    if (all === undefined) {
+      lines.push("Tokens today: none reported by the provider.");
+    } else {
+      const head = all.total === undefined ? "no total reported" : `${all.total} in total`;
+      lines.push(
+        `Tokens today: ${head}, as the provider reported them (prompt ${all.prompt ?? "not reported"}, completion ${all.completion ?? "not reported"}).`,
+      );
+    }
+
+    let hits: number | undefined;
+    for (const row of ends) {
+      const reported = row.data?.["cacheHitTokens"];
+      if (typeof reported === "number") hits = (hits ?? 0) + reported;
+    }
+    if (hits !== undefined) lines.push(`Cache hits today: ${hits} prompt token(s), as the provider reported them.`);
+
+    const price = this.config.model.price;
+    if (price === undefined) return lines;
+    const backupPrice = this.config.model.fallback?.price;
+    let cost = 0;
+    let backupUnpriced = false;
+    for (const row of ends) {
+      if (row.data?.["model"] !== this.model.info.id) continue;
+      const counted = tokenCountOf(row.data?.["tokens"]);
+      const backup = tokenCountOf(row.data?.["backupTokens"]);
+      const prompt = (counted.prompt ?? 0) - (backup.prompt ?? 0);
+      const completion = (counted.completion ?? 0) - (backup.completion ?? 0);
+      cost += (prompt * price.inputPerMillion + completion * price.outputPerMillion) / 1_000_000;
+      if (backup.prompt === undefined && backup.completion === undefined) continue;
+      if (backupPrice === undefined) backupUnpriced = true;
+      else {
+        cost += ((backup.prompt ?? 0) * backupPrice.inputPerMillion + (backup.completion ?? 0) * backupPrice.outputPerMillion) / 1_000_000;
+      }
+    }
+    lines.push(
+      `Cost today: ${cost.toFixed(4)} at the prices in your model config.${backupUnpriced ? " The backup's tokens are not priced: no price is set for the backup." : ""}`,
+    );
+    return lines;
   }
 
   private indexText(): string {
@@ -1515,7 +1738,7 @@ class Runtime implements Entity {
     return [...found.values()]
       .sort((a, b) => b.score - a.score || b.row.seq - a.row.seq)
       .slice(0, RECALL_LIMIT)
-      .map(({ row }) => `[${this.stamp(row.atMs)} ${row.thread} ${who(row)}] ${clip(viewKeyOf(row) === undefined ? row.text ?? "" : briefOf(row), RECALL_CLIP)}`)
+      .map(({ row }) => `[${this.stamp(row.atMs)} ${row.thread} ${who(row)}] ${shownRow(row)}`)
       .join("\n");
   }
 
@@ -1604,11 +1827,11 @@ class Runtime implements Entity {
         {
           name: "schedule_wake",
           description:
-            "Wake yourself later, in a thread of your own, with a reason you will read then. Give in_minutes (from now) or at_iso (a date and time; with no zone it is in your own zone). Give repeat as daily or weekly to keep the rhythm at the same local time; leave it out for a wake that fires once.",
+            "Wake yourself later, in a thread of your own, with a reason you will read then. Give in_minutes (from now, at least 1) or at_iso (a date and time at least a minute ahead; with no zone it is in your own zone). Give repeat as daily or weekly to keep the rhythm at the same local time; leave it out for a wake that fires once.",
           parameters: {
             type: "object",
             properties: {
-              in_minutes: { type: "number", minimum: 0, description: "Minutes from now." },
+              in_minutes: { type: "number", minimum: 1, description: "Minutes from now, at least 1." },
               at_iso: { type: "string", description: "A date and time, such as 2026-10-12T09:00:00+03:00." },
               why: { type: "string", description: "Why you are waking, in your own words. At most 500 characters." },
               repeat: {
@@ -2145,12 +2368,14 @@ class Runtime implements Entity {
       return refuse("bad_arguments", "Give either in_minutes or at_iso, not both.", "in_minutes or at_iso, exactly one");
     }
 
+    const tooSoon = "A wake must be at least 1 minute from now. Give a later time.";
     let atMs: number;
     if (hasMinutes) {
       const minutes = args["in_minutes"];
-      if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes < 0 || minutes > WAKE_LIMIT_MINUTES) {
-        return refuse("bad_arguments", "in_minutes must be a number of minutes from 0 up to ten years.", "in_minutes out of range");
+      if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes > WAKE_LIMIT_MINUTES) {
+        return refuse("bad_arguments", "in_minutes must be a number of minutes from 1 up to ten years.", "in_minutes out of range");
       }
+      if (minutes < 1) return refuse("bad_arguments", `${tooSoon} Give in_minutes of 1 or more.`, "in_minutes is less than 1 minute");
       atMs = Math.round(this.nowMs() + minutes * 60_000);
     } else {
       const iso = requireText(args, "at_iso", "The date and time");
@@ -2159,6 +2384,7 @@ class Runtime implements Entity {
       if (Number.isNaN(parsed)) {
         return refuse("bad_arguments", "at_iso must be a date and time, such as 2026-10-12T09:00:00+03:00.", "at_iso did not parse");
       }
+      if (parsed < this.nowMs() + WAKE_MIN_MS) return refuse("bad_arguments", tooSoon, "at_iso is less than 1 minute from now");
       atMs = parsed;
     }
 
@@ -2174,6 +2400,11 @@ class Runtime implements Entity {
       );
     }
 
+    // The chain limit: a run of turns woken only by her own wakes holds a new wake to HOLD_MS from now, and the receipt says so.
+    const run = this.state.selfWakeRun ?? 0;
+    const held = run >= WAKE_CHAIN_LIMIT && atMs < this.nowMs() + WAKE_CHAIN_HOLD_MS;
+    if (held) atMs = this.nowMs() + WAKE_CHAIN_HOLD_MS;
+
     const zone = this.config.timeZone;
     const wake: Wake = { id: randomUUID().slice(0, 8), atMs, why: why.value, scheduledIn: context.thread };
     if (repeat !== undefined && isWakeRepeat(repeat)) {
@@ -2185,10 +2416,13 @@ class Runtime implements Entity {
     this.saveState();
     this.armWake(wake);
     const rhythm = wake.repeat === undefined || wake.clock === undefined ? "" : `, ${wake.repeat} at ${wake.clock}`;
+    const hold = held
+      ? `, held to at least ${WAKE_CHAIN_HOLD_MS / 60_000} minutes from now because you have woken yourself ${run} times in a row with nothing from outside`
+      : "";
     return {
       ok: true,
-      summary: `Wake ${wake.id} set for ${this.stamp(atMs)}${rhythm}.`,
-      data: { id: wake.id, atMs },
+      summary: `Wake ${wake.id} set for ${this.stamp(atMs)}${rhythm}${hold}.`,
+      data: { id: wake.id, atMs, ...(held ? { held: true } : {}) },
     };
   }
 
@@ -2330,9 +2564,42 @@ function olderViewRows(rows: readonly RiverRow[]): Set<number> {
   return older;
 }
 
+/** A row as recall shows it: its words (a view by its brief), and for a receipt the start of what its tool returned. */
+function shownRow(row: RiverRow): string {
+  const text = clip(viewKeyOf(row) === undefined ? row.text ?? "" : briefOf(row), RECALL_CLIP);
+  const returned = row.data?.["dataJson"];
+  if (row.kind !== "receipt" || typeof returned !== "string" || returned === "") return text;
+  return `${text} It returned: ${clip(oneLine(returned), RECEIPT_SHOW)}`;
+}
+
 function who(row: RiverRow): string {
   if (row.kind === "say" && row.source === "self") return "you";
   return row.actor ?? row.source;
+}
+
+/** A row that one of the Lar's own wakes put in its thread. */
+function isWakeRow(row: RiverRow): boolean {
+  return row.source === "body" && row.data?.["wakeId"] !== undefined;
+}
+
+/** A row from outside the Lar, or one of the summoner's acts: either ends a run of turns woken only by her own wakes. */
+function isOutsideRow(row: RiverRow): boolean {
+  return row.source === "owner" || row.source === "outside" || row.data?.["summonerAct"] === true;
+}
+
+/** The token counts a turn's end row holds, read back from the river. Anything that is not a number is left out. */
+function tokenCountOf(value: unknown): TokenCount {
+  if (typeof value !== "object" || value === null) return {};
+  const row = value as Record<string, unknown>;
+  const count = (key: string): number | undefined => (typeof row[key] === "number" ? (row[key] as number) : undefined);
+  const prompt = count("prompt");
+  const completion = count("completion");
+  const total = count("total");
+  return {
+    ...(prompt === undefined ? {} : { prompt }),
+    ...(completion === undefined ? {} : { completion }),
+    ...(total === undefined ? {} : { total }),
+  };
 }
 
 function checkWorlds(worlds: World[]): void {

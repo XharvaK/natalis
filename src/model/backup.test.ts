@@ -29,6 +29,15 @@ const request: ModelRequest = {
 };
 
 describe("the backup model", () => {
+  it("is tried when the main model is out of credit, and the answer says which model answered", async () => {
+    const main = port("main", new ModelError("model service is out of credit (HTTP 402)", "out_of_credit", 1));
+    const backup = port("backup", answer("from the backup"));
+    const model = withBackup({ primary: main, backup, backupName: "backup-model", backupSeesPictures: true });
+    const reply = await model.complete(request);
+    expect(reply).toMatchObject({ content: "from the backup", servedBy: "backup-model" });
+    expect(backup.requests).toHaveLength(1);
+  });
+
   it("answers in place of the main model when the main model fails with a service failure", async () => {
     for (const kind of ["rate_limit", "unavailable", "timeout"] as const) {
       const main = port("main", new ModelError("service is down", kind, 4));

@@ -5,6 +5,7 @@ import { backupCommand } from "./backup.js";
 import { captureCommand } from "./capture.js";
 import { importCommand } from "./import.js";
 import { judgeCommand } from "./judge.js";
+import { ledgerCommand } from "./ledger.js";
 import { proposalsCommand } from "./proposals.js";
 import { replayCommand } from "./replay.js";
 import { restoreCommand } from "./restore.js";
@@ -28,6 +29,8 @@ export async function dispatchCommand(command: string | undefined, args: string[
       return unsealCommand(args);
     case "proposals":
       return proposalsCommand(args);
+    case "ledger":
+      return ledgerCommand(args, (line) => console.log(line), (line) => console.error(line));
     default:
       return undefined;
   }

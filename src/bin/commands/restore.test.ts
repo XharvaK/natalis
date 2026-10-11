@@ -9,7 +9,8 @@ import { openEntity, type Entity } from "../../entity/runtime.js";
 import { openRiver } from "../../river/index.js";
 import { ScriptedModel } from "../../testing/scripted-model.js";
 import { createCliWorld } from "../../worlds/cli.js";
-import { BUNDLE_FILE, isAllowedName, MANIFEST_FILE, readRiverLastSeq, type Manifest } from "./backup-format.js";
+import { isStopOn } from "../../entity/stop.js";
+import { BUNDLE_FILE, isAllowedName, MANIFEST_FILE, readManifest, readRiverLastSeq, type Manifest } from "./backup-format.js";
 import { openShelf } from "../../media/shelf.js";
 import { backupEntity } from "./backup.js";
 import { restoreCommand, restoreEntity } from "./restore.js";
@@ -77,6 +78,42 @@ async function backupOf(lar: string, name = "iris-20261011-103005"): Promise<str
 }
 
 describe("natalis restore", () => {
+  it("writes a note of the backup's time into the restored river, and keeps an emergency stop that was on", async () => {
+    const lar = join(root, "iris");
+    const entity = await startLar(lar);
+    writeFileSync(join(lar, "entity.json"), `${JSON.stringify(CONFIG, null, 2)}\n`);
+    // The stop is on in the Lar's state when the backup is made. The stop file itself is never in a backup.
+    const statePath = join(lar, "state.json");
+    const state = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>;
+    writeFileSync(statePath, `${JSON.stringify({ ...state, stopOn: true }, null, 2)}\n`);
+    const made = await backupEntity({ dir: lar, out: join(root, "backups"), now: new Date(2026, 9, 11, 10, 30, 5), say: () => {} });
+    await entity.stop();
+    running.length = 0;
+    const createdAt = readManifest(made.folder).createdAt;
+
+    const target = join(root, "restored", "iris");
+    await restoreEntity({ from: made.folder, dir: target, say: () => {} });
+
+    expect(isStopOn(target)).toBe(true);
+    const river = openRiver(join(target, "river.db"));
+    try {
+      const note = river.read({ kinds: ["note"], newestFirst: true, limit: 1 })[0];
+      expect(note?.text).toContain(`restored from a backup made at ${createdAt}.`);
+      expect(note?.text).toContain("emergency stop was on");
+      expect(note?.atMs).toBe(Date.parse(createdAt));
+    } finally {
+      river.close();
+    }
+  }, 60_000);
+
+  it("restores with the stop off when the backup was made with it off", async () => {
+    const lar = join(root, "iris");
+    const backup = await backupOf(lar);
+    const target = join(root, "restored", "iris");
+    await restoreEntity({ from: backup, dir: target, say: () => {} });
+    expect(isStopOn(target)).toBe(false);
+  }, 60_000);
+
   it("round trip: backup, restore, and the restored Lar starts with the same river and notebook", async () => {
     const lar = join(root, "iris");
     const backup = await backupOf(lar);
@@ -87,7 +124,9 @@ describe("natalis restore", () => {
     const result = await restoreEntity({ from: backup, dir: target, say: (line) => log.push(line) });
 
     expect(result.dir).toBe(target);
-    expect(textsOf(target)).toEqual(textsOf(lar));
+    // The restored river is the backup's rows, then the note of the restore.
+    expect(textsOf(target).slice(0, textsOf(lar).length)).toEqual(textsOf(lar));
+    expect(textsOf(target).at(-1)).toContain("restored from a backup made at");
     expect(headOf(join(target, "notebook"))).toBe(originalHead);
     expect(readFileSync(join(target, "notebook", "notes", "second.md"), "utf8")).toBe("The second note.\n");
     expect(execFileSync("git", ["-C", join(target, "notebook"), "remote"], { encoding: "utf8" }).trim()).toBe("");
@@ -182,7 +221,7 @@ describe("natalis restore", () => {
     const target = join(root, "empty-target");
     mkdirSync(target);
     await restoreEntity({ from: backup, dir: target, say: () => {} });
-    expect(textsOf(target)).toEqual(textsOf(lar));
+    expect(textsOf(target).slice(0, textsOf(lar).length)).toEqual(textsOf(lar));
   }, 60_000);
 
   it("refuses a target that is not empty, and changes nothing in it", async () => {

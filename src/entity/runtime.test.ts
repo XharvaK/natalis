@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ModelError,
   type ModelInfo,
@@ -25,9 +25,11 @@ import {
   type WorldEvent,
 } from "../contracts.js";
 import { createSecretScanner } from "../secrets/index.js";
-import { ScriptedModel, call, reply } from "../testing/scripted-model.js";
+import { ScriptedModel, call, reply, type ScriptStep } from "../testing/scripted-model.js";
 import { createCliWorld, type CliWorld } from "../worlds/cli.js";
 import type { EntityConfig } from "./config.js";
+import { SUMMONER_PREFIX } from "./summoner.js";
+import { readLedger } from "../river/ledger.js";
 import { forgetInStateFile, openEntity, STATE_FILE, type Entity, type OpenEntityOptions } from "./runtime.js";
 import { COMMITMENTS_STUB, HOUSEHOLD_PATH, OLD_COMMITMENTS_STUB } from "./commitments.js";
 import { isStopOn } from "./stop.js";
@@ -126,6 +128,20 @@ async function waitFor(condition: () => boolean, timeoutMs = 5_000): Promise<voi
   while (!condition()) {
     if (Date.now() > deadline) throw new Error("timed out waiting for a condition");
     await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+/**
+ * Runs a test on a fake clock: wakes fire when the test advances the time. The entities are stopped before the clock is
+ * put back, so no fake timer outlives the test.
+ */
+async function withClock<T>(run: (advance: (ms: number) => Promise<void>) => Promise<T>): Promise<T> {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+  try {
+    return await run((ms) => vi.advanceTimersByTimeAsync(ms));
+  } finally {
+    await Promise.allSettled(opened.map((entity) => entity.stop()));
+    vi.useRealTimers();
   }
 }
 
@@ -523,7 +539,11 @@ describe("failures", () => {
     await entity.idle();
 
     expect(asksDuringRetry).toEqual([expect.objectContaining({ place: "cli:summoner" })]);
-    expect(said).toEqual([{ place: "cli:summoner", text: "I am here, Mira." }]);
+    // The model is unavailable, an outage: the summoner is told once, before the retry's answer.
+    expect(said).toEqual([
+      expect.objectContaining({ place: "cli:summoner", text: expect.stringContaining("could not get an answer") }),
+      { place: "cli:summoner", text: "I am here, Mira." },
+    ]);
     expect(readStateFile().asks).toHaveLength(0);
     const notes = allRows(entity).filter((row) => row.kind === "note").map((row) => row.text ?? "");
     expect(notes).toContain("Your turn failed (model error); trying again in 1 s.");
@@ -571,13 +591,95 @@ describe("failures", () => {
     cli.send("Are you coming?");
     await entity.idle();
 
-    expect(said).toEqual([{ place: "cli:summoner", text: "On my way." }]);
+    expect(said).toEqual([
+      { place: "cli:summoner", text: "On my way." },
+      expect.objectContaining({ place: "cli:summoner", text: expect.stringContaining("could not get an answer") }),
+    ]);
     expect(readStateFile().wakes).toHaveLength(1);
     const retry = userTextOf(model.requests[2]);
     expect(retry).toContain("Already done");
     expect(retry).toContain("On my way.");
     expect(retry).toContain("check the kettle");
     expect(retry).toContain("owner] Are you coming?");
+  });
+});
+
+/** A model that is out of credit on every call, and counts the calls it was asked. */
+function brokeModel(): ModelPort & { calls: number } {
+  const port: ModelPort & { calls: number } = {
+    info: { id: "scripted:broke", contextTokens: 32_000, nativeTools: true },
+    calls: 0,
+    async complete(): Promise<ModelResponse> {
+      port.calls += 1;
+      throw new ModelError("model service is out of credit or over its quota (HTTP 402)", "out_of_credit", 1);
+    },
+  };
+  return port;
+}
+
+describe("an outage", () => {
+  it("tells the summoner once when the model is out of credit, however many retries follow", async () => {
+    const model = brokeModel();
+    const { entity, cli, said } = await open(model, { retryDelaysMs: [1] });
+    await entity.start();
+    cli.send("Hello?");
+    await waitFor(() => said.some((item) => item.text.includes("could not get an answer")));
+    await waitFor(() => model.calls >= 8);
+
+    const notices = said.filter((item) => item.text.includes("could not get an answer"));
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.place).toBe("cli:summoner");
+    expect(notices[0]?.text.startsWith(SUMMONER_PREFIX)).toBe(true);
+    expect(notices[0]?.text).toContain("out of credit");
+  });
+});
+
+describe("the ledger and the failure alert", () => {
+  it("writes one ledger row per turn, with the kind of thread, the model and the counts, and no words", async () => {
+    const model = new ScriptedModel([
+      { ...reply({ toolCalls: [call("end_turn")] }), usage: { inputTokens: 7, outputTokens: 2, totalTokens: 9 } },
+    ]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    cli.send("Secret words for the ledger.");
+    await entity.idle();
+    await entity.stop();
+
+    const rows = readLedger(join(dir, "river.db"), 0);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      threadKind: "summoner",
+      endedBy: "end_turn",
+      outcome: "answered",
+      model: "scripted:test-model",
+      promptTokens: 7,
+      completionTokens: 2,
+      totalTokens: 9,
+      backupUsed: false,
+    });
+    expect(JSON.stringify(rows)).not.toContain("Secret words");
+  });
+
+  it("tells the summoner once after five failed turns in a row, and again only after a turn succeeds", async () => {
+    const failing = (): ScriptStep => new ModelError("model service rejected the request (HTTP 404): no such model", "bad_request", 1);
+    const answer = (): ScriptStep => reply({ toolCalls: [call("end_turn")] });
+    const model = new ScriptedModel([
+      failing(), failing(), failing(), failing(), failing(), answer(),
+      failing(), failing(), failing(), failing(), failing(), answer(),
+    ]);
+    const { entity, cli, said } = await open(model, { retryDelaysMs: [1] });
+    await entity.start();
+    const notices = () => said.filter((item) => item.text.includes("could not get an answer"));
+
+    cli.send("One.");
+    await waitFor(() => model.requests.length >= 6);
+    await entity.idle();
+    expect(notices()).toHaveLength(1);
+
+    cli.send("Two.");
+    await waitFor(() => model.requests.length >= 12);
+    await entity.idle();
+    expect(notices()).toHaveLength(2);
   });
 });
 
@@ -619,21 +721,99 @@ describe("what the Lar sends and what it is shown", () => {
   });
 
   it("fires a scheduled wake as an event in the self thread", async () => {
+    await withClock(async (advance) => {
+      const model = new ScriptedModel([
+        reply({ toolCalls: [call("schedule_wake", { in_minutes: 1, why: "look at the garden" })] }),
+        reply({ toolCalls: [call("end_turn")] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ]);
+      const { entity, cli } = await open(model, { stopPollMs: 1e9 });
+      await entity.start();
+      cli.send("Remind yourself to look at the garden later.");
+      await entity.idle();
+      await advance(60_000);
+      await entity.idle();
+
+      expect(model.requests).toHaveLength(3);
+      expect(userTextOf(model.requests[2])).toContain("Your wake: look at the garden");
+      const wake = allRows(entity).find((row) => row.thread === "self" && row.kind === "event");
+      expect(wake).toMatchObject({ source: "body", text: "Your wake: look at the garden" });
+      expect(readStateFile().wakes).toHaveLength(0);
+    });
+  });
+
+  it("refuses a self-wake of less than a minute, says why, and keeps no wake", async () => {
     const model = new ScriptedModel([
-      reply({ toolCalls: [call("schedule_wake", { in_minutes: 0.01, why: "look at the garden" })] }),
-      reply({ toolCalls: [call("end_turn")] }),
-      reply({ toolCalls: [call("end_turn")] }),
+      reply({ toolCalls: [call("schedule_wake", { in_minutes: 0.5, why: "soon" }), call("end_turn")] }),
     ]);
     const { entity, cli } = await open(model);
     await entity.start();
-    cli.send("Remind yourself to look at the garden later.");
-    await waitFor(() => model.requests.length >= 3);
+    cli.send("Hello.");
     await entity.idle();
 
-    expect(userTextOf(model.requests[2])).toContain("Your wake: look at the garden");
-    const wake = allRows(entity).find((row) => row.thread === "self" && row.kind === "event");
-    expect(wake).toMatchObject({ source: "body", text: "Your wake: look at the garden" });
+    const receipt = allRows(entity).find((row) => row.kind === "receipt" && row.data?.["tool"] === "schedule_wake");
+    expect(receipt?.data).toMatchObject({ ok: false, refused: { code: "bad_arguments" } });
+    expect(String((receipt?.data?.["refused"] as { reason: string } | undefined)?.reason)).toContain("1 minute");
     expect(readStateFile().wakes).toHaveLength(0);
+  });
+
+  it("holds a self-wake to 15 minutes after 6 turns in a row woken only by her own wakes, and resets on a message", async () => {
+    await withClock(async (advance) => {
+      const again = (): ScriptStep => reply({ toolCalls: [call("schedule_wake", { in_minutes: 1, why: "again" }), call("end_turn")] });
+      const model = new ScriptedModel([again(), again(), again(), again(), again(), again(), again(), again(), again(), again()]);
+      const { entity, cli } = await open(model, { stopPollMs: 1e9 });
+      await entity.start();
+      cli.send("Start a run of self-wakes.");
+      await entity.idle();
+      // Six quick turns, each woken by the wake the turn before set one minute after itself.
+      for (let turn = 0; turn < 6; turn++) {
+        await advance(60_000);
+        await entity.idle();
+      }
+      expect(model.requests).toHaveLength(7);
+      const wakeReceipts = () => allRows(entity).filter((row) => row.kind === "receipt" && row.data?.["tool"] === "schedule_wake");
+      expect(wakeReceipts()).toHaveLength(7);
+      expect(wakeReceipts()[6]?.text).toContain("15 minutes");
+      expect(wakeReceipts()[5]?.text).not.toContain("15 minutes");
+
+      // The seventh wake is held: nothing fires for 14 minutes, and it fires at 15.
+      await advance(14 * 60_000);
+      await entity.idle();
+      expect(model.requests).toHaveLength(7);
+      await advance(60_000);
+      await entity.idle();
+      expect(model.requests).toHaveLength(8);
+
+      // A message from the summoner resets the run: the next wake is a quick one again.
+      cli.send("A new message.");
+      await entity.idle();
+      expect(model.requests).toHaveLength(9);
+      await advance(60_000);
+      await entity.idle();
+      expect(model.requests).toHaveLength(10);
+    });
+  });
+
+  it("shows the day's tokens on the now board, and the cost at the configured price", async () => {
+    const model = new ScriptedModel([
+      {
+        ...reply({ toolCalls: [call("end_turn")] }),
+        usage: { inputTokens: 1_000_000, outputTokens: 500_000, totalTokens: 1_500_000, cacheHitTokens: 700 },
+      },
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const priced: EntityConfig = { ...CONFIG, model: { ...CONFIG.model, price: { inputPerMillion: 2, outputPerMillion: 4 } } };
+    const { entity, cli } = await open(model, { config: priced });
+    await entity.start();
+    cli.send("First.");
+    await entity.idle();
+    cli.send("Second.");
+    await entity.idle();
+
+    const board = systemTextOf(model.requests[1]);
+    expect(board).toContain("Tokens today: 1500000 in total, as the provider reported them (prompt 1000000, completion 500000).");
+    expect(board).toContain("Cost today: 4.0000 at the prices in your model config.");
+    expect(board).toContain("Cache hits today: 700 prompt token(s), as the provider reported them.");
   });
 
   it("shows the Lar's mood on the now board", async () => {
@@ -688,6 +868,27 @@ describe("what the Lar sends and what it is shown", () => {
     const system = systemTextOf(model.requests[1]);
     expect(system).toContain("## recall");
     expect(system).toContain("fake:room mara] The lighthouse at the point is my favourite place.");
+  });
+
+  it("lets a later turn recall an earlier receipt, and shows the start of what the tool returned", async () => {
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("read_note", { path: "places/lighthouse.md" }), call("end_turn")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    // The first line is the one the notebook index shows; the sentence the test looks for is only in the note's body.
+    await entity.notebook.write("places/lighthouse.md", "Notes on the point.\nThe lighthouse keeper lives at the point.\n", "Note on the lighthouse", "body");
+
+    cli.send("Read the lighthouse note.");
+    await entity.idle();
+    cli.send("Where is the lighthouse?");
+    await entity.idle();
+
+    const system = systemTextOf(model.requests[1]);
+    expect(system).toContain("## recall");
+    expect(system).toContain("Read places/lighthouse.md.");
+    expect(system).toContain("The lighthouse keeper lives at the point.");
   });
 });
 
@@ -1927,29 +2128,59 @@ describe("the daily turn limit", () => {
   });
 
   it("holds a wake that comes due during the limit, and runs it with the next day's turns", async () => {
-    let now = Date.parse("2026-10-11T10:00:00Z");
-    const model = new ScriptedModel([
-      reply({ toolCalls: [call("schedule_wake", { in_minutes: 0, why: "Check the lamp." }, "w1")] }),
-      reply({ toolCalls: [call("end_turn")] }),
-      reply({ toolCalls: [call("end_turn")] }),
-      reply({ toolCalls: [call("end_turn")] }),
-    ]);
-    const { entity, cli } = await open(model, {
-      config: { ...CONFIG, limits: { turnsPerDay: 1 } },
-      nowMs: () => now,
+    await withClock(async (advance) => {
+      vi.setSystemTime(Date.parse("2026-10-11T10:00:00Z"));
+      const model = new ScriptedModel([
+        reply({ toolCalls: [call("schedule_wake", { in_minutes: 1, why: "Check the lamp." }, "w1")] }),
+        reply({ toolCalls: [call("end_turn")] }),
+        reply({ toolCalls: [call("end_turn")] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ]);
+      const { entity, cli } = await open(model, {
+        config: { ...CONFIG, limits: { turnsPerDay: 1 } },
+        stopPollMs: 1e9,
+      });
+      await entity.start();
+
+      cli.send("Remind yourself about the lamp.");
+      await entity.idle();
+      // The wake comes due while the day's one turn is used up, so it waits.
+      await advance(60_000);
+      await entity.idle();
+      expect(allRows(entity).some((row) => row.thread === "self" && row.text?.startsWith("Your wake:"))).toBe(true);
+      expect(model.requests).toHaveLength(2);
+
+      vi.setSystemTime(Date.parse("2026-10-12T00:05:00Z"));
+      cli.send("Tomorrow.");
+      await entity.idle();
+      expect(model.requests).toHaveLength(4);
     });
+  });
+});
+
+describe("body notes on start", () => {
+  it("says in the self thread when the Lar was last running and how long it was down", async () => {
+    const first = Date.parse("2026-10-11T10:00:00Z");
+    const before = await open(new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]), { nowMs: () => first });
+    await before.entity.start();
+    before.cli.send("Hello.");
+    await before.entity.idle();
+    await before.entity.stop();
+
+    const after = await open(new ScriptedModel([]), { nowMs: () => first + 3 * 3_600_000 });
+    await after.entity.start();
+    await after.entity.idle();
+
+    const notes = allRows(after.entity).filter((row) => row.thread === "self" && row.kind === "note" && row.text?.startsWith("You were last running"));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.text).toBe("You were last running at 2026-10-11 10:00 and were down for 3 h.");
+  });
+
+  it("writes no start note on the first start of a new Lar", async () => {
+    const { entity } = await open(new ScriptedModel([]), { nowMs: () => Date.parse("2026-10-11T10:00:00Z") });
     await entity.start();
-
-    cli.send("Remind yourself about the lamp.");
     await entity.idle();
-    await waitFor(() => allRows(entity).some((row) => row.thread === "self" && row.text?.startsWith("Your wake:")));
-    await entity.idle();
-    expect(model.requests).toHaveLength(2);
-
-    now = Date.parse("2026-10-12T00:05:00Z");
-    cli.send("Tomorrow.");
-    await entity.idle();
-    expect(model.requests).toHaveLength(4);
+    expect(allRows(entity).some((row) => row.text?.startsWith("You were last running"))).toBe(false);
   });
 });
 
@@ -2251,7 +2482,10 @@ describe("the daily rhythm", () => {
 
     const full = await open(new ScriptedModel([]), { nowMs: () => NOW, config: RHYTHM_CONFIG });
     await full.entity.start();
-    const notes = allRows(full.entity).filter((row) => row.kind === "note" && row.source === "body");
+    // The start note the body writes on every start is not the rhythm's note, so it is left out here.
+    const notes = allRows(full.entity).filter(
+      (row) => row.kind === "note" && row.source === "body" && !row.text?.startsWith("You were last running"),
+    );
     await full.entity.stop();
 
     const wakes = readStateFile().wakes as RhythmWake[];

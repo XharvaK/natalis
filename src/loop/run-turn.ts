@@ -3,11 +3,13 @@
 // end_turn, when the ceiling is reached, when the model fails, or when the signal aborts.
 // Every step is written to the river, so the turn can be read back later.
 
+import { createHash } from "node:crypto";
 import {
   ModelError,
   type Ceiling,
   type ChatMessage,
   type ImagePart,
+  type ModelErrorKind,
   type ModelPort,
   type ModelRequest,
   type ModelResponse,
@@ -19,12 +21,15 @@ import {
   type ToolCall,
   type ToolContext,
   type ToolSpec,
+  type TokenCount,
   type TurnEndReason,
   type TurnResult,
 } from "../contracts.js";
 import { MalformedToolBlock } from "../model/emulated-tools.js";
 
 export const END_TURN = "end_turn";
+/** How much of a receipt's data JSON the river keeps. The SHA-256 of all of it is kept beside the start. */
+const RECEIPT_KEPT_BYTES = 2048;
 
 /** The loop's own tool. Always offered; calling it ends the turn once its receipt is ok. */
 export const endTurnSpec: ToolSpec = {
@@ -104,9 +109,15 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
   let toolCalls = 0;
   let endedBy: TurnEndReason | undefined;
   let error: string | undefined;
+  let errorKind: ModelErrorKind | undefined;
   let thrown: { error: unknown } | undefined;
   // The backup model answers for one turn at most; the river says so once, not once per call.
   let backupNoted = false;
+  // Tokens the provider reported, summed over the turn's calls; the backup's share is kept apart for the cost.
+  let tokens: TokenCount | undefined;
+  let backupTokens: TokenCount | undefined;
+  // The cached-prompt counts, kept apart from the meter's token counts and written beside them when reported.
+  let cache: { hit?: number; miss?: number } | undefined;
 
   const write = (row: Omit<RiverRowInput, "thread" | "atMs">): void => {
     river.append({ ...row, thread, atMs: nowMs() });
@@ -149,6 +160,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
         ...(receipt.refused === undefined ? {} : { refused: receipt.refused }),
         turnId,
         callId: call.id,
+        ...keptData(receipt.data),
       },
     });
     receipts.push({ tool: call.name, receipt });
@@ -204,6 +216,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
         }
         endedBy = "model_error";
         error = messageOf(err);
+        errorKind = err instanceof ModelError ? err.kind : undefined;
         write({
           kind: "note",
           source: "body",
@@ -213,6 +226,12 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
         break;
       }
 
+      if (response.usage !== undefined) {
+        const counted = countOf(response.usage);
+        tokens = addTokens(tokens, counted);
+        cache = addCache(cache, response.usage);
+        if (response.servedBy !== undefined) backupTokens = addTokens(backupTokens, counted);
+      }
       if (response.servedBy !== undefined && !backupNoted) {
         backupNoted = true;
         write({
@@ -275,10 +294,19 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
       data: { turnId, ...(skipped.length > 0 ? { skipped } : {}) },
     });
   }
+  // The meter: the model's id, the effort asked for, and the tokens the provider reported. Only what was reported is written.
+  const meter = {
+    model: model.info.id,
+    ...(effort === undefined ? {} : { effort }),
+    ...(tokens === undefined ? {} : { tokens }),
+    ...(backupTokens === undefined ? {} : { backupTokens }),
+    ...(cache?.hit === undefined ? {} : { cacheHitTokens: cache.hit }),
+    ...(cache?.miss === undefined ? {} : { cacheMissTokens: cache.miss }),
+  };
   write({
     kind: "turn",
     source: "body",
-    data: { phase: "end", endedBy: finalReason, turnId, modelCalls, toolCalls },
+    data: { phase: "end", endedBy: finalReason, turnId, modelCalls, toolCalls, ...meter },
   });
   if (thrown !== undefined) throw thrown.error;
 
@@ -290,9 +318,74 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
     toolCalls,
     receipts,
     thoughts,
+    ...meter,
+    backupUsed: backupNoted,
     ...(error === undefined ? {} : { error }),
+    ...(errorKind === undefined ? {} : { errorKind }),
   };
   return { result, messages };
+}
+
+/**
+ * A receipt's data as the river keeps it: the start of its JSON (up to RECEIPT_KEPT_BYTES), the JSON's whole length, and
+ * its SHA-256. The record says what the tool returned without holding all of it, and the hash shows whether a copy matches.
+ */
+function keptData(data: Receipt["data"]): Record<string, unknown> {
+  if (data === undefined) return {};
+  const json = JSON.stringify(data);
+  return {
+    dataJson: clipBytes(json, RECEIPT_KEPT_BYTES),
+    dataBytes: Buffer.byteLength(json),
+    dataSha256: createHash("sha256").update(json).digest("hex"),
+  };
+}
+
+/** The longest start of a text that fits in max bytes, cut between characters so no character is split. */
+function clipBytes(text: string, max: number): string {
+  if (Buffer.byteLength(text) <= max) return text;
+  let kept = "";
+  let bytes = 0;
+  for (const char of text) {
+    const size = Buffer.byteLength(char);
+    if (bytes + size > max) break;
+    kept += char;
+    bytes += size;
+  }
+  return kept;
+}
+
+/** A call's reported counts, under the names a turn's meter uses. */
+export function countOf(usage: NonNullable<ModelResponse["usage"]>): TokenCount {
+  return {
+    ...(usage.inputTokens === undefined ? {} : { prompt: usage.inputTokens }),
+    ...(usage.outputTokens === undefined ? {} : { completion: usage.outputTokens }),
+    ...(usage.totalTokens === undefined ? {} : { total: usage.totalTokens }),
+  };
+}
+
+/** Adds one call's cached-prompt counts to a turn's. A count nobody reported stays absent. */
+function addCache(
+  sum: { hit?: number; miss?: number } | undefined,
+  usage: NonNullable<ModelResponse["usage"]>,
+): { hit?: number; miss?: number } | undefined {
+  if (usage.cacheHitTokens === undefined && usage.cacheMissTokens === undefined) return sum;
+  const next: { hit?: number; miss?: number } = { ...sum };
+  if (usage.cacheHitTokens !== undefined) next.hit = (next.hit ?? 0) + usage.cacheHitTokens;
+  if (usage.cacheMissTokens !== undefined) next.miss = (next.miss ?? 0) + usage.cacheMissTokens;
+  return next;
+}
+
+/**
+ * Adds one call's counts to a turn's. A count that nobody reported stays absent, and is not counted as zero: a call that
+ * reported nothing leaves the sum as it was, even when the sum is still absent.
+ */
+export function addTokens(sum: TokenCount | undefined, counted: TokenCount): TokenCount | undefined {
+  if (counted.prompt === undefined && counted.completion === undefined && counted.total === undefined) return sum;
+  const next: TokenCount = { ...sum };
+  if (counted.prompt !== undefined) next.prompt = (next.prompt ?? 0) + counted.prompt;
+  if (counted.completion !== undefined) next.completion = (next.completion ?? 0) + counted.completion;
+  if (counted.total !== undefined) next.total = (next.total ?? 0) + counted.total;
+  return next;
 }
 
 /** The one call that carries pictures the tools handed over: they are not added to the messages kept for the turn. */

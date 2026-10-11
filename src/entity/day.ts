@@ -16,8 +16,8 @@ export function dayKey(ms: number, timeZone: string | undefined): string {
   }).format(new Date(ms));
 }
 
-/** Milliseconds from a moment until the next local midnight. Never less than one second. */
-export function msUntilNextDay(ms: number, timeZone: string | undefined): number {
+/** The milliseconds since the local midnight that began the day of a moment. */
+function msIntoDay(ms: number, timeZone: string | undefined): number {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone,
     hour: "2-digit",
@@ -26,6 +26,15 @@ export function msUntilNextDay(ms: number, timeZone: string | undefined): number
     hourCycle: "h23",
   }).formatToParts(new Date(ms));
   const part = (type: string): number => Number(parts.find((item) => item.type === type)?.value ?? 0);
-  const intoDayMs = (part("hour") * 3600 + part("minute") * 60 + part("second")) * 1000 + (((ms % 1000) + 1000) % 1000);
-  return Math.max(1000, 86_400_000 - intoDayMs);
+  return (part("hour") * 3600 + part("minute") * 60 + part("second")) * 1000 + (((ms % 1000) + 1000) % 1000);
+}
+
+/** The moment local midnight began on the day of a moment: where "today" starts. */
+export function startOfDayMs(ms: number, timeZone: string | undefined): number {
+  return ms - msIntoDay(ms, timeZone);
+}
+
+/** Milliseconds from a moment until the next local midnight. Never less than one second. */
+export function msUntilNextDay(ms: number, timeZone: string | undefined): number {
+  return Math.max(1000, 86_400_000 - msIntoDay(ms, timeZone));
 }

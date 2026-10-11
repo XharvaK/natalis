@@ -55,6 +55,8 @@ export class RiverError extends Error {
 export const RIVER_SCHEMA_VERSION = 1;
 
 const KINDS: readonly RiverKind[] = ["event", "say", "tool_call", "receipt", "turn", "note", "tombstone"];
+/** What a forgotten row says in place of its words. */
+export const FORGOTTEN_TEXT = "(forgotten)";
 const SOURCES: readonly RiverSource[] = ["owner", "outside", "self", "body"];
 const KIND_SET: ReadonlySet<string> = new Set<string>(KINDS);
 const SOURCE_SET: ReadonlySet<string> = new Set<string>(SOURCES);
@@ -167,7 +169,7 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
       const lastStmt = db.prepare("SELECT COALESCE(MAX(seq), 0) AS last FROM rows");
       const ftsInsert = fts ? db.prepare("INSERT INTO river_fts(rowid, text) VALUES (?, ?)") : null;
       const ftsDelete = fts ? db.prepare("DELETE FROM river_fts WHERE rowid = ?") : null;
-      const eraseStmt = db.prepare("UPDATE rows SET text = NULL, data_json = NULL, forgotten = 1 WHERE seq = ?");
+      const eraseStmt = db.prepare("UPDATE rows SET text = ?, data_json = ?, forgotten = 1 WHERE seq = ?");
       const blankActorStmt = db.prepare("UPDATE rows SET actor = NULL WHERE seq = ?");
       const scanTextStmt = db.prepare(
         "SELECT seq, text, data_json, actor FROM rows WHERE forgotten = 0 AND kind != 'tombstone'",
@@ -379,7 +381,8 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
             const erased = [...targets].sort((a, b) => a - b);
             if (erased.length === 0) return 0;
             for (const seq of erased) {
-              eraseStmt.run(seq);
+              const shape = erasedShape(getRow(seq));
+              eraseStmt.run(shape.text, shape.dataJson, seq);
               if (actorBlanks.has(seq)) blankActorStmt.run(seq);
               if (ftsDelete) ftsDelete.run(seq);
             }
@@ -434,6 +437,28 @@ type CheckedInput = {
   text?: string;
   dataJson: string | null;
 };
+
+/**
+ * What a forgotten row keeps. A tool call or a receipt keeps its kind, time and place, its tool name, and its outcome
+ * (ok, and the refusal's code), so the record still says what ran and how it ended. Its words and data go. Any other
+ * row keeps nothing but its place in the river.
+ */
+function erasedShape(row: StoredRiverRow): { text: string | null; dataJson: string | null } {
+  if (row.kind !== "tool_call" && row.kind !== "receipt") return { text: null, dataJson: null };
+  const data = row.data ?? {};
+  const kept: Record<string, unknown> = { forgotten: FORGOTTEN_TEXT };
+  const tool = row.kind === "tool_call" ? row.text : data["tool"];
+  if (typeof tool === "string") kept["tool"] = tool;
+  if (typeof data["ok"] === "boolean") kept["ok"] = data["ok"];
+  const refused = data["refused"];
+  if (typeof refused === "object" && refused !== null && typeof (refused as { code?: unknown }).code === "string") {
+    kept["refused"] = { code: (refused as { code: string }).code };
+  }
+  for (const key of ["turnId", "callId"]) {
+    if (typeof data[key] === "string") kept[key] = data[key];
+  }
+  return { text: FORGOTTEN_TEXT, dataJson: JSON.stringify(kept) };
+}
 
 function tableExists(db: DatabaseSync, name: string): boolean {
   return db.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(name) !== undefined;

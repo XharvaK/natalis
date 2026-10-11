@@ -45,7 +45,11 @@ Each takes `--dir <entity folder>` (the Lar's own folder) unless noted.
 - `chat`: talk with a Lar in the terminal.
 - `run`: keep a Lar living in its worlds (Discord) until it is stopped.
 - `stop`: the summoner's emergency stop; pauses outward acts. `--off` lifts it.
-- `forget`: erase river rows or note lines, with a reason.
+- `forget`: erase river rows, or with `--query` every place the words live (note lines, the notebook's git history,
+  trash/, files in the home that hold them, and the shelf's pictures that forgotten rows name), with a reason. It prints
+  counts only. Older backups still hold the old text until they rotate out.
+- `ledger`: the turn ledger for a Lar (`natalis ledger <folder> [--days N]`, one day by default): counts only, one row per
+  turn kept in the river's file, with no message text.
 - `import`: bring a seed bundle into a new Lar; prints the plan unless `--apply` is given.
 - `capture`: write one time window of a Lar's river for a replay.
 - `replay`: replay captured events on a copy of a Lar; the original is never written.
@@ -67,13 +71,20 @@ The file in the Lar's folder. Its blocks:
 
 - `model`: the main model. `baseUrl` (http or https), `model` (its name), `contextTokens`, and optionally `apiKeyEnv`
   (the name of the environment variable holding the key, never the key), `nativeTools`, `effortParam`
-  (`"reasoning_effort"` or `null`), `timeoutMs` and `vision` (true only when the model can see pictures).
+  (`"reasoning_effort"` or `null`), `timeoutMs`, `vision` (true only when the model can see pictures) and `price`.
+  `price` is optional and absent by default: `{ "inputPerMillion": 2, "outputPerMillion": 4 }`, what the provider charges
+  per million input and output tokens, in the currency you use. With it, the now board shows the day's cost next to the
+  day's tokens; without it, the board shows only the tokens the provider reported.
 - `model.fallback`: an optional backup model, the same service and key. It answers only when the main model cannot: a rate
-  limit, an unavailable or unreachable service, or no reply in time. A refused key or request is never sent to it. Its
+  limit, out of credit or over its quota (HTTP 402, or a 429 that names an insufficient quota), an unavailable or
+  unreachable service, or no reply in time. A refused key or request is never sent to it. Its
   fields: `model` (required), `effort` (`low`, `medium`, `high` or `xhigh`; left out, the main model's), `effortParam`
-  (left out, the main model's), `vision` (false by default: it gets no pictures, only a plain line in their place), and
-  `contextTokens` (a request estimated larger than this is not sent to it; the river says why). When it answers, the
-  river says so for that turn.
+  (left out, the main model's), `vision` (false by default: it gets no pictures, only a plain line in their place),
+  `contextTokens` (a request estimated larger than this is not sent to it; the river says why) and `price` (as for the
+  main model; its tokens are not priced without it). When it answers, the river says so for that turn.
+  Before you set a backup, the summoner names its provider, its tier, and whether that provider keeps or trains on what it
+  is sent, in the household note (`self/household.md` in the notebook). The body does not know these and does not check
+  them. A backup on the same service as the main model shares its quota, so it does not help when that quota is spent.
 - `holds`: body checks on what the Lar says. `honesty` (true or false) runs one model call that asks whether the words
   contradict the Lar's own life record. It is **off** unless `"holds": { "honesty": true }` is written.
 
