@@ -8,8 +8,11 @@ import { ModelError, type ChatMessage, type ModelPort, type ModelRequest, type M
 /** The line that stands in for a picture the backup model cannot see. */
 export const PICTURE_STAND_IN = "[A picture was here; the backup model cannot see it.]";
 
-/** The failures that mean the service did not answer: rate limits, unavailable or unreachable, and no reply in time. */
-const SERVICE_FAILURES: ReadonlySet<string> = new Set(["rate_limit", "unavailable", "timeout"]);
+/**
+ * The failures that mean the service did not answer: rate limits, spent credit or quota, unavailable or unreachable, and
+ * no reply in time. A refused key or request is not among them.
+ */
+const SERVICE_FAILURES: ReadonlySet<string> = new Set(["rate_limit", "out_of_credit", "unavailable", "timeout"]);
 
 /** The same rough size the context assembly uses: characters divided by 4. */
 const CHARS_PER_TOKEN = 4;

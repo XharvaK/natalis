@@ -373,6 +373,21 @@ describe("retries", () => {
 });
 
 describe("final errors", () => {
+  it("402 is out of credit and is not retried, and so is a 429 that names an insufficient quota", async () => {
+    const paid = harness([status(402)]);
+    const err = await errorOf(paid.port.complete(asks([{ role: "user", content: "hi" }])));
+    expect(err.kind).toBe("out_of_credit");
+    expect(err.attempts).toBe(1);
+    expect(paid.calls).toHaveLength(1);
+    expect(paid.sleeps).toEqual([]);
+
+    const quota = harness([status(429, { error: { message: "You exceeded your quota.", code: "insufficient_quota" } })]);
+    const quotaErr = await errorOf(quota.port.complete(asks([{ role: "user", content: "hi" }])));
+    expect(quotaErr.kind).toBe("out_of_credit");
+    expect(quota.calls).toHaveLength(1);
+    expect(quota.sleeps).toEqual([]);
+  });
+
   it("401 is auth and is not retried", async () => {
     const { port, calls, sleeps } = harness([status(401)]);
     const err = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));

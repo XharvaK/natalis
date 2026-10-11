@@ -154,7 +154,7 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
         if (sent.status >= 200 && sent.status < 300) {
           return parseReply(sent.text, Date.now() - started, attempt, newId);
         }
-        if (RETRYABLE_STATUS.has(sent.status) && attempt < maxAttempts) {
+        if (RETRYABLE_STATUS.has(sent.status) && attempt < maxAttempts && !isOutOfCredit(sent.status, sent.text)) {
           await pause(sent.retryAfterMs ?? backoffMs(attempt), signal, attempt);
           continue;
         }
@@ -288,6 +288,14 @@ function parseReply(
   return response;
 }
 
+/**
+ * Spent credit or quota: HTTP 402, or a 429 whose body names an insufficient quota (the code OpenAI-style services send).
+ * It is an outage, not a rate limit, so it is not retried here: the same key will not get credit back in a few seconds.
+ */
+function isOutOfCredit(status: number, text: string): boolean {
+  return status === 402 || (status === 429 && /insufficient_quota/i.test(text));
+}
+
 function httpError(
   status: number,
   text: string,
@@ -296,6 +304,11 @@ function httpError(
 ): ModelError {
   if (status === 401 || status === 403) {
     return new ModelError(`model service refused the credentials (HTTP ${status})`, "auth", attempt);
+  }
+  if (isOutOfCredit(status, text)) {
+    const detail = providerMessage(text);
+    const suffix = detail ? `: ${safe(detail)}` : "";
+    return new ModelError(`model service is out of credit or over its quota (HTTP ${status})${suffix}`, "out_of_credit", attempt);
   }
   if (status === 429) {
     return new ModelError(

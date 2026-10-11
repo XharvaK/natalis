@@ -15,7 +15,7 @@ import { assembleSystem, formatDuration, timeFacts } from "../context/index.js";
 import { addTokens, runTurnWithMessages } from "../loop/index.js";
 import { openNotebook, seedNotebook } from "../notebook/index.js";
 import { FORGOTTEN_LINE, lineHoldsWords, queryWords } from "../notebook/forget.js";
-import { ModelError } from "../contracts.js";
+import { ModelError, type ModelErrorKind } from "../contracts.js";
 import { openRiver } from "../river/index.js";
 import { checkRiver } from "../river/integrity.js";
 import { createSecretScanner, guardModel, guardNotebook, guardRiver, KNOWN_VALUE_KIND } from "../secrets/index.js";
@@ -106,6 +106,13 @@ const CLAIM_WINDOW_MS = 2 * 60 * 1000;
 /** How many of the summoner's acts the board lists at once, and how much of a proposal it shows. */
 const ACTS_LIMIT = 20;
 const PROPOSAL_SHOW = 80;
+/**
+ * The model failures that are an outage: the service did not answer for a reason outside the Lar's words (spent credit,
+ * a rate limit, unavailable, no reply in time). A refused request or key is not an outage; it is shown in the turn's notes.
+ */
+const OUTAGE_KINDS: ReadonlySet<ModelErrorKind> = new Set<ModelErrorKind>(["out_of_credit", "rate_limit", "unavailable", "timeout"]);
+/** How much of the last model error the summoner's outage notice shows. */
+const OUTAGE_DETAIL_CLIP = 240;
 /** How many pictures one say may carry, and how many of the newest shelf ids a refusal lists. */
 const SAY_PICTURES_MAX = 4;
 const SHELF_LIST = 10;
@@ -283,6 +290,8 @@ type EntityState = {
   rhythmGiven?: boolean;
   /** Turns in a row woken only by her own wakes, with nothing from outside or the summoner between them. */
   selfWakeRun?: number;
+  /** The summoner's own place the last time the summoner wrote in it: where body notices to the summoner go. */
+  summonerPlace?: string;
 };
 
 function emptyState(): EntityState {
@@ -438,6 +447,11 @@ function checkState(value: unknown): EntityState {
     if (typeof selfWakeRun !== "number" || !Number.isSafeInteger(selfWakeRun) || selfWakeRun < 0) bad("selfWakeRun");
     state.selfWakeRun = selfWakeRun as number;
   }
+  const summonerPlace = root["summonerPlace"];
+  if (summonerPlace !== undefined) {
+    if (typeof summonerPlace !== "string" || summonerPlace === "") bad("summonerPlace");
+    state.summonerPlace = summonerPlace as string;
+  }
   return state;
 }
 
@@ -528,6 +542,9 @@ class Runtime implements Entity {
   private outboxBusy = 0;
   private readonly idleWaiters: Array<() => void> = [];
   private readonly abort = new AbortController();
+
+  /** Set when the summoner was told of the current outage. A turn that gets an answer ends the outage and clears it. */
+  private outageNoticed = false;
 
   private started = false;
   private stopping = false;
@@ -728,6 +745,7 @@ class Runtime implements Entity {
     if (!this.stopping && event.source === "owner" && this.isOwnerPlace(event.place)) {
       // The summoner's own place. The welcome notice goes first, then a "!" line is a body command: it is never a turn
       // and opens no ask. Everything else is an ordinary message. During shutdown there are no commands to answer.
+      this.state.summonerPlace = event.place;
       this.queueOutbox(() => this.sendWelcome(event.place));
       if (isSummonerCommand(event.text)) {
         this.state.lastOwnerMs = atMs;
@@ -872,11 +890,12 @@ class Runtime implements Entity {
       // The cursor stays too, so the retry takes the same events. The owner's asks are not touched.
       const message = result.error ?? "unknown error";
       const oversize = isOversized(message) ? `${sizes}, the new messages and recent lines ${event.length} characters` : undefined;
-      this.failTurn(thread, message, true, turnId, oversize);
+      this.failTurn(thread, message, true, turnId, oversize, result.errorKind);
       return;
     }
     this.failures.delete(thread);
     this.oversized.delete(thread);
+    this.outageNoticed = false;
     const cursor = this.threadState(thread);
     cursor.seenSeq = snapshot;
     cursor.lastTurnMs = this.nowMs();
@@ -926,7 +945,14 @@ class Runtime implements Entity {
    * Records a failed turn and schedules its retry. A turn the model rejected as too large (`oversize` names the sections
    * and their sizes) is tried again only until OVERSIZE_TRIES rejections in a row; then the thread waits for a new event.
    */
-  private failTurn(thread: string, message: string, fromModel: boolean, turnId?: string, oversize?: string): void {
+  private failTurn(
+    thread: string,
+    message: string,
+    fromModel: boolean,
+    turnId?: string,
+    oversize?: string,
+    kind?: ModelErrorKind,
+  ): void {
     if (this.stopping) return;
     const failed = this.failures.get(thread) ?? 0;
     this.failures.set(thread, failed + 1);
@@ -958,6 +984,7 @@ class Runtime implements Entity {
       atMs: this.nowMs(),
     });
     this.cancelRetry(thread);
+    if (fromModel && kind !== undefined && OUTAGE_KINDS.has(kind)) this.noticeOutage(message);
     if (giveUp) return;
     const timer = setTimeout(() => {
       this.retries.delete(thread);
@@ -966,6 +993,36 @@ class Runtime implements Entity {
       this.pump();
     }, delay);
     this.retries.set(thread, timer);
+  }
+
+  /**
+   * Tells the summoner once that the model is not answering. The retries that follow are not told again: the outage is
+   * over when a turn gets an answer, and a later outage is told once more. The model's own error goes in, redacted and
+   * short. Only the summoner's place is told; with no such place known yet, the self thread notes it instead.
+   */
+  private noticeOutage(message: string): void {
+    if (this.outageNoticed) return;
+    this.outageNoticed = true;
+    const place = this.state.summonerPlace;
+    const detail = clip(oneLine(this.scanner.redact(message)), OUTAGE_DETAIL_CLIP);
+    if (place === undefined) {
+      this.river.append({
+        thread: "self",
+        kind: "note",
+        source: "body",
+        text: `Your model is not answering, and no summoner place is known yet to tell you: ${detail}`,
+        atMs: this.nowMs(),
+      });
+      return;
+    }
+    const backup = this.config.model.fallback === undefined ? "No backup model is set." : "The backup model did not answer either.";
+    const text =
+      `${SUMMONER_PREFIX}Your Lar could not get an answer from its model. ${backup} The last error was: ${detail} ` +
+      "Your Lar keeps trying on its own. This is the only notice about this outage.";
+    this.saveState();
+    this.queueOutbox(async () => {
+      await this.sayTo(place, text);
+    });
   }
 
   /**

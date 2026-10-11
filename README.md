@@ -71,7 +71,8 @@ The file in the Lar's folder. Its blocks:
   per million input and output tokens, in the currency you use. With it, the now board shows the day's cost next to the
   day's tokens; without it, the board shows only the tokens the provider reported.
 - `model.fallback`: an optional backup model, the same service and key. It answers only when the main model cannot: a rate
-  limit, an unavailable or unreachable service, or no reply in time. A refused key or request is never sent to it. Its
+  limit, out of credit or over its quota (HTTP 402, or a 429 that names an insufficient quota), an unavailable or
+  unreachable service, or no reply in time. A refused key or request is never sent to it. Its
   fields: `model` (required), `effort` (`low`, `medium`, `high` or `xhigh`; left out, the main model's), `effortParam`
   (left out, the main model's), `vision` (false by default: it gets no pictures, only a plain line in their place),
   `contextTokens` (a request estimated larger than this is not sent to it; the river says why) and `price` (as for the

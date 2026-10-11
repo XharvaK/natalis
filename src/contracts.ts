@@ -81,10 +81,24 @@ export interface ModelPort {
   complete(request: ModelRequest, signal?: AbortSignal): Promise<ModelResponse>;
 }
 
+/**
+ * What went wrong with a model call. "out_of_credit" is the provider's refusal for spent credit or quota (HTTP 402, or a
+ * 429 that names an insufficient quota): an outage, so the backup is tried and the summoner is told.
+ */
+export type ModelErrorKind =
+  | "auth"
+  | "rate_limit"
+  | "out_of_credit"
+  | "unavailable"
+  | "bad_request"
+  | "timeout"
+  | "malformed"
+  | "aborted";
+
 export class ModelError extends Error {
   constructor(
     message: string,
-    readonly kind: "auth" | "rate_limit" | "unavailable" | "bad_request" | "timeout" | "malformed" | "aborted",
+    readonly kind: ModelErrorKind,
     readonly attempts: number,
   ) {
     super(message);
@@ -233,6 +247,8 @@ export type TurnResult = {
   /** Free text the model wrote outside tool calls (the Lar's thinking aloud); kept, never sent anywhere. */
   thoughts: string[];
   error?: string;
+  /** The kind of model failure when the turn ended on one. */
+  errorKind?: ModelErrorKind;
   /** The model port's id, and the effort asked for, as the turn's end row records them. */
   model: string;
   effort?: NonNullable<ModelRequest["effort"]>;

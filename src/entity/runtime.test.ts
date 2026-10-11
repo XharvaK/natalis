@@ -28,6 +28,7 @@ import { createSecretScanner } from "../secrets/index.js";
 import { ScriptedModel, call, reply, type ScriptStep } from "../testing/scripted-model.js";
 import { createCliWorld, type CliWorld } from "../worlds/cli.js";
 import type { EntityConfig } from "./config.js";
+import { SUMMONER_PREFIX } from "./summoner.js";
 import { forgetInStateFile, openEntity, STATE_FILE, type Entity, type OpenEntityOptions } from "./runtime.js";
 import { COMMITMENTS_STUB, HOUSEHOLD_PATH, OLD_COMMITMENTS_STUB } from "./commitments.js";
 import { isStopOn } from "./stop.js";
@@ -536,7 +537,11 @@ describe("failures", () => {
     await entity.idle();
 
     expect(asksDuringRetry).toEqual([expect.objectContaining({ place: "cli:summoner" })]);
-    expect(said).toEqual([{ place: "cli:summoner", text: "I am here, Mira." }]);
+    // The model is unavailable, an outage: the summoner is told once, before the retry's answer.
+    expect(said).toEqual([
+      expect.objectContaining({ place: "cli:summoner", text: expect.stringContaining("could not get an answer") }),
+      { place: "cli:summoner", text: "I am here, Mira." },
+    ]);
     expect(readStateFile().asks).toHaveLength(0);
     const notes = allRows(entity).filter((row) => row.kind === "note").map((row) => row.text ?? "");
     expect(notes).toContain("Your turn failed (model error); trying again in 1 s.");
@@ -584,13 +589,46 @@ describe("failures", () => {
     cli.send("Are you coming?");
     await entity.idle();
 
-    expect(said).toEqual([{ place: "cli:summoner", text: "On my way." }]);
+    expect(said).toEqual([
+      { place: "cli:summoner", text: "On my way." },
+      expect.objectContaining({ place: "cli:summoner", text: expect.stringContaining("could not get an answer") }),
+    ]);
     expect(readStateFile().wakes).toHaveLength(1);
     const retry = userTextOf(model.requests[2]);
     expect(retry).toContain("Already done");
     expect(retry).toContain("On my way.");
     expect(retry).toContain("check the kettle");
     expect(retry).toContain("owner] Are you coming?");
+  });
+});
+
+/** A model that is out of credit on every call, and counts the calls it was asked. */
+function brokeModel(): ModelPort & { calls: number } {
+  const port: ModelPort & { calls: number } = {
+    info: { id: "scripted:broke", contextTokens: 32_000, nativeTools: true },
+    calls: 0,
+    async complete(): Promise<ModelResponse> {
+      port.calls += 1;
+      throw new ModelError("model service is out of credit or over its quota (HTTP 402)", "out_of_credit", 1);
+    },
+  };
+  return port;
+}
+
+describe("an outage", () => {
+  it("tells the summoner once when the model is out of credit, however many retries follow", async () => {
+    const model = brokeModel();
+    const { entity, cli, said } = await open(model, { retryDelaysMs: [1] });
+    await entity.start();
+    cli.send("Hello?");
+    await waitFor(() => said.some((item) => item.text.includes("could not get an answer")));
+    await waitFor(() => model.calls >= 8);
+
+    const notices = said.filter((item) => item.text.includes("could not get an answer"));
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.place).toBe("cli:summoner");
+    expect(notices[0]?.text.startsWith(SUMMONER_PREFIX)).toBe(true);
+    expect(notices[0]?.text).toContain("out of credit");
   });
 });
 

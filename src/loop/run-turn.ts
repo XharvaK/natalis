@@ -8,6 +8,7 @@ import {
   type Ceiling,
   type ChatMessage,
   type ImagePart,
+  type ModelErrorKind,
   type ModelPort,
   type ModelRequest,
   type ModelResponse,
@@ -105,6 +106,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
   let toolCalls = 0;
   let endedBy: TurnEndReason | undefined;
   let error: string | undefined;
+  let errorKind: ModelErrorKind | undefined;
   let thrown: { error: unknown } | undefined;
   // The backup model answers for one turn at most; the river says so once, not once per call.
   let backupNoted = false;
@@ -208,6 +210,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
         }
         endedBy = "model_error";
         error = messageOf(err);
+        errorKind = err instanceof ModelError ? err.kind : undefined;
         write({
           kind: "note",
           source: "body",
@@ -309,6 +312,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
     ...meter,
     backupUsed: backupNoted,
     ...(error === undefined ? {} : { error }),
+    ...(errorKind === undefined ? {} : { errorKind }),
   };
   return { result, messages };
 }
