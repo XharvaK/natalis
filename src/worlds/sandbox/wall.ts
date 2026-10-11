@@ -92,3 +92,17 @@ export function wallCommand(input: { pastaPath: string; ipPath: string; bwrapPat
     ],
   };
 }
+
+/**
+ * pasta prints this on start when the host's resolver is a loopback address (as with systemd-resolved), before it reads
+ * any option, so no flag silences it. DNS still works through WALL_DNS. It is the body's noise, not the command's.
+ */
+export const PASTA_RESOLVER_NOTICE = "Couldn't get any nameserver address";
+
+/** The command's error output without pasta's start-up notice. Only lines that are exactly the notice are taken out. */
+export function withoutPastaNotice(text: string): string {
+  return text
+    .split("\n")
+    .filter((line) => line !== PASTA_RESOLVER_NOTICE)
+    .join("\n");
+}

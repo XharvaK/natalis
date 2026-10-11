@@ -10,7 +10,7 @@ import { BODY_MOUNT, bodyRefusal, defaultBodyRoot } from "./body.js";
 import { buildBwrapArgs, SANDBOX_HOME } from "./bwrap.js";
 import { SANDBOX_DEFAULT_NETWORK, type SandboxSettings } from "./config.js";
 import { OUTPUT_CAP_BYTES, OutputCollector } from "./output.js";
-import { WALL_DNS, wallCommand } from "./wall.js";
+import { WALL_DNS, wallCommand, withoutPastaNotice } from "./wall.js";
 
 export const SANDBOX_WORLD_ID = "sandbox";
 
@@ -223,7 +223,7 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
           return refusal("spawn_failed", "The sandbox could not start the shell, so the command did not run.", spawnError);
         }
         const outText = stdout.text();
-        const errText = stderr.text();
+        const errText = network === "wall" ? withoutPastaNotice(stderr.text()) : stderr.text();
         const seconds = (durationMs / 1000).toFixed(1);
         const ok = stoppedBy === undefined && exitCode === 0;
         let summary: string;

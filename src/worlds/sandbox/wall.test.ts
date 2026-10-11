@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PASTA_ARGS, routeScript, WALL_DNS, WALLED_RANGES, wallCommand } from "./wall.js";
+import { PASTA_ARGS, PASTA_RESOLVER_NOTICE, routeScript, WALL_DNS, WALLED_RANGES, wallCommand, withoutPastaNotice } from "./wall.js";
 
 describe("the pasta arguments", () => {
   it("are exactly the design's: config from the flags, IPv4 only, no host ports or gateway mapped in", () => {
@@ -62,5 +62,15 @@ describe("wallCommand", () => {
       "/usr/bin/bwrap",
       ...bwrapArgs,
     ]);
+  });
+});
+
+describe("pasta's start-up notice", () => {
+  it("is taken out of the error output, and nothing else is", () => {
+    expect(withoutPastaNotice(`${PASTA_RESOLVER_NOTICE}\nreal error\n`)).toBe("real error\n");
+    expect(withoutPastaNotice("a line mentioning Couldn't get any nameserver address, quoted\n")).toBe(
+      "a line mentioning Couldn't get any nameserver address, quoted\n",
+    );
+    expect(withoutPastaNotice("")).toBe("");
   });
 });
