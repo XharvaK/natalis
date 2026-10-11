@@ -57,12 +57,12 @@ export class MemoryRiver implements River {
   forget(match: { seqs?: number[]; text?: string }, by: "owner" | "self", reason: string): number {
     if (match.seqs === undefined && match.text === undefined) return 0;
     if (match.text === "") return 0;
-    const needle = match.text?.toLowerCase();
+    const words = match.text?.normalize("NFKC").toLowerCase().split(/\s+/).filter((word) => word.length > 0);
     const seqs = match.seqs === undefined ? undefined : new Set(match.seqs);
     const targets = this.rows.filter((row) => {
       if (!this.searchable(row)) return false;
       if (seqs !== undefined && !seqs.has(row.seq)) return false;
-      if (needle !== undefined && !(row.text ?? "").toLowerCase().includes(needle)) return false;
+      if (words !== undefined && !words.every((word) => (row.text ?? "").normalize("NFKC").toLowerCase().includes(word))) return false;
       return true;
     });
     if (targets.length === 0) return 0;
