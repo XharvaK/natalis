@@ -628,6 +628,7 @@ class Runtime implements Entity {
     return {
       append: (row) => river.append(row),
       read: (query) => river.read(query),
+      count: (query) => river.count(query),
       search: (text, options) => river.search(text, options),
       forget: (match, by, reason) => {
         const erased = river.forget(match, by, reason);

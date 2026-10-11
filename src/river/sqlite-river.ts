@@ -6,6 +6,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import type {
   River,
   RiverKind,
+  RiverCountQuery,
   RiverQuery,
   RiverRow,
   RiverRowInput,
@@ -245,36 +246,7 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
 
         read(query: RiverQuery): StoredRiverRow[] {
           ensureOpen();
-          const where: string[] = [];
-          const params: SQLInputValue[] = [];
-          if (query.thread !== undefined) {
-            requireString(query.thread, "thread");
-            where.push("thread = ?");
-            params.push(query.thread);
-          }
-          if (query.kinds !== undefined) {
-            if (!Array.isArray(query.kinds) || query.kinds.length === 0) {
-              throw new RiverError("kinds must be a non-empty list; leave it out to read every kind");
-            }
-            for (const kind of query.kinds) checkKind(kind);
-            where.push(`kind IN (${query.kinds.map(() => "?").join(", ")})`);
-            params.push(...query.kinds);
-          }
-          if (query.sinceSeq !== undefined) {
-            checkInteger(query.sinceSeq, "sinceSeq");
-            where.push("seq > ?");
-            params.push(query.sinceSeq);
-          }
-          if (query.untilSeq !== undefined) {
-            checkInteger(query.untilSeq, "untilSeq");
-            where.push("seq <= ?");
-            params.push(query.untilSeq);
-          }
-          if (query.sinceMs !== undefined) {
-            checkInteger(query.sinceMs, "sinceMs");
-            where.push("at_ms >= ?");
-            params.push(query.sinceMs);
-          }
+          const { where, params } = filterOf(query);
           const limit = checkLimit(query.limit ?? DEFAULT_READ_LIMIT, "limit");
           const order = query.newestFirst === true ? "DESC" : "ASC";
           const sql =
@@ -283,6 +255,13 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
           params.push(limit);
           const records = db.prepare(sql).all(...params) as unknown as RowRecord[];
           return records.map(toStored);
+        },
+
+        count(query: RiverCountQuery): number {
+          ensureOpen();
+          const { where, params } = filterOf(query);
+          const sql = `SELECT COUNT(*) AS n FROM rows${where.length ? ` WHERE ${where.join(" AND ")}` : ""}`;
+          return Number((db.prepare(sql).get(...params) as { n: number }).n);
         },
 
         search(text: string, options: { limit?: number; thread?: string } = {}): StoredRiverHit[] {
@@ -488,6 +467,41 @@ function checkInteger(value: unknown, name: string): void {
   if (typeof value !== "number" || !Number.isSafeInteger(value)) {
     throw new RiverError(`${name} must be a whole number`);
   }
+}
+
+/** The WHERE terms and their values for a read or a count: thread, kinds, seq and time bounds. */
+function filterOf(query: RiverCountQuery): { where: string[]; params: SQLInputValue[] } {
+  const where: string[] = [];
+  const params: SQLInputValue[] = [];
+  if (query.thread !== undefined) {
+    requireString(query.thread, "thread");
+    where.push("thread = ?");
+    params.push(query.thread);
+  }
+  if (query.kinds !== undefined) {
+    if (!Array.isArray(query.kinds) || query.kinds.length === 0) {
+      throw new RiverError("kinds must be a non-empty list; leave it out to read every kind");
+    }
+    for (const kind of query.kinds) checkKind(kind);
+    where.push(`kind IN (${query.kinds.map(() => "?").join(", ")})`);
+    params.push(...query.kinds);
+  }
+  if (query.sinceSeq !== undefined) {
+    checkInteger(query.sinceSeq, "sinceSeq");
+    where.push("seq > ?");
+    params.push(query.sinceSeq);
+  }
+  if (query.untilSeq !== undefined) {
+    checkInteger(query.untilSeq, "untilSeq");
+    where.push("seq <= ?");
+    params.push(query.untilSeq);
+  }
+  if (query.sinceMs !== undefined) {
+    checkInteger(query.sinceMs, "sinceMs");
+    where.push("at_ms >= ?");
+    params.push(query.sinceMs);
+  }
+  return { where, params };
 }
 
 function checkLimit(value: unknown, name: string): number {

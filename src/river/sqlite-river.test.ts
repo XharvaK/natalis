@@ -144,6 +144,25 @@ describe("read", () => {
     expect(() => river.read({ kinds: [] })).toThrow(RiverError);
     expect(() => river.read({ limit: 0 })).toThrow(RiverError);
   });
+
+  it("counts the rows a read with the same thread, kinds and bounds would give, and reads none", () => {
+    const river = open();
+    seed(river);
+    expect(river.count({})).toBe(5);
+    expect(river.count({ thread: "dm:owner" })).toBe(3);
+    expect(river.count({ thread: "dm:owner", kinds: ["event", "say"] })).toBe(2);
+    expect(river.count({ thread: "room:lantern", kinds: ["event", "say"], untilSeq: 4 })).toBe(1);
+    expect(river.count({ kinds: ["say"], sinceSeq: 2, untilSeq: 4 })).toBe(1);
+    expect(river.count({ thread: "nobody" })).toBe(0);
+  });
+
+  it("counts a forgotten row as a read does, and counts tombstones only when asked for them", () => {
+    const river = open();
+    seed(river);
+    river.forget({ seqs: [1] }, "owner", "first");
+    expect(river.count({ thread: "dm:owner", kinds: ["event", "say"] })).toBe(2);
+    expect(river.count({ kinds: ["tombstone"] })).toBe(1);
+  });
 });
 
 describe.each(modes)("search ($label)", ({ forceNoFts }) => {

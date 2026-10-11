@@ -160,9 +160,14 @@ export type RiverQuery = {
 
 export type RiverHit = { row: RiverRow; score: number };
 
+/** A count takes a read's thread, kinds and bounds. It has no limit and no order, and reads no rows. */
+export type RiverCountQuery = Pick<RiverQuery, "thread" | "kinds" | "sinceSeq" | "untilSeq" | "sinceMs">;
+
 export interface River {
   append(row: RiverRowInput): RiverRow;
   read(query: RiverQuery): RiverRow[];
+  /** How many rows a read with the same thread, kinds and bounds would return, counted without reading them. */
+  count(query: RiverCountQuery): number;
   /** Full-text search over row text. Tombstoned rows never match. */
   search(text: string, options?: { limit?: number; thread?: string }): RiverHit[];
   /**

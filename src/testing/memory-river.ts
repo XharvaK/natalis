@@ -7,7 +7,7 @@
 // - forget: when both seqs and text are given, a row must match both. An empty text matches nothing.
 //   A tombstone row is appended only when at least one row was erased.
 
-import type { River, RiverHit, RiverQuery, RiverRow, RiverRowInput } from "../contracts.js";
+import type { River, RiverCountQuery, RiverHit, RiverQuery, RiverRow, RiverRowInput } from "../contracts.js";
 
 export type MemoryRiverOptions = { nowMs?: () => number };
 
@@ -38,6 +38,10 @@ export class MemoryRiver implements River {
       .sort((a, b) => (query.newestFirst ? b.seq - a.seq : a.seq - b.seq));
     const limited = query.limit === undefined ? ordered : ordered.slice(0, query.limit);
     return limited.map(copyRow);
+  }
+
+  count(query: RiverCountQuery): number {
+    return this.rows.filter((row) => matches(row, query)).length;
   }
 
   search(text: string, options: { limit?: number; thread?: string } = {}): RiverHit[] {

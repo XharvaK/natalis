@@ -43,6 +43,7 @@ export function guardRiver(river: River, scanner: SecretScanner): River {
       });
     },
     read: (query) => river.read(query),
+    count: (query) => river.count(query),
     search: (text, options) => river.search(text, options),
     forget: (match, by, reason) => river.forget(match, by, scanner.redact(reason)),
     lastSeq: () => river.lastSeq(),
