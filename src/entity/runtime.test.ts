@@ -448,6 +448,28 @@ describe("the owner's asks", () => {
     expect(said).toHaveLength(1);
     expect(readStateFile().asks).toHaveLength(0);
   });
+
+  it("is cleared by a say only up to the messages the turn saw, so a message that came during the turn stays open", async () => {
+    let sendLater: (text: string) => void = () => {};
+    const model = new ScriptedModel([
+      () => {
+        sendLater("And one more thing?");
+        return reply({ toolCalls: [call("say", { place: "cli:summoner", text: "Yes, I am here." })] });
+      },
+      reply({ toolCalls: [call("end_turn")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli, said } = await open(model);
+    sendLater = (text) => cli.send(text);
+    await entity.start();
+    cli.send("Are you there?");
+    await entity.idle();
+
+    expect(said).toHaveLength(1);
+    expect(readStateFile().asks).toEqual([expect.objectContaining({ place: "cli:summoner" })]);
+    expect(model.requests).toHaveLength(3);
+    expect(userTextOf(model.requests[2])).toContain("And one more thing?");
+  });
 });
 
 describe("failures", () => {

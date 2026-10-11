@@ -1559,7 +1559,9 @@ class Runtime implements Entity {
       ...(ids.length === 0 ? {} : { data: { pictures: ids } }),
       atMs: nowMs,
     });
-    this.state.asks = this.state.asks.filter((ask) => ask.place !== place.value);
+    // Only the asks the turn saw are answered: a message that came in during the turn is still waiting.
+    const seenUpTo = this.turnSnapshots.get(context.turnId) ?? 0;
+    this.state.asks = this.state.asks.filter((ask) => ask.place !== place.value || ask.seq > seenUpTo);
     this.state.placeClaims[place.value] = { thread: context.thread, atMs: nowMs, text: clip(oneLine(text.value), SAY_CLIP) };
     this.saveState();
     return {
