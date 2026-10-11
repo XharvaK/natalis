@@ -158,6 +158,12 @@ describe("auth", () => {
 });
 
 describe("observations", () => {
+  it("starts the view with her body now, from the portrait the helper sent with it", async () => {
+    await call("/domus/observation", viewBody({ portrait: { zone: { room_label: "Test kitchen" }, paused: true, mood: "Flirty" } }));
+    expect(events).toHaveLength(1);
+    expect(events[0]?.text?.startsWith("Your body now:\nThe game is paused.\nRoom: Test kitchen.\nMood: flirty.\n\nThe game (slot3) shows:\n")).toBe(true);
+  });
+
   it("admits a new view with 202, and emits one outside event on the game thread with its refs", async () => {
     const reply = await call("/domus/observation", viewBody());
     expect(reply.status).toBe(202);

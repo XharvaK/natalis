@@ -132,7 +132,7 @@ function observationEvent(parsed: ParsedObservation): WorldEvent {
     thread,
     actor: "game",
     source: "outside",
-    text: renderView({ world: alias, percepts: parsed.percepts, options }),
+    text: renderView({ world: alias, percepts: parsed.percepts, options, portrait: parsed.normalized.portrait }),
     data,
     atMs: parsed.fields.sourceTimeMs,
     wake: true,

@@ -5,6 +5,8 @@
 import type { Found, OptionObject, AnswerRules } from "./answers.js";
 import { answerRulesOf } from "./answers.js";
 import type { Percept } from "./wire.js";
+import { bodyLines } from "./body.js";
+import { BAND_WORDS, capitalised, plainName, textOrUndefined } from "./words.js";
 
 /** The longest the rendered view may be, in characters. The rest is said as a count. */
 export const VIEW_TEXT_MAX = 6000;
@@ -80,25 +82,7 @@ function factsText(facts: Record<string, unknown>): string {
     .join(", ");
 }
 
-const BAND_WORDS: Readonly<Record<string, string>> = { distress: "very low", low: "low", ok: "fine", high: "full", full: "full" };
 const ORIGIN_WORDS: Readonly<Record<string, string>> = { her_choice: "your act", script: "your act", game: "the game", native_reaction: "the game, on its own" };
-
-function textOrUndefined(value: unknown): string | undefined {
-  if (typeof value === "string" && value.trim() !== "") return value.trim();
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  return undefined;
-}
-
-/** A game name in plain words: the tuning name of a class string, with camel case, "_" and "-" as spaces, lower case. */
-export function plainName(text: string): string {
-  const tuning = /<class '([^']*)'>/.exec(text)?.[1] ?? text;
-  const last = tuning.split(".").pop() ?? tuning;
-  return last.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
-}
-
-function capitalised(text: string): string {
-  return text.length === 0 ? text : `${text[0]!.toUpperCase()}${text.slice(1)}`;
-}
 
 /**
  * One percept as one plain sentence, from its fixed form. Returns undefined for a kind it does not know, or a
@@ -172,10 +156,12 @@ export function perceptSentence(percept: Percept): string | undefined {
  * The plain text of a game view for the Lar: what the game shows, then the choices it offers, each with its ref.
  * Shows the ref and the game's words only; no id, no matcher hint, no advice.
  */
-export function renderView(input: { world: string; percepts: readonly Percept[]; options: readonly OptionObject[] }): string {
-  const lines: string[] = [`The game (${input.world}) shows:`];
+export function renderView(input: { world: string; percepts: readonly Percept[]; options: readonly OptionObject[]; portrait?: unknown }): string {
+  const body = bodyLines(input.portrait);
+  const head = [...(body.length ? ["Your body now:", ...body, ""] : []), `The game (${input.world}) shows:`];
+  const lines: string[] = [...head];
   let shown = 0;
-  let used = lines[0]!.length;
+  let used = head.reduce((sum, line) => sum + line.length + 1, 0);
   for (const percept of input.percepts) {
     const sentence = perceptSentence(percept);
     const label = percept.kind.replace(/_/g, " ");
