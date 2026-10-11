@@ -31,6 +31,10 @@ export type AnswerRules = {
 export type OptionAct = { ref: string; guid64: string; text: string; opens?: string };
 export type OptionObject = {
   object: string; object_id: string; where?: string; acts: OptionAct[]; noWay?: string; answer_rules?: unknown;
+  /** The room the object is in, by its name; absent when the helper does not know it. */
+  room?: string;
+  /** True for an object near her (the helper's own reckoning). */
+  near?: boolean;
 };
 export type Found = { object: OptionObject; act: OptionAct };
 /** The answer as it is kept and sent to the helper: rows by the game's own option ids, counts resolved, text as typed. */

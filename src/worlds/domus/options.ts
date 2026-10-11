@@ -4,12 +4,12 @@
 
 import type { Found, OptionObject, AnswerRules } from "./answers.js";
 import { answerRulesOf } from "./answers.js";
-import type { Percept } from "./wire.js";
+import type { OptionsCut, Percept } from "./wire.js";
 import { type AttachmentNow, bodyLines } from "./body.js";
 import { BAND_WORDS, capitalised, plainName, textOrUndefined } from "./words.js";
 
 /** The longest the rendered view may be, in characters. The rest is said as a count. */
-export const VIEW_TEXT_MAX = 6000;
+export const VIEW_TEXT_MAX = 20_000;
 const FACT_MAX = 80;
 
 function clip(text: string, max: number): string {
@@ -158,6 +158,9 @@ export function perceptSentence(percept: Percept): string | undefined {
  */
 export function renderView(input: {
   world: string; percepts: readonly Percept[]; options: readonly OptionObject[]; portrait?: unknown; attachment?: AttachmentNow;
+  /** The choices of the last view rendered on this thread (see choicesSignature), or undefined when there was none. */
+  lastChoices?: string;
+  optionsCut?: OptionsCut;
 }): string {
   const body = bodyLines(input.portrait, input.attachment);
   const head = [...(body.length ? ["Your body now:", ...body, ""] : []), `The game (${input.world}) shows:`];
@@ -179,17 +182,68 @@ export function renderView(input: {
     lines.push("", "The game offers no choices in this view.");
     return lines.join("\n");
   }
-  lines.push("", "Choices you can name with game_act, by ref:");
-  for (const object of input.options) {
-    const where = object.where ? ` (${object.where})` : "";
-    const noWay = typeof object.noWay === "string" ? ` [${object.noWay}]` : "";
-    const acts = object.acts
-      .filter((act) => act && typeof act === "object" && typeof act.ref === "string" && typeof act.text === "string")
-      .map((act) => `${act.ref} ${act.text}${typeof act.opens === "string" ? ` [${act.opens}]` : ""}`)
-      .join("; ");
-    lines.push(`- ${object.object}${where}${noWay}: ${acts}`);
-    const rules = answerRulesOf(object);
-    if (rules) lines.push(`  Answer rules: ${describeRules(rules)}.`);
+  const cut = optionsCutLine(input.optionsCut);
+  if (input.lastChoices !== undefined && input.lastChoices === choicesSignature(input.options)) {
+    lines.push("", "Choices: the same as in the last view.");
+    if (cut) lines.push(cut);
+    return lines.join("\n");
   }
+  lines.push("", "Choices you can name with game_act, by ref:");
+  for (const object of input.options.filter(isNear)) lines.push(...objectLines(object));
+  const elsewhere = input.options.filter((object) => !isNear(object));
+  if (elsewhere.length) {
+    lines.push("Elsewhere on the lot:");
+    const rooms = new Map<string, OptionObject[]>();
+    for (const object of elsewhere) {
+      const room = typeof object.room === "string" && object.room !== "" ? object.room : "Other rooms";
+      rooms.set(room, [...(rooms.get(room) ?? []), object]);
+    }
+    for (const [room, objects] of rooms) {
+      lines.push(`${room}:`);
+      for (const object of objects) lines.push(...objectLines(object));
+    }
+  }
+  if (cut) lines.push(cut);
   return lines.join("\n");
+}
+
+/** Near her: the helper's near flag, or a where that starts "here" (what older helpers send). */
+function isNear(object: OptionObject): boolean {
+  return object.near === true || (typeof object.where === "string" && object.where.startsWith("here"));
+}
+
+/** One object's line, and its answer rules when it is a question. */
+function objectLines(object: OptionObject): string[] {
+  const where = object.where ? ` (${object.where})` : "";
+  const noWay = typeof object.noWay === "string" ? ` [${object.noWay}]` : "";
+  const acts = object.acts
+    .filter((act) => act && typeof act === "object" && typeof act.ref === "string" && typeof act.text === "string")
+    .map((act) => `${act.ref} ${act.text}${typeof act.opens === "string" ? ` [${act.opens}]` : ""}`)
+    .join("; ");
+  const lines = [`- ${object.object}${where}${noWay}: ${acts}`];
+  const rules = answerRulesOf(object);
+  if (rules) lines.push(`  Answer rules: ${describeRules(rules)}.`);
+  return lines;
+}
+
+/** The choices as a set of (ref, words, no-way, opens), ignoring distances; "" when there are none. */
+export function choicesSignature(options: readonly OptionObject[]): string {
+  const rows = new Set<string>();
+  for (const object of options) {
+    for (const act of object.acts) {
+      if (act && typeof act === "object" && typeof act.ref === "string" && typeof act.text === "string") {
+        const noWay = typeof object.noWay === "string" ? object.noWay : null;
+        const opens = typeof act.opens === "string" ? act.opens : null;
+        rows.add(JSON.stringify([act.ref, act.text, noWay, opens]));
+      }
+    }
+  }
+  return [...rows].sort().join("\n");
+}
+
+/** The line that says how many choice objects the game left out of the table, and in which rooms. */
+function optionsCutLine(cut: OptionsCut | undefined): string | undefined {
+  if (!cut || cut.objects <= 0) return undefined;
+  const rooms = cut.rooms.length ? cut.rooms.join(", ") : "rooms it did not name";
+  return `The game left out ${cut.objects} more choice object(s) on the lot, in ${rooms}.`;
 }

@@ -10,7 +10,7 @@ import type { AttachmentNow } from "./body.js";
 import { gameActTool, type GameActContext } from "./game-act.js";
 import { isStopOn } from "../../entity/stop.js";
 import { expireDue, pendingCounts, syncActs, type ThreadNote, withdrawUndone, withholdForStop } from "./acts.js";
-import { optionsOf, renderView } from "./options.js";
+import { choicesSignature, optionsOf, renderView } from "./options.js";
 import {
   checkSnapshot, expireSnapshots, gameSnapshotTool, openSnapshots, SNAPSHOT_PICTURE_NAME, SNAPSHOT_STATUS, settleFailed,
   settleTaken, type SnapshotContext, withdrawSnapshots,
@@ -115,7 +115,7 @@ function listen(server: Server, host: string, port: number): Promise<void> {
 }
 
 /** An admitted view becomes one event on its game thread: outside text (the game's), with the choices and their refs. */
-function observationEvent(parsed: ParsedObservation, attachment: AttachmentNow): WorldEvent {
+function observationEvent(parsed: ParsedObservation, attachment: AttachmentNow, lastChoices: string | undefined): WorldEvent {
   const thread = gameThreadOf(parsed.fields.world);
   const alias = thread.slice(DOMUS_WORLD_ID.length + 1);
   const options = optionsOf(parsed.options ?? []);
@@ -126,6 +126,7 @@ function observationEvent(parsed: ParsedObservation, attachment: AttachmentNow):
     sourceTimeMs: parsed.fields.sourceTimeMs,
     expiresAtMs: parsed.fields.expiresAtMs,
     ...(parsed.options?.length ? { options: parsed.options } : {}),
+    ...(parsed.optionsCut ? { optionsCut: parsed.optionsCut } : {}),
   };
   return {
     world: DOMUS_WORLD_ID,
@@ -133,7 +134,9 @@ function observationEvent(parsed: ParsedObservation, attachment: AttachmentNow):
     thread,
     actor: "game",
     source: "outside",
-    text: renderView({ world: alias, percepts: parsed.percepts, options, portrait: parsed.normalized.portrait, attachment }),
+    text: renderView({
+      world: alias, percepts: parsed.percepts, options, portrait: parsed.normalized.portrait, attachment, lastChoices, optionsCut: parsed.optionsCut,
+    }),
     data,
     atMs: parsed.fields.sourceTimeMs,
     wake: true,
@@ -171,6 +174,8 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
   let detachNoticed = false;
   /** The world the newest admitted view came from; the detach notice goes to its game thread. */
   let lastWorld: string | undefined;
+  /** The choices of the last view rendered on each game thread, so a view with the same choices says so instead of listing them again. */
+  const choicesShown = new Map<string, string>();
 
   const deliver = (event: WorldEvent): void => {
     if (!emitter) return;
@@ -260,7 +265,9 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     });
     if (result.status === "admitted") {
       lastWorld = parsed.fields.world;
-      deliver(observationEvent(parsed, attachmentAt(now)));
+      const thread = gameThreadOf(parsed.fields.world);
+      deliver(observationEvent(parsed, attachmentAt(now), choicesShown.get(thread)));
+      choicesShown.set(thread, choicesSignature(optionsOf(parsed.options ?? [])));
     }
   }
 

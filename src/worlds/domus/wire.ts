@@ -18,6 +18,12 @@ export const SNAPSHOT_BODY_LIMIT = 9 * 1024 * 1024;
 export const MAX_WINDOW_MS = 600_000;
 /** An observation may claim a source time at most this far ahead of the listener's clock. */
 export const MAX_SKEW_MS = 120_000;
+/** The option table: at most this many objects, and this many bytes of JSON (a whole lot is listed by room). */
+export const OPTIONS_MAX = 160;
+export const OPTIONS_BYTES = 32 * 1024;
+/** A room's name, and how many rooms an options_cut may name. */
+export const ROOM_MAX = 64;
+const CUT_ROOMS_MAX = 64;
 /** The helper's token must be at least this many bytes. */
 export const MIN_TOKEN_BYTES = 32;
 export const SNAPSHOT_FAILURES = ["game_minimized", "no_game_window", "capture_failed"] as const;
@@ -98,7 +104,7 @@ export function tokenProblem(token: string, otherTokens: readonly string[]): "mi
 
 const OBSERVATION_KEYS = new Set([
   "v", "observation_id", "world", "branch", "session", "attachment", "body", "snapshot",
-  "seq", "source_time_ms", "expires_at_ms", "lineage_class", "percepts", "portrait", "day", "options",
+  "seq", "source_time_ms", "expires_at_ms", "lineage_class", "percepts", "portrait", "day", "options", "options_cut",
 ]);
 
 export type Percept = { kind: string; salience: number; facts: Record<string, unknown> };
@@ -114,7 +120,26 @@ export type ParsedObservation = {
   percepts: Percept[];
   /** The option table: what the game offers the Lar to do, each act with the ref the Lar names. */
   options: Record<string, unknown>[] | undefined;
+  /** How many choice objects the game left out of the table, and in which rooms (the helper's own count). */
+  optionsCut?: OptionsCut;
 };
+
+export type OptionsCut = { objects: number; rooms: string[] };
+
+/** An option object's optional fields: a room (a name, up to ROOM_MAX characters) and near (a flag). Anything else is refused. */
+function optionObject(item: Record<string, unknown>): Record<string, unknown> {
+  if (item.room !== undefined) textOf(item.room, 1, ROOM_MAX);
+  if (item.near !== undefined && typeof item.near !== "boolean") fail(400, "invalid_body");
+  return item;
+}
+
+/** options_cut: a whole count of the objects left out, and the rooms they are in (names, at most CUT_ROOMS_MAX). */
+function optionsCutOf(value: unknown): OptionsCut {
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== "objects" && key !== "rooms")) fail(400, "invalid_body");
+  const objects = safeInt(value.objects);
+  if (!Array.isArray(value.rooms) || value.rooms.length > CUT_ROOMS_MAX) fail(400, "invalid_body");
+  return { objects, rooms: value.rooms.map((room) => textOf(room, 1, ROOM_MAX)) };
+}
 
 /** POST /domus/observation. Throws WireError for every refusal; returns the parsed body otherwise. */
 export function parseObservation(body: unknown, nowMs: number): ParsedObservation {
@@ -148,10 +173,15 @@ export function parseObservation(body: unknown, nowMs: number): ParsedObservatio
   if ("day" in body) normalized.day = jsonObject(body.day, 16384);
   let options: Record<string, unknown>[] | undefined;
   if ("options" in body) {
-    if (!Array.isArray(body.options) || body.options.length > 32 || !body.options.every(isRecord)
-      || Buffer.byteLength(JSON.stringify(body.options), "utf8") > 8192) fail(400, "invalid_body");
-    options = body.options as Record<string, unknown>[];
-    normalized.options = body.options;
+    if (!Array.isArray(body.options) || body.options.length > OPTIONS_MAX || !body.options.every(isRecord)
+      || Buffer.byteLength(JSON.stringify(body.options), "utf8") > OPTIONS_BYTES) fail(400, "invalid_body");
+    options = (body.options as Record<string, unknown>[]).map(optionObject);
+    normalized.options = options;
+  }
+  let optionsCut: OptionsCut | undefined;
+  if ("options_cut" in body) {
+    optionsCut = optionsCutOf(body.options_cut);
+    normalized.options_cut = { objects: optionsCut.objects, rooms: optionsCut.rooms };
   }
   if (expiresAtMs <= sourceTimeMs || expiresAtMs - sourceTimeMs > MAX_WINDOW_MS) fail(400, "invalid_body");
   if (sourceTimeMs > nowMs + MAX_SKEW_MS) fail(400, "clock_skew");
@@ -162,6 +192,7 @@ export function parseObservation(body: unknown, nowMs: number): ParsedObservatio
     fields: { world, branch, session, attachment, body: bodyId, snapshot, seq, sourceTimeMs, expiresAtMs, lineageClass },
     percepts,
     options,
+    optionsCut,
   };
 }
 

@@ -568,3 +568,27 @@ describe("the game's attachment, in the views and on the game thread", () => {
     expect(events.filter((event) => event.text === "The game is no longer attached.")).toHaveLength(1);
   }, 15_000);
 });
+
+describe("views of a whole lot: the choices, and what the game left out", () => {
+  it("says the choices are the same as in the last view when the next view on the thread offers the same ones", async () => {
+    await attach();
+    await call("/domus/observation", viewBody());
+    await call("/domus/observation", viewBody());
+    expect(events).toHaveLength(2);
+    expect(events[0]?.text).toContain("Choices you can name with game_act, by ref:");
+    expect(events[1]?.text).toContain("Choices: the same as in the last view.");
+    expect(events[1]?.text).not.toContain("Choices you can name");
+  });
+
+  it("lists the choices in full again when the choices changed, and says what the game left out", async () => {
+    await attach();
+    await call("/domus/observation", viewBody());
+    await call("/domus/observation", viewBody({
+      options: [{ object: "Test rug", object_id: "obj-rug", acts: [{ ref: "a7", guid64: "777", text: "Sit" }] }],
+      options_cut: { objects: 2, rooms: ["Test garden"] },
+    }));
+    expect(events[1]?.text).toContain("- Test rug: a7 Sit");
+    expect(events[1]?.text?.endsWith("The game left out 2 more choice object(s) on the lot, in Test garden.")).toBe(true);
+    expect(events[1]?.data).toMatchObject({ optionsCut: { objects: 2, rooms: ["Test garden"] } });
+  });
+});

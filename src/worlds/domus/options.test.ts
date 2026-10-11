@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { OptionObject } from "./answers.js";
-import { findOption, labelOf, optionsOf, refsOf, renderView, VIEW_TEXT_MAX } from "./options.js";
+import { choicesSignature, findOption, labelOf, optionsOf, refsOf, renderView, VIEW_TEXT_MAX } from "./options.js";
 
 const TABLE: OptionObject[] = [
   { object: "Test kettle", object_id: "obj-kettle", where: "here, 2.0 m", acts: [
@@ -111,9 +111,65 @@ describe("rendering a view", () => {
 
   it("keeps the view within its size, and says how many percepts it left out", () => {
     const long = "z".repeat(80);
-    const percepts = Array.from({ length: 32 }, (_, index) => ({ kind: `kind_${index}`, salience: 0.5, facts: { a: long, b: long, c: long } }));
+    const percepts = Array.from({ length: 100 }, (_, index) => ({ kind: `kind_${index}`, salience: 0.5, facts: { a: long, b: long, c: long } }));
     const text = renderView({ world: "slot3", percepts, options: [] });
     expect(text.length).toBeLessThanOrEqual(VIEW_TEXT_MAX + 200);
     expect(text).toMatch(/more not shown\)/);
+  });
+});
+
+describe("rendering the choices of a whole lot", () => {
+  const LOT: OptionObject[] = [
+    { object: "Test fridge", object_id: "o1", where: "here, 1.0 m", near: true, acts: [{ ref: "a1", guid64: "1", text: "Cook" }] },
+    { object: "Test mailbox", object_id: "o2", room: "Test hall", acts: [{ ref: "a2", guid64: "2", text: "Check the mail" }] },
+    { object: "Test lamp", object_id: "o3", room: "Test attic", acts: [{ ref: "a3", guid64: "3", text: "All lights on" }] },
+    { object: "Test door", object_id: "o4", acts: [{ ref: "a4", guid64: "4", text: "Open" }] },
+  ];
+
+  it("lists the near objects first, then the rest grouped by room, and says what the game left out", () => {
+    const text = renderView({ world: "slot3", percepts: [], options: LOT, optionsCut: { objects: 3, rooms: ["Test garden"] } });
+    const near = text.indexOf("- Test fridge (here, 1.0 m): a1 Cook");
+    const elsewhere = text.indexOf("Elsewhere on the lot:");
+    expect(near).toBeGreaterThan(-1);
+    expect(near).toBeLessThan(elsewhere);
+    expect(text).toContain("Test hall:\n- Test mailbox: a2 Check the mail");
+    expect(text).toContain("Test attic:\n- Test lamp: a3 All lights on");
+    expect(text).toContain("Other rooms:\n- Test door: a4 Open");
+    expect(text.indexOf("Test hall:")).toBeLessThan(text.indexOf("Test attic:"));
+    expect(text.endsWith("The game left out 3 more choice object(s) on the lot, in Test garden.")).toBe(true);
+  });
+
+  it("says the rooms it left out as not named when the game named none", () => {
+    const text = renderView({ world: "slot3", percepts: [], options: LOT, optionsCut: { objects: 2, rooms: [] } });
+    expect(text).toContain("The game left out 2 more choice object(s) on the lot, in rooms it did not name.");
+  });
+
+  it("gives the choices in full only when they differ from the last view on the thread, ignoring distances", () => {
+    const sig = choicesSignature(LOT);
+    const moved = LOT.map((object) => ({ ...object, where: object.where ? "9 m" : object.where }));
+    const same = renderView({ world: "slot3", percepts: [], options: moved, lastChoices: sig, optionsCut: { objects: 1, rooms: ["Test garden"] } });
+    expect(same).toContain("Choices: the same as in the last view.");
+    expect(same).not.toContain("Test mailbox");
+    expect(same.endsWith("The game left out 1 more choice object(s) on the lot, in Test garden.")).toBe(true);
+    const grown = renderView({
+      world: "slot3", percepts: [], options: [...LOT, { object: "Test rug", object_id: "o5", acts: [{ ref: "a5", guid64: "5", text: "Sit" }] }], lastChoices: sig,
+    });
+    expect(grown).toContain("Test rug");
+    expect(grown).not.toContain("the same as in the last view");
+    expect(renderView({ world: "slot3", percepts: [], options: LOT })).toContain("Test mailbox");
+  });
+
+  it("counts a change in a choice's words, its no-way or its opens as a change", () => {
+    const sig = choicesSignature(LOT);
+    const opens = LOT.map((object) => (object.object === "Test door" ? { ...object, acts: [{ ...object.acts[0]!, opens: "a screen only you can use" }] } : object));
+    expect(choicesSignature(opens)).not.toBe(sig);
+    const worded = LOT.map((object) => (object.object === "Test door" ? { ...object, acts: [{ ...object.acts[0]!, text: "Close" }] } : object));
+    expect(choicesSignature(worded)).not.toBe(sig);
+    expect(choicesSignature(LOT.map((object) => ({ ...object, where: "3 m" })))).toBe(sig);
+    expect(choicesSignature([])).toBe("");
+  });
+
+  it("names the view's size as twenty thousand characters", () => {
+    expect(VIEW_TEXT_MAX).toBe(20_000);
   });
 });
