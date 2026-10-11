@@ -330,7 +330,8 @@ describe("flood and loop limits", () => {
     }
     expect(events).toHaveLength(5);
     expect(events.slice(0, 4).every((event) => event.wake === true)).toBe(true);
-    expect(events[4]).toMatchObject({ wake: false, text: "msg 4", data: { flooded: true } });
+    expect(events[4]).toMatchObject({ wake: false, text: "msg 4", data: { flooded: true, heldBy: "a burst" } });
+    expect(events[0]?.data?.heldBy).toBeUndefined();
   });
 
   it("never floods the owner", async () => {
@@ -357,7 +358,9 @@ describe("flood and loop limits", () => {
 
     const botEvents = events.filter((event) => event.actor === "crier");
     expect(botEvents.map((event) => event.wake)).toEqual([true, true, true, true, false, true]);
-    expect(botEvents[4]?.data).toMatchObject({ bot: true, loopCeiling: true });
+    expect(botEvents[4]?.data).toMatchObject({ bot: true, loopCeiling: true, heldBy: "a burst" });
+    expect(botEvents[0]?.data).toMatchObject({ bot: true });
+    expect(botEvents[0]?.data?.heldBy).toBeUndefined();
   });
 });
 

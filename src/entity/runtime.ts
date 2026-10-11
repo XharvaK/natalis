@@ -1785,7 +1785,10 @@ class Runtime implements Entity {
   /** One row as one line. A row shown by its brief (an older view, see olderViewRows) gives the brief in place of its text. */
   private lineFor(row: RiverRow, brief = false): string {
     const outside = row.source === "outside" ? " (outside)" : "";
-    return `[${this.clock(row.atMs)} ${who(row)}${outside}] ${brief ? briefOf(row) : row.text ?? ""}`;
+    // A bot's line says so, and a line a flood or loop hold kept from waking the Lar says what held it.
+    const bot = row.data?.["bot"] === true ? " (bot)" : "";
+    const held = typeof row.data?.["heldBy"] === "string" ? ` (held: ${row.data["heldBy"]})` : "";
+    return `[${this.clock(row.atMs)} ${who(row)}${outside}${bot}${held}] ${brief ? briefOf(row) : row.text ?? ""}`;
   }
 
   private clock(atMs: number): string {

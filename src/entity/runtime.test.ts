@@ -2690,4 +2690,29 @@ describe("what a turn says it leaves out", () => {
     expect(user).not.toContain("not shown");
     expect(user).toContain("Quiet line 1.");
   });
+  it("marks a line from a bot, and a line a flood or loop hold kept from waking the Lar", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const hall = eventWorld("fake");
+    const { entity } = await open(model, {}, [hall.world]);
+    await entity.start();
+
+    hall.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: "Hello from a bot.", data: { bot: true }, wake: false });
+    hall.emit({
+      world: "fake",
+      place: HALL,
+      actor: "crier",
+      source: "outside",
+      text: "Held words.",
+      data: { bot: true, heldBy: "a burst" },
+      wake: false,
+    });
+    hall.emit({ world: "fake", place: HALL, actor: "tovan", source: "outside", text: "A person speaks." });
+    await entity.idle();
+
+    const user = userTextOf(model.requests[0]);
+    expect(user).toContain("tovan (outside)] A person speaks.");
+    expect(user).toContain("mara (outside) (bot)] Hello from a bot.");
+    expect(user).toContain("crier (outside) (bot) (held: a burst)] Held words.");
+    expect(user).not.toContain("tovan (outside) (bot)");
+  });
 });
