@@ -45,7 +45,11 @@ Each takes `--dir <entity folder>` (the Lar's own folder) unless noted.
 - `chat`: talk with a Lar in the terminal.
 - `run`: keep a Lar living in its worlds (Discord) until it is stopped.
 - `stop`: the summoner's emergency stop; pauses outward acts. `--off` lifts it.
-- `forget`: erase river rows or note lines, with a reason.
+- `forget`: erase river rows, or with `--query` every place the words live (note lines, the notebook's git history,
+  trash/, files in the home that hold them, and the shelf's pictures that forgotten rows name), with a reason. It prints
+  counts only. Older backups still hold the old text until they rotate out.
+- `ledger`: the turn ledger for a Lar (`natalis ledger <folder> [--days N]`, one day by default): counts only, one row per
+  turn kept in the river's file, with no message text.
 - `import`: bring a seed bundle into a new Lar; prints the plan unless `--apply` is given.
 - `capture`: write one time window of a Lar's river for a replay.
 - `replay`: replay captured events on a copy of a Lar; the original is never written.

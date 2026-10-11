@@ -29,6 +29,7 @@ import { ScriptedModel, call, reply, type ScriptStep } from "../testing/scripted
 import { createCliWorld, type CliWorld } from "../worlds/cli.js";
 import type { EntityConfig } from "./config.js";
 import { SUMMONER_PREFIX } from "./summoner.js";
+import { readLedger } from "../river/ledger.js";
 import { forgetInStateFile, openEntity, STATE_FILE, type Entity, type OpenEntityOptions } from "./runtime.js";
 import { COMMITMENTS_STUB, HOUSEHOLD_PATH, OLD_COMMITMENTS_STUB } from "./commitments.js";
 import { isStopOn } from "./stop.js";
@@ -629,6 +630,55 @@ describe("an outage", () => {
     expect(notices[0]?.place).toBe("cli:summoner");
     expect(notices[0]?.text.startsWith(SUMMONER_PREFIX)).toBe(true);
     expect(notices[0]?.text).toContain("out of credit");
+  });
+});
+
+describe("the ledger and the failure alert", () => {
+  it("writes one ledger row per turn, with the kind of thread, the model and the counts, and no words", async () => {
+    const model = new ScriptedModel([
+      { ...reply({ toolCalls: [call("end_turn")] }), usage: { inputTokens: 7, outputTokens: 2, totalTokens: 9 } },
+    ]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    cli.send("Secret words for the ledger.");
+    await entity.idle();
+    await entity.stop();
+
+    const rows = readLedger(join(dir, "river.db"), 0);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      threadKind: "summoner",
+      endedBy: "end_turn",
+      outcome: "answered",
+      model: "scripted:test-model",
+      promptTokens: 7,
+      completionTokens: 2,
+      totalTokens: 9,
+      backupUsed: false,
+    });
+    expect(JSON.stringify(rows)).not.toContain("Secret words");
+  });
+
+  it("tells the summoner once after five failed turns in a row, and again only after a turn succeeds", async () => {
+    const failing = (): ScriptStep => new ModelError("model service rejected the request (HTTP 404): no such model", "bad_request", 1);
+    const answer = (): ScriptStep => reply({ toolCalls: [call("end_turn")] });
+    const model = new ScriptedModel([
+      failing(), failing(), failing(), failing(), failing(), answer(),
+      failing(), failing(), failing(), failing(), failing(), answer(),
+    ]);
+    const { entity, cli, said } = await open(model, { retryDelaysMs: [1] });
+    await entity.start();
+    const notices = () => said.filter((item) => item.text.includes("could not get an answer"));
+
+    cli.send("One.");
+    await waitFor(() => model.requests.length >= 6);
+    await entity.idle();
+    expect(notices()).toHaveLength(1);
+
+    cli.send("Two.");
+    await waitFor(() => model.requests.length >= 12);
+    await entity.idle();
+    expect(notices()).toHaveLength(2);
   });
 });
 

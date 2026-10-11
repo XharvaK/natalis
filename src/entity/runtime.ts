@@ -17,6 +17,7 @@ import { openNotebook, seedNotebook } from "../notebook/index.js";
 import { FORGOTTEN_LINE, lineHoldsWords, queryWords } from "../notebook/forget.js";
 import { ModelError, type ModelErrorKind } from "../contracts.js";
 import { openRiver } from "../river/index.js";
+import { openLedger, type Ledger, type LedgerRow, type ThreadKind } from "../river/ledger.js";
 import { checkRiver } from "../river/integrity.js";
 import { createSecretScanner, guardModel, guardNotebook, guardRiver, KNOWN_VALUE_KIND } from "../secrets/index.js";
 import { notebookTools } from "../tools/index.js";
@@ -36,6 +37,7 @@ import type {
   Tool,
   ToolContext,
   ToolSpec,
+  TurnResult,
   World,
   WorldBody,
   WorldEvent,
@@ -113,6 +115,10 @@ const PROPOSAL_SHOW = 80;
 const OUTAGE_KINDS: ReadonlySet<ModelErrorKind> = new Set<ModelErrorKind>(["out_of_credit", "rate_limit", "unavailable", "timeout"]);
 /** How much of the last model error the summoner's outage notice shows. */
 const OUTAGE_DETAIL_CLIP = 240;
+/** Failed turns in a row, over every thread, after which the summoner is told (once, until a turn succeeds). */
+const FAILED_TURNS_ALERT = 5;
+/** The river file holds the ledger table too: a backup of the river carries it. */
+const RIVER_LEDGER_FILE = "river.db";
 /** How many pictures one say may carry, and how many of the newest shelf ids a refusal lists. */
 const SAY_PICTURES_MAX = 4;
 const SHELF_LIST = 10;
@@ -512,6 +518,10 @@ class Runtime implements Entity {
   private readonly body: WorldBody;
   /** The river as the Lar's tools see it: a forget of words also scrubs them from the state the body keeps. */
   private readonly larRiver: River;
+  /** One row per turn, beside the river's rows (no words). */
+  private readonly ledger: Ledger;
+  /** Failed turns in a row, over every thread. A turn that gets an answer clears it. */
+  private failedRun = 0;
   private readonly ceiling: Ceiling;
   private readonly tools: Tool[];
   private readonly clockFormat: Intl.DateTimeFormat;
@@ -571,6 +581,7 @@ class Runtime implements Entity {
     this.body = shelfBody(init.shelf, init.nowMs);
     this.ceiling = init.config.ceiling ?? DEFAULT_CEILING;
     this.river = init.river;
+    this.ledger = openLedger(join(init.dir, RIVER_LEDGER_FILE));
     this.larRiver = this.riverForLar(init.river);
     this.notebook = init.notebook;
     this.clockFormat = new Intl.DateTimeFormat("en-GB", {
@@ -717,6 +728,7 @@ class Runtime implements Entity {
       }
     }
     await Promise.allSettled([...this.running.values()]);
+    this.ledger.close();
     this.saveState();
     this.closed = true;
     this.river.close();
@@ -883,6 +895,7 @@ class Runtime implements Entity {
       this.turnSnapshots.delete(turnId);
       this.turnStarts.delete(turnId);
     });
+    this.writeLedger(thread, result);
 
     if (result.endedBy === "aborted") {
       // Stopping: the events were not handled, so the cursor stays and they are taken again next start.
@@ -899,6 +912,7 @@ class Runtime implements Entity {
     this.failures.delete(thread);
     this.oversized.delete(thread);
     this.outageNoticed = false;
+    this.failedRun = 0;
     const cursor = this.threadState(thread);
     cursor.seenSeq = snapshot;
     cursor.lastTurnMs = this.nowMs();
@@ -988,7 +1002,10 @@ class Runtime implements Entity {
       atMs: this.nowMs(),
     });
     this.cancelRetry(thread);
-    if (fromModel && kind !== undefined && OUTAGE_KINDS.has(kind)) this.noticeOutage(message);
+    // An outage is told at once. Any other run of failed turns is told once it reaches FAILED_TURNS_ALERT in a row.
+    this.failedRun += 1;
+    const outage = fromModel && kind !== undefined && OUTAGE_KINDS.has(kind);
+    if (outage || this.failedRun >= FAILED_TURNS_ALERT) this.noticeOutage(message);
     if (giveUp) return;
     const timer = setTimeout(() => {
       this.retries.delete(thread);
@@ -997,6 +1014,48 @@ class Runtime implements Entity {
       this.pump();
     }, delay);
     this.retries.set(thread, timer);
+  }
+
+  /**
+   * One ledger row for the turn: when, which kind of thread, how it ended, the model, the tokens the provider reported,
+   * and whether the backup answered. No words go in. A failure to write it is noted in the self thread, never silent.
+   */
+  private writeLedger(thread: string, result: TurnResult): void {
+    const row: LedgerRow = {
+      atMs: this.nowMs(),
+      threadKind: this.threadKind(thread),
+      endedBy: result.endedBy,
+      outcome: result.endedBy === "model_error" ? "failed" : result.endedBy === "aborted" ? "aborted" : "answered",
+      model: result.model,
+      backupUsed: result.backupUsed,
+      ...(result.tokens?.prompt === undefined ? {} : { promptTokens: result.tokens.prompt }),
+      ...(result.tokens?.completion === undefined ? {} : { completionTokens: result.tokens.completion }),
+      ...(result.tokens?.total === undefined ? {} : { totalTokens: result.tokens.total }),
+      ...(result.cacheHitTokens === undefined ? {} : { cacheHitTokens: result.cacheHitTokens }),
+      ...(result.cacheMissTokens === undefined ? {} : { cacheMissTokens: result.cacheMissTokens }),
+      ...(result.errorKind === undefined ? {} : { errorKind: result.errorKind }),
+    };
+    try {
+      this.ledger.append(row);
+    } catch (err) {
+      this.river.append({
+        thread: "self",
+        kind: "note",
+        source: "body",
+        text: `The ledger could not take a row for this turn: ${messageOf(err)}`,
+        atMs: this.nowMs(),
+      });
+    }
+  }
+
+  /** The kind of a thread, from where it is: the summoner's place, a contact, a room, the game, or the Lar's own thread. */
+  private threadKind(thread: string): ThreadKind {
+    if (thread === "self") return "self";
+    if (this.isOwnerPlace(thread)) return "summoner";
+    if (this.worldFor(thread)?.id === "domus") return "game";
+    if (thread.includes(":room:")) return "room";
+    if (thread.includes(":dm:")) return "contact";
+    return "other";
   }
 
   /**
