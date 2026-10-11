@@ -86,6 +86,17 @@ function factsText(facts: Record<string, unknown>): string {
 
 const ORIGIN_WORDS: Readonly<Record<string, string>> = { her_choice: "your act", script: "your act", game: "the game", native_reaction: "the game, on its own" };
 
+/** A text the game sent, trimmed; anything that is not text, or is empty, is undefined. */
+function said(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+/** A text the game sent as one sentence: a full stop is added only when it has none of its own. */
+function sentence(value: unknown): string | undefined {
+  const text = said(value);
+  return text === undefined ? undefined : /[.!?]$/.test(text) ? text : `${text}.`;
+}
+
 /**
  * One percept as one plain sentence, from its fixed form. Returns undefined for a kind it does not know, or a
  * percept missing what its sentence needs; the caller then keeps the old "kind: facts" line, so nothing is lost.
@@ -147,6 +158,14 @@ export function perceptSentence(percept: Percept): string | undefined {
       const reason = textOrUndefined(facts.reason);
       return `Her life line changed${lineage ? ` (${plainName(lineage)})` : ""}${reason ? `: ${reason}` : ""}.`;
     }
+    case "notice": {
+      const text = sentence(facts.text);
+      const title = facts.title === undefined ? "" : said(facts.title);
+      if (text === undefined || title === undefined) return undefined;
+      return `The game says: ${title ? `${title}: ` : ""}${text}`;
+    }
+    case "self":
+      return sentence(facts.text);
     case "gap":
       return "Part of the game's feed was missed.";
     default:
