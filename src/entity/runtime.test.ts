@@ -1062,6 +1062,34 @@ function readStateJson(): Record<string, any> {
   return JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
 }
 
+describe("the stop reaching the worlds", () => {
+  it("notices the stop file within a poll and calls each world's onStop once each time it turns on", async () => {
+    const room = fakeWorld("fake");
+    let stops = 0;
+    const watched: World = {
+      ...room.world,
+      onStop: () => {
+        stops += 1;
+      },
+    };
+    const { entity, cli } = await open(new ScriptedModel([]), { stopPollMs: 5 }, [watched]);
+    await entity.start();
+
+    writeFileSync(join(dir, "STOP"), "", "utf8");
+    await waitFor(() => stops === 1);
+    writeFileSync(join(dir, "STOP"), "still on", "utf8");
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(stops).toBe(1);
+    expect(allRows(entity).filter((row) => row.data?.["emergencyStop"] === true)).toHaveLength(1);
+
+    rmSync(join(dir, "STOP"));
+    await waitFor(() => allRows(entity).some((row) => row.data?.["emergencyStop"] === false));
+    cli.send("!stop");
+    await entity.idle();
+    expect(stops).toBe(2);
+  });
+});
+
 describe("the constitution the Lar sees", () => {
   it("shows the floor, the household part and the Lar's own commitments, in that order", async () => {
     const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);

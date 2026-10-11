@@ -285,6 +285,18 @@ describe("run: timeouts and the process group", () => {
     expect(receipt.data?.["stoppedBy"]).toBe("turn");
   });
 
+  it("ends every running command when the summoner's stop turns on, and the receipt says the stop ended it", async () => {
+    harness = await started();
+    const pending = runTool(harness.world).run({ command: "sleep 999" }, context());
+    await harness.world.onStop?.();
+    expect(harness.killGroup).toHaveBeenCalledWith(4242, "SIGTERM");
+    (harness.children[0] as FakeChild).emit("close", null, "SIGTERM");
+    const receipt = await pending;
+    expect(receipt.ok).toBe(false);
+    expect(receipt.summary).toBe("The command was ended by your summoner's emergency stop.");
+    expect(receipt.data?.["stoppedBy"]).toBe("stop");
+  });
+
   it("kills running commands when the world stops, so none outlives the sandbox", async () => {
     harness = await started();
     const pending = runTool(harness.world).run({ command: "sleep 999" }, context());

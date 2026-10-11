@@ -296,6 +296,11 @@ export interface World {
   start(emit: (event: WorldEvent) => void, body: WorldBody): Promise<void>;
   stop(): Promise<void>;
   /**
+   * Called once each time the summoner's emergency stop turns on, after the body has noticed it. Outward work this world
+   * still has running ends here; its receipt says the stop ended it.
+   */
+  onStop?(): void | Promise<void>;
+  /**
    * Deliver words to a place in this world. Pictures in `files` go with the words; a world that cannot carry them
    * refuses the whole say. The receipt says delivered, or why not.
    */

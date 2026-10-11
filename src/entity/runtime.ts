@@ -107,6 +107,8 @@ const SAY_PICTURES_MAX = 4;
 const SHELF_LIST = 10;
 
 const DEFAULT_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 300_000, 600_000];
+/** How often the stop file is looked at while the entity runs. A check is one existence test. */
+const STOP_POLL_MS = 2_000;
 const ACTIVE_WINDOW_MS = 6 * 60 * 60 * 1000;
 const ACTIVE_ROWS_LIMIT = 2_000;
 const NOW_THREAD_LIMIT = 20;
@@ -137,6 +139,8 @@ export type OpenEntityOptions = {
   scanner?: SecretScanner;
   /** Waits before a failed turn is tried again. The last one repeats. Defaults to 30 s, 1, 2, 5, 10 min. */
   retryDelaysMs?: number[];
+  /** How often the stop file is looked at while the entity runs. Defaults to 2 s. */
+  stopPollMs?: number;
 };
 
 export interface Entity {
@@ -156,6 +160,7 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
   const nowMs = options.nowMs ?? (() => Date.now());
   const scanner = options.scanner ?? createSecretScanner();
   const retryDelaysMs = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
+  const stopPollMs = options.stopPollMs ?? STOP_POLL_MS;
   checkWorlds(worlds);
   if (retryDelaysMs.length === 0 || retryDelaysMs.some((ms) => !Number.isFinite(ms) || ms < 0)) {
     throw new Error("retryDelaysMs must be a non-empty list of waits in milliseconds, 0 or more.");
@@ -207,6 +212,7 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
     nowMs,
     scanner,
     retryDelaysMs,
+    stopPollMs,
     statePath,
     dir,
     privacy,
@@ -421,6 +427,7 @@ type RuntimeInit = {
   nowMs: () => number;
   scanner: SecretScanner;
   retryDelaysMs: number[];
+  stopPollMs: number;
   statePath: string;
   dir: string;
   privacy: PrivacyWatch;
@@ -441,6 +448,7 @@ class Runtime implements Entity {
   private readonly nowMs: () => number;
   private readonly scanner: SecretScanner;
   private readonly delays: number[];
+  private readonly stopPollMs: number;
   private readonly statePath: string;
   private readonly dir: string;
   private readonly privacy: PrivacyWatch;
@@ -465,6 +473,8 @@ class Runtime implements Entity {
   /** Threads held back by the daily turn limit. They wait for the next local day; idle does not wait for them. */
   private readonly limited = new Set<string>();
   private limitTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Looks at the stop file while the entity runs, so a stop turned on by hand reaches the worlds within one poll. */
+  private stopPoll: ReturnType<typeof setInterval> | undefined;
   /**
    * Words the body says to the summoner, one job after another: the welcome notice, command answers and limit
    * notices. A turn waits for this chain, so the welcome notice always comes before anything the Lar says.
@@ -486,6 +496,7 @@ class Runtime implements Entity {
     this.nowMs = init.nowMs;
     this.scanner = init.scanner;
     this.delays = init.retryDelaysMs;
+    this.stopPollMs = init.stopPollMs;
     this.statePath = init.statePath;
     this.dir = init.dir;
     this.privacy = init.privacy;
@@ -527,6 +538,9 @@ class Runtime implements Entity {
     if (this.stopped !== undefined) throw new Error("The entity was stopped. Open it again to run it.");
     if (this.started) throw new Error("The entity is already started.");
     this.started = true;
+    this.stopPoll = setInterval(() => {
+      if (!this.stopping) this.stopIsOn();
+    }, this.stopPollMs);
     for (const wake of this.state.wakes) this.armWake(wake);
     try {
       for (const world of this.worlds) {
@@ -564,6 +578,8 @@ class Runtime implements Entity {
 
   private async shutdown(): Promise<void> {
     this.stopping = true;
+    if (this.stopPoll !== undefined) clearInterval(this.stopPoll);
+    this.stopPoll = undefined;
     for (const timer of this.wakeTimers.values()) clearTimeout(timer);
     this.wakeTimers.clear();
     for (const timer of this.retries.values()) clearTimeout(timer);
@@ -1045,9 +1061,7 @@ class Runtime implements Entity {
           atMs: this.nowMs(),
         });
       },
-      stopChanged: () => {
-        this.state.stopOn = isStopOn(this.dir);
-      },
+      stopChanged: () => this.syncStop(),
     };
   }
 
@@ -1596,8 +1610,7 @@ class Runtime implements Entity {
   private stopIsOn(): boolean {
     const on = isStopOn(this.dir);
     if (on === this.state.stopOn) return on;
-    this.state.stopOn = on;
-    this.saveState();
+    this.setStopState(on);
     const reason = on ? readStop(this.dir).reason : undefined;
     this.river.append({
       thread: "self",
@@ -1610,6 +1623,43 @@ class Runtime implements Entity {
       atMs: this.nowMs(),
     });
     return on;
+  }
+
+  /** A stop the summoner's own command just wrote: the state follows it at once. The command writes its own river row. */
+  private syncStop(): void {
+    const on = isStopOn(this.dir);
+    if (on !== this.state.stopOn) this.setStopState(on);
+  }
+
+  /** Records a change of the stop. Turning on ends the outward work the worlds still have running, once per change. */
+  private setStopState(on: boolean): void {
+    this.state.stopOn = on;
+    this.saveState();
+    if (on) this.endOutwardWork();
+  }
+
+  /** Calls each world's onStop hook. A hook that fails is noted in the self thread, and the other worlds still run. */
+  private endOutwardWork(): void {
+    for (const world of this.worlds) {
+      const failed = (err: unknown): void => {
+        try {
+          this.river.append({
+            thread: "self",
+            kind: "note",
+            source: "body",
+            text: `${world.id} could not end its running work when the stop turned on: ${messageOf(err)}`,
+            atMs: this.nowMs(),
+          });
+        } catch {
+          // The river is closing; there is nothing left to note it in.
+        }
+      };
+      try {
+        Promise.resolve(world.onStop?.()).catch(failed);
+      } catch (err) {
+        failed(err);
+      }
+    }
   }
 
   private isOwnerPlace(place: string): boolean {
