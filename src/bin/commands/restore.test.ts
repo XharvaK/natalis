@@ -10,6 +10,7 @@ import { openRiver } from "../../river/index.js";
 import { ScriptedModel } from "../../testing/scripted-model.js";
 import { createCliWorld } from "../../worlds/cli.js";
 import { BUNDLE_FILE, isAllowedName, MANIFEST_FILE, readRiverLastSeq, type Manifest } from "./backup-format.js";
+import { openShelf } from "../../media/shelf.js";
 import { backupEntity } from "./backup.js";
 import { restoreCommand, restoreEntity } from "./restore.js";
 
@@ -225,5 +226,43 @@ describe("natalis restore", () => {
     expect(await restoreCommand(["--from", join(root, "x")])).toBe(2);
     expect(await restoreCommand(["--dir", join(root, "y")])).toBe(2);
     expect(await restoreCommand(["--from", join(root, "x"), "--dir", join(root, "y")])).toBe(1);
+  });
+});
+
+describe("the shelf of pictures in a backup", () => {
+  const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 4, 5, 6]);
+
+  it("carries the pictures through a backup and a restore, and leaves out anything else in media/", async () => {
+    const lar = join(root, "iris");
+    const entity = await startLar(lar);
+    writeFileSync(join(lar, "entity.json"), `${JSON.stringify(CONFIG, null, 2)}\n`);
+    const kept = openShelf(join(lar, "media")).keep({ bytes: PNG, name: "cat.png", from: { world: "cli", place: "cli:summoner" }, atMs: T0 });
+    writeFileSync(join(lar, "media", "notes.txt"), "not a picture");
+    writeFileSync(join(lar, "media", "m-ABCDEFGH.exe"), "not a picture either");
+
+    const made = await backupEntity({ dir: lar, out: join(root, "backups"), now: new Date(2026, 9, 11, 10, 30, 5), say: () => {} });
+    await entity.stop();
+    running.length = 0;
+
+    const names = made.manifest.files.map((file) => file.name);
+    expect(names).toContain(`media/${kept.id}.png`);
+    expect(names).toContain(`media/${kept.id}.json`);
+    expect(names.some((name) => name.startsWith("media/notes") || name.endsWith(".exe"))).toBe(false);
+
+    const target = join(root, "restored", "iris");
+    await restoreEntity({ from: made.folder, dir: target, say: () => {} });
+    expect(openShelf(join(target, "media")).get(kept.id)).toEqual(kept);
+    expect(readFileSync(join(target, "media", `${kept.id}.png`))).toEqual(Buffer.from(PNG));
+  });
+
+  it("allows only the picture and sidecar names of the shelf", () => {
+    expect(isAllowedName("media/m-ABCD2345.png")).toBe(true);
+    expect(isAllowedName("media/m-ABCD2345.jpg")).toBe(true);
+    expect(isAllowedName("media/m-ABCD2345.json")).toBe(true);
+    expect(isAllowedName("media/m-ABCD2345.exe")).toBe(false);
+    expect(isAllowedName("media/m-ABCD2345.png.tmp")).toBe(false);
+    expect(isAllowedName("media/../m-ABCD2345.png")).toBe(false);
+    expect(isAllowedName("media/m-ABCD234.png")).toBe(false);
+    expect(isAllowedName("media/m-ENVABCDE.png")).toBe(false);
   });
 });

@@ -4,7 +4,7 @@
 
 import { appendFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import type { Receipt, Tool, ToolContext, ToolSpec, World, WorldEvent } from "../contracts.js";
+import type { Receipt, SayFile, Tool, ToolContext, ToolSpec, World, WorldEvent } from "../contracts.js";
 
 /** One line of transcript.jsonl: a say, a wake the entity scheduled, or a wake it cancelled. */
 export type TranscriptRow =
@@ -93,7 +93,10 @@ export class ReplayWorld implements World {
     this.emit(event);
   }
 
-  async say(place: string, text: string, options?: { replyTo?: string }): Promise<Receipt> {
+  async say(place: string, text: string, options?: { replyTo?: string; files?: SayFile[] }): Promise<Receipt> {
+    if (options?.files !== undefined && options.files.length > 0) {
+      return { ok: false, summary: "This place cannot carry pictures, so nothing was sent.", refused: { code: "no_pictures", reason: "this place cannot carry pictures" } };
+    }
     const atMs = this.recorder.now();
     const row: TranscriptRow =
       options?.replyTo === undefined ? { atMs, place, text } : { atMs, place, text, replyTo: options.replyTo };

@@ -85,3 +85,16 @@ ability text says plainly: "You cannot see pictures with your current model; you
 | look | A model without vision is sent images | `look` exists only when `vision: true` |
 | look | The same picture fills every later call | sent once, on the call after `look` |
 | backup | Media missing from a restore | `media/` in the manifest allow-list, round-trip tested |
+
+## 7. As built (2026-10-11)
+
+- `World.say(place, text, { replyTo?, files? })`: files ride in the options object beside `replyTo`.
+- `World.start(emit, body)`: the body (with `keepPicture`) is the second argument; worlds that keep nothing ignore it.
+- Pictures reach the model as `images` on a user message (not an array content part), so every text reader of
+  `content` stays a string reader. The OpenAI-compatible port sends each as an `image_url` data URL. `look` returns
+  them on its receipt; the loop strips them from the river and the tool message and sends them once, in one extra
+  user message on the next call.
+- The CLI and replay worlds refuse a say with pictures ("this place cannot carry pictures").
+- A say's river row keeps `[picture m-…: name]` lines and `data.pictures`, so the Lar remembers what it sent.
+- The emergency stop also withdraws waiting picture requests (a note that does not wake).
+- Shelf ids never contain "env", because backups refuse any such name.

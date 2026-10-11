@@ -430,3 +430,39 @@ describe("runTurn: failures and aborts", () => {
     expect(model.remaining).toBe(1);
   });
 });
+
+describe("runTurn: pictures a tool hands over", () => {
+  const show: Tool = {
+    spec: { name: "show", description: "Shows a picture.", parameters: { type: "object", properties: {} } },
+    async run(): Promise<Receipt> {
+      return { ok: true, summary: "Here is the picture.", images: [{ type: "image", mime: "image/png", dataBase64: "AAAA" }] };
+    },
+  };
+  const noop: Tool = {
+    spec: { name: "noop", description: "Does nothing.", parameters: { type: "object", properties: {} } },
+    async run(): Promise<Receipt> {
+      return { ok: true, summary: "Nothing." };
+    },
+  };
+
+  it("shows the picture on the next call only, and keeps it out of the record and the tool message", async () => {
+    const { input, model, river } = await setup({
+      tools: [show, noop],
+      steps: [
+        reply({ toolCalls: [call("show", {}, "c1")] }),
+        reply({ toolCalls: [call("noop", {}, "c2")] }),
+        reply({ toolCalls: [call(END_TURN, {}, "c3")] }),
+      ],
+    });
+    const result = await runTurn(input);
+
+    expect(result.endedBy).toBe("end_turn");
+    expect(model.requests[0]?.messages.some((m) => m.role === "user" && m.images !== undefined)).toBe(false);
+    const shown = model.requests[1]?.messages.at(-1);
+    expect(shown).toMatchObject({ role: "user", images: [{ type: "image", mime: "image/png", dataBase64: "AAAA" }] });
+    expect(model.requests[2]?.messages.some((m) => m.role === "user" && m.images !== undefined)).toBe(false);
+    expect(JSON.stringify(rowsOf(river))).not.toContain("AAAA");
+    expect(toolMessages(model.requests[1]?.messages ?? []).map((item) => item.content).join("\n")).not.toContain("AAAA");
+    expect(result.receipts[0]?.receipt).toEqual({ ok: true, summary: "Here is the picture." });
+  });
+});

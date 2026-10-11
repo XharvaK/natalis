@@ -96,7 +96,7 @@ describe("request mapping", () => {
       asks(
         [
           { role: "system", content: "Be brief." },
-          { role: "user", content: "look", images: ["data:image/png;base64,AAAA"] },
+          { role: "user", content: "look", images: [{ type: "image", mime: "image/png", dataBase64: "AAAA" }] },
           {
             role: "assistant",
             content: null,

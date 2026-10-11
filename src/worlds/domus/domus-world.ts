@@ -5,11 +5,15 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { DatabaseSync } from "node:sqlite";
-import type { World, WorldEvent } from "../../contracts.js";
+import type { World, WorldBody, WorldEvent } from "../../contracts.js";
 import { gameActTool, type GameActContext } from "./game-act.js";
 import { isStopOn } from "../../entity/stop.js";
 import { expireDue, pendingCounts, syncActs, type ThreadNote, withholdForStop } from "./acts.js";
 import { optionsOf, renderView } from "./options.js";
+import {
+  checkSnapshot, expireSnapshots, gameSnapshotTool, openSnapshots, SNAPSHOT_PICTURE_NAME, SNAPSHOT_STATUS, settleFailed,
+  settleTaken, type SnapshotContext, withdrawSnapshots,
+} from "./snapshot.js";
 import { admitObservation, HeartbeatBook, markSpanUndone, openDomusDb, pruneObservations } from "./store.js";
 import {
   BODY_LIMIT, canonicalJson, DOMUS_WORLD_ID, gameThreadOf, MIN_TOKEN_BYTES, observationDigest, parseActSync, parseFeed,
@@ -149,6 +153,8 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
   let sweep: ReturnType<typeof setInterval> | null = null;
   let bound: { host: string; port: number } | null = null;
   let lastPruneMs = 0;
+  /** The body's way to keep pictures on the shelf. Set at start; a picture the helper sends is kept through it. */
+  let keeper: WorldBody | null = null;
 
   const deliver = (event: WorldEvent): void => {
     if (!emitter) return;
@@ -165,6 +171,14 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     const heartbeats = book;
     if (!current || !heartbeats) return null;
     return { db: current, nowMs, attachedAt: (at: number) => heartbeats.attachedAt(at) };
+  };
+
+  /** What the game_snapshot tool reads on each call: null while the world is not running. */
+  const openSnapshot = (): SnapshotContext => {
+    const current = db;
+    const heartbeats = book;
+    if (!current || !heartbeats) return null;
+    return { db: current, nowMs, attachedSession: (at: number) => heartbeats.attachedSession(at) };
   };
 
   function observationRoute(body: unknown, res: ServerResponse): void {
@@ -213,10 +227,14 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     const parsed = parseActSync(body);
     const now = nowMs();
     // The summoner's stop reaches the game too: what was requested before it is withdrawn, not handed over.
-    const withheld = isStopOn(options.dir) ? withholdForStop(requireDb(), now) : [];
+    const stopped = isStopOn(options.dir);
+    const withheld = stopped ? withholdForStop(requireDb(), now) : [];
+    const pictures = stopped ? withdrawSnapshots(requireDb(), now) : expireSnapshots(requireDb(), now);
     const result = syncActs(requireDb(), { attachment: parsed.helperSession, events: parsed.events, nowMs: now });
+    const snapshots = stopped ? [] : openSnapshots(requireDb(), { helperSession: parsed.helperSession, nowMs: now });
     for (const note of withheld) deliver(noteEvent(note, now));
-    send(res, 200, { status: "ok", applied: result.applied, acts: result.acts, planned: result.planned, snapshots: [] });
+    for (const note of pictures) deliver(noteEvent(note, now));
+    send(res, 200, { status: "ok", applied: result.applied, acts: result.acts, planned: result.planned, snapshots });
     for (const note of result.notes) deliver(noteEvent(note, now));
   }
 
@@ -236,6 +254,43 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       atMs: now,
       wake: false,
     });
+  }
+
+  /** The helper's answer to a picture request: the picture goes on the shelf and the request is marked taken, or the reason is kept. */
+  function snapshotRoute(body: unknown, res: ServerResponse): void {
+    const parsed = parseSnapshot(body);
+    const now = nowMs();
+    const checked = checkSnapshot(requireDb(), {
+      helperSession: parsed.helperSession,
+      snapshotId: parsed.snapshotId,
+      ...(parsed.pngBase64 !== undefined ? { pngBase64: parsed.pngBase64 } : {}),
+      ...(parsed.failed !== undefined ? { failed: parsed.failed } : {}),
+    });
+    if (!checked.ok) {
+      send(res, SNAPSHOT_STATUS[checked.code], { error: checked.code });
+      return;
+    }
+    if (parsed.failed !== undefined) {
+      const note = settleFailed(requireDb(), { snapshotId: parsed.snapshotId, failed: parsed.failed, thread: checked.thread, nowMs: now });
+      send(res, 200, { status: "ok" });
+      deliver(noteEvent(note, now));
+      return;
+    }
+    const shelf = keeper;
+    if (shelf === null || checked.bytes === undefined) {
+      send(res, SNAPSHOT_STATUS.snapshots_unavailable, { error: "snapshots_unavailable" });
+      return;
+    }
+    let picture: { id: string };
+    try {
+      picture = shelf.keepPicture({ bytes: checked.bytes, name: SNAPSHOT_PICTURE_NAME, from: { world: DOMUS_WORLD_ID, place: checked.thread } });
+    } catch {
+      send(res, SNAPSHOT_STATUS.write_failed, { error: "write_failed" });
+      return;
+    }
+    const note = settleTaken(requireDb(), { snapshotId: parsed.snapshotId, thread: checked.thread, pictureId: picture.id, nowMs: now });
+    send(res, 200, { status: "ok" });
+    deliver(noteEvent(note, now));
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -268,12 +323,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
           send(res, 200, { status: "ok", items: [], marks: [] });
           return;
         }
-        case "/domus/snapshot": {
-          parseSnapshot(body);
-          // No picture is requested in this world, so every well-formed snapshot is one the listener never asked for.
-          send(res, 404, { error: "unknown_snapshot" });
-          return;
-        }
+        case "/domus/snapshot": return snapshotRoute(body, res);
       }
     } catch (error) {
       if (error instanceof WireError) {
@@ -301,6 +351,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       const now = nowMs();
       if (isStopOn(options.dir)) for (const note of withholdForStop(db, now)) deliver(noteEvent(note, now));
       for (const note of expireDue(db, now)) deliver(noteEvent(note, now));
+      for (const note of isStopOn(options.dir) ? withdrawSnapshots(db, now) : expireSnapshots(db, now)) deliver(noteEvent(note, now));
       if (now - lastPruneMs >= PRUNE_MS) {
         lastPruneMs = now;
         pruneObservations(db, now);
@@ -313,7 +364,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
   return {
     id: DOMUS_WORLD_ID,
 
-    async start(emit) {
+    async start(emit, worldBody) {
       if (server) throw new Error("The Domus world is already started.");
       const problem = tokenProblem(options.token, others);
       if (problem) throw new Error(TOKEN_MESSAGE[problem]);
@@ -326,6 +377,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
         throw error;
       }
       emitter = emit;
+      keeper = worldBody;
       const listener = createServer((req, res) => {
         void handle(req, res);
       });
@@ -351,6 +403,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       if (sweep) clearInterval(sweep);
       sweep = null;
       emitter = null;
+      keeper = null;
       const closing = server;
       server = null;
       bound = null;
@@ -372,7 +425,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     },
 
     tools() {
-      return [gameActTool(open)];
+      return [gameActTool(open), gameSnapshotTool(openSnapshot)];
     },
 
     about() {

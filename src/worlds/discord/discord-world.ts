@@ -15,7 +15,8 @@ import {
 } from "discord.js";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Receipt, RiverSource, Tool, World, WorldEvent } from "../../contracts.js";
+import type { Receipt, RiverSource, SayFile, Tool, World, WorldBody, WorldEvent } from "../../contracts.js";
+import { PICTURE_BYTES_MAX } from "../../media/shelf.js";
 import { createAliasStore, OWNER_ALIAS, type AliasStore } from "./aliases.js";
 
 // ---------------------------------------------------------------------------------------------------
@@ -46,6 +47,7 @@ function writeJsonAtomic(path: string, value: unknown): void {
 export type PlatformAuthor = { id: string; displayName: string; bot: boolean };
 export type PlatformAttachment = { name: string; contentType: string | null; url: string };
 export type PlatformMention = { id: string; displayName: string };
+export type OutboundFile = { name: string; bytes: Uint8Array };
 
 export type PlatformMessage = {
   id: string;
@@ -72,8 +74,14 @@ export type PlatformClient = {
   /** The direct-message channel with a user. */
   openDm(userId: string): Promise<string>;
   /** Send one message; resolves with its id. Mentions in the text never ping anyone. */
-  /** `mentionUserIds`: the only people this message may ping (never everyone or roles). */
-  send(channelId: string, text: string, replyToMessageId: string | null, mentionUserIds?: string[]): Promise<string>;
+  /** `mentionUserIds`: the only people this message may ping (never everyone or roles). `files`: pictures to attach. */
+  send(
+    channelId: string,
+    text: string,
+    replyToMessageId: string | null,
+    mentionUserIds?: string[],
+    files?: OutboundFile[],
+  ): Promise<string>;
   react(channelId: string, messageId: string, emoji: string): Promise<void>;
   /** Most recent messages first. */
   history(channelId: string, limit: number): Promise<PlatformMessage[]>;
@@ -99,6 +107,8 @@ export type DiscordWorldOptions = {
   maxDebounceMs?: number;
   guestLimit?: { messages: number; perMs: number };
   botExchangeLimit?: number;
+  /** Fetches the pictures people send. Injected in tests; the global fetch is used when absent. */
+  fetch?: typeof fetch;
 };
 
 const WORLD_ID = "discord";
@@ -108,6 +118,9 @@ const HISTORY_DEFAULT = 20;
 const HISTORY_MAX = 50;
 const ERROR_TEXT_MAX = 200;
 const EMOJI_MAX = 32;
+/** Discord's own attachment hosts. A picture is fetched from these over https and from nowhere else. */
+const PICTURE_HOSTS: ReadonlySet<string> = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
+const PICTURE_FETCH_MS = 20_000;
 
 function refused(code: string, reason: string, summary: string, data?: Record<string, unknown>): Receipt {
   return { ok: false, summary, ...(data ? { data } : {}), refused: { code, reason: `${code}: ${reason}` } };
@@ -122,7 +135,15 @@ type Pending = {
   source: RiverSource;
   bot: boolean;
   startedAtMs: number;
-  messages: Array<{ ref: string; text: string; attachments: EventAttachment[]; mentionsHer: boolean; replyToRef: string | null }>;
+  messages: Array<{
+    ref: string;
+    text: string;
+    attachments: EventAttachment[];
+    mentionsHer: boolean;
+    replyToRef: string | null;
+    /** One line per picture the Lar keeps (or cannot keep), when the message has image attachments. */
+    pictures: Promise<string[]> | null;
+  }>;
   flooded: boolean;
   loopCeiling: boolean;
   timer: ReturnType<typeof setTimeout> | null;
@@ -186,6 +207,10 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
   const roomSlugs = new Map<string, string>();
 
   const pending = new Map<string, Pending>();
+  /** Bursts that wait for their pictures to be fetched and kept; stop waits for them too. */
+  const flushing = new Set<Promise<void>>();
+  /** The body's way to keep pictures. Set at start. */
+  let keeper: WorldBody | null = null;
   const guestHits = new Map<string, number[]>();
   const botRuns = new Map<string, number>();
 
@@ -268,11 +293,27 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     burst.timer = setTimeout(() => flush(burst.key), delay);
   }
 
-  function flush(key: string): void {
+  /** Sends a burst on as one event. A burst with pictures still arriving waits for them; the world's stop waits too. */
+  function flush(key: string): Promise<void> {
     const burst = pending.get(key);
-    if (!burst) return;
+    if (!burst) return Promise.resolve();
     if (burst.timer) clearTimeout(burst.timer);
     pending.delete(key);
+    if (!burst.messages.some((message) => message.pictures !== null)) {
+      emitBurst(burst, []);
+      return Promise.resolve();
+    }
+    const sending = Promise.all(burst.messages.map((message) => message.pictures ?? Promise.resolve<string[]>([])))
+      .then((lines) => emitBurst(burst, lines))
+      .catch((error: unknown) => {
+        console.error(`[discord] a burst could not be sent: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    flushing.add(sending);
+    void sending.finally(() => flushing.delete(sending));
+    return sending;
+  }
+
+  function emitBurst(burst: Pending, lines: string[][]): void {
     const emit = emitter;
     if (!emit) return;
     const replyToRef = burst.messages.find((message) => message.replyToRef)?.replyToRef ?? null;
@@ -290,7 +331,10 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       place: burst.place,
       actor: burst.actor,
       source: burst.source,
-      text: burst.messages.map((message) => message.text).filter(Boolean).join("\n"),
+      text: burst.messages
+        .map((message, index) => [message.text, ...(lines[index] ?? [])].filter(Boolean).join("\n"))
+        .filter(Boolean)
+        .join("\n"),
       atMs: burst.startedAtMs,
       wake: !(burst.flooded || burst.loopCeiling),
       data,
@@ -328,6 +372,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     const ref = refFor(message.channelId, message.id);
     const entry = {
       ref,
+      pictures: pictureLines(message.attachments, `${PLACE_PREFIX}${placeAlias}`),
       text: readable(message.content, message.mentionedUsers),
       attachments: describeAttachments(message.attachments),
       mentionsHer: message.content.includes(`<@${self.id}>`) || message.content.includes(`<@!${self.id}>`),
@@ -335,7 +380,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     };
 
     const existing = pending.get(key);
-    if (existing && nowMs - existing.startedAtMs >= maxDebounceMs) flush(key);
+    if (existing && nowMs - existing.startedAtMs >= maxDebounceMs) void flush(key);
     let burst = pending.get(key);
     if (!burst) {
       burst = {
@@ -356,6 +401,26 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     burst.flooded = burst.flooded || flooded;
     burst.loopCeiling = burst.loopCeiling || loopCeiling;
     arm(burst, nowMs);
+  }
+
+  /** One picture line per image attachment: kept on the shelf, or the reason it was not kept. Null when there are none. */
+  function pictureLines(attachments: PlatformAttachment[], place: string): Promise<string[]> | null {
+    const images = attachments.filter((attachment) => (attachment.contentType ?? "").startsWith("image/"));
+    return images.length === 0 ? null : Promise.all(images.map((attachment) => keepFromDiscord(attachment, place)));
+  }
+
+  /** Fetches one picture from Discord and puts it on the shelf. Never rejects: a picture that is not kept says why. */
+  async function keepFromDiscord(attachment: PlatformAttachment, place: string): Promise<string> {
+    const name = scrubIds(attachment.name);
+    const fetched = await fetchPicture(attachment.url, options.fetch ?? fetch);
+    if (!fetched.ok) return `[attachment: ${name} (not kept: ${fetched.reason})]`;
+    if (keeper === null) return `[attachment: ${name} (not kept: the Lar has no shelf right now)]`;
+    try {
+      const ref = keeper.keepPicture({ bytes: fetched.bytes, name, from: { world: WORLD_ID, place } });
+      return `[picture ${ref.id}: ${ref.name}, ${Math.ceil(ref.bytes / 1024)} KB]`;
+    } catch (error) {
+      return `[attachment: ${name} (not kept: ${cleanError(error)})]`;
+    }
   }
 
   function roomSlugOf(channelId: string, channelName: string | null): string {
@@ -511,9 +576,10 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
   return {
     id: WORLD_ID,
 
-    async start(emit) {
+    async start(emit, worldBody) {
       if (status === "starting" || status === "connected") throw new Error("Discord world is already started.");
       emitter = emit;
+      keeper = worldBody;
       status = "starting";
       statusReason = "connecting";
       if (!handlersRegistered) {
@@ -553,11 +619,13 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
 
     async stop() {
       if (status !== "starting" && status !== "connected") return;
-      for (const key of [...pending.keys()]) flush(key);
-      emitter = null;
-      self = null;
+      // No message is taken from here on. What is pending goes out, pictures and all, before the emitter closes.
       status = "stopped";
       statusReason = "stopped";
+      for (const key of [...pending.keys()]) void flush(key);
+      await Promise.allSettled([...flushing]);
+      emitter = null;
+      self = null;
       await client.logout();
     },
 
@@ -576,6 +644,8 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       });
       const chunks = splitForDiscord(withMentions);
       if (chunks.length === 0) return refused("empty_text", "there is no text to send.", "There was nothing to send.");
+      const pictures = readOutboundFiles(sayOptions?.files ?? []);
+      if (!pictures.ok) return pictures.receipt;
 
       let replyId: string | null = null;
       if (sayOptions?.replyTo !== undefined) {
@@ -594,7 +664,9 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       for (let index = 0; index < chunks.length; index += 1) {
         const chunk = chunks[index] ?? "";
         try {
-          const sentId = await client.send(target.channelId, chunk, index === 0 ? replyId : null, [...mentionUserIds]);
+          // The pictures go with the first message only.
+          const files = index === 0 && pictures.files.length > 0 ? pictures.files : undefined;
+          const sentId = await client.send(target.channelId, chunk, index === 0 ? replyId : null, [...mentionUserIds], files);
           refs.push(refFor(target.channelId, sentId));
           botRuns.set(target.channelId, (botRuns.get(target.channelId) ?? 0) + 1);
         } catch (error) {
@@ -647,6 +719,96 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
 
 // ---------------------------------------------------------------------------------------------------
 // Helpers.
+
+const PICTURE_EXTENSION: Readonly<Record<string, string>> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+};
+
+/** The shelf pictures a say carries, read from the files the body holds. A file that cannot be read refuses the say. */
+function readOutboundFiles(files: SayFile[]): { ok: true; files: OutboundFile[] } | { ok: false; receipt: Receipt } {
+  const out: OutboundFile[] = [];
+  for (const file of files) {
+    try {
+      out.push({ name: safeFileName(file.name, file.mime), bytes: readFileSync(file.path) });
+    } catch {
+      return {
+        ok: false,
+        receipt: refused("picture_unreadable", `the picture ${file.name} could not be read from the shelf, so nothing was sent.`, "A picture could not be read, so nothing was sent."),
+      };
+    }
+  }
+  return { ok: true, files: out };
+}
+
+/** A file name Discord takes: letters, digits, dash and underscore, with the extension the picture type gives. */
+function safeFileName(name: string, mime: string): string {
+  const extension = PICTURE_EXTENSION[mime] ?? "bin";
+  const stem = name.replace(/\.[A-Za-z0-9]{1,5}$/, "").replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 48);
+  return `${stem || "picture"}.${extension}`;
+}
+
+/**
+ * A picture's bytes from one of Discord's attachment hosts, or the plain reason it was not fetched. The address is
+ * checked before anything is requested: https, one of the two hosts, no port, no userinfo. Redirects are not
+ * followed, the size is capped while reading, and it never rejects.
+ */
+async function fetchPicture(
+  url: string,
+  fetchFn: typeof fetch,
+): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; reason: string }> {
+  let target: URL;
+  try {
+    target = new URL(url);
+  } catch {
+    return { ok: false, reason: "its address is not usable" };
+  }
+  if (
+    target.protocol !== "https:" ||
+    !PICTURE_HOSTS.has(target.hostname) ||
+    target.port !== "" ||
+    target.username !== "" ||
+    target.password !== ""
+  ) {
+    return { ok: false, reason: "it is not on Discord's attachment hosts" };
+  }
+  const tooLarge = { ok: false as const, reason: "it is larger than 8 MiB" };
+  try {
+    const response = await fetchFn(target.href, { redirect: "manual", signal: AbortSignal.timeout(PICTURE_FETCH_MS) });
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel();
+      return { ok: false, reason: "Discord redirected the download, which is not followed" };
+    }
+    if (!response.ok) {
+      await response.body?.cancel();
+      return { ok: false, reason: `Discord answered ${response.status}` };
+    }
+    const declared = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > PICTURE_BYTES_MAX) {
+      await response.body?.cancel();
+      return tooLarge;
+    }
+    const reader = response.body?.getReader();
+    if (reader === undefined) return { ok: false, reason: "nothing came back" };
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > PICTURE_BYTES_MAX) {
+        await reader.cancel();
+        return tooLarge;
+      }
+      chunks.push(value);
+    }
+    return { ok: true, bytes: Buffer.concat(chunks) };
+  } catch {
+    return { ok: false, reason: "it could not be downloaded" };
+  }
+}
 
 /** Long digit runs are platform ids (snowflakes are 17 to 20 digits). They never reach the entity. */
 function scrubIds(text: string): string {
@@ -883,12 +1045,13 @@ export function createDiscordJsClient(): PlatformClient {
       const dm = await user.createDM();
       return dm.id;
     },
-    async send(channelId, text, replyToMessageId, mentionUserIds = []) {
+    async send(channelId, text, replyToMessageId, mentionUserIds = [], files = []) {
       const channel = await sendable(channelId);
       const sent = await channel.send({
         content: text,
         allowedMentions: { parse: [], users: mentionUserIds, repliedUser: false },
         ...(replyToMessageId ? { reply: { messageReference: replyToMessageId, failIfNotExists: false } } : {}),
+        ...(files.length > 0 ? { files: files.map((file) => ({ attachment: Buffer.from(file.bytes), name: file.name })) } : {}),
       });
       return sent.id;
     },

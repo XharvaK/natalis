@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Receipt, Tool, ToolContext, WorldEvent } from "../../contracts.js";
 import { writeStop } from "../../entity/stop.js";
+import { openShelf, shelfBody, type Shelf } from "../../media/shelf.js";
 import { createDomusWorld, type DomusWorld } from "./domus-world.js";
 import { MIN_TOKEN_BYTES } from "./wire.js";
 
@@ -28,6 +29,7 @@ let clock: number;
 let events: WorldEvent[];
 let world: DomusWorld | undefined;
 let seq: number;
+let shelf: Shelf;
 
 function make(token = TOKEN, others: string[] = [BOT]): DomusWorld {
   return createDomusWorld({ dir, token, host: "127.0.0.1", port: 0, nowMs: () => clock, otherTokens: others });
@@ -35,7 +37,8 @@ function make(token = TOKEN, others: string[] = [BOT]): DomusWorld {
 
 async function startWorld(): Promise<DomusWorld> {
   const next = make();
-  await next.start((event) => events.push(event));
+  shelf = openShelf(join(dir, "media"));
+  await next.start((event) => events.push(event), shelfBody(shelf, () => clock));
   world = next;
   return next;
 }
@@ -322,11 +325,121 @@ describe("snapshot, feed and undo", () => {
   });
 });
 
+// A picture of the game for the snapshot tests: a PNG signature and a few more bytes.
+const PNG_BASE64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]).toString("base64");
+
+function snapshotTool(): Tool {
+  const found = world?.tools().find((item) => item.spec.name === "game_snapshot");
+  if (!found) throw new Error("no tool game_snapshot");
+  return found;
+}
+
+function askForPicture(thread = "domus:slot3"): Promise<Receipt> {
+  return snapshotTool().run({}, { thread, turnId: "t-snap", nowMs: clock } as ToolContext);
+}
+
+async function attach(session = "helper-1"): Promise<void> {
+  await call("/domus/heartbeat", { v: 1, helper_session: session, sent_at_ms: clock, attached: true });
+}
+
+/** The snapshot id the helper is told to take, from its sync. */
+async function pendingSnapshotId(session = "helper-1"): Promise<string> {
+  const sync = await call("/domus/acts/sync", { v: 1, helper_session: session, events: [] });
+  const found = sync.body.snapshots as Array<{ snapshot_id: string }>;
+  return found[0]?.snapshot_id ?? "";
+}
+
+describe("game pictures: the Lar asks, the helper takes, the shelf keeps", () => {
+  it("refuses a picture while the game is not attached, and lets one open request at a time", async () => {
+    expect(await askForPicture()).toMatchObject({ ok: false, refused: { code: "not_attached" } });
+    await attach();
+    const asked = await askForPicture();
+    expect(asked).toMatchObject({ ok: true, data: { expiresAtMs: clock + 600_000 } });
+    clock += 30_000;
+    expect(await askForPicture()).toMatchObject({ ok: false, refused: { code: "one_open" } });
+    expect((await askForPicture()).refused?.reason).toContain("30 s ago");
+    expect(await askForPicture("domus:other")).toMatchObject({ ok: true });
+  });
+
+  it("refuses the tool outside a game thread", async () => {
+    await attach();
+    expect(await askForPicture("cli:summoner")).toMatchObject({ ok: false, refused: { code: "not_a_game_thread" } });
+  });
+
+  it("lists the request in the next sync, keeps the picture the helper sends, and wakes the thread", async () => {
+    await attach();
+    await askForPicture();
+    const snapshotId = await pendingSnapshotId();
+    expect(snapshotId).not.toBe("");
+
+    const posted = await call("/domus/snapshot", { v: 1, helper_session: "helper-1", snapshot_id: snapshotId, png_base64: PNG_BASE64 });
+    expect(posted).toEqual({ status: 200, body: { status: "ok" } });
+    const [picture] = shelf.list();
+    expect(picture).toMatchObject({ mime: "image/png", bytes: 11, name: "game.png", from: { world: "domus", place: "domus:slot3" } });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ place: "domus:slot3", source: "body", wake: true });
+    expect(events[0]?.text).toBe(`Your picture of the game is on your shelf as ${picture?.id}.`);
+
+    expect(await call("/domus/snapshot", { v: 1, helper_session: "helper-1", snapshot_id: snapshotId, png_base64: PNG_BASE64 }))
+      .toEqual({ status: 409, body: { error: "not_requested" } });
+    expect(await pendingSnapshotId()).toBe("");
+    expect(await askForPicture()).toMatchObject({ ok: true });
+  });
+
+  it("refuses a picture from the wrong session without using the request, and a file that is not a PNG", async () => {
+    await attach();
+    await askForPicture();
+    const snapshotId = await pendingSnapshotId();
+    expect(await call("/domus/snapshot", { v: 1, helper_session: "helper-2", snapshot_id: snapshotId, png_base64: PNG_BASE64 }))
+      .toEqual({ status: 409, body: { error: "wrong_attachment" } });
+    expect(await call("/domus/snapshot", { v: 1, helper_session: "helper-1", snapshot_id: snapshotId, png_base64: Buffer.from("<html>").toString("base64") }))
+      .toEqual({ status: 400, body: { error: "not_png" } });
+    expect(await call("/domus/snapshot", { v: 1, helper_session: "helper-1", snapshot_id: "snap-unknown", png_base64: PNG_BASE64 }))
+      .toEqual({ status: 404, body: { error: "unknown_snapshot" } });
+    expect(shelf.list()).toEqual([]);
+    expect(await call("/domus/snapshot", { v: 1, helper_session: "helper-1", snapshot_id: snapshotId, png_base64: PNG_BASE64 })).toEqual({ status: 200, body: { status: "ok" } });
+  });
+
+  it("says why a picture could not be taken, and wakes the thread", async () => {
+    await attach();
+    await askForPicture();
+    const snapshotId = await pendingSnapshotId();
+    expect(await call("/domus/snapshot", { v: 1, helper_session: "helper-1", snapshot_id: snapshotId, failed: "game_minimized" }))
+      .toEqual({ status: 200, body: { status: "ok" } });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ place: "domus:slot3", wake: true });
+    expect(events[0]?.text).toBe("Your picture of the game could not be taken: the game window was minimized.");
+    expect(shelf.list()).toEqual([]);
+  });
+
+  it("expires a request nobody took within ten minutes, without waking the thread", async () => {
+    await attach();
+    await askForPicture();
+    clock += 600_001;
+    expect(await pendingSnapshotId()).toBe("");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ place: "domus:slot3", wake: false });
+    expect(events[0]?.text).toBe("Your picture of the game was not taken within ten minutes, so the request expired.");
+    await attach();
+    expect(await askForPicture()).toMatchObject({ ok: true });
+  });
+
+  it("withdraws a waiting request when the summoner's stop goes on, and tells the Lar without a wake", async () => {
+    await attach();
+    await askForPicture();
+    writeStop(dir, "test");
+    expect(await pendingSnapshotId()).toBe("");
+    expect(events.map((event) => [event.text, event.wake])).toEqual([
+      ["Your picture request was withdrawn: your summoner's emergency stop is on.", false],
+    ]);
+  });
+});
+
 describe("the world's surface", () => {
   it("offers one game tool, says what it is about, and refuses words", async () => {
     expect(world?.id).toBe("domus");
-    expect(world?.tools().map((item) => item.spec.name)).toEqual(["game_act"]);
-    expect(world?.tools()[0]?.spec.safeWhenStopped).toBeUndefined();
+    expect(world?.tools().map((item) => item.spec.name)).toEqual(["game_act", "game_snapshot"]);
+    expect(world?.tools().map((item) => item.spec.safeWhenStopped)).toEqual([undefined, undefined]);
     expect(world?.about?.()).toBe("The Sims 4 (Domus): your household's game, at domus:<world>, while your summoner's helper is attached.");
     expect(await world?.say("domus:slot3", "hello")).toMatchObject({ ok: false, refused: { code: "no_words" } });
   });

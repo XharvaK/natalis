@@ -196,7 +196,10 @@ function toWireMessage(message: ChatMessage): Record<string, unknown> {
         role: "user",
         content: [
           { type: "text", text: message.content },
-          ...message.images.map((url) => ({ type: "image_url", image_url: { url } })),
+          ...message.images.map((picture) => ({
+            type: "image_url",
+            image_url: { url: `data:${picture.mime};base64,${picture.dataBase64}` },
+          })),
         ],
       };
     }

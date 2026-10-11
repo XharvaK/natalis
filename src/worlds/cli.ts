@@ -1,7 +1,7 @@
 // The command-line world: the owner types lines into a terminal and the entity's words come back to the same
 // terminal. It offers no tools of its own. The host decides what is shown; the words are the entity's.
 
-import type { SayResult, World, WorldEvent } from "../contracts.js";
+import type { SayFile, SayResult, World, WorldEvent } from "../contracts.js";
 
 export const CLI_WORLD_ID = "cli";
 export const CLI_PLACE = "cli:summoner";
@@ -36,7 +36,10 @@ export function createCliWorld(options: CliWorldOptions): CliWorld {
       emit({ world: CLI_WORLD_ID, place: CLI_PLACE, source: "owner", text });
     },
 
-    async say(place: string, text: string): Promise<SayResult> {
+    async say(place: string, text: string, sayOptions?: { replyTo?: string; files?: SayFile[] }): Promise<SayResult> {
+      if (sayOptions?.files !== undefined && sayOptions.files.length > 0) {
+        return { ok: false, summary: "This place cannot carry pictures, so nothing was sent.", refused: { code: "no_pictures", reason: "this place cannot carry pictures" } };
+      }
       if (!place.startsWith(`${CLI_WORLD_ID}:`)) {
         return { ok: false, summary: "That is not a command-line place.", refused: { code: "no_place", reason: `${place} is not a command-line place.` } };
       }

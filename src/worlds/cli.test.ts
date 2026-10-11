@@ -54,3 +54,13 @@ describe("the command-line world", () => {
     expect(CLI_NOW).toBe("Command line: open.");
   });
 });
+
+describe("the command-line world and pictures", () => {
+  it("refuses a say that carries pictures, since the terminal cannot show them", async () => {
+    const shown: string[] = [];
+    const cli = createCliWorld({ onSay: (_place, text) => shown.push(text) });
+    const receipt = await cli.say(CLI_PLACE, "Here it is.", { files: [{ path: "/x/m-ABCD2345.png", name: "cat.png", mime: "image/png" }] });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "no_pictures", reason: "this place cannot carry pictures" } });
+    expect(shown).toEqual([]);
+  });
+});

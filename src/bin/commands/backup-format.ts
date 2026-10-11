@@ -1,7 +1,7 @@
 // The shape of a Lar backup, shared by `natalis backup` and `natalis restore`: the files a backup holds, the manifest
 // that lists them with sizes and hashes, and the two checks both commands make (the manifest, and the river's last
 // seq). A backup holds only the files named here, plus the worlds' own folders: the vault (kept 0600), the sandbox
-// home and the game's folder. Nothing with "env" in its name is ever in the list (in the home, a file or folder with
+// home, the game's folder and the shelf of pictures. Nothing with "env" in its name is ever in the list (in the home, a file or folder with
 // "env" in its name is left out), and the emergency stop file is not either: a restored Lar starts with its stop off.
 
 import { execFile } from "node:child_process";
@@ -32,6 +32,8 @@ export const PLAIN_FILES: readonly string[] = [
 
 /** The web world's vault: one file per secret, each copied as it is and restored with mode 0600. */
 export const VAULT_TREE = "vault";
+/** The shelf of pictures: `<id>.<ext>` and its `<id>.json` sidecar, nothing else. */
+export const MEDIA_TREE = "media";
 /** The sandbox world's home: everything the Lar keeps there, except symlinks, caches, and anything named like env. */
 export const HOME_TREE = "home";
 /** Top-level folders of the home that are only caches, left out of a backup. */
@@ -40,6 +42,7 @@ export const HOME_SKIPPED: ReadonlySet<string> = new Set([".cache"]);
 export const DOMUS_DB_PATH = "domus/domus.sqlite";
 export const DOMUS_STATE_PATH = "domus/state.json";
 const VAULT_ENTRY = /^vault\/[A-Za-z0-9_.-]{1,48}\.json$/;
+const MEDIA_ENTRY = /^media\/m-[A-Z2-7]{8}\.(png|jpg|gif|webp|json)$/;
 
 /** Every name a manifest may list. Anything else, including any name with "env" in it, is refused. */
 const ALLOWED_NAMES: ReadonlySet<string> = new Set<string>([RIVER_FILE, BUNDLE_FILE, ...PLAIN_FILES, DOMUS_DB_PATH, DOMUS_STATE_PATH]);
@@ -48,6 +51,7 @@ const ALLOWED_NAMES: ReadonlySet<string> = new Set<string>([RIVER_FILE, BUNDLE_F
 export function isAllowedName(name: string): boolean {
   if (ALLOWED_NAMES.has(name)) return !hasEnvName(name);
   if (VAULT_ENTRY.test(name)) return true;
+  if (MEDIA_ENTRY.test(name)) return !hasEnvName(name);
   if (!name.startsWith(`${HOME_TREE}/`)) return false;
   const parts = name.split("/");
   return parts.length >= 2 && parts.every((part) => part !== "" && part !== "." && part !== ".." && !/[\\\u0000:]/.test(part))

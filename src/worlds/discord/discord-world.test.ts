@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +12,7 @@ import {
   type PlatformMention,
   type PlatformMessage,
 } from "./discord-world.js";
+import { openShelf, PICTURE_BYTES_MAX, shelfBody } from "../../media/shelf.js";
 
 // Every id here is invented. Tokens are built from parts so no token-shaped literal sits in the source.
 const OWNER = "5".repeat(18);
@@ -35,6 +36,8 @@ type Fake = {
   client: PlatformClient;
   sent: SentRecord[];
   reactions: Array<{ channelId: string; messageId: string; emoji: string }>;
+  /** Pictures sent with a message: the channel, the name Discord gets, and the size. */
+  uploads: Array<{ channelId: string; name: string; bytes: number }>;
   history: PlatformMessage[];
   /** Per send: null succeeds, an Error fails that call. Consumed in order. */
   sendScript: Array<Error | null>;
@@ -51,6 +54,7 @@ function fakeClient(): Fake {
     client: undefined as unknown as PlatformClient,
     sent: [],
     reactions: [],
+    uploads: [],
     history: [],
     sendScript: [],
     loginError: null,
@@ -79,12 +83,13 @@ function fakeClient(): Fake {
     async openDm(userId) {
       return userId === OWNER ? DM_OWNER : DM_MARA;
     },
-    async send(channelId, text, replyTo, mentionUserIds = []) {
+    async send(channelId, text, replyTo, mentionUserIds = [], files = []) {
       const scripted = fake.sendScript.shift();
       if (scripted) throw scripted;
       seq += 1;
       const id = `30${String(seq).padStart(16, "0")}`;
       fake.sent.push({ channelId, text, replyTo, id, mentions: mentionUserIds });
+      for (const file of files) fake.uploads.push({ channelId, name: file.name, bytes: file.bytes.length });
       return id;
     },
     async react(channelId, messageId, emoji) {
@@ -144,6 +149,9 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+/** A fetch that answers 404 unless a test says otherwise, so no test reaches the network. */
+const notFound = (async () => new Response("", { status: 404 })) as unknown as typeof fetch;
+
 async function startWorld(extra: Partial<DiscordWorldOptions> = {}) {
   const fake = fakeClient();
   const world = createDiscordWorld({
@@ -152,13 +160,15 @@ async function startWorld(extra: Partial<DiscordWorldOptions> = {}) {
     rooms: [GENERAL],
     aliasesPath,
     client: fake.client,
+    fetch: notFound,
     ...extra,
   });
   const events: WorldEvent[] = [];
+  const shelf = openShelf(join(dir, "media"));
   await world.start((event) => {
     events.push(event);
-  });
-  return { world, fake, events };
+  }, shelfBody(shelf, () => Date.now()));
+  return { world, fake, events, shelf };
 }
 
 /** The tool, called with a context the world never reads (it takes its place from the arguments). */
@@ -670,5 +680,148 @@ describe("receipts", () => {
       summary: "Delivered to discord:room:general in 1 message(s).",
       data: { refs: ["m1"] },
     });
+  });
+});
+
+describe("pictures out", () => {
+  const PNG_BYTES = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 9]);
+
+  it("sends the shelf pictures with the words, named safely for Discord", async () => {
+    const { world, fake } = await startWorld();
+    const path = join(dir, "picture.bin");
+    writeFileSync(path, PNG_BYTES);
+    const receipt = await world.say("discord:dm:owner", "Here is the cat.", { files: [{ path, name: "../cat photo.png", mime: "image/png" }] });
+    expect(receipt.ok).toBe(true);
+    expect(fake.uploads).toEqual([{ channelId: DM_OWNER, name: "cat_photo.png", bytes: PNG_BYTES.length }]);
+    expect(fake.sent.map((item) => item.text)).toEqual(["Here is the cat."]);
+  });
+
+  it("attaches the pictures to the first message only, when the words are split", async () => {
+    const { world, fake } = await startWorld();
+    const path = join(dir, "picture.bin");
+    writeFileSync(path, PNG_BYTES);
+    const long = "A sentence of plain words. ".repeat(120);
+    const receipt = await world.say("discord:dm:owner", long, { files: [{ path, name: "one.png", mime: "image/png" }] });
+    expect(receipt.ok).toBe(true);
+    expect(fake.sent.length).toBeGreaterThan(1);
+    expect(fake.uploads).toHaveLength(1);
+  });
+
+  it("refuses the whole say when a picture cannot be read, and sends nothing", async () => {
+    const { world, fake } = await startWorld();
+    const receipt = await world.say("discord:dm:owner", "Look.", { files: [{ path: join(dir, "gone.png"), name: "gone.png", mime: "image/png" }] });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "picture_unreadable" } });
+    expect(fake.sent).toEqual([]);
+    expect(fake.uploads).toEqual([]);
+  });
+});
+
+describe("pictures in", () => {
+  const PNG_BYTES = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7, 7, 7]);
+  /** A host that is not Discord's, built from parts. */
+  const OTHER_HOST = ["other", "host"].join(".");
+  const PNG_URL = `https://media.discordapp.net/attachments/${GENERAL}/${CDN_ATTACHMENT}/cat.png?ex=1&hm=2`;
+  const PICTURE = { name: "cat.png", contentType: "image/png", url: PNG_URL };
+  const pngResponse = (bytes: Uint8Array = PNG_BYTES) => new Response(Buffer.from(bytes), { status: 200, headers: { "content-type": "image/png" } });
+  const fetchReturning = (make: () => Response) => vi.fn(async () => make()) as unknown as typeof fetch & ReturnType<typeof vi.fn>;
+
+  /** Lets the burst's debounce pass and waits for the pictures it was waiting for. */
+  async function settle(check: () => void): Promise<void> {
+    await vi.advanceTimersByTimeAsync(1500);
+    await vi.waitFor(check, { timeout: 2000, interval: 10 });
+  }
+
+  it("keeps an image attachment on the shelf, and the event line names it", async () => {
+    const { fake, events, shelf } = await startWorld({ fetch: fetchReturning(() => pngResponse()) });
+    fake.deliver(incoming({ author: MARA_AUTHOR, content: "look", attachments: [PICTURE] }));
+    await settle(() => expect(events).toHaveLength(1));
+
+    const [picture] = shelf.list();
+    expect(picture).toMatchObject({ mime: "image/png", bytes: PNG_BYTES.length, name: "cat.png", from: { world: "discord", place: "discord:room:general" } });
+    expect(events[0]?.text).toBe(`look\n[picture ${picture?.id}: cat.png, 1 KB]`);
+    expect(events[0]?.data?.attachments).toEqual([{ name: "cat.png", contentType: "image/png", url: "attachment:a1" }]);
+  });
+
+  it("fetches only from Discord's https attachment hosts, and says so when it will not", async () => {
+    const fetchFn = fetchReturning(() => pngResponse());
+    const { fake, events } = await startWorld({ fetch: fetchFn });
+    fake.deliver(incoming({ author: MARA_AUTHOR, content: "look", attachments: [{ name: "cat.png", contentType: "image/png", url: `https://${OTHER_HOST}/cat.png` }] }));
+    await settle(() => expect(events).toHaveLength(1));
+    expect(events[0]?.text).toBe("look\n[attachment: cat.png (not kept: it is not on Discord's attachment hosts)]");
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("refuses plain http and a port, even on a Discord host", async () => {
+    const fetchFn = fetchReturning(() => pngResponse());
+    const { fake, events } = await startWorld({ fetch: fetchFn });
+    fake.deliver(incoming({ author: MARA_AUTHOR, content: "a", attachments: [{ name: "x.png", contentType: "image/png", url: "http://cdn.discordapp.com/x.png" }] }));
+    await settle(() => expect(events).toHaveLength(1));
+    fake.deliver(incoming({ author: OWNER_AUTHOR, channelKind: "dm", content: "b", attachments: [{ name: "y.png", contentType: "image/png", url: "https://cdn.discordapp.com:8443/y.png" }] }));
+    await settle(() => expect(events).toHaveLength(2));
+    expect(events.map((event) => event.text)).toEqual([
+      "a\n[attachment: x.png (not kept: it is not on Discord's attachment hosts)]",
+      "b\n[attachment: y.png (not kept: it is not on Discord's attachment hosts)]",
+    ]);
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("does not follow a redirect, and sends the request with redirects off", async () => {
+    const fetchFn = fetchReturning(() => new Response(null, { status: 302, headers: { location: `https://${OTHER_HOST}/x.png` } }));
+    const { fake, events, shelf } = await startWorld({ fetch: fetchFn });
+    fake.deliver(incoming({ author: MARA_AUTHOR, content: "look", attachments: [PICTURE] }));
+    await settle(() => expect(events).toHaveLength(1));
+    expect(events[0]?.text).toBe("look\n[attachment: cat.png (not kept: Discord redirected the download, which is not followed)]");
+    expect(fetchFn.mock.calls[0]?.[1]).toMatchObject({ redirect: "manual" });
+    expect(shelf.list()).toEqual([]);
+  });
+
+  it("refuses a picture over 8 MiB, from its declared size or from what it sends", async () => {
+    const big = new Uint8Array(PICTURE_BYTES_MAX + 1);
+    big.set(PNG_BYTES);
+    const declared = fetchReturning(() => new Response(Buffer.from(PNG_BYTES), { status: 200, headers: { "content-length": String(PICTURE_BYTES_MAX + 1) } }));
+    const sent = fetchReturning(() => new Response(big, { status: 200 }));
+    const first = await startWorld({ fetch: declared });
+    first.fake.deliver(incoming({ author: MARA_AUTHOR, content: "a", attachments: [PICTURE] }));
+    await settle(() => expect(first.events).toHaveLength(1));
+    expect(first.events[0]?.text).toBe("a\n[attachment: cat.png (not kept: it is larger than 8 MiB)]");
+    await first.world.stop();
+
+    const second = await startWorld({ fetch: sent, aliasesPath: join(dir, "second.json") });
+    second.fake.deliver(incoming({ author: MARA_AUTHOR, content: "b", attachments: [PICTURE] }));
+    await settle(() => expect(second.events).toHaveLength(1));
+    expect(second.events[0]?.text).toBe("b\n[attachment: cat.png (not kept: it is larger than 8 MiB)]");
+    expect(second.shelf.list()).toEqual([]);
+  });
+
+  it("says why a file that is not a picture was not kept", async () => {
+    const { fake, events, shelf } = await startWorld({ fetch: fetchReturning(() => new Response("<html></html>", { status: 200 })) });
+    fake.deliver(incoming({ author: MARA_AUTHOR, content: "look", attachments: [PICTURE] }));
+    await settle(() => expect(events).toHaveLength(1));
+    expect(events[0]?.text).toBe("look\n[attachment: cat.png (not kept: Only PNG, JPEG, GIF and WebP pictures can be kept.)]");
+    expect(shelf.list()).toEqual([]);
+  });
+
+  it("leaves other attachments as they were: no fetch, and the same event line", async () => {
+    const fetchFn = fetchReturning(() => pngResponse());
+    const { fake, events } = await startWorld({ fetch: fetchFn });
+    fake.deliver(incoming({ author: MARA_AUTHOR, content: "notes", attachments: [{ name: "x.txt", contentType: "text/plain", url: PNG_URL }] }));
+    await settle(() => expect(events).toHaveLength(1));
+    expect(events[0]?.text).toBe("notes");
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("waits for a picture still being fetched when the world stops, so the message is not lost", async () => {
+    let release: (response: Response) => void = () => {};
+    const fetchFn = vi.fn(() => new Promise<Response>((resolve) => {
+      release = resolve;
+    })) as unknown as typeof fetch;
+    const { world, fake, events, shelf } = await startWorld({ fetch: fetchFn });
+    fake.deliver(incoming({ author: MARA_AUTHOR, content: "look", attachments: [PICTURE] }));
+    await vi.advanceTimersByTimeAsync(1500);
+    const stopping = world.stop();
+    release(pngResponse());
+    await stopping;
+    expect(events).toHaveLength(1);
+    expect(events[0]?.text).toContain(`[picture ${shelf.list()[0]?.id}: cat.png, 1 KB]`);
   });
 });

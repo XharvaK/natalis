@@ -17,6 +17,7 @@ import { dayKey, hostZone } from "./day.js";
 import { clearStop, writeStop } from "./stop.js";
 import { loadWebFile, normalizeHost, saveWebFile, WEB_FILE, WEB_SITES_MAX, type WebFile } from "../worlds/web/sites.js";
 import { readVault, removeVaultEntry, validVaultName } from "../worlds/web/vault.js";
+import { isPictureId, type Shelf } from "../media/shelf.js";
 
 /** A commitment the Lar proposed and the summoner has not answered yet. */
 export type Proposal = { id: string; text: string; why: string; atMs: number; thread: string };
@@ -41,6 +42,7 @@ export const HELP_TEXT = [
   "!approve <id>: agree to one. !decline <id> [reason]: decline it.",
   "!sites: list the sites the Lar may post, log in or make accounts on. !sites add <host> adds one. !sites remove <host> removes one.",
   "!vault: list the names in the Lar's vault, with the host each belongs to (never the values). !vault remove <name> deletes one.",
+  "!media: list the newest pictures on the Lar's shelf. !media forget <id> removes one.",
   "!help: this list.",
 ].join("\n");
 
@@ -61,6 +63,8 @@ export type SummonerDesk = {
   nowMs: () => number;
   proposals: () => Proposal[];
   setProposals: (next: Proposal[]) => void;
+  /** The shelf of pictures the Lar keeps. */
+  pictures: Shelf;
   /** Writes one body row in the self thread: what the summoner did, in plain words. */
   record: (text: string) => void;
   /** Called after the stop file changed, so the runtime does not report the same change twice. */
@@ -92,6 +96,8 @@ export async function answerSummoner(text: string, desk: SummonerDesk): Promise<
       return sites(rest, desk);
     case "vault":
       return vault(rest, desk);
+    case "media":
+      return media(rest, desk);
     case "help":
       desk.record("Your summoner asked for the list of commands.");
       return HELP_TEXT;
@@ -318,6 +324,42 @@ function removeVault(tail: string[], desk: SummonerDesk): string {
   }
   desk.record(`Your summoner removed the vault value named ${name}. You can no longer send it with auth.`);
   return `Removed the vault value named ${name}. The Lar can no longer send it.`;
+}
+
+// --- the shelf of pictures --------------------------------------------------------------------
+
+const USAGE_MEDIA = "Use !media to list the newest pictures, or !media forget <id> to remove one.";
+const USAGE_FORGET = "Give the picture's id: !media forget <id>. !media lists them.";
+const MEDIA_LIST = 10;
+
+function media(rest: string, desk: SummonerDesk): string {
+  const [sub, ...tail] = words(rest);
+  if (sub === undefined) return mediaList(desk);
+  if (sub.toLowerCase() === "forget") return forgetPicture(tail, desk);
+  return USAGE_MEDIA;
+}
+
+function mediaList(desk: SummonerDesk): string {
+  desk.record("Your summoner looked at the pictures on your shelf.");
+  const pictures = desk.pictures.list();
+  if (pictures.length === 0) return "Your shelf of pictures is empty.";
+  const lines = pictures.slice(0, MEDIA_LIST).map((item) => {
+    const when = new Date(item.atMs).toISOString().slice(0, 16).replace("T", " ");
+    return `- ${item.id}: ${clip(item.name, LIST_TEXT_CLIP)} (${Math.ceil(item.bytes / 1024)} KB, from ${item.from.place}, ${when} UTC)`;
+  });
+  const more = pictures.length > MEDIA_LIST ? `\n...and ${pictures.length - MEDIA_LIST} more on the shelf.` : "";
+  return ["The newest pictures on your shelf:", ...lines].join("\n") + more;
+}
+
+function forgetPicture(tail: string[], desk: SummonerDesk): string {
+  const id = tail[0];
+  if (tail.length !== 1 || id === undefined || !isPictureId(id)) return USAGE_FORGET;
+  if (!desk.pictures.forget(id)) {
+    desk.record(`Your summoner tried to remove the picture ${id}, which is not on your shelf.`);
+    return `There is no picture ${id} on your shelf. !media lists them.`;
+  }
+  desk.record(`Your summoner removed the picture ${id} from your shelf.`);
+  return `Removed the picture ${id} from your shelf.`;
 }
 
 // --- the Lar's proposed commitments -----------------------------------------------------------

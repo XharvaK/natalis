@@ -14,6 +14,8 @@ export type ModelConfig = {
   nativeTools?: boolean;
   effortParam?: "reasoning_effort" | null;
   timeoutMs?: number;
+  /** True when the model can see pictures. Only then is the look tool offered to the Lar. Never assumed. */
+  vision?: boolean;
 };
 
 export function modelFromConfig(
