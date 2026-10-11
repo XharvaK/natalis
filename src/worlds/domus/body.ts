@@ -369,11 +369,25 @@ export function bodyLines(portrait: unknown, attachment?: AttachmentNow, attenti
     const heard = typeof place.household_heard === "number" && place.household_heard > 0 ? place.household_heard : 0;
     if (heard) lines.push(`${heard} more of the household is out of sight.`);
   }
-  const situations = records(p.situations)
-    .map((item) => textOrUndefined(item.role) ?? textOrUndefined(item.name))
-    .filter((item): item is string => item !== undefined)
-    .slice(0, LISTED_MAX);
-  if (situations.length) lines.push(`Situations: ${situations.map((item) => capitalised(item)).join(", ")}.`);
+  const situations = situationLine(p.situations);
+  if (situations) lines.push(situations);
   lines.push(...youLines(p.self));
   return lines;
+}
+
+/**
+ * The situations she is in, in plain words: each once, in the order the view gives them, with its count when it repeats
+ * ("pivotal moment (×3)"). The tuning's Role_ prefix is not a word she needs. At most LISTED_MAX different ones.
+ */
+function situationLine(value: unknown): string | undefined {
+  const counts = new Map<string, number>();
+  for (const item of records(value)) {
+    const text = textOrUndefined(item.role) ?? textOrUndefined(item.name);
+    if (text === undefined) continue;
+    const name = plainName(text).replace(/^role /, "");
+    if (name === "") continue;
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  const items = [...counts].slice(0, LISTED_MAX).map(([name, count]) => (count > 1 ? `${name} (×${count})` : name));
+  return items.length ? `Situations: ${items.join(", ")}.` : undefined;
 }
