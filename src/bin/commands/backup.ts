@@ -22,6 +22,7 @@ import {
   isAllowedName,
   MANIFEST_FILE,
   PLAIN_FILES,
+  MEDIA_TREE,
   VAULT_TREE,
   formatStamp,
   git,
@@ -115,9 +116,11 @@ export async function backupEntity(options: BackupOptions): Promise<BackupResult
     }
     const vaultNames = copyTree(dir, partial, VAULT_TREE, () => true);
     if (vaultNames.length > 0) say(`Copied the vault (${vaultNames.length} entries).`);
+    const mediaNames = copyTree(dir, partial, MEDIA_TREE, () => true);
+    if (mediaNames.length > 0) say(`Copied the shelf of pictures (${mediaNames.length} files).`);
     const homeNames = copyTree(dir, partial, HOME_TREE, (rel) => !HOME_SKIPPED.has(rel.split("/")[1] ?? ""));
     if (homeNames.length > 0) say(`Copied the home (${homeNames.length} files).`);
-    plainNames.push(...vaultNames, ...homeNames);
+    plainNames.push(...vaultNames, ...mediaNames, ...homeNames);
 
     const notebookHead = await notebookHeadOf(notebook);
     await git(notebook, ["bundle", "create", bundle, "--all"]);
