@@ -71,6 +71,7 @@ const DROP_REASON: Readonly<Record<string, string>> = {
   after_expired: "the act before it expired before the game picked it up",
   after_cut_short: "the act before it was cut short",
   stopped: "your summoner's stop is on",
+  undone: "the game went back before the view it was chosen from",
 };
 
 function insertAct(db: DatabaseSync, row: {
@@ -182,6 +183,7 @@ function phaseSentence(phase: DomusActPhase, detail: Record<string, unknown>, la
     case "unknown": return `nothing says how it ended${code}${reason}`;
     case "expired":
       if (detail.code === "STOPPED") return "it was withdrawn before the game picked it up, because your summoner's stop is on";
+      if (detail.code === "UNDONE") return "it was withdrawn, because the game went back before the view you chose it from";
       return late ? "it expired" : "it expired before the game picked it up";
   }
 }
@@ -384,6 +386,37 @@ export function withholdForStop(db: DatabaseSync, nowMs: number): ThreadNote[] {
     }
     return notes;
   });
+}
+
+/**
+ * An undo: the game went back, so what was chosen on the views after that time did not happen. Each requested act chosen
+ * on such a view is withdrawn (kept as expired, code UNDONE), and each waiting plan step of a plan chosen there is
+ * dropped. The Lar is told, without a wake. Runs inside the undo's transaction; the span's views are already marked.
+ */
+export function withdrawUndone(db: DatabaseSync, span: { world: string; branch: string; session: string; afterSourceTimeMs: number }, nowMs: number): ThreadNote[] {
+  const chosenOn = "SELECT observation_id FROM observations WHERE world = ? AND branch = ? AND session = ? AND source_time_ms > ?";
+  const args = [span.world, span.branch, span.session, span.afterSourceTimeMs];
+  const notes: ThreadNote[] = [];
+  const waiting = db.prepare(`SELECT * FROM acts WHERE state = 'requested' AND observation_id IN (${chosenOn})`).all(...args) as Row[];
+  for (const row of waiting) {
+    const actId = String(row.act_id);
+    keepEvent(db, actId, "expired", nowMs, nowMs, { code: "UNDONE" });
+    setState(db, actId, "expired", nowMs);
+    notes.push({ ...noteFor(row, "expired", { code: "UNDONE" }, false), wake: false });
+  }
+  const planOf = `plan_id IN (SELECT act_id FROM acts WHERE observation_id IN (${chosenOn}))`;
+  const dropping = db.prepare(`SELECT plan_id, step, thread, label FROM plan_steps WHERE state = 'planned' AND ${planOf} ORDER BY plan_id, step`)
+    .all(...args) as Row[];
+  db.prepare(`UPDATE plan_steps SET state = 'dropped', reason = 'undone', updated_at_ms = ? WHERE state = 'planned' AND ${planOf}`)
+    .run(nowMs, ...args);
+  const seen = new Set<string>();
+  for (const step of dropping) {
+    const planId = String(step.plan_id);
+    if (seen.has(planId)) continue;
+    seen.add(planId);
+    notes.push(planNote(step, "undone"));
+  }
+  return notes;
 }
 
 /** Acts requested and not yet picked up, and steps still waiting, for the now board. */

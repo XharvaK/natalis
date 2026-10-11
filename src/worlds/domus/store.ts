@@ -205,16 +205,19 @@ export type UndoSpan = { thread: string; world: string; branch: string; session:
  * view). Returns how many were undone now. Nothing else is rewritten.
  */
 export function markSpanUndone(db: DatabaseSync, span: UndoSpan, nowMs: number): number {
-  return inTransaction(db, () => {
-    const changed = db.prepare(`UPDATE observations SET undone_at_ms = ?
-      WHERE world = ? AND branch = ? AND session = ? AND source_time_ms > ? AND undone_at_ms IS NULL`)
-      .run(nowMs, span.world, span.branch, span.session, span.afterSourceTimeMs);
-    const count = Number(changed.changes);
-    db.prepare(`INSERT INTO undos (thread, world, branch, session, after_source_time_ms, reason, observations, undone_at_ms)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(span.thread, span.world, span.branch, span.session, span.afterSourceTimeMs,
-      span.reason, count, nowMs);
-    return count;
-  });
+  return inTransaction(db, () => markSpanUndoneIn(db, span, nowMs));
+}
+
+/** The undo's rows, without a transaction of their own: for a caller that runs them inside its own (the Domus undo route). */
+export function markSpanUndoneIn(db: DatabaseSync, span: UndoSpan, nowMs: number): number {
+  const changed = db.prepare(`UPDATE observations SET undone_at_ms = ?
+    WHERE world = ? AND branch = ? AND session = ? AND source_time_ms > ? AND undone_at_ms IS NULL`)
+    .run(nowMs, span.world, span.branch, span.session, span.afterSourceTimeMs);
+  const count = Number(changed.changes);
+  db.prepare(`INSERT INTO undos (thread, world, branch, session, after_source_time_ms, reason, observations, undone_at_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(span.thread, span.world, span.branch, span.session, span.afterSourceTimeMs,
+    span.reason, count, nowMs);
+  return count;
 }
 
 // ---------------------------------------------------------------------------------------------------
