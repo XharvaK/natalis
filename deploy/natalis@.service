@@ -17,7 +17,9 @@ RestartSec=20
 # SIGTERM makes the Lar finish its turn, then close its river and notebook cleanly.
 KillSignal=SIGTERM
 TimeoutStopSec=300
-NoNewPrivileges=yes
+# No NoNewPrivileges here: under it, bwrap inside pasta's network wall cannot write its user namespace's uid map
+# ("setting up uid map: Operation not permitted"), so every sandbox command failed. bwrap sets no-new-privileges on
+# every command it runs, so her commands still cannot gain privileges.
 
 [Install]
 WantedBy=default.target
