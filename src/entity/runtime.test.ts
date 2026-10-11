@@ -1303,6 +1303,22 @@ describe("the summoner's commands", () => {
     expect(systemTextOf(model.requests[1])).toContain("example.org");
   });
 
+  it("says how many older acts the board left out when more than twenty wait", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+
+    for (let n = 1; n <= 22; n += 1) cli.send(`!vault remove gate-${n}`);
+    await entity.idle();
+    cli.send("Hello.");
+    await entity.idle();
+
+    const system = systemTextOf(model.requests[0]);
+    expect(system).toContain("gate-22");
+    expect(system).not.toContain("gate-1,");
+    expect(system).toContain("- 2 older ones were left out.");
+  });
+
   it("writes the household line, and the Lar sees what the summoner did on its next turn, once", async () => {
     const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);
     const { entity, cli } = await open(model);

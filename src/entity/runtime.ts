@@ -1077,13 +1077,15 @@ class Runtime implements Entity {
     };
   }
 
-  /** The summoner's acts the Lar has not been shown on a turn yet: body rows in the self thread, oldest first. */
-  private summonerActs(upTo: number): RiverRow[] {
-    return this.river
+  /**
+   * The summoner's acts the Lar has not been shown on a turn yet: body rows in the self thread, oldest first. Only the
+   * newest ACTS_LIMIT are listed; the count of the older ones left out is returned with them.
+   */
+  private summonerActs(upTo: number): { rows: RiverRow[]; omitted: number } {
+    const all = this.river
       .read({ thread: "self", kinds: ["event"], sinceSeq: this.state.actsSeenSeq, untilSeq: upTo, newestFirst: true, limit: ALL_ROWS })
-      .filter((row) => row.data?.["summonerAct"] === true)
-      .slice(0, ACTS_LIMIT)
-      .reverse();
+      .filter((row) => row.data?.["summonerAct"] === true);
+    return { rows: all.slice(0, ACTS_LIMIT).reverse(), omitted: Math.max(0, all.length - ACTS_LIMIT) };
   }
 
   /** Hands one picture from the shelf to the model on its next call, once. Only offered when the model can see. */
@@ -1236,10 +1238,11 @@ class Runtime implements Entity {
     const claims = this.placeClaimLines(thread, nowMs);
     lines.push(...(claims.length === 0 ? ["- none"] : claims));
 
-    const acts = this.isOwnerPlace(thread) ? this.summonerActs(snapshot) : [];
-    if (acts.length > 0) {
+    const acts = this.isOwnerPlace(thread) ? this.summonerActs(snapshot) : { rows: [], omitted: 0 };
+    if (acts.rows.length > 0) {
       lines.push("", "Your summoner did these since your last turn (body notes):");
-      for (const row of acts) lines.push(`- ${this.stamp(row.atMs)}: ${row.text ?? ""}`);
+      if (acts.omitted > 0) lines.push(`- ${acts.omitted} older ${acts.omitted === 1 ? "one was" : "ones were"} left out.`);
+      for (const row of acts.rows) lines.push(`- ${this.stamp(row.atMs)}: ${row.text ?? ""}`);
     }
 
     lines.push("");
