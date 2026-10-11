@@ -1,6 +1,9 @@
 {
   "name": "natalis",
   "version": "0.0.1",
+  "bin": {
+    "natalis": "dist/bin/natalis.js"
+  },
   "private": true,
   "description": "A foundation for digital entities: the model is the mind, the host is the body.",
   "license": "MIT",
@@ -9,7 +12,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "chat": "node dist/bin/natalis.js chat"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
