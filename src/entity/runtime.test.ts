@@ -41,6 +41,8 @@ const CONFIG: EntityConfig = {
   model: { baseUrl: "http://127.0.0.1:9/v1", model: "scripted", contextTokens: 32_000 },
   ceiling: { maxModelCalls: 10, maxToolCalls: 20 },
   owner: { alias: "owner" },
+  // No daily rhythm here: the rhythm has its own tests below, and the wake tests count the wakes they set.
+  rhythm: [],
 };
 
 let root: string;
@@ -1933,5 +1935,161 @@ describe("a world with a model of its own", () => {
     expect(main.requests).toHaveLength(1);
     expect(main.requests[0]?.effort).toBe("high");
     expect(gameModel.requests).toHaveLength(1);
+  });
+});
+
+describe("the daily rhythm", () => {
+  const NOW = Date.parse("2026-10-11T10:00:00Z");
+  type RhythmWake = { id: string; atMs: number; why: string; scheduledIn: string; repeat?: string; clock?: string };
+
+  function stateObject(): Record<string, unknown> {
+    return JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as Record<string, unknown>;
+  }
+
+  /** Edits a stopped Lar's state.json, the way an older or a hand-made state file would hold it. */
+  function editState(edit: (state: Record<string, unknown>) => void): void {
+    const state = stateObject();
+    edit(state);
+    writeFileSync(join(dir, "state.json"), JSON.stringify(state, null, 2));
+  }
+
+  const RHYTHM_CONFIG = { ...CONFIG, timeZone: "UTC", rhythm: undefined };
+
+  it("gives a fresh Lar one daily wake per default time, in its own thread, once, and says nothing of what it is for", async () => {
+    const { entity } = await open(new ScriptedModel([]), { nowMs: () => NOW, config: RHYTHM_CONFIG });
+    await entity.start();
+    await entity.stop();
+
+    const wakes = readStateFile().wakes as RhythmWake[];
+    // One wake per time, in the order the times are listed. The 09:00 has passed for today, so it is tomorrow's.
+    expect(wakes).toEqual([
+      { id: expect.any(String), atMs: Date.parse("2026-10-12T09:00:00Z"), why: "Your daily rhythm.", scheduledIn: "self", repeat: "daily", clock: "09:00" },
+      { id: expect.any(String), atMs: Date.parse("2026-10-11T14:00:00Z"), why: "Your daily rhythm.", scheduledIn: "self", repeat: "daily", clock: "14:00" },
+      { id: expect.any(String), atMs: Date.parse("2026-10-11T20:00:00Z"), why: "Your daily rhythm.", scheduledIn: "self", repeat: "daily", clock: "20:00" },
+    ]);
+    expect(stateObject()["rhythmGiven"]).toBe(true);
+    expect(new Set(wakes.map((wake) => wake.id)).size).toBe(3);
+  });
+
+  it("is not given again after the Lar cancels its rhythm and starts again", async () => {
+    const { entity } = await open(new ScriptedModel([]), { nowMs: () => NOW, config: RHYTHM_CONFIG });
+    await entity.start();
+    const ids = (readStateFile().wakes as RhythmWake[]).map((wake) => wake.id);
+    await entity.stop();
+    opened.length = 0;
+
+    const model = new ScriptedModel([
+      reply({ toolCalls: ids.map((id, index) => call("cancel_wake", { id }, `c${index}`)) }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const cancelling = await open(model, { nowMs: () => NOW, config: RHYTHM_CONFIG });
+    await cancelling.entity.start();
+    cancelling.cli.send("Cancel the wakes you were given.");
+    await cancelling.entity.idle();
+    expect(readStateFile().wakes).toEqual([]);
+    await cancelling.entity.stop();
+    opened.length = 0;
+
+    const again = await open(new ScriptedModel([]), { nowMs: () => NOW, config: RHYTHM_CONFIG });
+    await again.entity.start();
+    await again.entity.stop();
+    expect(readStateFile().wakes).toEqual([]);
+    expect(stateObject()["rhythmGiven"]).toBe(true);
+  });
+
+  it("refuses a state file whose rhythmGiven is not true or false, and does not start", async () => {
+    const { entity } = await open(new ScriptedModel([]), { nowMs: () => NOW, config: { ...RHYTHM_CONFIG, rhythm: [] } });
+    await entity.start();
+    await entity.stop();
+    opened.length = 0;
+    editState((state) => {
+      state["rhythmGiven"] = "yes";
+    });
+    await expect(open(new ScriptedModel([]), { nowMs: () => NOW, config: RHYTHM_CONFIG })).rejects.toThrow(/rhythmGiven/);
+  });
+
+  it("gives the rhythm once to a Lar whose state predates the flag, and not again on the next start", async () => {
+    const first = await open(new ScriptedModel([]), { nowMs: () => NOW, config: { ...RHYTHM_CONFIG, rhythm: [] } });
+    await first.entity.start();
+    await first.entity.stop();
+    opened.length = 0;
+    // The state an older Lar holds: no rhythmGiven flag and no wakes.
+    editState((state) => {
+      delete state["rhythmGiven"];
+    });
+
+    const older = await open(new ScriptedModel([]), { nowMs: () => NOW, config: RHYTHM_CONFIG });
+    await older.entity.start();
+    await older.entity.stop();
+    opened.length = 0;
+    const given = readStateFile().wakes as RhythmWake[];
+    expect(given.map((wake) => wake.clock)).toEqual(["09:00", "14:00", "20:00"]);
+    expect(given.every((wake) => wake.why === "Your daily rhythm." && wake.repeat === "daily")).toBe(true);
+
+    const later = await open(new ScriptedModel([]), { nowMs: () => NOW, config: RHYTHM_CONFIG });
+    await later.entity.start();
+    await later.entity.stop();
+    expect(readStateFile().wakes).toHaveLength(3);
+  });
+
+  it("creates no wake when the rhythm is an empty list, and does not record it as given", async () => {
+    const { entity } = await open(new ScriptedModel([]), { nowMs: () => NOW, config: { ...RHYTHM_CONFIG, rhythm: [] } });
+    await entity.start();
+    await entity.stop();
+    expect(readStateFile().wakes).toEqual([]);
+    expect(stateObject()["rhythmGiven"]).toBeUndefined();
+  });
+
+  it("makes only the wakes that fit under the limit, and a body note says how many were not made", async () => {
+    const { entity } = await open(new ScriptedModel([]), { nowMs: () => NOW, config: { ...RHYTHM_CONFIG, rhythm: [] } });
+    await entity.start();
+    await entity.stop();
+    opened.length = 0;
+    const held = Array.from({ length: 98 }, (_, index) => ({
+      id: `held${String(index).padStart(4, "0")}`,
+      atMs: NOW + (index + 1) * 60_000,
+      why: "held",
+      scheduledIn: "summoner",
+    }));
+    editState((state) => {
+      delete state["rhythmGiven"];
+      state["wakes"] = held;
+    });
+
+    const full = await open(new ScriptedModel([]), { nowMs: () => NOW, config: RHYTHM_CONFIG });
+    await full.entity.start();
+    const notes = allRows(full.entity).filter((row) => row.kind === "note" && row.source === "body");
+    await full.entity.stop();
+
+    const wakes = readStateFile().wakes as RhythmWake[];
+    expect(wakes).toHaveLength(100);
+    expect(wakes.filter((wake) => wake.why === "Your daily rhythm.").map((wake) => wake.clock)).toEqual(["09:00", "14:00"]);
+    expect(notes.map((row) => row.text)).toEqual([
+      "1 of 3 daily wakes were not made: 100 wakes is the most you hold at once. Cancel one with cancel_wake to make room.",
+    ]);
+  });
+
+  it("holds the clock in the Lar's zone across a daylight-saving change, and stores the clock as written", async () => {
+    const NEW_YORK = { ...RHYTHM_CONFIG, timeZone: "America/New_York" };
+    // 31 October 2026, 08:00 in New York (still daylight time): 09:00 is an hour away.
+    const before = await open(new ScriptedModel([]), { nowMs: () => Date.parse("2026-10-31T12:00:00Z"), config: NEW_YORK });
+    await before.entity.start();
+    await before.entity.stop();
+    const wakes = readStateFile().wakes as RhythmWake[];
+    const byClock = (clock: string): RhythmWake | undefined => wakes.find((wake) => wake.clock === clock);
+    expect(byClock("09:00")?.atMs).toBe(Date.parse("2026-10-31T13:00:00Z"));
+    expect(byClock("14:00")?.atMs).toBe(Date.parse("2026-10-31T18:00:00Z"));
+    expect(byClock("20:00")?.atMs).toBe(Date.parse("2026-11-01T00:00:00Z"));
+    expect(wakes.every((wake) => wake.repeat === "daily")).toBe(true);
+  });
+
+  it("takes the local nine o'clock after the clocks went back, which is 14:00 UTC that day", async () => {
+    const after = await open(new ScriptedModel([]), {
+      nowMs: () => Date.parse("2026-11-01T12:00:00Z"),
+      config: { ...RHYTHM_CONFIG, timeZone: "America/New_York", rhythm: ["09:00"] },
+    });
+    await after.entity.start();
+    await after.entity.stop();
+    expect(readStateFile().wakes).toEqual([expect.objectContaining({ clock: "09:00", atMs: Date.parse("2026-11-01T14:00:00Z") })]);
   });
 });

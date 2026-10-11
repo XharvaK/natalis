@@ -3,13 +3,14 @@
 // and what to do with the output are the Lar's own judgment.
 
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { Receipt, Tool, ToolContext, World } from "../../contracts.js";
 import { BODY_MOUNT, bodyRefusal, defaultBodyRoot } from "./body.js";
 import { buildBwrapArgs, SANDBOX_HOME } from "./bwrap.js";
-import type { SandboxSettings } from "./config.js";
+import { SANDBOX_DEFAULT_NETWORK, type SandboxSettings } from "./config.js";
 import { OUTPUT_CAP_BYTES, OutputCollector } from "./output.js";
+import { WALL_DNS, wallCommand } from "./wall.js";
 
 export const SANDBOX_WORLD_ID = "sandbox";
 
@@ -35,6 +36,10 @@ export type SandboxWorldOptions = {
   nowMs?: () => number;
   /** Finds bwrap: the configured path, or a search of PATH. Injected in tests. */
   locateBwrap?: (configuredPath: string | undefined) => string | undefined;
+  /** Finds pasta, which walls the network in "wall" mode. Injected in tests. */
+  locatePasta?: (configuredPath: string | undefined) => string | undefined;
+  /** Finds ip, used by the route script in "wall" mode. Injected in tests. */
+  locateIp?: (configuredPath: string | undefined) => string | undefined;
   /** Signals a whole process group. Injected in tests, so no real process is ever signalled by a test. */
   killGroup?: (pid: number, signal: NodeJS.Signals) => void;
   /**
@@ -60,19 +65,38 @@ function defaultKillGroup(pid: number, signal: NodeJS.Signals): void {
 }
 
 /** The configured path if it exists (a bare name is searched on PATH), else the first match on PATH. */
-export function findBwrap(configuredPath: string | undefined): string | undefined {
+export function findProgram(name: string, configuredPath: string | undefined): string | undefined {
   if (configuredPath !== undefined) {
     const candidate = configuredPath.includes("/") || isAbsolute(configuredPath) ? resolve(configuredPath) : undefined;
     if (candidate !== undefined) return existsSync(candidate) ? candidate : undefined;
   }
-  const name = configuredPath ?? "bwrap";
+  const bare = configuredPath ?? name;
   for (const folder of (process.env["PATH"] ?? "").split(delimiter)) {
     if (folder === "") continue;
-    const candidate = join(folder, name);
+    const candidate = join(folder, bare);
     if (existsSync(candidate)) return candidate;
   }
   return undefined;
 }
+
+/** Finds bwrap: the configured path, or a search of PATH. */
+export function findBwrap(configuredPath: string | undefined): string | undefined {
+  return findProgram("bwrap", configuredPath);
+}
+
+/** Finds pasta: the configured path, or a search of PATH. */
+export function findPasta(configuredPath: string | undefined): string | undefined {
+  return findProgram("pasta", configuredPath);
+}
+
+/** Finds ip: the configured path, else /usr/sbin/ip, else /sbin/ip. The route script names it by this full path. */
+export function findIp(configuredPath: string | undefined): string | undefined {
+  if (configuredPath !== undefined) return findProgram("ip", configuredPath);
+  return ["/usr/sbin/ip", "/sbin/ip"].find((candidate) => existsSync(candidate));
+}
+
+/** The folder, inside the entity folder, that holds the resolver file a walled command uses. */
+export const WALL_FOLDER = "sandbox-network";
 
 /** The entries of a folder. A missing or unreadable folder has none. */
 function listFolder(folder: string) {
@@ -132,19 +156,27 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
   const platform = options.platform ?? process.platform;
   const nowMs = options.nowMs ?? (() => Date.now());
   const locate = options.locateBwrap ?? findBwrap;
+  const locatePasta = options.locatePasta ?? findPasta;
+  const locateIp = options.locateIp ?? findIp;
   const killGroup = options.killGroup ?? defaultKillGroup;
   const bodyRoot = options.bodyDir ?? defaultBodyRoot();
+  const network = config.network ?? SANDBOX_DEFAULT_NETWORK;
   // The default root is looked up once here; the refusal is checked at start, when the bind is decided.
 
   let status: Status = "idle";
   let bwrapPath: string | undefined;
+  /** The resolver file a walled command uses, written at start. Only set in "wall" mode. */
+  let resolvPath: string | undefined;
   /** The checkout bound at /body for this run of the world, when it is bound. */
   let bodyPath: string | undefined;
   /** Commands in flight, each with the function that ends it. */
   const running = new Map<ChildProcess, (stoppedBy: StoppedBy) => void>();
 
-  /** Runs one argument list in bwrap and resolves with the receipt when the job has ended. */
-  function execute(bwrap: string, argv: string[], timeoutSeconds: number, signal: AbortSignal | undefined): Promise<Receipt> {
+  /**
+   * Runs one program with its argument list (bwrap, or pasta around bwrap in "wall" mode) and resolves with the receipt
+   * when the job has ended.
+   */
+  function execute(program: string, argv: string[], timeoutSeconds: number, signal: AbortSignal | undefined): Promise<Receipt> {
     const started = nowMs();
     return new Promise<Receipt>((resolveReceipt) => {
       const stdout = new OutputCollector();
@@ -222,7 +254,13 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
       };
 
       try {
-        child = spawnProcess(bwrap, argv, {
+        // Detached, so the leader is a process group of its own: pasta in "wall" mode, bwrap otherwise. The group kill
+        // (SIGTERM, then SIGKILL) reaches the leader and whatever stays in its group. If bwrap's --new-session moves bwrap
+        // into a session of its own, the group kill misses it, and --die-with-parent is what covers that: in "wall" mode
+        // bwrap's parent is pasta (the shell became bwrap with exec), so the SIGKILL to pasta makes the kernel kill bwrap,
+        // and bwrap's own --die-with-parent takes the command down with it. In host and none modes bwrap's parent is this
+        // process, so the group kill is the only path, as it was before the wall. Not checked on a Linux host yet.
+        child = spawnProcess(program, argv, {
           detached: true,
           stdio: ["ignore", "pipe", "pipe"],
           env: {},
@@ -297,8 +335,31 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
     } catch (err) {
       return refusal("home_unavailable", "Your home folder could not be made, so the command did not run.", errorText(err));
     }
-    const argv = buildBwrapArgs({ homeDir, command, ...(bodyPath === undefined ? {} : { bodyDir: bodyPath }) });
-    return execute(bwrapPath, argv, timeoutSeconds, context.signal);
+    const bwrapArgs = buildBwrapArgs({
+      homeDir,
+      command,
+      network,
+      ...(bodyPath === undefined ? {} : { bodyDir: bodyPath }),
+      ...(resolvPath === undefined ? {} : { resolvPath }),
+    });
+    if (network !== "wall") return execute(bwrapPath, bwrapArgs, timeoutSeconds, context.signal);
+    // The wall is never skipped: when pasta or ip is missing the command does not run, and the receipt says so.
+    const pastaPath = locatePasta(config.pastaPath);
+    const ipPath = locateIp(config.ipPath);
+    const missing = [
+      ...(pastaPath === undefined ? ["pasta (the passt package)"] : []),
+      ...(ipPath === undefined ? ["ip (iproute2)"] : []),
+    ];
+    if (pastaPath === undefined || ipPath === undefined) {
+      return refusal(
+        "network_not_walled",
+        `The command did not run, because the network wall needs ${missing.join(" and ")}, and it is not installed here. ` +
+          'Your summoner can install the passt package, or set "network": "host" in sandbox.json to share the host\'s network without the wall.',
+        `not found: ${missing.join(", ")}`,
+      );
+    }
+    const walled = wallCommand({ pastaPath, ipPath, bwrapPath, bwrapArgs });
+    return execute(walled.command, walled.args, timeoutSeconds, context.signal);
   }
 
   const runTool: Tool = {
@@ -349,6 +410,18 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
         if (refusal !== undefined) throw new Error(refusal);
         bodyPath = bodyRoot;
       }
+      if (network === "wall") {
+        // The resolver the walled command is told to use. Written once per start; the host's own resolver is never bound.
+        const folder = join(options.dir, WALL_FOLDER);
+        const file = join(folder, "resolv.conf");
+        try {
+          mkdirSync(folder, { recursive: true, mode: 0o700 });
+          writeFileSync(file, `nameserver ${WALL_DNS}\n`, "utf8");
+        } catch (err) {
+          throw new Error(`The sandbox could not write its resolver file in ${folder}: ${errorText(err)}`);
+        }
+        resolvPath = file;
+      }
       bwrapPath = found;
       status = "ready";
     },
@@ -373,7 +446,12 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
 
     about() {
       const body = bodyPath === undefined ? "" : ` Your own source is at ${BODY_MOUNT}, read-only.`;
-      return `A Linux shell of your own, with network access, run with the run tool. Your home folder at ${SANDBOX_HOME} keeps what you make; installs go there.${body}`;
+      const shell = network === "none" ? "with no network" : "with network access";
+      const reach =
+        network === "wall"
+          ? " Your network reaches the internet, but not this host's own services or the machines on its local network."
+          : "";
+      return `A Linux shell of your own, ${shell}, run with the run tool. Your home folder at ${SANDBOX_HOME} keeps what you make; installs go there.${reach}${body}`;
     },
 
     now() {

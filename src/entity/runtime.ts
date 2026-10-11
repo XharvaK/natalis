@@ -69,7 +69,8 @@ import {
   type SummonerDesk,
 } from "./summoner.js";
 import { isStopOn, readStop } from "./stop.js";
-import { clockOf, instantOfLocal, isWakeRepeat, nextOccurrence, parseClock, WAKE_LIMIT, type WakeRepeat } from "./wake-schedule.js";
+import { clockOf, firstDailyOccurrence, instantOfLocal, isWakeRepeat, nextOccurrence, parseClock, WAKE_LIMIT, type WakeRepeat } from "./wake-schedule.js";
+import { DEFAULT_RHYTHM } from "./config.js";
 
 export const STATE_FILE = "state.json";
 /** The welcome notice the host may write into the entity's folder. Sent once, in the summoner's place. */
@@ -128,6 +129,8 @@ const WAKE_WHY_MAX = 500;
 /** Context-size rejections in a row after which a thread waits for a new event instead of trying the same words again. */
 const OVERSIZE_TRIES = 3;
 const WAKE_LIMIT_MINUTES = 60 * 24 * 365 * 10;
+/** The reason a rhythm wake carries. It names nothing about what the wake is for. */
+const RHYTHM_WHY = "Your daily rhythm.";
 const TIMER_LIMIT_MS = 2_147_483_647;
 const ALL_ROWS = 1_000_000;
 const SOURCES: readonly RiverSource[] = ["owner", "outside", "self", "body"];
@@ -266,6 +269,8 @@ type EntityState = {
   limitNotices?: { day: string; places: string[] };
   /** The highest river seq whose summoner acts were shown to the Lar on a turn. */
   actsSeenSeq: number;
+  /** Set once the body has given the Lar its daily rhythm of wakes (its first start). Never given again. */
+  rhythmGiven?: boolean;
 };
 
 function emptyState(): EntityState {
@@ -411,6 +416,11 @@ function checkState(value: unknown): EntityState {
   const actsSeenSeq = root["actsSeenSeq"] ?? 0;
   if (typeof actsSeenSeq !== "number" || !Number.isSafeInteger(actsSeenSeq) || actsSeenSeq < 0) bad("actsSeenSeq");
   state.actsSeenSeq = actsSeenSeq as number;
+  const rhythmGiven = root["rhythmGiven"];
+  if (rhythmGiven !== undefined) {
+    if (typeof rhythmGiven !== "boolean") bad("rhythmGiven");
+    state.rhythmGiven = rhythmGiven as boolean;
+  }
   return state;
 }
 
@@ -597,6 +607,7 @@ class Runtime implements Entity {
     this.stopPoll = setInterval(() => {
       if (!this.stopping) this.stopIsOn();
     }, this.stopPollMs);
+    this.seedRhythm();
     for (const wake of this.state.wakes) this.armWake(wake);
     try {
       for (const world of this.worlds) {
@@ -940,6 +951,44 @@ class Runtime implements Entity {
   }
 
   // --- wakes ------------------------------------------------------------------------------------
+
+  /**
+   * The daily rhythm the body gives a Lar on its first start: one ordinary daily wake per configured clock time, in the
+   * Lar's own thread, as schedule_wake makes a wake the Lar sets itself. It is given once. A Lar that cancels them keeps
+   * them cancelled; a Lar whose state predates the flag gets them on its next start. Wakes past the limit are not made,
+   * and a body note says how many.
+   */
+  private seedRhythm(): void {
+    if (this.state.rhythmGiven === true) return;
+    const times = this.config.rhythm ?? DEFAULT_RHYTHM;
+    // An empty rhythm gives nothing and is not recorded as given, so times added later still arrive once.
+    if (times.length === 0) return;
+    const now = this.nowMs();
+    const room = Math.max(0, WAKE_LIMIT - this.state.wakes.length);
+    const made = times.slice(0, room);
+    for (const clock of made) {
+      this.state.wakes.push({
+        id: randomUUID().slice(0, 8),
+        atMs: firstDailyOccurrence({ afterMs: now, clock, timeZone: this.config.timeZone }),
+        why: RHYTHM_WHY,
+        scheduledIn: "self",
+        repeat: "daily",
+        clock,
+      });
+    }
+    const notMade = times.length - made.length;
+    if (notMade > 0) {
+      this.river.append({
+        thread: "self",
+        kind: "note",
+        source: "body",
+        text: `${notMade} of ${times.length} daily wakes were not made: ${WAKE_LIMIT} wakes is the most you hold at once. Cancel one with cancel_wake to make room.`,
+        atMs: now,
+      });
+    }
+    this.state.rhythmGiven = true;
+    this.saveState();
+  }
 
   private armWake(wake: Wake): void {
     this.clearWakeTimer(wake.id);
@@ -1289,6 +1338,7 @@ class Runtime implements Entity {
       young: character === null || character.trim() === "" || character.trim() === CHARACTER_STUB.trim(),
       worlds: this.worlds.map((world) => world.about?.() ?? world.id),
       summonerAlias: this.config.owner.alias,
+      rhythm: (this.config.rhythm ?? DEFAULT_RHYTHM).length > 0,
     });
   }
 

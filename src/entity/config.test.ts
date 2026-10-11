@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_CEILING, loadEntityConfig, parseEntityConfig } from "./config.js";
+import { DEFAULT_CEILING, DEFAULT_RHYTHM, loadEntityConfig, parseEntityConfig } from "./config.js";
 
 const MINIMAL = {
   name: "Iris",
@@ -212,5 +212,28 @@ describe("model.fallback, the backup model", () => {
     expect(() => parse({ model: "backup", effortParam: "effort" })).toThrow('model.fallback.effortParam must be "reasoning_effort" or null.');
     expect(() => parse({ model: "backup", vision: "yes" })).toThrow("model.fallback.vision must be true or false.");
     expect(() => parse("backup")).toThrow("model.fallback must be an object.");
+  });
+});
+
+describe("rhythm", () => {
+  it("is the default three clock times when entity.json leaves it out", () => {
+    expect(parseEntityConfig(MINIMAL).rhythm).toEqual(["09:00", "14:00", "20:00"]);
+    expect(DEFAULT_RHYTHM).toEqual(["09:00", "14:00", "20:00"]);
+  });
+
+  it("keeps the times it is given, and an empty list means none", () => {
+    expect(parseEntityConfig({ ...MINIMAL, rhythm: ["07:30", "23:59"] }).rhythm).toEqual(["07:30", "23:59"]);
+    expect(parseEntityConfig({ ...MINIMAL, rhythm: [] }).rhythm).toEqual([]);
+  });
+
+  it("refuses a time that is not HH:MM, and says which one", () => {
+    for (const bad of ["9:00", "24:00", "12:60", "12.00", "noon", "", 900, null]) {
+      expect(() => parseEntityConfig({ ...MINIMAL, rhythm: [bad] })).toThrow(/rhythm holds .* not a clock time "HH:MM"/);
+    }
+  });
+
+  it("refuses a rhythm that is not a list, and a time listed twice", () => {
+    expect(() => parseEntityConfig({ ...MINIMAL, rhythm: "09:00" })).toThrow("rhythm must be a list of clock times");
+    expect(() => parseEntityConfig({ ...MINIMAL, rhythm: ["09:00", "09:00"] })).toThrow("rhythm lists 09:00 more than once.");
   });
 });

@@ -59,25 +59,47 @@ Stop: `web_request` is an outward act; the emergency stop refuses it.
 ## 2. The sandbox (`sandbox.json`)
 
 ```json
-{ "timeoutSeconds": 120, "maxTimeoutSeconds": 900 }
+{ "timeoutSeconds": 120, "maxTimeoutSeconds": 900, "network": "wall" }
 ```
 
 Linux only; on other systems the world refuses to start with a plain error. Needs `bwrap`.
 
 **Tool `run`** `{command, timeout_s?, why?}` runs `bash -lc <command>` in Bubblewrap, unprivileged:
 
-- `--unshare-all --share-net --die-with-parent --new-session --clearenv`
+- `--unshare-all --share-net --die-with-parent --new-session --clearenv` (`--share-net` is left out in `"none"` mode; see Network below)
 - `/usr` read-only, with `/bin`, `/sbin`, `/lib`, `/lib64` as symlinks into it; `--proc /proc`,
   `--dev /dev`, `--tmpfs /tmp`
 - read-only `/etc` pieces the network and tools need, each with `--ro-bind-try`: `resolv.conf`, `hosts`,
-  `nsswitch.conf`, `ssl`, `ca-certificates`, `alternatives`, `localtime`
+  `nsswitch.conf`, `ssl`, `ca-certificates`, `alternatives`, `localtime`. In wall mode `resolv.conf` is not the host's: it is the body's file, bound read-only in its place
 - `<entity>/home` bound read-write at `/home/lar` (created on first use); cwd `/home/lar`
 - the allow-listed parts of the Natalis checkout bound read-only at `/body`: the folders `src`, `docs`, `deploy` and the files `README.md`, `AGENTS.md`, `package.json`, `LICENSE`, each only if present, at the same path under `/body`. Git history is not bound (no `.git`), and no `dist`, `node_modules` or other top-level name is. The root is found from the code's own location; `"body": false` in `sandbox.json` leaves all of it out; the bind is refused at start when the Lar's folder lies inside the checkout, or when an allow-listed folder holds an env file (`.env`, `.env.*`, `*.env`) or a `vault` folder at any depth
 - env: `PATH=/home/lar/.local/bin:/usr/local/bin:/usr/bin:/bin`, `HOME=/home/lar`, `LANG=C.UTF-8`, `TERM=dumb`,
   `NPM_CONFIG_PREFIX=/home/lar/.local` (what the Lar installs runs by name)
 - never bound: the entity folder itself, the vault, any env file, the host's home
 
-Network is on; installs go to her home (`pip install --user`, `npm` prefix in home). Timeout default 120 s,
+Network is set by `"network"` in `sandbox.json` (default `"wall"`):
+
+- `"wall"`: the command runs under **pasta** (the `passt` package). pasta gives it a private network of its own
+  (`192.0.2.2`, the documentation range TEST-NET-1, through the gateway `192.0.2.1`). bwrap keeps `--share-net`, so it
+  shares that private network, not the host's. A route script runs first, as root inside that network, and adds an
+  unreachable route for each range in `WALLED_RANGES` (`src/worlds/sandbox/wall.ts`: `0/8`, `10/8`, `100.64/10`,
+  `169.254/16`, `172.16/12`, `192.168/16`, `192.0.0/24`, `198.18/15`, `224/4`, `240/4`). `set -e` stops the run if a
+  route fails. The command reaches the internet and none of the host's loopback services or local-network machines.
+  pasta maps no host port into the network (`-t/-u/-T/-U none`) and keeps the gateway off the host's loopback
+  (`--no-map-gw`). The command's `/etc/resolv.conf` is a file the body writes at start (`<entity>/sandbox-network/`),
+  holding `nameserver 192.0.2.3`; the host's own resolver is never bound.
+  The `ip` program is found at `/usr/sbin/ip` or `/sbin/ip` (or `"ipPath"`). `"pastaPath"` names pasta when it is not on PATH.
+  When pasta or ip is not found, the command does not run: the receipt names what is missing and says the summoner can
+  install the `passt` package or set `"network": "host"`. The wall never falls back to the host's network by itself.
+- `"host"`: the host's whole network, as before the wall (the host's loopback and local network are reachable).
+- `"none"`: no `--share-net`: the command has its own loopback only, and no network.
+
+The wall is tested on Linux by `sandbox-world.bwrap.test.ts` (set `NATALIS_BWRAP_TEST=1`, with pasta and ip present): a
+connect to the host's loopback and to its first private address fails in wall mode, and the same loopback connect
+succeeds in host mode. The argument lists, the route script and the refusal are tested anywhere by `wall.test.ts`,
+`bwrap.test.ts` and `sandbox-world.test.ts`.
+
+Installs go to her home (`pip install --user`, `npm` prefix in home). Timeout default 120 s,
 at most `maxTimeoutSeconds`; on timeout the whole process group is killed. The receipt carries exit code,
 duration, and stdout/stderr each capped at 16,000 characters (head and tail kept, the middle elided with a
 count). Output is run through the secret scanner like any other receipt.
