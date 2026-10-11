@@ -5,7 +5,7 @@
 import type { Found, OptionObject, AnswerRules } from "./answers.js";
 import { answerRulesOf } from "./answers.js";
 import type { Percept } from "./wire.js";
-import { bodyLines } from "./body.js";
+import { type AttachmentNow, bodyLines } from "./body.js";
 import { BAND_WORDS, capitalised, plainName, textOrUndefined } from "./words.js";
 
 /** The longest the rendered view may be, in characters. The rest is said as a count. */
@@ -156,8 +156,10 @@ export function perceptSentence(percept: Percept): string | undefined {
  * The plain text of a game view for the Lar: what the game shows, then the choices it offers, each with its ref.
  * Shows the ref and the game's words only; no id, no matcher hint, no advice.
  */
-export function renderView(input: { world: string; percepts: readonly Percept[]; options: readonly OptionObject[]; portrait?: unknown }): string {
-  const body = bodyLines(input.portrait);
+export function renderView(input: {
+  world: string; percepts: readonly Percept[]; options: readonly OptionObject[]; portrait?: unknown; attachment?: AttachmentNow;
+}): string {
+  const body = bodyLines(input.portrait, input.attachment);
   const head = [...(body.length ? ["Your body now:", ...body, ""] : []), `The game (${input.world}) shows:`];
   const lines: string[] = [...head];
   let shown = 0;

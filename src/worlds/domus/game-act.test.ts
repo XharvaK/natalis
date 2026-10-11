@@ -33,7 +33,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "domus-tool-"));
   db = openDomusDb(dir);
   seq = 0;
-  open = { db, nowMs: () => T0, attachedSession: () => HELPER };
+  open = { db, nowMs: () => T0, attachedSession: () => HELPER, lastAttachedMs: () => T0 };
   tool = gameActTool(() => open);
 });
 
@@ -92,7 +92,7 @@ describe("game_act: where it works", () => {
 describe("game_act: a view from an earlier helper session", () => {
   it("refuses a choice from a view the game sent before it restarted, and requests nothing", async () => {
     view(VIEW);
-    open = { db, nowMs: () => T0, attachedSession: () => "helper-2" };
+    open = { db, nowMs: () => T0, attachedSession: () => "helper-2", lastAttachedMs: () => T0 };
     const receipt = await run({ option: "a1" });
     expect(receipt).toMatchObject({ ok: false, refused: { code: "view_from_earlier_session" } });
     expect(receipt.refused?.reason).toContain("The game restarted since that view, and its new view has not arrived yet.");
@@ -101,7 +101,7 @@ describe("game_act: a view from an earlier helper session", () => {
 
   it("requests the choice when the attached session is the one that sent the view", async () => {
     view(VIEW);
-    expect(await run({ option: "a1" })).toMatchObject({ ok: true, data: { attached: true } });
+    expect(await run({ option: "a1" })).toMatchObject({ ok: true });
     expect(acts()).toHaveLength(1);
   });
 });
@@ -144,7 +144,7 @@ describe("game_act: requests", () => {
     expect(receipt.summary.startsWith("Requested: Boil water (Test kettle) (a1).")).toBe(true);
     expect(receipt.summary).toContain("Then, each after the one before completes: a3 (Sit down (Test bench)).");
     expect(receipt.summary).not.toMatch(/^Done/);
-    expect(receipt.data).toMatchObject({ option: "a1", label: "Boil water (Test kettle)", forSummoner: false, then: ["a3"], attached: true });
+    expect(receipt.data).toMatchObject({ option: "a1", label: "Boil water (Test kettle)", forSummoner: false, then: ["a3"] });
     const rows = acts();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ thread: THREAD, attachment: HELPER, option_ref: "a1", object_id: "obj-kettle", guid64: "111", state: "requested" });
@@ -158,12 +158,22 @@ describe("game_act: requests", () => {
     expect(acts()[0]).toMatchObject({ for_summoner: 1 });
   });
 
-  it("says the game is not attached, and that the request may expire, when it is not", async () => {
+  it("refuses at once with not_attached when the game is not attached, queues nothing, and says when it was last attached", async () => {
     view(VIEW);
-    open = { db, nowMs: () => T0, attachedSession: () => undefined };
+    open = { db, nowMs: () => T0, attachedSession: () => undefined, lastAttachedMs: () => T0 - 120_000 };
     const receipt = await run({ option: "a1" });
-    expect(receipt.summary).toContain("The game is not attached right now");
-    expect(receipt.data).toMatchObject({ attached: false });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "not_attached" } });
+    expect(receipt.refused?.reason).toContain(`It was last attached at ${new Date(T0 - 120_000).toISOString()}.`);
+    expect(acts()).toEqual([]);
+  });
+
+  it("says it has never been attached when no attachment was ever seen", async () => {
+    view(VIEW);
+    open = { db, nowMs: () => T0, attachedSession: () => undefined, lastAttachedMs: () => undefined };
+    const receipt = await run({ option: "a1" });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "not_attached" } });
+    expect(receipt.refused?.reason).toContain("It has not been attached since this world started.");
+    expect(acts()).toEqual([]);
   });
 
   it("refuses a plan with an unknown step, and requests nothing", async () => {

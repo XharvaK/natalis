@@ -5,7 +5,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import { answerFor, isAnswerClaim, type AnswerClaim, type Found } from "./answers.js";
-import { ACT_TTL_MS, PLAN_MORE, requestAct } from "./acts.js";
+import { PLAN_MORE, requestAct } from "./acts.js";
 import { findOption, labelOf, optionsOf, refsOf } from "./options.js";
 import { newestObservation, STALE_VIEW_CODE, STALE_VIEW_REASON } from "./store.js";
 
@@ -13,8 +13,13 @@ const REF = /^[A-Za-z0-9._-]{1,16}$/;
 const ARG_KEYS = new Set(["option", "then", "for_summoner", "answer"]);
 export const GAME_THREAD_PREFIX = "domus:";
 
-/** What the tool needs from the world: the open database, the world's clock and the helper session that is attached now (undefined when the game is not attached; null when not running). */
-export type GameActContext = { db: DatabaseSync; nowMs: () => number; attachedSession: (nowMs: number) => string | undefined } | null;
+/**
+ * What the tool needs from the world: the open database, the world's clock, the helper session that is attached now
+ * (undefined when the game is not attached; null when not running) and the last time the game was attached.
+ */
+export type GameActContext = {
+  db: DatabaseSync; nowMs: () => number; attachedSession: (nowMs: number) => string | undefined; lastAttachedMs: () => number | undefined;
+} | null;
 
 function refused(code: string, reason: string, summary: string = reason): Receipt {
   return { ok: false, summary, refused: { code, reason } };
@@ -76,6 +81,13 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
   if (!context.thread.startsWith(GAME_THREAD_PREFIX)) {
     return refused("not_a_game_thread", "game_act works in a game thread (domus:...). This is not one.");
   }
+  // Nothing is queued for a game that is not there: the request would only expire unclaimed.
+  const nowAt = game.nowMs();
+  if (game.attachedSession(nowAt) === undefined) {
+    const last = game.lastAttachedMs();
+    const when = last === undefined ? "It has not been attached since this world started." : `It was last attached at ${new Date(last).toISOString()}.`;
+    return refused("not_attached", `The game is not attached, so nothing was requested. ${when}`);
+  }
   for (const key of Object.keys(args)) {
     if (!ARG_KEYS.has(key)) return refused("bad_args", `${key} is not a field of game_act.`);
   }
@@ -134,14 +146,12 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
   if (!requested.ok) {
     return refused(requested.code, "You already asked the game for one act in this turn. Ask for the next one in your next turn.");
   }
-  const attachedNow = attached !== undefined;
   const planText = requested.steps.length
     ? ` Then, each after the one before completes: ${requested.steps.map((step) => `${step.ref} (${step.label})`).join("; ")}.`
     : "";
-  const notAttached = attachedNow ? "" : ` The game is not attached right now, so the request may expire unclaimed after ${ACT_TTL_MS / 1000} seconds.`;
   return {
     ok: true,
-    summary: `Requested: ${label} (${option}). The game has not done it yet; what it does comes back here as notes.${planText}${notAttached}`,
+    summary: `Requested: ${label} (${option}). The game has not done it yet; what it does comes back here as notes.${planText}`,
     data: {
       actId: requested.actId,
       option,
@@ -149,7 +159,6 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
       expiresAtMs: requested.expiresAtMs,
       forSummoner: args.for_summoner === true,
       then: requested.steps.map((step) => step.ref),
-      attached: attachedNow,
     },
   };
 }

@@ -334,6 +334,10 @@ type HeartbeatRecord = {
   attached: boolean;
   /** When the attached value last changed (the time it began, or when it began to be absent). */
   changedAtMs: number;
+  /** The last time a heartbeat of this session said attached. Absent until one has. */
+  lastAttachedMs?: number;
+  /** The game's world, as the helper named it on its last heartbeat that named one. */
+  world?: string;
   probeVersion?: string;
 };
 
@@ -349,13 +353,17 @@ export class HeartbeatBook {
   }
 
   /** Records one heartbeat. The attached value's change time is kept while it stays the same. */
-  record(session: string, input: { sentAtMs: number; attached: boolean; probeVersion?: string }, nowMs: number): void {
+  record(session: string, input: { sentAtMs: number; attached: boolean; probeVersion?: string; world?: string }, nowMs: number): void {
     const before = this.sessions[session];
+    const lastAttachedMs = input.attached ? nowMs : before?.lastAttachedMs;
+    const world = input.world ? input.world : before?.world;
     this.sessions[session] = {
       receivedAtMs: nowMs,
       sentAtMs: input.sentAtMs,
       attached: input.attached,
       changedAtMs: before && before.attached === input.attached ? before.changedAtMs : nowMs,
+      ...(lastAttachedMs === undefined ? {} : { lastAttachedMs }),
+      ...(world === undefined ? {} : { world }),
       ...(input.probeVersion ? { probeVersion: input.probeVersion } : {}),
     };
     this.prune();
@@ -374,6 +382,20 @@ export class HeartbeatBook {
   /** Attached: the latest heartbeat says so and it arrived within ARMED_MS. */
   attachedAt(nowMs: number): boolean {
     return this.attachedSession(nowMs) !== undefined;
+  }
+
+  /** The last time any session's heartbeat said attached, or undefined when none ever did. */
+  lastAttachedAt(): number | undefined {
+    let last: number | undefined;
+    for (const record of Object.values(this.sessions)) {
+      if (record.lastAttachedMs !== undefined && (last === undefined || record.lastAttachedMs > last)) last = record.lastAttachedMs;
+    }
+    return last;
+  }
+
+  /** The game's world as a session's heartbeats named it, or undefined when none did. */
+  worldOf(session: string): string | undefined {
+    return this.sessions[session]?.world;
   }
 
   /** The helper session that is attached now (see attachedAt), or undefined. */

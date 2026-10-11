@@ -126,11 +126,26 @@ function flagLines(portrait: Record_): string[] {
   return flags.filter(([on]) => on).map(([, text]) => text);
 }
 
-/** The block's lines, in order, or none when the portrait holds nothing readable. Never throws. */
-export function bodyLines(portrait: unknown): string[] {
+/** Whether the game is attached when the view is shown; when not, the last time it was attached, if ever. */
+export type AttachmentNow = { attached: true } | { attached: false; lastAttachedMs: number | undefined; nowMs: number };
+
+export function attachmentLine(attachment: AttachmentNow): string {
+  if (attachment.attached) return "The game is attached.";
+  if (attachment.lastAttachedMs === undefined) return "The game is not attached.";
+  const minutes = Math.floor(Math.max(0, attachment.nowMs - attachment.lastAttachedMs) / 60_000);
+  return minutes < 1
+    ? "The game is not attached (last seen under a minute ago)."
+    : `The game is not attached (last seen ${minutes} minutes ago).`;
+}
+
+/**
+ * The block's lines, in order: whether the game is attached (when known), then what the portrait holds. Empty when
+ * there is neither. Never throws.
+ */
+export function bodyLines(portrait: unknown, attachment?: AttachmentNow): string[] {
   const p = record(portrait);
-  if (!p) return [];
-  const lines: string[] = [];
+  const lines: string[] = attachment ? [attachmentLine(attachment)] : [];
+  if (!p) return lines;
   const clock = clockLine(p);
   if (clock) lines.push(clock);
   const room = textOrUndefined(record(p.zone)?.room_label);

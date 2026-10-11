@@ -6,6 +6,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { DatabaseSync } from "node:sqlite";
 import type { World, WorldBody, WorldEvent } from "../../contracts.js";
+import type { AttachmentNow } from "./body.js";
 import { gameActTool, type GameActContext } from "./game-act.js";
 import { isStopOn } from "../../entity/stop.js";
 import { expireDue, pendingCounts, syncActs, type ThreadNote, withdrawUndone, withholdForStop } from "./acts.js";
@@ -114,7 +115,7 @@ function listen(server: Server, host: string, port: number): Promise<void> {
 }
 
 /** An admitted view becomes one event on its game thread: outside text (the game's), with the choices and their refs. */
-function observationEvent(parsed: ParsedObservation): WorldEvent {
+function observationEvent(parsed: ParsedObservation, attachment: AttachmentNow): WorldEvent {
   const thread = gameThreadOf(parsed.fields.world);
   const alias = thread.slice(DOMUS_WORLD_ID.length + 1);
   const options = optionsOf(parsed.options ?? []);
@@ -132,11 +133,16 @@ function observationEvent(parsed: ParsedObservation): WorldEvent {
     thread,
     actor: "game",
     source: "outside",
-    text: renderView({ world: alias, percepts: parsed.percepts, options, portrait: parsed.normalized.portrait }),
+    text: renderView({ world: alias, percepts: parsed.percepts, options, portrait: parsed.normalized.portrait, attachment }),
     data,
     atMs: parsed.fields.sourceTimeMs,
     wake: true,
   };
+}
+
+/** The game thread hears once that the game stopped being attached (the helper said so, or went quiet). */
+function detachedEvent(thread: string, atMs: number): WorldEvent {
+  return { world: DOMUS_WORLD_ID, place: thread, thread, source: "body", text: "The game is no longer attached.", data: { attached: false }, atMs, wake: false };
 }
 
 function noteEvent(note: ThreadNote, atMs: number): WorldEvent {
@@ -159,6 +165,12 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
   let lastPruneMs = 0;
   /** The body's way to keep pictures on the shelf. Set at start; a picture the helper sends is kept through it. */
   let keeper: WorldBody | null = null;
+  /** The helper session the game was last seen attached under (restored from the state file at start). */
+  let lastAttachedSession: string | undefined;
+  /** Whether the game thread was already told of the current detach. */
+  let detachNoticed = false;
+  /** The world the newest admitted view came from; the detach notice goes to its game thread. */
+  let lastWorld: string | undefined;
 
   const deliver = (event: WorldEvent): void => {
     if (!emitter) return;
@@ -174,8 +186,40 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     const current = db;
     const heartbeats = book;
     if (!current || !heartbeats) return null;
-    return { db: current, nowMs, attachedSession: (at: number) => heartbeats.attachedSession(at) };
+    return {
+      db: current,
+      nowMs,
+      attachedSession: (at: number) => heartbeats.attachedSession(at),
+      lastAttachedMs: () => heartbeats.lastAttachedAt(),
+    };
   };
+
+  /** Whether the game is attached at this moment, as a view or a receipt says it. */
+  const attachmentAt = (at: number): AttachmentNow => {
+    const heartbeats = requireBook();
+    if (heartbeats.attachedSession(at) !== undefined) return { attached: true };
+    return { attached: false, lastAttachedMs: heartbeats.lastAttachedAt(), nowMs: at };
+  };
+
+  /** Once per detach: when the attached session stops being attached, the game thread hears it one time. */
+  function checkAttachment(now: number): void {
+    const heartbeats = book;
+    if (!heartbeats) return;
+    const attached = heartbeats.attachedSession(now);
+    if (attached !== undefined) {
+      lastAttachedSession = attached;
+      detachNoticed = false;
+      return;
+    }
+    if (lastAttachedSession === undefined || detachNoticed) return;
+    detachNoticed = true;
+    const world = heartbeats.worldOf(lastAttachedSession) ?? lastWorld;
+    if (world === undefined) {
+      console.error("[domus] the game stopped being attached, but no world is known for its thread; the notice was not given.");
+      return;
+    }
+    deliver(detachedEvent(gameThreadOf(world), now));
+  }
 
   /** What the game_snapshot tool reads on each call: null while the world is not running. */
   const openSnapshot = (): SnapshotContext => {
@@ -214,16 +258,22 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       observation_id: parsed.observationId,
       receipt_time_ms: result.receiptTimeMs,
     });
-    if (result.status === "admitted") deliver(observationEvent(parsed));
+    if (result.status === "admitted") {
+      lastWorld = parsed.fields.world;
+      deliver(observationEvent(parsed, attachmentAt(now)));
+    }
   }
 
   function heartbeatRoute(body: unknown, res: ServerResponse): void {
     const parsed = parseHeartbeat(body);
+    const now = nowMs();
     requireBook().record(parsed.helperSession, {
       sentAtMs: parsed.sentAtMs,
       attached: parsed.attached,
       ...(parsed.probeVersion ? { probeVersion: parsed.probeVersion } : {}),
-    }, nowMs());
+      ...(parsed.world ? { world: parsed.world } : {}),
+    }, now);
+    checkAttachment(now);
     send(res, 200, { status: "ok" });
   }
 
@@ -370,6 +420,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     if (!db) return;
     try {
       const now = nowMs();
+      checkAttachment(now);
       if (isStopOn(options.dir)) for (const note of withholdForStop(db, now)) deliver(noteEvent(note, now));
       for (const note of expireDue(db, now)) deliver(noteEvent(note, now));
       for (const note of isStopOn(options.dir) ? withdrawSnapshots(db, now) : expireSnapshots(db, now)) deliver(noteEvent(note, now));
@@ -399,6 +450,9 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       }
       emitter = emit;
       keeper = worldBody;
+      const latest = book?.latest();
+      lastAttachedSession = latest?.attached === true ? latest.session : undefined;
+      detachNoticed = false;
       const listener = createServer((req, res) => {
         handle(req, res).catch((error: unknown) => internalError(res, error));
       });
