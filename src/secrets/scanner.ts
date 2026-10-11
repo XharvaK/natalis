@@ -65,7 +65,10 @@ export const MIN_KNOWN_VALUE_LENGTH = 8;
 export type SecretScannerOptions = { knownValues?: string[] };
 
 export type CreatedSecretScanner = SecretScanner & {
-  /** Register a value the creator wants hidden. Values shorter than 8 characters are refused, not guessed at. */
+  /**
+   * Register a value the creator wants hidden, in its raw and its JSON-escaped form. Values shorter than 8
+   * characters are refused, not guessed at.
+   */
   addKnownValue(value: string): void;
 };
 
@@ -96,7 +99,11 @@ export function createSecretScanner(options: SecretScannerOptions = {}): Created
 
   const addKnownValue = (value: string): void => {
     checkKnownValue(value);
-    if (!known.includes(value)) known.push(value);
+    // A value also turns up JSON-escaped (a quote, a backslash or a newline written as an escape) wherever the
+    // text was JSON.stringify'd, so both forms are looked for.
+    for (const form of [value, JSON.stringify(value).slice(1, -1)]) {
+      if (!known.includes(form)) known.push(form);
+    }
   };
 
   for (const value of options.knownValues ?? []) addKnownValue(value);
