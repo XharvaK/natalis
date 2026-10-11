@@ -21,6 +21,8 @@ export type EntityConfig = {
   /** Defaults to DEFAULT_CEILING when left out. */
   ceiling?: Ceiling;
   owner: { alias: string };
+  /** Body checks on what she says. Each one is on unless the block says false. */
+  holds?: { honesty?: boolean };
 };
 
 export const ENTITY_FILE = "entity.json";
@@ -46,7 +48,7 @@ export function loadEntityConfig(dir: string): EntityConfig {
 /** Validates an already-parsed entity config. Throws a plain error naming the first wrong field. */
 export function parseEntityConfig(value: unknown): EntityConfig {
   const root = objectOf(value, ENTITY_FILE);
-  onlyKeys(root, ["name", "timeZone", "model", "effort", "ceiling", "owner"], ENTITY_FILE);
+  onlyKeys(root, ["name", "timeZone", "model", "effort", "ceiling", "owner", "holds"], ENTITY_FILE);
 
   const name = textOf(root["name"], "name");
   const config: EntityConfig = {
@@ -66,7 +68,19 @@ export function parseEntityConfig(value: unknown): EntityConfig {
     }
     config.effort = root["effort"];
   }
+  if (root["holds"] !== undefined) config.holds = parseHolds(root["holds"]);
   return config;
+}
+
+function parseHolds(value: unknown): { honesty?: boolean } {
+  const block = objectOf(value, "holds");
+  onlyKeys(block, ["honesty"], "holds");
+  const holds: { honesty?: boolean } = {};
+  if (block["honesty"] !== undefined) {
+    if (typeof block["honesty"] !== "boolean") throw new Error("holds.honesty must be true or false.");
+    holds.honesty = block["honesty"];
+  }
+  return holds;
 }
 
 function parseModel(value: unknown): ModelConfig {

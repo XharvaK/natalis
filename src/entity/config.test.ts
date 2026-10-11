@@ -74,6 +74,20 @@ describe("parseEntityConfig", () => {
     );
   });
 
+  it("leaves the holds block out unless it is given, and keeps the honesty switch as written", () => {
+    expect(parseEntityConfig(MINIMAL).holds).toBeUndefined();
+    expect(parseEntityConfig({ ...MINIMAL, holds: { honesty: false } }).holds).toEqual({ honesty: false });
+    expect(parseEntityConfig({ ...MINIMAL, holds: {} }).holds).toEqual({});
+  });
+
+  it("refuses a holds switch that is not true or false, and an unknown hold", () => {
+    expect(() => parseEntityConfig({ ...MINIMAL, holds: { honesty: "yes" } })).toThrow(
+      /holds.honesty must be true or false/,
+    );
+    expect(() => parseEntityConfig({ ...MINIMAL, holds: { secrets: true } })).toThrow(/Unknown field "secrets" in holds/);
+    expect(() => parseEntityConfig({ ...MINIMAL, holds: true })).toThrow(/holds must be an object/);
+  });
+
   it("refuses an effort it does not know", () => {
     expect(() => parseEntityConfig({ ...MINIMAL, effort: "max" })).toThrow(/effort must be one of/);
   });
