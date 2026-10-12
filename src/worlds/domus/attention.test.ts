@@ -76,7 +76,8 @@ describe("the game_attention description says what each mode wakes for (NATALIS2
   it("names what wakes her in every mode, and what each mode adds to it", () => {
     const text = gameAttentionTool(() => null).spec.description;
     expect(text).toContain("Always, in every mode: a question the game holds open for you, a call or a notice on your phone, and a look you asked for.");
-    expect(text).toContain("A need that goes into distress wakes you when you are not at work");
+    expect(text).toContain("Except in quiet, a need that goes into distress wakes you when you are not at work.");
+    expect(text).toContain("When work ends with a need still in distress you wake once, in every mode.");
     expect(text).toContain("at work, a view whose only changes are needs in distress stays quiet");
     expect(text).toContain("when_called: otherwise a change wakes you only when something calls you");
     expect(text).toContain("quiet: otherwise nothing wakes you until until");
@@ -113,11 +114,14 @@ describe("which views wake her, by her mode", () => {
     }
   });
 
-  it("in every mode, a need that has just gone into distress wakes her, and a need that has not does not (D1)", () => {
+  it("a need that has just gone into distress wakes her in every mode but quiet, and a need that has not does not (D1, Q-1)", () => {
     const distress = percept("need", { subject: "social", band: "distress" });
-    for (const mode of ["every_change", "when_called", "quiet"] as const) {
+    for (const mode of ["every_change", "when_called"] as const) {
       expect(wakesFor(mode, view([distress]))).toBe(true);
     }
+    // Quiet means quiet: a need in distress does not wake her in quiet, and a question, a call or a look still does.
+    expect(wakesFor("quiet", view([distress]))).toBe(false);
+    expect(wakesFor("quiet", view([percept("phone", { what: "call", from: "Test Friend" })]))).toBe(true);
     expect(wakesFor("when_called", view([percept("need", { subject: "hunger", band: "low" })]))).toBe(false);
     expect(wakesFor("quiet", view([percept("need", { subject: "fun", band: "ok" })]))).toBe(false);
   });

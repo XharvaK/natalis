@@ -69,6 +69,8 @@ describe("quiet at work", () => {
     expect(wakesFor("every_change", view(distress, portraitWith({ at_work: false })))).toBe(true);
     expect(wakesFor("every_change", view(distress, undefined))).toBe(true);
     expect(wakesFor("quiet", view(distress, atWork))).toBe(false);
+    // Quiet means quiet (Q-1): a need in distress away from work does not wake her in quiet either.
+    expect(wakesFor("quiet", view(distress, portraitWith({ at_work: false })))).toBe(false);
     // A view with some other change still wakes her in every_change: the distress is not the only reason.
     const other = [percept("need", { subject: "Test Need", band: "ok" })];
     expect(wakesFor("every_change", view([...distress, ...other], atWork))).toBe(true);

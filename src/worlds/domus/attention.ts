@@ -59,8 +59,9 @@ function needInDistress(portrait: unknown): boolean {
 }
 
 /**
- * Whether a view wakes her in this mode. A question put to her, a look she asked for, and a need that has just gone into
- * distress always wake her, in every mode (the body's alarm, as a held window is: she may still do nothing, D1).
+ * Whether a view wakes her in this mode. A question put to her, a look she asked for, and a call or a notice on her phone
+ * always wake her, in every mode (the body's alarm, as a held window is: she may still do nothing, D1). A need that has just
+ * gone into distress wakes her in every mode but quiet: quiet means quiet (Q-1).
  * Otherwise every_change wakes her on every view, quiet on none, and when_called on a call (someone addressed her,
  * someone arrived or is on the lot, the day's record, the first view after the game attached).
  *
@@ -74,7 +75,7 @@ export function wakesFor(mode: AttentionMode, view: ViewFacts): boolean {
   // A notice on her phone or a call held for her is hers to answer in every mode, at work too (W13).
   if (view.percepts.some((item) => item.kind === "phone" && (item.facts["what"] === "notice" || item.facts["what"] === "call"))) return true;
   const atWork = atWorkNow(view.portrait);
-  if (!atWork && view.percepts.some(isDistress)) return true;
+  if (mode !== "quiet" && !atWork && view.percepts.some(isDistress)) return true;
   if (view.workEnded && needInDistress(view.portrait)) return true;
   if (mode === "every_change") return !(atWork && view.percepts.length > 0 && view.percepts.every(isDistress));
   if (mode === "quiet") return false;
@@ -180,8 +181,8 @@ function refused(code: string, reason: string): Receipt {
 
 const SET_UP =
   "Set how the game reaches you. Always, in every mode: a question the game holds open for you, a call or a notice on your " +
-  "phone, and a look you asked for. A need that goes into distress wakes you when you are not at work, and when work ends " +
-  "with a need still in distress you wake once. " +
+  "phone, and a look you asked for. When work ends with a need still in distress you wake once, in every mode. " +
+  "Except in quiet, a need that goes into distress wakes you when you are not at work. " +
   "every_change (the default): every other change in the game wakes you too; at work, a view whose only changes are needs " +
   "in distress stays quiet. " +
   "when_called: otherwise a change wakes you only when something calls you: someone speaking to you, someone arriving on the " +
