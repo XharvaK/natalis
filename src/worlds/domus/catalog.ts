@@ -17,7 +17,6 @@ import { CATALOG_ITEMS_MAX } from "./wire.js";
 export const CATALOG_TTL_MS = 2 * 60_000;
 /** The longest the words of a catalogue question may be, after trimming. */
 export const WORDS_CATALOG_MAX = 80;
-const ROOM_MAX = 64;
 const PLACEMENTS: readonly string[] = ["floor", "wall", "surface"];
 
 /** A catalogue item as the helper sent it, checked by the wire. */
@@ -47,7 +46,6 @@ export function gameCatalogTool(open: () => GameContext): Tool {
         type: "object",
         properties: {
           words: { type: "string", description: `What you look for, in your words: 1 to ${WORDS_CATALOG_MAX} characters.` },
-          room: { type: "string", description: "Optional: the room you want it for, as the view names it." },
           max_price: { type: "integer", minimum: 0, description: "Optional: the most it may cost." },
           placement: { type: "string", enum: [...PLACEMENTS], description: "Optional: floor, wall or surface." },
         },
@@ -64,14 +62,11 @@ function gameCatalog(open: () => GameContext, args: Record<string, unknown>, con
   const game = open();
   if (!game) return refused("not_running", "The game is not connected to you right now.");
   for (const key of Object.keys(args)) {
-    if (!["words", "room", "max_price", "placement"].includes(key)) return refused("bad_args", `${key} is not a field of game_catalog.`);
+    if (!["words", "max_price", "placement"].includes(key)) return refused("bad_args", `${key} is not a field of game_catalog.`);
   }
   const words = typeof args.words === "string" ? args.words.trim() : "";
   if (words === "" || words.length > WORDS_CATALOG_MAX) {
     return refused("bad_args", `words must be 1 to ${WORDS_CATALOG_MAX} characters: what you look for, in your words.`);
-  }
-  if (args.room !== undefined && !(typeof args.room === "string" && args.room.trim() !== "" && args.room.length <= ROOM_MAX)) {
-    return refused("bad_args", `room must be one room's name, up to ${ROOM_MAX} characters.`);
   }
   if (args.max_price !== undefined && !(typeof args.max_price === "number" && Number.isSafeInteger(args.max_price) && args.max_price >= 0)) {
     return refused("bad_args", "max_price must be a whole number of simoleons, 0 or more.");
@@ -86,9 +81,10 @@ function gameCatalog(open: () => GameContext, args: Record<string, unknown>, con
     return refused("already_asked", "You already asked the game's catalogue about something on this thread, and it has not answered yet. Wait for its answer.");
   }
   const askId = randomUUID();
+  // The room column is kept for asks written before the room was dropped; no new ask names one.
   game.db.prepare(`INSERT INTO catalog_asks (ask_id, thread, about, status, requested_at_ms, room, max_price, placement)
-    VALUES (?, ?, ?, 'owed', ?, ?, ?, ?)`)
-    .run(askId, context.thread, words, nowMs, typeof args.room === "string" ? args.room.trim() : null,
+    VALUES (?, ?, ?, 'owed', ?, NULL, ?, ?)`)
+    .run(askId, context.thread, words, nowMs,
       typeof args.max_price === "number" ? args.max_price : null, typeof args.placement === "string" ? args.placement : null);
   return {
     ok: true,
@@ -100,7 +96,7 @@ function gameCatalog(open: () => GameContext, args: Record<string, unknown>, con
 /** The questions owed to a helper session on its sync: each becomes handed to that session, and is returned once. */
 export function handCatalog(db: DatabaseSync, input: { helperSession: string; nowMs: number }): Array<Record<string, unknown>> {
   const since = input.nowMs - CATALOG_TTL_MS;
-  const owed = db.prepare(`SELECT ask_id, about, room, max_price, placement FROM catalog_asks WHERE status = 'owed' AND requested_at_ms > ?
+  const owed = db.prepare(`SELECT ask_id, about, max_price, placement FROM catalog_asks WHERE status = 'owed' AND requested_at_ms > ?
     ORDER BY requested_at_ms, rowid`).all(since) as Row[];
   if (owed.length === 0) return [];
   db.prepare("UPDATE catalog_asks SET status = 'handed', handed_session = ? WHERE status = 'owed' AND requested_at_ms > ?")
@@ -108,7 +104,6 @@ export function handCatalog(db: DatabaseSync, input: { helperSession: string; no
   return owed.map((row) => ({
     ask_id: String(row.ask_id),
     words: String(row.about),
-    ...(row.room === null ? {} : { room: String(row.room) }),
     ...(row.max_price === null ? {} : { max_price: Number(row.max_price) }),
     ...(row.placement === null ? {} : { placement: String(row.placement) }),
   }));

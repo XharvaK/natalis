@@ -187,6 +187,13 @@ describe("the catalogue ask", () => {
     expect(db.prepare("SELECT definition_id, name, price FROM catalog_seen WHERE ref = 'c1'").get()).toEqual({ definition_id: "def-1", name: "Test Shelf One", price: 80 });
   });
 
+  it("takes no room: the tool refuses one, and the ask the helper gets names none", async () => {
+    const withRoom = await gameCatalogTool(game).run({ words: TEXT, room: "Test Kitchen" }, { thread: "domus:slot3", turnId: "t", nowMs: clock } as ToolContext);
+    expect(withRoom).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await ask(TEXT)).toMatchObject({ ok: true });
+    expect(handCatalog(db, { helperSession: HELPER, nowMs: clock })).toEqual([{ ask_id: expect.any(String), words: TEXT }]);
+  });
+
   it("expires after two minutes and withdraws on the stop", async () => {
     await ask(TEXT);
     clock += CATALOG_TTL_MS + 1000;
