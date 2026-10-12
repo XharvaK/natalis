@@ -8,7 +8,7 @@ import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import type { OptionObject } from "./answers.js";
 import { actRequestedMeanwhile, HOME_EDITS_PER_TURN, HOME_VERBS, homeEditsIn, lastSaveAt, requestVerb } from "./acts.js";
 import { seenItem } from "./catalog.js";
-import { findListed, readList, REF_PATTERN } from "./lists.js";
+import { findListed, listedSession, readList, REF_PATTERN } from "./lists.js";
 import { findOption, optionsOf } from "./options.js";
 import { gameThreadNow, newestObservation } from "./store.js";
 import { type GameContext, gameGate, refused, staleRef } from "./tool-context.js";
@@ -59,10 +59,10 @@ function viewOf(db: DatabaseSync, attached: string): View | undefined {
 const NO_VIEW = "The newest view of the game does not show this choice, so an a ref cannot be used now. Name a thing by its t ref, or wait for the game's view.";
 
 /** A thing by its ref: a t ref (from the things list) or an a ref (the choice's object in the newest view). */
-function thingOf(db: DatabaseSync, attached: string, view: View | undefined, ref: string): Thing | Receipt {
+function thingOf(db: DatabaseSync, listed: string | undefined, view: View | undefined, ref: string): Thing | Receipt {
   if (!REF_PATTERN.test(ref)) return refused("bad_args", `${ref} is not a ref: use a t ref from game_list things, or an a ref from the view.`);
   if (ref.startsWith("t")) {
-    const item = findListed(db, attached, "things", ref);
+    const item = findListed(db, listed, "things", ref);
     return item ? { id: String(item.id), name: String(item.name) } : staleRef(ref, "game_list things");
   }
   if (ref.startsWith("a")) {
@@ -74,10 +74,10 @@ function thingOf(db: DatabaseSync, attached: string, view: View | undefined, ref
 }
 
 /** The rooms she can name: the rooms of the newest view and of the things list, as the words they have (exact, ignoring case). */
-function roomNamed(db: DatabaseSync, attached: string, view: View | undefined, name: string): string | Receipt {
+function roomNamed(db: DatabaseSync, listed: string | undefined, view: View | undefined, name: string): string | Receipt {
   const rooms = new Set<string>();
   for (const object of view?.options ?? []) if (typeof object.room === "string" && object.room !== "") rooms.add(object.room);
-  for (const item of readList(db, attached, "things")?.items ?? []) {
+  for (const item of readList(db, listed, "things")?.items ?? []) {
     if (typeof item.where === "string" && item.where !== "inventory" && item.where !== "outside") rooms.add(item.where);
   }
   const wanted = name.trim().toLowerCase();
@@ -88,7 +88,7 @@ function roomNamed(db: DatabaseSync, attached: string, view: View | undefined, n
 }
 
 /** A place: one relation to a thing or a room, and optionally a facing. The probe's words and the label's words both come from it. */
-function placeOf(db: DatabaseSync, attached: string, view: View | undefined, raw: unknown): Place | Receipt {
+function placeOf(db: DatabaseSync, listed: string | undefined, view: View | undefined, raw: unknown): Place | Receipt {
   const bad = refused("bad_args", `place is malformed. ${PLACE_TEXT}`);
   if (!isRecord(raw)) return bad;
   const relations = Object.keys(raw).filter((key) => (RELATIONS as readonly string[]).includes(key));
@@ -99,13 +99,13 @@ function placeOf(db: DatabaseSync, attached: string, view: View | undefined, raw
   const args: Args = {};
   let words: string;
   if (relation === "wall" || relation === "in") {
-    const room = roomNamed(db, attached, view, value);
+    const room = roomNamed(db, listed, view, value);
     if (typeof room !== "string") return room;
     args.rel = relation;
     args.room = room;
     words = relation === "wall" ? `against a wall of ${room}` : `in ${room}`;
   } else {
-    const thing = thingOf(db, attached, view, value);
+    const thing = thingOf(db, listed, view, value);
     if (isReceipt(thing)) return thing;
     args.rel = relation;
     args.target_id = thing.id;
@@ -117,7 +117,7 @@ function placeOf(db: DatabaseSync, attached: string, view: View | undefined, raw
       args.facing = "room";
       words += ", facing the room";
     } else if (typeof raw.facing === "string") {
-      const facing = thingOf(db, attached, view, raw.facing);
+      const facing = thingOf(db, listed, view, raw.facing);
       if (isReceipt(facing)) return facing;
       args.facing = facing.id;
       words += `, facing ${facing.name} (${raw.facing})`;
@@ -128,12 +128,12 @@ function placeOf(db: DatabaseSync, attached: string, view: View | undefined, raw
   return { args, words };
 }
 
-/** A ref of a list kind, checked by its first letter and found in the attached session's list. */
-function listedRef(db: DatabaseSync, attached: string, ref: unknown, letter: string, kind: "people" | "places" | "events" | "things", tool: string): { id: string; name: string } | Receipt {
+/** A ref of a list kind, checked by its first letter and found in the list of the session her refs name (listedSession). */
+function listedRef(db: DatabaseSync, listed: string | undefined, ref: unknown, letter: string, kind: "people" | "places" | "events" | "things", tool: string): { id: string; name: string } | Receipt {
   if (typeof ref !== "string" || !REF_PATTERN.test(ref) || !ref.startsWith(letter)) {
     return refused("bad_args", `${String(ref)} must be a ${letter} ref from ${tool}.`);
   }
-  const item = findListed(db, attached, kind, ref);
+  const item = findListed(db, listed, kind, ref);
   return item ? { id: String(item.id), name: String(item.name) } : staleRef(ref, tool);
 }
 
@@ -144,7 +144,7 @@ type VerbDef = {
   required: string[];
   /** The arguments this verb takes (knowingly is always taken). */
   keys: string[];
-  plan(ctx: { db: DatabaseSync; attached: string; view: View | undefined; args: Args; nowMs: number; ownerMs: number | undefined }): Planned | Receipt;
+  plan(ctx: { db: DatabaseSync; listed: string | undefined; view: View | undefined; args: Args; nowMs: number; ownerMs: number | undefined }): Planned | Receipt;
 };
 
 const VERBS: VerbDef[] = [
@@ -154,8 +154,8 @@ const VERBS: VerbDef[] = [
     properties: { place: { type: "string", description: "The h ref of the place, from game_list places." } },
     required: ["place"],
     keys: ["place"],
-    plan({ db, attached, args, ownerMs }) {
-      const place = listedRef(db, attached, args.place, "h", "places", "game_list places");
+    plan({ db, listed, args, ownerMs }) {
+      const place = listedRef(db, listed, args.place, "h", "places", "game_list places");
       if (isReceipt(place)) return place;
       return {
         verb: "go", label: `go to ${place.name} (${String(args.place)})`, objectId: "0", args: { zone_id: place.id },
@@ -194,14 +194,14 @@ const VERBS: VerbDef[] = [
     },
     required: ["type"],
     keys: ["type", "guests", "start"],
-    plan({ db, attached, args }) {
-      const type = listedRef(db, attached, args.type, "e", "events", "game_list events");
+    plan({ db, listed, args }) {
+      const type = listedRef(db, listed, args.type, "e", "events", "game_list events");
       if (isReceipt(type)) return type;
       const guestRefs = args.guests ?? [];
       if (!Array.isArray(guestRefs) || guestRefs.length > GUESTS_MAX) return refused("bad_args", `guests is up to ${GUESTS_MAX} p refs from game_list people.`);
       const guests: Array<{ id: string; name: string; ref: string }> = [];
       for (const ref of guestRefs) {
-        const guest = listedRef(db, attached, ref, "p", "people", "game_list people");
+        const guest = listedRef(db, listed, ref, "p", "people", "game_list people");
         if (isReceipt(guest)) return guest;
         guests.push({ ...guest, ref: String(ref) });
       }
@@ -235,12 +235,12 @@ const VERBS: VerbDef[] = [
     },
     required: ["item", "place"],
     keys: ["item", "place", "max_price"],
-    plan({ db, attached, view, args }) {
+    plan({ db, listed, view, args }) {
       const ref = args.item;
       if (typeof ref !== "string" || !REF_PATTERN.test(ref) || !ref.startsWith("c")) return refused("bad_args", "item must be a c ref from a catalogue answer.");
-      const item = seenItem(db, attached, ref);
+      const item = listed === undefined ? undefined : seenItem(db, listed, ref);
       if (!item) return staleRef(ref, "game_catalog");
-      const place = placeOf(db, attached, view, args.place);
+      const place = placeOf(db, listed, view, args.place);
       if (isReceipt(place)) return place;
       if (args.max_price !== undefined && !(typeof args.max_price === "number" && Number.isSafeInteger(args.max_price) && args.max_price >= 0)) {
         return refused("bad_args", "max_price must be a whole number of simoleons, 0 or more.");
@@ -258,13 +258,13 @@ const VERBS: VerbDef[] = [
     properties: { thing: { type: "string", description: "The t ref of an inventory item, from game_list things." }, place: { description: PLACE_TEXT, type: "object" } },
     required: ["thing", "place"],
     keys: ["thing", "place"],
-    plan({ db, attached, view, args }) {
+    plan({ db, listed, view, args }) {
       const ref = args.thing;
       if (typeof ref !== "string" || !REF_PATTERN.test(ref) || !ref.startsWith("t")) return refused("bad_args", "thing must be a t ref of an inventory item.");
-      const item = findListed(db, attached, "things", ref);
+      const item = findListed(db, listed, "things", ref);
       if (!item) return staleRef(ref, "game_list things");
       if (item.where !== "inventory") return refused("not_in_inventory", `${ref} is not in your inventory, so it is not placed. It is ${String(item.where)}.`);
-      const place = placeOf(db, attached, view, args.place);
+      const place = placeOf(db, listed, view, args.place);
       if (isReceipt(place)) return place;
       return {
         verb: "place", label: `place ${String(item.name)} (${ref}) ${place.words}`, objectId: String(item.id),
@@ -278,10 +278,10 @@ const VERBS: VerbDef[] = [
     properties: { thing: { type: "string", description: "A t ref from game_list things, or an a ref from the view." }, place: { description: PLACE_TEXT, type: "object" } },
     required: ["thing", "place"],
     keys: ["thing", "place"],
-    plan({ db, attached, view, args }) {
-      const thing = thingOf(db, attached, view, String(args.thing));
+    plan({ db, listed, view, args }) {
+      const thing = thingOf(db, listed, view, String(args.thing));
       if (isReceipt(thing)) return thing;
-      const place = placeOf(db, attached, view, args.place);
+      const place = placeOf(db, listed, view, args.place);
       if (isReceipt(place)) return place;
       return {
         verb: "move", label: `move ${thing.name} (${String(args.thing)}) ${place.words}`, objectId: thing.id,
@@ -295,8 +295,8 @@ const VERBS: VerbDef[] = [
     properties: { thing: { type: "string", description: "A t ref from game_list things, or an a ref from the view." } },
     required: ["thing"],
     keys: ["thing"],
-    plan({ db, attached, view, args }) {
-      const thing = thingOf(db, attached, view, String(args.thing));
+    plan({ db, listed, view, args }) {
+      const thing = thingOf(db, listed, view, String(args.thing));
       if (isReceipt(thing)) return thing;
       return {
         verb: "sell", label: `sell ${thing.name} (${String(args.thing)})`, objectId: thing.id,
@@ -340,7 +340,7 @@ function runVerb(open: () => GameContext, def: VerbDef, args: Args, context: Too
   if (isHome && homeEditsIn(game.db, context.turnId) >= HOME_EDITS_PER_TURN) {
     return refused("home_edits_full", `You made ${HOME_EDITS_PER_TURN} home edits this turn already. The next turn can make more.`);
   }
-  const planned = def.plan({ db: game.db, attached, view, args, nowMs, ownerMs: game.ownerMs() });
+  const planned = def.plan({ db: game.db, listed: listedSession(game.db, attached), view, args, nowMs, ownerMs: game.ownerMs() });
   if (isReceipt(planned)) return planned;
   if (args.knowingly !== true) {
     const other = actRequestedMeanwhile(game.db, { thread: context.thread, nowMs });

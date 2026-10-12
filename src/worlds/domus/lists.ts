@@ -1,7 +1,8 @@
 // The game's lists on demand: the people she knows, the places she can go, her things and the event types. The helper sends
 // a list only when its content changed (POST /domus/lists), and Natalis keeps the newest one per helper session and kind.
-// The game_list tool reads it and changes nothing. Refs in a list (p, h, t, e) resolve only against the lists of the helper
-// session that is attached now (see findListed). Her view carries one count line from these lists (listCountLine).
+// The game_list tool reads it and changes nothing. Refs in a list (p, h, t, e) resolve only against the list of the helper
+// session her last list answer named, and only while that session is attached (see listedSession and findListed). Her view
+// carries one count line from these lists (listCountLine).
 
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
@@ -44,7 +45,8 @@ export function listDigests(db: DatabaseSync, attachment: string): Record<string
 }
 
 /** The stored list of one kind for a helper session, or undefined when it has none. */
-export function readList(db: DatabaseSync, attachment: string, kind: string): StoredList | undefined {
+export function readList(db: DatabaseSync, attachment: string | undefined, kind: string): StoredList | undefined {
+  if (attachment === undefined) return undefined;
   const row = db.prepare("SELECT digest, items_json, at_ms FROM lists WHERE attachment = ? AND kind = ?").get(attachment, kind) as Row | undefined;
   if (!row) return undefined;
   let items: unknown;
@@ -56,8 +58,24 @@ export function readList(db: DatabaseSync, attachment: string, kind: string): St
   };
 }
 
+/**
+ * Records the helper session whose list (or catalogue answer) she read last. Her refs name items of that session only: a
+ * ref she was given before the game was attached to another session is not mapped to whatever that session numbered it.
+ */
+export function markListed(db: DatabaseSync, attachment: string): void {
+  db.prepare(`INSERT INTO list_marks (id, attachment) VALUES (1, ?)
+    ON CONFLICT (id) DO UPDATE SET attachment = excluded.attachment`).run(attachment);
+}
+
+/** The helper session her list and catalogue refs name, when it is the session attached now; undefined otherwise (her refs are stale). */
+export function listedSession(db: DatabaseSync, attached: string): string | undefined {
+  const row = db.prepare("SELECT attachment FROM list_marks WHERE id = 1").get() as Row | undefined;
+  return row !== undefined && String(row.attachment) === attached ? attached : undefined;
+}
+
 /** The item a ref names in a helper session's stored list of that kind, or undefined. Only an exact ref matches. */
-export function findListed(db: DatabaseSync, attachment: string, kind: ListKind, ref: string): ListItem | undefined {
+export function findListed(db: DatabaseSync, attachment: string | undefined, kind: ListKind, ref: string): ListItem | undefined {
+  if (attachment === undefined) return undefined;
   return readList(db, attachment, kind)?.items.find((item) => item.ref === ref);
 }
 
@@ -198,6 +216,7 @@ function gameList(open: () => GameContext, args: Record<string, unknown>, _conte
   if (stored === undefined) {
     return { ok: false, summary: `The game has not sent its list of ${kind} yet.`, refused: { code: "no_list", reason: `The game has not sent its list of ${kind} yet.` } };
   }
+  markListed(game.db, session);
   const room = typeof args.room === "string" ? args.room.trim() : undefined;
   return {
     ok: true,

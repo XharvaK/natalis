@@ -161,6 +161,10 @@ CREATE TABLE IF NOT EXISTS catalog_asks (
   placement TEXT
 );
 CREATE INDEX IF NOT EXISTS catalog_asks_status ON catalog_asks (status);
+CREATE TABLE IF NOT EXISTS list_marks (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  attachment TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS catalog_seen (
   attachment TEXT NOT NULL,
   ref TEXT NOT NULL,

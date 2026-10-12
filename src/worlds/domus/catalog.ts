@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import type { ThreadNote } from "./acts.js";
+import { markListed } from "./lists.js";
 import { type Row } from "./store.js";
 import { type GameContext, gameGate, refused } from "./tool-context.js";
 import { CATALOG_ITEMS_MAX } from "./wire.js";
@@ -133,6 +134,7 @@ export function settleCatalog(
       at_ms = excluded.at_ms`).run(input.helperSession, String(item.ref), String(item.id), String(item.name),
       typeof item.price === "number" ? item.price : null, input.nowMs);
   }
+  markListed(db, input.helperSession);
   return {
     applied: true,
     note: {

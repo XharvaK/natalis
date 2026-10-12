@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Receipt, ToolContext } from "../../contracts.js";
 import { actRequestedMeanwhile, syncActs } from "./acts.js";
 import { gameActTool, type GameActContext } from "./game-act.js";
-import { storeList } from "./lists.js";
+import { markListed, storeList } from "./lists.js";
 import { admitObservation, openDomusDb, type Row } from "./store.js";
 import type { GameContext } from "./tool-context.js";
 import { SAVE_FLOOR_MS, verbTools } from "./verbs.js";
@@ -53,7 +53,9 @@ function seedView(options: unknown[], portrait?: unknown): void {
   });
 }
 
+/** The lists as she has listed them: the game sent them, and her last game_list answer named this session. */
 function seedLists(): void {
+  markListed(db, HELPER);
   storeList(db, {
     attachment: HELPER, kind: "places", digest: "p", nowMs: clock,
     items: [{ ref: "h1", id: "9001", name: "Test Park", kind: "venue", what: "Park" }],

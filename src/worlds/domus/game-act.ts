@@ -7,7 +7,7 @@ import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import { answerFor, isAnswerClaim, type AnswerClaim, type Found } from "./answers.js";
 import { actRequestedMeanwhile, PLAN_MORE, requestAct } from "./acts.js";
 import { findOption, labelOf, optionsOf, refsOf } from "./options.js";
-import { findListed } from "./lists.js";
+import { findListed, listedSession } from "./lists.js";
 import { gameThreadNow, newestObservation, STALE_VIEW_CODE, STALE_VIEW_REASON } from "./store.js";
 import { PROBE_NEEDED, probeAtLeast, staleRef } from "./tool-context.js";
 
@@ -207,9 +207,9 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
     if (game.probeOf && !probeAtLeast(game.probeOf(attached))) {
       return refused("probe_too_old", `Choosing a Sim needs the game's helper at probe ${PROBE_NEEDED} or later, and it is not. Nothing was requested.`);
     }
-    const listed = findListed(game.db, attached, "people", sim);
-    if (!listed) return staleRef(sim, "game_list people");
-    person = { id: String(listed.id), name: String(listed.name) };
+    const found = findListed(game.db, listedSession(game.db, attached), "people", sim);
+    if (!found) return staleRef(sim, "game_list people");
+    person = { id: String(found.id), name: String(found.name) };
   }
   if (typeof words === "string" && first.object.person !== true) {
     return refused("not_a_person", `Words go only with an act on a person, and ${option} is not one in the newest view. Nothing was requested.`);

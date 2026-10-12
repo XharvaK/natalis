@@ -5,6 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ToolContext } from "../../contracts.js";
 import { catalogText, expireCatalog, gameCatalogTool, handCatalog, openCatalogAsk, settleCatalog, withdrawCatalog, CATALOG_TTL_MS } from "./catalog.js";
+import { verbTools } from "./verbs.js";
 import { findListed, gameListTool, listCountLine, listDigests, LISTS_KEEP_MS, readList, storeList } from "./lists.js";
 import { openDomusDb } from "./store.js";
 import { parseActSync, parseCatalog, parseLists, RESULT_MAX } from "./wire.js";
@@ -18,10 +19,11 @@ let dir: string;
 let db: DatabaseSync;
 let clock: number;
 let attached: boolean;
+let session: string;
 
 function game(): GameContext {
   return {
-    db, nowMs: () => clock, stopped: () => false, attachedSession: () => (attached ? HELPER : undefined),
+    db, nowMs: () => clock, stopped: () => false, attachedSession: () => (attached ? session : undefined),
     lastAttachedMs: () => clock - 1000, probeOf: () => "2.40.0", ownerMs: () => undefined,
   };
 }
@@ -35,6 +37,7 @@ beforeEach(() => {
   db = openDomusDb(dir);
   clock = T0;
   attached = true;
+  session = HELPER;
 });
 
 afterEach(() => {
@@ -99,6 +102,22 @@ describe("game_list", () => {
     expect(await list({ what: "cars" })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
     expect(await list({ what: "places", room: "Kitchen" })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
     expect(await list({ what: "events" })).toMatchObject({ ok: false, refused: { code: "no_list" } });
+  });
+
+  it("refuses a ref from a session she did not list under, after the game attaches to another one, and names the tool", async () => {
+    storeList(db, { attachment: HELPER, kind: "things", digest: DIGEST, nowMs: clock, items: [{ ref: "t1", id: "11", name: "Test Bed", where: "inventory" }] });
+    storeList(db, { attachment: "helper-2", kind: "things", digest: DIGEST, nowMs: clock, items: [{ ref: "t1", id: "22", name: "Test Lamp", where: "inventory" }] });
+    expect(await list({ what: "things" })).toMatchObject({ ok: true });
+    session = "helper-2";
+    const sell = (args: Record<string, unknown>) => verbTools(game).find((item) => item.spec.name === "game_sell")!
+      .run(args, { thread: "domus:slot3", turnId: "t", nowMs: clock } as ToolContext);
+    const stale = await sell({ thing: "t1" });
+    expect(stale).toMatchObject({ ok: false, refused: { code: "stale_list" } });
+    expect(stale.summary).toContain("game_list things");
+    expect(db.prepare("SELECT COUNT(*) AS n FROM acts").get()).toEqual({ n: 0 });
+    // Once she lists under the session attached now, its refs are the ones she can use.
+    expect(await list({ what: "things" })).toMatchObject({ ok: true });
+    expect(await sell({ thing: "t1" })).not.toMatchObject({ refused: { code: "stale_list" } });
   });
 
   it("refuses while the game is not attached, and changes nothing", async () => {
