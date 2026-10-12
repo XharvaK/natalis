@@ -46,6 +46,14 @@ afterEach(() => {
 });
 
 describe("game_overlay_say: her line on the overlay", () => {
+  it("says in its description that the line shows in the game as a notification from her, and on the overlay viewers read", () => {
+    const description = gameOverlaySayTool(() => context()).spec.description;
+    expect(description).toContain("it shows in the game as a notification from you");
+    expect(description).toContain("on the overlay panel viewers see");
+    expect(description).toContain("Viewers read it.");
+    expect(description).toContain("a short thought or feeling you want seen, one line.");
+  });
+
   it("puts one trimmed line on the overlay and says so in its receipt", async () => {
     const receipt = await say({ text: "  Hello overlay.  " });
     expect(receipt).toMatchObject({ ok: true, summary: "Put your line on the game overlay. Viewers read it; clear removes it." });
