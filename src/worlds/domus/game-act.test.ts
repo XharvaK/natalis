@@ -84,6 +84,13 @@ describe("game_act: where it works", () => {
     expect(acts()).toEqual([expect.objectContaining({ thread: "discord:dm:owner", observation_id: "helper-1.1", option_ref: "a1" })]);
   });
 
+  it("resolves refs from a thread that holds an old view against the game's newest view, not the old one", async () => {
+    view([{ object: "Old thing", object_id: "obj-old", acts: [{ ref: "a7", guid64: "700", text: "Old act" }] }], T0 - 60_000);
+    view(VIEW);
+    expect(await run({ option: "a7" }, "discord:dm:owner")).toMatchObject({ ok: false, refused: { code: "unknown_option" } });
+    expect(await run({ option: "a3" }, "discord:dm:owner")).toMatchObject({ ok: true, summary: expect.stringContaining("Sit down") });
+  });
+
   it("finds the game's thread from the attached session, and from the newest view when that session has sent none", async () => {
     view(VIEW);
     open = { db, nowMs: () => T0, attachedSession: () => "helper-2", lastAttachedMs: () => T0 };

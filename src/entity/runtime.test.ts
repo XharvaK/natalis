@@ -2940,6 +2940,41 @@ describe("cache order: the slow sections first, then the rows that change", () =
     expect(user.split("Full text two.")).toHaveLength(2);
   });
 
+  it("gives a thread that holds an old copy of a view the newest view of that game, and says it came from the game thread", async () => {
+    const world = feedWorld("fake");
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity } = await open(model, {}, [world.world]);
+    await entity.start();
+    world.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: "An old copy of the view.", view: "game", brief: "Old view brief.", wake: false });
+    world.emit({ world: "fake", place: GAME, source: "outside", text: "The newest full view.", view: "game", brief: "Newest view brief.", wake: false });
+    world.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: "Still there?" });
+    await entity.idle();
+
+    const user = userTextOf(model.requests[0]);
+    expect(user).toContain("Old view brief.");
+    expect(user).not.toContain("An old copy of the view.");
+    const at = user.indexOf("Current view (game, from the game thread):");
+    expect(at).toBeGreaterThan(user.indexOf("New:"));
+    expect(user.slice(at, user.indexOf("## now"))).toContain("The newest full view.");
+    expect(user.split("The newest full view.")).toHaveLength(2);
+  });
+
+  it("finds the newest view of a key past a page of other rows", async () => {
+    const world = feedWorld("fake");
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity } = await open(model, {}, [world.world]);
+    await entity.start();
+    world.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: "An old copy of the view.", view: "game", brief: "Old view brief.", wake: false });
+    world.emit({ world: "fake", place: GAME, source: "outside", text: "The newest full view.", view: "game", brief: "Newest view brief.", wake: false });
+    for (let i = 1; i <= 600; i += 1) world.emit({ world: "fake", place: GAME, source: "outside", text: `Game line ${i}.`, wake: false });
+    world.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: "Still there?" });
+    await entity.idle();
+
+    const user = userTextOf(model.requests[0]);
+    expect(user).toContain("Current view (game, from the game thread):");
+    expect(user).toContain("The newest full view.");
+  });
+
   it("shows the same words as the old layout, the only addition being the brief of the newest view that now sits in its block", async () => {
     const game = feedWorld("fake");
     const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);

@@ -172,6 +172,8 @@ const WAKE_CHAIN_HOLD_MS = 15 * 60_000;
 const RHYTHM_WHY = "Your daily rhythm.";
 const TIMER_LIMIT_MS = 2_147_483_647;
 const ALL_ROWS = 1_000_000;
+/** The rows read at a time when the newest view of a key is looked for, from any thread. */
+const VIEW_SCAN_PAGE = 500;
 const SOURCES: readonly RiverSource[] = ["owner", "outside", "self", "body"];
 const BUILT_IN_NAMES = ["say", "schedule_wake", "cancel_wake", "set_mood", "let_go"] as const;
 
@@ -923,10 +925,12 @@ class Runtime implements Entity {
     const turnModel = worldModel ?? this.model;
     const mainName = worldModel === undefined ? this.config.model.model : (this.config.worldModels?.[world]?.model ?? turnModel.info.id);
     const { system: systemParts, tail, sizes } = this.systemText(thread, fresh, shown, nowMs, snapshot, this.thinkingOf(turnModel, mainName, effort));
-    // Views in Recent always show their brief. In New, an older view of a key shows its brief and the newest shows its full
-    // text. The newest full view of a key that New does not show goes in its own block, after New.
-    const briefed = olderViewRows([...recent, ...fresh]);
-    const current = currentViewRows(recent, fresh);
+    // Views in Recent always show their brief. Of the views of a key, only the newest shows its full text: the newest may
+    // be on another thread (a game view a thread copied last night is older than the game's newest). The newest full view
+    // of a key that New does not show goes in its own block, after New.
+    const newest = this.newestViews([...recent, ...fresh], snapshot);
+    const briefed = olderViewRows([...recent, ...fresh], newest);
+    const current = currentViewRows(fresh, newest);
     const recentLines = (rows: readonly RiverRow[]): string[] =>
       rows.map((row) => this.lineFor(row, viewKeyOf(row) !== undefined));
     // Recent here holds still for a page: its first RECENT_LIMIT rows are one part (class page), and the rows since the
@@ -952,7 +956,9 @@ class Runtime implements Entity {
     }
     user.push({ name: "new", cls: "turn", text: ["New:", ...fresh.map((row) => this.lineFor(row, briefed.has(row.seq)))].join("\n") });
     for (const { key, row } of current) {
-      user.push({ name: `current view (${key})`, cls: "turn", text: [`Current view (${key}):`, this.lineFor(row)].join("\n") });
+      // A view written on another thread says so: the game's newest view can be on the game thread while this one holds an old copy.
+      const from = row.thread === thread ? "" : ", from the game thread";
+      user.push({ name: `current view (${key})`, cls: "turn", text: [`Current view (${key}${from}):`, this.lineFor(row)].join("\n") });
     }
     if (done.length > 0) {
       user.push({
@@ -1864,6 +1870,32 @@ class Runtime implements Entity {
   }
 
   /**
+   * The newest row of each view key that the given rows hold, from any thread up to the snapshot. Rows are read newest
+   * first, so the first row of a key that the scan meets is its newest; the scan stops once every key has one.
+   */
+  private newestViews(rows: readonly RiverRow[], snapshot: number): Map<string, RiverRow> {
+    const pending = new Set<string>();
+    for (const row of rows) {
+      const key = viewKeyOf(row);
+      if (key !== undefined) pending.add(key);
+    }
+    const newest = new Map<string, RiverRow>();
+    let until = snapshot;
+    while (pending.size > 0 && until > 0) {
+      const page = this.river.read({ kinds: ["event"], untilSeq: until, newestFirst: true, limit: VIEW_SCAN_PAGE });
+      if (page.length === 0) break;
+      for (const row of page) {
+        const key = viewKeyOf(row);
+        if (key === undefined || !pending.has(key)) continue;
+        pending.delete(key);
+        newest.set(key, row);
+      }
+      until = (page[page.length - 1]?.seq ?? 0) - 1;
+    }
+    return newest;
+  }
+
+  /**
    * The rows of kinds event and say that Recent here shows, oldest first, not counting the new events. The window's oldest
    * row moves on only in steps of RECENT_PAGE, counted from the thread's oldest row, so the window holds RECENT_LIMIT to
    * RECENT_LIMIT + RECENT_PAGE - 1 rows and keeps its start for every turn of one page.
@@ -2694,37 +2726,26 @@ function briefOf(row: RiverRow): string {
 }
 
 /**
- * The newest full view of each key that Recent here shows and New does not, oldest first. A key that New shows has its
- * newest view in New, where it is shown in full, so it gets no block here.
+ * The newest full view of each key whose newest row is not in New, oldest first. A key whose newest view New shows has
+ * its newest view in New, where it is shown in full, so it gets no block here.
  */
-function currentViewRows(recent: readonly RiverRow[], fresh: readonly RiverRow[]): Array<{ key: string; row: RiverRow }> {
-  const inNew = new Set<string>();
-  for (const row of fresh) {
-    const key = viewKeyOf(row);
-    if (key !== undefined) inNew.add(key);
-  }
-  const newest = new Map<string, RiverRow>();
-  for (const row of recent) {
-    const key = viewKeyOf(row);
-    if (key !== undefined && !inNew.has(key)) newest.set(key, row);
-  }
-  return [...newest].map(([key, row]) => ({ key, row })).sort((a, b) => a.row.seq - b.row.seq);
+function currentViewRows(fresh: readonly RiverRow[], newest: ReadonlyMap<string, RiverRow>): Array<{ key: string; row: RiverRow }> {
+  const inNew = new Set<number>(fresh.map((row) => row.seq));
+  return [...newest]
+    .filter(([, row]) => !inNew.has(row.seq))
+    .map(([key, row]) => ({ key, row }))
+    .sort((a, b) => a.row.seq - b.row.seq);
 }
 
 /**
- * The seqs of the rows that show their brief: for each view key, every row with that key except the newest one of it.
- * Rows without a view key are never in the set.
+ * The seqs of the rows that show their brief: every row with a view key except the newest view of that key, which is
+ * looked up from any thread (see newestViews). Rows without a view key are never in the set.
  */
-function olderViewRows(rows: readonly RiverRow[]): Set<number> {
-  const newest = new Map<string, number>();
-  for (const row of rows) {
-    const view = viewKeyOf(row);
-    if (view !== undefined) newest.set(view, Math.max(newest.get(view) ?? 0, row.seq));
-  }
+function olderViewRows(rows: readonly RiverRow[], newest: ReadonlyMap<string, RiverRow>): Set<number> {
   const older = new Set<number>();
   for (const row of rows) {
     const view = viewKeyOf(row);
-    if (view !== undefined && newest.get(view) !== row.seq) older.add(row.seq);
+    if (view !== undefined && newest.get(view)?.seq !== row.seq) older.add(row.seq);
   }
   return older;
 }
