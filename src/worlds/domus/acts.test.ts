@@ -220,6 +220,11 @@ describe("requested acts", () => {
 });
 
 describe("plans", () => {
+  it("holds a plan of six at most: the first act and five more (Q-4)", () => {
+    ask(T0, "a1", { then: ["a2", "a3", "a4", "a1", "a2", "a3"] });
+    expect(sync(T0 + 1).planned).toBe(5);
+  });
+
   it("runs a plan of three: each step is requested only when the one before completed", () => {
     const first = okId(ask(T0, "a1", { then: ["a3", "a4"], forSummoner: true }));
     const start = sync(T0 + 1);

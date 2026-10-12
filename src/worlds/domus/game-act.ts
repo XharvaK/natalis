@@ -1,4 +1,4 @@
-// The game_act tool: the Lar names one choice of the newest view of its game thread (and up to two more to follow it),
+// The game_act tool: the Lar names one choice of the newest view of its game thread (and up to five more to follow it),
 // and the world keeps the request for the helper. The tool never guesses a ref, never matches a word, and never
 // chooses for the Lar. Its receipts say requested; what the game did comes back later as notes on the game thread.
 
@@ -57,7 +57,7 @@ export function gameActTool(open: () => GameActContext): Tool {
       name: "game_act",
       description:
         "Ask the game to do one of the choices in its newest view, by the ref (for example a3). " +
-        "Put up to two more refs in then; each runs only after the one before it completes. Set for_summoner only when " +
+        "Put up to five more refs in then; each runs only after the one before it completes. Set for_summoner only when " +
         "your summoner asked for this act. If another of your threads asked the game for an act within the last 60 seconds, " +
         "the request is refused; set knowingly to true only to ask for this act anyway. " +
         "Answer a game question with answer: rows by ref (with a count where the question allows it) " +
@@ -70,7 +70,7 @@ export function gameActTool(open: () => GameActContext): Tool {
             type: "array",
             items: { type: "string" },
             maxItems: PLAN_MORE,
-            description: "Up to two more refs, each run after the one before it completes.",
+            description: "Up to five more refs, each run after the one before it completes.",
           },
           expect: {
             type: "string",

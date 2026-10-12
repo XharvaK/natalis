@@ -3,7 +3,7 @@
 // a note on the game thread. Nothing here chooses an act: the Lar chose it, the game did it or did not.
 //
 // Phases move forward only, a terminal phase is not overwritten, and a late report is still kept. A plan is the
-// first act and up to two more: each later one is requested only after the one before completed. A refusal, an
+// first act and up to five more: each later one is requested only after the one before completed. A refusal, an
 // unknown or a cut-short act ends the plan. A new choice replaces whatever a plan still waited to do.
 //
 // Source: the old listener's acts (same phase rules, same expiry, same plan rules). Where the design and that source
@@ -22,7 +22,7 @@ export const ACT_TTL_MS = 90_000;
 /** A plan's waiting steps are released only while the plan is this young; an older plan is let go whole. */
 export const PLAN_STEP_MAX_MS = 5 * 60 * 1000;
 /** A plan is the first act and at most this many more. */
-export const PLAN_MORE = 2;
+export const PLAN_MORE = 5;
 /** Another thread's request for the game within this time holds a new act, unless the Lar says it knowingly. */
 export const ACT_MEANWHILE_MS = 60_000;
 
