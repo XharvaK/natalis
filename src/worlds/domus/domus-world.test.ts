@@ -199,7 +199,7 @@ describe("observations", () => {
     expect(events[0]?.wake).toBe(true);
     await call("/domus/observation", viewBody());
     expect(events[1]?.brief).toBe("- sim arrives: subject Pim Dorrow");
-    expect(events[0]?.brief).toBe("- She fell asleep.\n- The game's record of your day came with this view.");
+    expect(events[0]?.brief).toBe("- You fell asleep.\n- The game's record of your day came with this view.");
   });
 
   it("names every view one domus view, with a brief of its percept lines only, so an older view shrinks in her turn", async () => {

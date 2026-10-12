@@ -172,13 +172,13 @@ export function perceptSentence(percept: Percept): string | undefined {
       return interaction ? `${who} is talking to you (${plainName(interaction)}).` : `${who} is talking to you.`;
     }
     case "env":
-      return facts.from_room !== undefined ? "She moved rooms." : undefined;
+      return facts.from_room !== undefined ? "You moved rooms." : undefined;
     case "sleep_onset":
-      return "She fell asleep.";
+      return "You fell asleep.";
     case "lineage": {
       const lineage = textOrUndefined(facts.bucket);
       const reason = textOrUndefined(facts.reason);
-      return `Her life line changed${lineage ? ` (${plainName(lineage)})` : ""}${reason ? `: ${reason}` : ""}.`;
+      return `Your life line changed${lineage ? ` (${plainName(lineage)})` : ""}${reason ? `: ${reason}` : ""}.`;
     }
     case "notice": {
       const text = sentence(facts.text);

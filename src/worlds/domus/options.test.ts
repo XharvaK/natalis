@@ -85,9 +85,9 @@ describe("rendering a view", () => {
     expect(text).toContain("- Started: y (the game, on its own).");
     expect(text).toContain("- Mara Quill arrived, 49 m away, sim stand (guest).");
     expect(text).toContain("- Tobin Ash left.");
-    expect(text).toContain("- She moved rooms.");
+    expect(text).toContain("- You moved rooms.");
     expect(text).toContain("- Posture: sitting.");
-    expect(text).toContain("- She fell asleep.");
+    expect(text).toContain("- You fell asleep.");
     expect(text).toContain("- Part of the game's feed was missed.");
     expect(text).not.toContain("subject");
     expect(text).not.toContain("value");
@@ -221,7 +221,7 @@ describe("the brief of an older view", () => {
       { kind: "sim_arrives", salience: 0, facts: { subject: "Pim Dorrow" } },
       { kind: "sleep_onset", salience: 0, facts: {} },
     ]);
-    expect(brief).toBe("- sim arrives: subject Pim Dorrow\n- She fell asleep.");
+    expect(brief).toBe("- sim arrives: subject Pim Dorrow\n- You fell asleep.");
   });
 
   it("says An earlier view. when there are no percept lines", () => {
@@ -314,7 +314,7 @@ describe("the game's record of the day in a view", () => {
     const text = renderView({
       world: "slot3", percepts: [{ kind: "sleep_onset", salience: 1, facts: {} }], options: [], portrait: { mood: "Zesty" }, day: DAY,
     });
-    expect(text).toBe(`Your body now:\nMood: zesty.\n\n${SECTION}\n\nThe game (slot3) shows:\n- She fell asleep.\n\nThe game offers no choices in this view.`);
+    expect(text).toBe(`Your body now:\nMood: zesty.\n\n${SECTION}\n\nThe game (slot3) shows:\n- You fell asleep.\n\nThe game offers no choices in this view.`);
   });
 
   it("is not shown when the view carries no record, so the view reads as before", () => {
@@ -323,9 +323,19 @@ describe("the game's record of the day in a view", () => {
   });
 
   it("gives an older view one brief line that the record came with it, and nothing more of the record", () => {
-    expect(viewBrief([{ kind: "sleep_onset", salience: 0, facts: {} }], true)).toBe("- She fell asleep.\n- The game's record of your day came with this view.");
+    expect(viewBrief([{ kind: "sleep_onset", salience: 0, facts: {} }], true)).toBe("- You fell asleep.\n- The game's record of your day came with this view.");
     expect(viewBrief([], true)).toBe("- The game's record of your day came with this view.");
     expect(viewBrief([])).toBe("An earlier view.");
+  });
+
+  it("says a change to your life line, and the room you moved to, in the second person", () => {
+    const text = viewBrief([
+      { kind: "env", salience: 0, facts: { from_room: "Test Hall" } },
+      { kind: "lineage", salience: 0, facts: { bucket: "Test Bucket", reason: "Test reason" } },
+    ]);
+    expect(text).toContain("- You moved rooms.");
+    expect(text).toContain("Your life line changed (");
+    expect(text).not.toMatch(/\b(She|she|Her|her)\b/);
   });
 });
 
