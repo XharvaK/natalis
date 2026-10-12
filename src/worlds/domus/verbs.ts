@@ -185,11 +185,9 @@ const VERBS: VerbDef[] = [
       type: { type: "string", description: "The e ref of the event type." },
       guests: { type: "array", items: { type: "string" }, maxItems: GUESTS_MAX, description: "Optional: up to 16 p refs." },
       start: {
+        type: ["string", "object"],
         description: "Optional: \"now\" (the default), or {day: \"today\" or \"tomorrow\", time: \"HH:MM\"}.",
-        oneOf: [
-          { type: "string", enum: ["now"] },
-          { type: "object", properties: { day: { type: "string", enum: ["today", "tomorrow"] }, time: { type: "string" } }, required: ["day", "time"] },
-        ],
+        properties: { day: { type: "string", enum: ["today", "tomorrow"] }, time: { type: "string" } },
       },
     },
     required: ["type"],

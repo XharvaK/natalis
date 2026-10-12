@@ -281,3 +281,11 @@ describe("the sync hands a verb act to the helper, and its result comes back as 
     expect(sync.acts).toEqual([expect.objectContaining({ guid64: "902", sim_id: "4001" })]);
   });
 });
+
+describe("the tool schemas (NATALIS2-9)", () => {
+  it("gives plan_event's start a top-level type, so a validator that needs one still accepts the tool", () => {
+    const start = tool("plan_event").spec.parameters.properties.start as Record<string, unknown>;
+    expect(start.type).toEqual(["string", "object"]);
+    expect(start).not.toHaveProperty("oneOf");
+  });
+});
