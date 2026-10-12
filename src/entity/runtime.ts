@@ -924,13 +924,15 @@ class Runtime implements Entity {
     const effort = worldModel === undefined ? this.config.effort : (this.config.worldModels?.[world]?.effort ?? this.config.effort);
     const turnModel = worldModel ?? this.model;
     const mainName = worldModel === undefined ? this.config.model.model : (this.config.worldModels?.[world]?.model ?? turnModel.info.id);
-    const { system: systemParts, tail, sizes } = this.systemText(thread, fresh, shown, nowMs, snapshot, this.thinkingOf(turnModel, mainName, effort));
     // Views in Recent always show their brief. Of the views of a key, only the newest shows its full text: the newest may
     // be on another thread (a game view a thread copied last night is older than the game's newest). The newest full view
     // of a key that New does not show goes in its own block, after New.
     const newest = this.newestViews([...recent, ...fresh], snapshot);
     const briefed = olderViewRows([...recent, ...fresh], newest);
     const current = currentViewRows(fresh, newest);
+    // A row in its own block is shown, so recall does not show it again.
+    for (const { row } of current) shown.add(row.seq);
+    const { system: systemParts, tail, sizes } = this.systemText(thread, fresh, shown, nowMs, snapshot, this.thinkingOf(turnModel, mainName, effort));
     const recentLines = (rows: readonly RiverRow[]): string[] =>
       rows.map((row) => this.lineFor(row, viewKeyOf(row) !== undefined));
     // Recent here holds still for a page: its first RECENT_LIMIT rows are one part (class page), and the rows since the
