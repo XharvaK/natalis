@@ -140,6 +140,36 @@ CREATE TABLE IF NOT EXISTS memory_asks (
   settled_at_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS memory_asks_status ON memory_asks (status);
+CREATE TABLE IF NOT EXISTS lists (
+  attachment TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  digest TEXT NOT NULL,
+  items_json TEXT NOT NULL,
+  at_ms INTEGER NOT NULL,
+  PRIMARY KEY (attachment, kind)
+);
+CREATE TABLE IF NOT EXISTS catalog_asks (
+  ask_id TEXT PRIMARY KEY,
+  thread TEXT NOT NULL,
+  about TEXT NOT NULL,
+  status TEXT NOT NULL,
+  requested_at_ms INTEGER NOT NULL,
+  handed_session TEXT,
+  settled_at_ms INTEGER,
+  room TEXT,
+  max_price INTEGER,
+  placement TEXT
+);
+CREATE INDEX IF NOT EXISTS catalog_asks_status ON catalog_asks (status);
+CREATE TABLE IF NOT EXISTS catalog_seen (
+  attachment TEXT NOT NULL,
+  ref TEXT NOT NULL,
+  definition_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  price INTEGER,
+  at_ms INTEGER NOT NULL,
+  PRIMARY KEY (attachment, ref)
+);
 `;
 
 /** How the game's changes reach the Lar's turns. A quiet mode reverts to resumeMode when quietUntilMs passes. */
@@ -166,10 +196,13 @@ export type Row = Record<string, unknown>;
 
 /**
  * The schema version this code reads and writes (PRAGMA user_version). Version 1 adds two nullable columns to acts: words
- * (what the Lar said to the Sim the act targets) and pulled_at_ms (when the helper first took the act).
+ * (what the Lar said to the Sim the act targets) and pulled_at_ms (when the helper first took the act). Version 2 adds
+ * acts.verb and acts.args_json (the home and travel verbs, and a Sim an act names), and the tables lists, catalog_asks and
+ * catalog_seen (the game's lists on demand, and the catalogue asks).
  */
-export const DOMUS_SCHEMA_VERSION = 1;
+export const DOMUS_SCHEMA_VERSION = 2;
 const ACT_COLUMNS_V1: ReadonlyArray<readonly [name: string, type: string]> = [["words", "TEXT"], ["pulled_at_ms", "INTEGER"]];
+const ACT_COLUMNS_V2: ReadonlyArray<readonly [name: string, type: string]> = [["verb", "TEXT"], ["args_json", "TEXT"]];
 
 /**
  * Brings an open Domus database to DOMUS_SCHEMA_VERSION. Each column is added only when it is missing, in one transaction
@@ -184,7 +217,7 @@ export function migrateDomusDb(db: DatabaseSync): void {
   const present = new Set((db.prepare("PRAGMA table_info(acts)").all() as Row[]).map((column) => String(column.name)));
   db.exec("BEGIN IMMEDIATE");
   try {
-    for (const [name, type] of ACT_COLUMNS_V1) {
+    for (const [name, type] of [...ACT_COLUMNS_V1, ...ACT_COLUMNS_V2]) {
       if (!present.has(name)) db.exec(`ALTER TABLE acts ADD COLUMN ${name} ${type}`);
     }
     db.exec(`PRAGMA user_version = ${DOMUS_SCHEMA_VERSION}`);
@@ -332,7 +365,7 @@ const FORGET_TABLES: ReadonlyArray<{ table: string; columns: readonly ForgetColu
     table: "acts",
     columns: [
       { name: "label", json: false, erased: FORGOTTEN_LINE }, { name: "answer_json", json: true, erased: "{}" },
-      { name: "words", json: false, erased: FORGOTTEN_LINE },
+      { name: "words", json: false, erased: FORGOTTEN_LINE }, { name: "args_json", json: true, erased: "{}" },
     ],
   },
   { table: "act_events", columns: [{ name: "detail_json", json: true, erased: "{}" }] },
@@ -340,6 +373,9 @@ const FORGET_TABLES: ReadonlyArray<{ table: string; columns: readonly ForgetColu
   { table: "undos", columns: [{ name: "reason", json: false, erased: FORGOTTEN_LINE }] },
   { table: "overlay_lines", columns: [{ name: "line", json: false, erased: FORGOTTEN_LINE }] },
   { table: "memory_asks", columns: [{ name: "about", json: false, erased: FORGOTTEN_LINE }] },
+  { table: "lists", columns: [{ name: "items_json", json: true, erased: "[]" }] },
+  { table: "catalog_asks", columns: [{ name: "about", json: false, erased: FORGOTTEN_LINE }] },
+  { table: "catalog_seen", columns: [{ name: "name", json: false, erased: FORGOTTEN_LINE }] },
 ];
 
 /** The form words are compared in: NFKC and lower case, as the notebook and the river fold them. */
@@ -386,6 +422,9 @@ function withdrawForgotten(db: DatabaseSync, table: string, rowid: number, nowMs
   } else if (table === "memory_asks") {
     // A question still waiting to be handed over is withdrawn, so the helper never receives the erased words.
     db.prepare("UPDATE memory_asks SET status = 'withdrawn', settled_at_ms = ? WHERE rowid = ? AND status IN ('owed', 'handed')")
+      .run(nowMs, rowid);
+  } else if (table === "catalog_asks") {
+    db.prepare("UPDATE catalog_asks SET status = 'withdrawn', settled_at_ms = ? WHERE rowid = ? AND status IN ('owed', 'handed')")
       .run(nowMs, rowid);
   }
 }
@@ -507,6 +546,11 @@ export class HeartbeatBook {
   /** The game's world as a session's heartbeats named it, or undefined when none did. */
   worldOf(session: string): string | undefined {
     return this.sessions[session]?.world;
+  }
+
+  /** The game's helper probe version as a session's heartbeats named it, or undefined when none did. */
+  probeOf(session: string): string | undefined {
+    return this.sessions[session]?.probeVersion;
   }
 
   /** The helper session that is attached now (see attachedAt), or undefined. */
