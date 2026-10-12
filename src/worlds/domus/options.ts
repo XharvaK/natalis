@@ -5,15 +5,18 @@
 import type { Found, OptionObject, AnswerRules } from "./answers.js";
 import { answerRulesOf } from "./answers.js";
 import type { OptionsCut, Percept } from "./wire.js";
-import { type AttachmentNow, bodyLines, clockLine } from "./body.js";
+import { type AttachmentNow, bodyLines, clockLine, needFeeling, needGradeOfBand, needGradeOfValue } from "./body.js";
 import { DAY_BRIEF_LINE, dayRecordLines } from "./day-record.js";
-import { BAND_WORDS, capitalised, dropTokens, ORIGIN_WORDS, plainName, textOrUndefined } from "./words.js";
+import { capitalised, dropTokens, ORIGIN_WORDS, plainName, textOrUndefined } from "./words.js";
 
 /** The longest the rendered view may be, in characters. The rest is said as a count. */
 export const VIEW_TEXT_MAX = 20_000;
 /** The longest an older view's brief may be, in characters. The rest is said as a count. */
 export const BRIEF_MAX = 1_000;
 const FACT_MAX = 80;
+/** The helper's id and where for her queue (its acts are the ones she has queued). */
+const QUEUE_OBJECT_ID = "queue:her";
+const QUEUE_WHERE = "your queue";
 
 function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
@@ -117,10 +120,13 @@ export function perceptSentence(percept: Percept): string | undefined {
       return undefined;
     }
     case "need": {
+      // N4: a need reaches her as its feeling, graded by its value when the game gives one, else by its band. A need that
+      // is not felt (ok) has no words, so the view does not show it.
       const subject = textOrUndefined(facts.subject);
-      const band = textOrUndefined(facts.band);
-      if (!subject || !band) return undefined;
-      return `${capitalised(plainName(subject))}: ${BAND_WORDS[band] ?? band}.`;
+      if (!subject) return undefined;
+      const value = typeof facts.value === "number" && Number.isFinite(facts.value) ? facts.value : undefined;
+      const grade = value !== undefined ? needGradeOfValue(value) : needGradeOfBand(textOrUndefined(facts.band));
+      return grade === undefined ? undefined : needFeeling(subject, grade);
     }
     case "moodlet": {
       const to = textOrUndefined(facts.to);
@@ -172,13 +178,13 @@ export function perceptSentence(percept: Percept): string | undefined {
       return interaction ? `${who} is talking to you (${plainName(interaction)}).` : `${who} is talking to you.`;
     }
     case "env":
-      return facts.from_room !== undefined ? "She moved rooms." : undefined;
+      return facts.from_room !== undefined ? "You moved rooms." : undefined;
     case "sleep_onset":
-      return "She fell asleep.";
+      return "You fell asleep.";
     case "lineage": {
       const lineage = textOrUndefined(facts.bucket);
       const reason = textOrUndefined(facts.reason);
-      return `Her life line changed${lineage ? ` (${plainName(lineage)})` : ""}${reason ? `: ${reason}` : ""}.`;
+      return `Your life line changed${lineage ? ` (${plainName(lineage)})` : ""}${reason ? `: ${reason}` : ""}.`;
     }
     case "notice": {
       const text = sentence(facts.text);
@@ -197,12 +203,13 @@ export function perceptSentence(percept: Percept): string | undefined {
   }
 }
 
-/** One percept's line in a view: its plain sentence, or the old "kind: facts" line for a kind it does not know. */
-export function perceptLine(percept: Percept): string {
+/**
+ * One percept's line in a view: its plain sentence. A percept with no words (a kind it does not know, or one missing
+ * what its sentence needs) has no line: its raw "kind: facts" text is not shown to her.
+ */
+export function perceptLine(percept: Percept): string | undefined {
   const sentence = perceptSentence(percept);
-  const label = percept.kind.replace(/_/g, " ");
-  const facts = factsText(percept.facts);
-  return sentence !== undefined ? `- ${sentence}` : `- ${label}${facts ? `: ${facts}` : ""}`;
+  return sentence === undefined ? undefined : `- ${sentence}`;
 }
 
 /**
@@ -211,17 +218,17 @@ export function perceptLine(percept: Percept): string {
  */
 export function viewBrief(percepts: readonly Percept[], dayRecord = false): string {
   if (percepts.length === 0 && !dayRecord) return "An earlier view.";
+  const all = percepts.map(perceptLine).filter((line): line is string => line !== undefined);
   const lines: string[] = [];
   let used = 0;
-  for (const percept of percepts) {
-    const line = perceptLine(percept);
+  for (const line of all) {
     if (used + line.length > BRIEF_MAX) break;
     lines.push(line);
     used += line.length + 1;
   }
-  if (lines.length < percepts.length) lines.push(`- (${percepts.length - lines.length} more not shown)`);
+  if (lines.length < all.length) lines.push(`- (${all.length - lines.length} more not shown)`);
   if (dayRecord) lines.push(DAY_BRIEF_LINE);
-  return lines.join("\n");
+  return lines.length === 0 ? "An earlier view." : lines.join("\n");
 }
 
 /**
@@ -239,6 +246,8 @@ export function renderView(input: {
   /** The choices of the last view rendered on this thread (see choicesSignature), or undefined when there was none. */
   lastChoices?: string;
   optionsCut?: OptionsCut;
+  /** True while the game has not sent its first whole choices this session: the view says they are still coming. */
+  choicesPending?: boolean;
 }): string {
   const body = withCountLine(bodyLines(input.portrait, input.attachment, input.attention), input.counts);
   const record = dayRecordLines(input.day);
@@ -248,18 +257,20 @@ export function renderView(input: {
     `The game (${input.world}) shows:`,
   ];
   const lines: string[] = [...head];
+  const all = input.percepts.map(perceptLine).filter((line): line is string => line !== undefined);
   let shown = 0;
   let used = head.reduce((sum, line) => sum + line.length + 1, 0);
-  for (const percept of input.percepts) {
-    const line = perceptLine(percept);
+  for (const line of all) {
     if (used + line.length > VIEW_TEXT_MAX) break;
     lines.push(line);
     used += line.length;
     shown++;
   }
-  if (shown < input.percepts.length) lines.push(`- (${input.percepts.length - shown} more not shown)`);
+  if (shown < all.length) lines.push(`- (${all.length - shown} more not shown)`);
+  // Until the game's first whole menu of this session, its choices are not in yet. With none sent so far, the view says
+  // so instead of a list; a near part of the menu that did come is shown as it is.
   if (input.options.length === 0) {
-    lines.push("", "The game offers no choices in this view.");
+    lines.push("", input.choicesPending ? "The game has not sent its choices yet. They come with a later view." : "The game offers no choices in this view.");
     return lines.join("\n");
   }
   const cut = optionsCutLine(input.optionsCut);
@@ -271,10 +282,17 @@ export function renderView(input: {
   lines.push("", "Choices you can name with game_act, by ref:");
   for (const object of input.options.filter(isNear)) lines.push(...objectLines(object));
   const elsewhere = input.options.filter((object) => !isNear(object));
-  if (elsewhere.length) {
+  // Her queue is not in a room: it is its own group, right after the near objects, and never under a room heading.
+  const queue = elsewhere.filter(isQueue);
+  if (queue.length) {
+    lines.push("What you are doing now:");
+    for (const object of queue) lines.push(...objectLines(object));
+  }
+  const rest = elsewhere.filter((object) => !isQueue(object));
+  if (rest.length) {
     lines.push("Elsewhere on the lot:");
     const rooms = new Map<string, OptionObject[]>();
-    for (const object of elsewhere) {
+    for (const object of rest) {
       const room = typeof object.room === "string" && object.room !== "" ? object.room : "Other rooms";
       rooms.set(room, [...(rooms.get(room) ?? []), object]);
     }
@@ -300,6 +318,51 @@ function isNear(object: OptionObject): boolean {
   return object.near === true || (typeof object.where === "string" && object.where.startsWith("here"));
 }
 
+/** Her queue: the helper's queue object, which has no room (its where is "your queue"). */
+function isQueue(object: OptionObject): boolean {
+  const hasRoom = typeof object.room === "string" && object.room !== "";
+  return !hasRoom && (object.object_id === QUEUE_OBJECT_ID || object.where === QUEUE_WHERE);
+}
+
+/** The helper's words for a refused act the game gave no reason for (see the helper's refusal lines). */
+const NO_REASON = ": refused: no reason given";
+/** The helper's words for an act left out of the menu: "<act>: left out: <reason>". */
+const LEFT_OUT = /^(.*?): left out: (.*)$/;
+/** The most acts of one left-out reason the view names; more are said as a count. */
+const LEFT_OUT_NAMED_MAX = 5;
+
+/**
+ * The refusals and left-out acts of one object, in plain words. A refusal with a reason stays word for word. The refusals
+ * the game gave no reason for become one count line. The left-out acts become one line, grouped by reason.
+ */
+function awayLines(refused: readonly string[], leftOut: readonly string[]): string[] {
+  const groups = new Map<string, string[]>();
+  const words: string[] = [];
+  let withoutReason = 0;
+  for (const raw of [...refused, ...leftOut]) {
+    const line = dropTokens(raw);
+    const left = LEFT_OUT.exec(line);
+    if (left) {
+      const [, act = "", reason = ""] = left;
+      groups.set(reason, [...(groups.get(reason) ?? []), act]);
+    } else if (line.endsWith(NO_REASON)) {
+      withoutReason++;
+    } else {
+      words.push(line);
+    }
+  }
+  const lines: string[] = [...words];
+  if (withoutReason > 0) {
+    lines.push(`${withoutReason} more ${withoutReason === 1 ? "act" : "acts"} the game does not offer here now.`);
+  }
+  if (groups.size) {
+    // A small group names its acts; a large one is said as a count, so a long list of cheat acts does not fill the view.
+    const parts = [...groups].map(([reason, acts]) => `${acts.length <= LEFT_OUT_NAMED_MAX ? acts.join(", ") : `${acts.length} acts`} (${reason})`);
+    lines.push(`Left out: ${parts.join("; ")}.`);
+  }
+  return lines;
+}
+
 /** One object's line, its states, the game's reasons and the acts left out under it, and its answer rules when it is a question. */
 function objectLines(object: OptionObject): string[] {
   const where = object.where ? ` (${object.where})` : "";
@@ -310,7 +373,7 @@ function objectLines(object: OptionObject): string[] {
     .join("; ");
   const lines = [`- ${dropTokens(object.object)}${where}${noWay}: ${acts}`];
   if (object.states?.length) lines.push(`  States: ${object.states.map((state) => dropTokens(state)).join(", ")}.`);
-  for (const line of [...(object.refused ?? []), ...(object.left_out ?? [])]) lines.push(`  ${dropTokens(line)}`);
+  for (const line of awayLines(object.refused ?? [], object.left_out ?? [])) lines.push(`  ${line}`);
   const rules = answerRulesOf(object);
   if (rules) lines.push(`  Answer rules: ${describeRules(rules)}.`);
   return lines;

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Receipt, Tool, ToolContext, WorldEvent } from "../../contracts.js";
 import { writeStop } from "../../entity/stop.js";
 import { openShelf, shelfBody, type Shelf } from "../../media/shelf.js";
-import { createDomusWorld, type DomusWorld } from "./domus-world.js";
+import { createDomusWorld, type DomusWorld, LIVING_IT } from "./domus-world.js";
 import { MIN_TOKEN_BYTES } from "./wire.js";
 
 const T0 = 1_800_000_000_000;
@@ -94,7 +94,7 @@ function viewBody(overrides: Record<string, unknown> = {}): Record<string, unkno
     source_time_ms: clock - 1000,
     expires_at_ms: clock + 30_000,
     lineage_class: "LIVE",
-    percepts: [{ kind: "sim_arrives", salience: 0.8, facts: { subject: "Pim Dorrow" } }],
+    percepts: [{ kind: "presence", salience: 0.8, facts: { bucket: "arrived", name: "Pim Dorrow" } }],
     options: VIEW,
     ...overrides,
   };
@@ -125,6 +125,17 @@ describe("forget", () => {
     await world!.stop();
     world = undefined;
     expect(make().forget(["dorrow"])).toBe(1);
+  });
+});
+
+describe("what the world says of itself", () => {
+  it("says the Sim in the game is her, and that she talks about it as her own life, verbatim", () => {
+    const about = make().about?.() ?? "";
+    expect(about).toContain(
+      "In the game, the Sim is you: your body, your house, your life. Talk about it the way a person talks about their own life: " +
+        "what you feel, what you want, what you are about to do. Clock times, refs, need words and object names are for choosing " +
+        "your acts. Leave them out of what you say unless someone asks for them.",
+    );
   });
 });
 
@@ -177,6 +188,16 @@ describe("observations", () => {
     expect(events[1]?.brief).not.toContain("Money:");
   });
 
+  it("says in the first view that the game's choices are still coming, when the helper has sent none yet", async () => {
+    const body = viewBody({ choices_pending: true });
+    delete body.options;
+    const reply = await call("/domus/observation", body);
+    expect(reply.status).toBe(202);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.text).toContain("The game has not sent its choices yet. They come with a later view.");
+    expect(events[0]?.text).not.toContain("Choices you can name");
+  });
+
   it("admits a new view with 202, and emits one outside event on the game thread with its refs", async () => {
     const reply = await call("/domus/observation", viewBody());
     expect(reply.status).toBe(202);
@@ -185,7 +206,7 @@ describe("observations", () => {
     const [event] = events;
     expect(event).toMatchObject({ world: "domus", place: "domus:slot3", thread: "domus:slot3", actor: "game", source: "outside", wake: true, atMs: T0 - 1000 });
     expect(event?.text).toContain("The game (slot3) shows:");
-    expect(event?.text).toContain("- sim arrives: subject Pim Dorrow");
+    expect(event?.text).toContain("- Pim Dorrow arrived.");
     expect(event?.text).toContain("- Test kettle (here, 2.0 m): a1 Boil water; a2 Tidy up");
     expect(event?.data).toMatchObject({ observationId: "helper-1.1", world: "slot3", options: VIEW });
   });
@@ -198,15 +219,15 @@ describe("observations", () => {
     expect(events[0]?.text).toContain("\n\nThe game's record of your day (facts only):\n- Day 3: slept 23:10.\n\nThe game (slot3) shows:\n");
     expect(events[0]?.wake).toBe(true);
     await call("/domus/observation", viewBody());
-    expect(events[1]?.brief).toBe("- sim arrives: subject Pim Dorrow");
-    expect(events[0]?.brief).toBe("- She fell asleep.\n- The game's record of your day came with this view.");
+    expect(events[1]?.brief).toBe("- Pim Dorrow arrived.");
+    expect(events[0]?.brief).toBe("- You fell asleep.\n- The game's record of your day came with this view.");
   });
 
   it("names every view one domus view, with a brief of its percept lines only, so an older view shrinks in her turn", async () => {
     await attach();
     await call("/domus/observation", viewBody({ portrait: { zone: { room_label: "Test kitchen" } } }));
     const [event] = events;
-    expect(event).toMatchObject({ view: "domus", brief: "- sim arrives: subject Pim Dorrow" });
+    expect(event).toMatchObject({ view: "domus", brief: "- Pim Dorrow arrived." });
     expect(event?.brief).not.toContain("Your body now");
     expect(event?.brief).not.toContain("Choices");
     expect(event?.text).toContain("Your body now:");
@@ -559,7 +580,7 @@ describe("the world's surface", () => {
       "game_act", "game_snapshot", "game_attention", "game_look", "game_overlay_say", "game_memory", "game_list", "game_catalog",
       "game_go", "game_save", "plan_event", "game_buy", "game_place", "game_move", "game_sell",
     ]);
-    expect(world?.about?.()).toBe("The Sims 4 (Domus): your household's game, at domus:<world>, while your summoner's helper is attached.");
+    expect(world?.about?.()).toBe("The Sims 4 (Domus): your household's game, at domus:<world>, while your summoner's helper is attached. " + LIVING_IT);
     expect(await world?.say("domus:slot3", "hello")).toMatchObject({ ok: false, refused: { code: "no_words" } });
   });
 
@@ -683,7 +704,7 @@ describe("her attention: which views wake her, and the setting she keeps", () =>
     await call("/domus/observation", viewBody({ percepts: CALL }));
     expect(events.map((event) => event.wake)).toEqual([false, false, true]);
     expect(events[1]?.text).toContain("Your attention: when something calls you.");
-    expect(events[1]?.brief).toBe("- Hunger: fine.");
+    expect(events[1]?.brief).toBe("An earlier view.");
   });
 
   it("when quiet, wakes her for a question with a deadline and a window held for her, and for nothing else", async () => {
@@ -828,7 +849,7 @@ describe("a fresh look: she asks, the helper answers on its sync, and the answer
     events = [];
     await look("domus:slot3");
     await call("/domus/observation", viewBody({
-      percepts: [{ kind: "look", salience: 0, facts: { bucket: "asked" } }, { kind: "sim_arrives", salience: 0.8, facts: { subject: "Pim Dorrow" } }],
+      percepts: [{ kind: "look", salience: 0, facts: { bucket: "asked" } }, { kind: "presence", salience: 0.8, facts: { bucket: "arrived", name: "Pim Dorrow" } }],
     }));
     // The choices are the same as the last view's, so the whole view says so instead of listing them again; the look is named.
     expect(events[0]?.text).toContain("Your body now:");

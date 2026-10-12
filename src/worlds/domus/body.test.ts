@@ -56,11 +56,67 @@ describe("her body now", () => {
     expect(lines).toContain("Moodlets: Feeling flirty; tipsy.");
   });
 
-  it("says each need by its band in words and never by its number", () => {
+  it("says every felt need, the worst first, and never as a number or a level word", () => {
     const lines = bodyLines(BUSY);
-    const needs = lines.find((line) => line.startsWith("Needs:"));
-    expect(needs).toBe("Needs: social very low, hunger fine, fun full, energy low.");
-    expect(needs).not.toMatch(/\d/);
+    expect(lines).toContain("You're desperately lonely. You're getting tired. You'll need the toilet soon.");
+    const text = lines.join("\n");
+    expect(text).not.toContain("Needs:");
+    expect(text).not.toMatch(/\b(very low|low|fine|full)\b/);
+    expect(lines.find((line) => line.includes("lonely"))).not.toMatch(/\d/);
+  });
+
+  /** The body lines for one need at one value, the other needs all fine. */
+  function feltBy(id: string, value: number | null, band?: string): string[] {
+    return bodyLines({ needs: { [id]: { value, ...(band === undefined ? {} : { band }) } } });
+  }
+
+  it("grades a need by its value at each band edge (bladder, the game's own words)", () => {
+    expect(feltBy("bladder", 60)).toContain("Nothing is bothering you.");
+    expect(feltBy("bladder", 59)).toContain("You'll need the toilet soon.");
+    expect(feltBy("bladder", 40)).toContain("You'll need the toilet soon.");
+    expect(feltBy("bladder", 39)).toContain("You need the toilet.");
+    expect(feltBy("bladder", 20)).toContain("You need the toilet.");
+    expect(feltBy("bladder", 19)).toContain("You badly need the toilet; you can't hold it much longer.");
+    expect(feltBy("bladder", 6)).toContain("You badly need the toilet; you can't hold it much longer.");
+    expect(feltBy("bladder", 5)).toContain("You're about to wet yourself.");
+    expect(feltBy("bladder", 0)).toContain("You're about to wet yourself.");
+  });
+
+  it("gives each known need its own words at the four grades", () => {
+    const grades: Array<[string, string[]]> = [
+      ["hunger", ["You're getting peckish.", "You're hungry.", "You're starving.", "You're so hungry you could faint."]],
+      ["energy", ["You're getting tired.", "You're tired.", "You're exhausted.", "You're about to fall asleep where you stand."]],
+      ["fun", ["You're a little bored.", "You're bored.", "You're very bored.", "You're bored out of your mind."]],
+      ["social", ["You'd like some company.", "You're lonely.", "You're very lonely.", "You're desperately lonely."]],
+      ["hygiene", ["You could use a wash.", "You feel grubby.", "You feel filthy.", "You smell awful, and people will notice."]],
+    ];
+    for (const [id, words] of grades) {
+      [50, 30, 10, 2].forEach((value, index) => expect(feltBy(id, value)).toContain(words[index]));
+    }
+  });
+
+  it("says any other need as '<need> is ...' by grade", () => {
+    expect(feltBy("comfort", 50)).toContain("Comfort is getting low.");
+    expect(feltBy("comfort", 30)).toContain("Comfort is low.");
+    expect(feltBy("comfort", 10)).toContain("Comfort is very low.");
+    expect(feltBy("comfort", 2)).toContain("Comfort is about to give out.");
+  });
+
+  it("grades a need by its band when its value is null: distress is urgent, low a need, ok nothing", () => {
+    expect(feltBy("social", null, "distress")).toContain("You're very lonely.");
+    expect(feltBy("social", null, "low")).toContain("You're lonely.");
+    expect(feltBy("social", null, "ok")).toContain("Nothing is bothering you.");
+  });
+
+  it("says nothing bothers her when no need is below 60, and says nothing at all when the portrait has no needs", () => {
+    expect(bodyLines({ needs: { hunger: { value: 80, band: "ok" }, fun: { value: 99, band: "full" } } })).toContain("Nothing is bothering you.");
+    expect(bodyLines({ needs: {} }).join("\n")).not.toContain("Nothing is bothering you.");
+    expect(bodyLines({}).join("\n")).not.toContain("Nothing is bothering you.");
+  });
+
+  it("says every felt need, worst first", () => {
+    const lines = bodyLines({ needs: { hunger: { value: 30 }, energy: { value: 10 }, bladder: { value: 5 } } });
+    expect(lines).toContain("You're about to wet yourself. You're exhausted. You're hungry.");
   });
 
   it("names who is with her, the sounds she hears, and who is talking to her", () => {
@@ -213,9 +269,9 @@ describe("the You section of her body, in the full view", () => {
 
 describe("the You section is only in the full view", () => {
   it("is not in the brief of a view, which carries the percept lines only", () => {
-    const brief = viewBrief([{ kind: "sim_arrives", salience: 0, facts: { subject: "Pim Dorrow" } }]);
+    const brief = viewBrief([{ kind: "presence", salience: 0, facts: { bucket: "arrived", name: "Pim Dorrow" } }]);
     expect(brief).not.toContain("You are");
-    expect(brief).toBe("- sim arrives: subject Pim Dorrow");
+    expect(brief).toBe("- Pim Dorrow arrived.");
     expect(renderView({ world: "slot3", percepts: [], options: [], portrait: { self: SELF } })).toContain("You are Cheerful, Loyal.");
   });
 });

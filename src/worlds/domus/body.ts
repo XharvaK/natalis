@@ -1,9 +1,9 @@
 // "Your body now": the game's state for the Lar, at the top of every view, from the helper's portrait. It says what
-// is true in plain words, with the game's own names and texts, and needs by their band, never by number. It never
-// says what she should do, never ranks anything, and never speaks for her. A field that is missing or malformed is
-// skipped; a portrait never makes the view fail.
+// is true in plain words, with the game's own names and texts. Needs reach her as feelings, graded the way a person
+// feels them: never a number, never a level word. It never says what she should do, never ranks anything, and never
+// speaks for her. A field that is missing or malformed is skipped; a portrait never makes the view fail.
 
-import { BAND_WORDS, capitalised, plainName, textOrUndefined, withStop, withoutStop } from "./words.js";
+import { capitalised, plainName, textOrUndefined, withStop, withoutStop } from "./words.js";
 
 /** The longest text of an open window the block shows, in characters. */
 const WINDOW_TEXT_MAX = 160;
@@ -68,15 +68,82 @@ function actWords(value: unknown, doingSaid: Record_[], state: string): string[]
   return namesOf(value).map((name) => sentences.get(name) ?? name);
 }
 
+/**
+ * How hard a need bites, as a grade: 1 is the mildest (below 60, from 40 to 59) and 4 the worst (0 to 5). A need at 60
+ * or more is not felt, so it has no grade.
+ */
+export type NeedGrade = 1 | 2 | 3 | 4;
+
+/** The feeling words of the game's needs, one per grade, mildest first. */
+const NEED_FEELINGS: Readonly<Record<string, readonly [string, string, string, string]>> = {
+  bladder: [
+    "You'll need the toilet soon.",
+    "You need the toilet.",
+    "You badly need the toilet; you can't hold it much longer.",
+    "You're about to wet yourself.",
+  ],
+  hunger: ["You're getting peckish.", "You're hungry.", "You're starving.", "You're so hungry you could faint."],
+  energy: ["You're getting tired.", "You're tired.", "You're exhausted.", "You're about to fall asleep where you stand."],
+  fun: ["You're a little bored.", "You're bored.", "You're very bored.", "You're bored out of your mind."],
+  social: ["You'd like some company.", "You're lonely.", "You're very lonely.", "You're desperately lonely."],
+  hygiene: ["You could use a wash.", "You feel grubby.", "You feel filthy.", "You smell awful, and people will notice."],
+};
+
+/** The words of a need the table does not name, by grade: "<need> is getting low." and so on. */
+const OTHER_NEED_FEELINGS: readonly [string, string, string, string] = [
+  "is getting low.",
+  "is low.",
+  "is very low.",
+  "is about to give out.",
+];
+
+/** The grade of a need by its value (0 to 100); undefined at 60 or more. */
+export function needGradeOfValue(value: number): NeedGrade | undefined {
+  if (value >= 60) return undefined;
+  if (value >= 40) return 1;
+  if (value >= 20) return 2;
+  if (value >= 6) return 3;
+  return 4;
+}
+
+/** The grade of a need by its band, when its value is not there: distress is urgent (3), low is a need (2), ok says nothing. */
+export function needGradeOfBand(band: string | undefined): NeedGrade | undefined {
+  if (band === "distress") return 3;
+  if (band === "low") return 2;
+  return undefined;
+}
+
+/** The feeling of one need at a grade, in plain words: the need's own sentence, or "<need> is ..." for one the table does not name. */
+export function needFeeling(id: string, grade: NeedGrade): string {
+  const name = plainName(id);
+  const words = NEED_FEELINGS[name];
+  if (words) return words[grade - 1] ?? words[0];
+  return `${capitalised(name)} ${OTHER_NEED_FEELINGS[grade - 1] ?? OTHER_NEED_FEELINGS[0]}`;
+}
+
+/**
+ * The needs as feelings: every need below 60, the worst first, each in its words. With none below 60, "Nothing is
+ * bothering you." A need's value grades it; its band grades it when the value is not there.
+ */
 function needsLine(needs: Record_ | undefined): string | undefined {
   if (!needs) return undefined;
-  const items: string[] = [];
+  const felt: Array<{ id: string; grade: NeedGrade; value: number | undefined }> = [];
+  let known = 0;
   for (const [id, entry] of Object.entries(needs)) {
-    const band = textOrUndefined(record(entry)?.band);
-    if (band === undefined) continue;
-    items.push(`${plainName(id)} ${BAND_WORDS[band] ?? band}`);
+    const item = record(entry);
+    if (!item) continue;
+    const value = typeof item.value === "number" && Number.isFinite(item.value) ? item.value : undefined;
+    const band = textOrUndefined(item.band);
+    if (value === undefined && band === undefined) continue;
+    known++;
+    const grade = value !== undefined ? needGradeOfValue(value) : needGradeOfBand(band);
+    if (grade !== undefined) felt.push({ id, grade, value });
   }
-  return items.length ? `Needs: ${items.join(", ")}.` : undefined;
+  // A portrait with no needs in it says nothing about them, rather than that nothing bothers her.
+  if (known === 0) return undefined;
+  if (felt.length === 0) return "Nothing is bothering you.";
+  felt.sort((a, b) => b.grade - a.grade || (a.value ?? 0) - (b.value ?? 0));
+  return felt.map((item) => needFeeling(item.id, item.grade)).join(" ");
 }
 
 /**

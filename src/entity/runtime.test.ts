@@ -2244,7 +2244,7 @@ describe("repeating wakes", () => {
     // The board is read at the start of each turn, so the rhythm shows on the next one.
     cli.send("Anything else today?");
     await entity.idle();
-    expect(userTextOf(model.requests[2])).toContain("Next wakes: 09:00 daily (next 2026-10-12 09:00): look at the garden.");
+    expect(userTextOf(model.requests[2])).toMatch(/Next wakes: 09:00 daily \(next 2026-10-12 09:00\) \(id [0-9a-f]{8}\): look at the garden\./);
   });
 
   it("ends a series when cancel_wake names its id", async () => {
@@ -2263,6 +2263,29 @@ describe("repeating wakes", () => {
     reopened.cli.send("Stop the watering.");
     await reopened.entity.idle();
 
+    expect(readStateFile().wakes).toEqual([]);
+  });
+
+  it("shows a wake's id on the board in the form cancel_wake takes, and that id cancels it", async () => {
+    const { entity } = await open(new ScriptedModel([]), { nowMs: () => NOW });
+    await entity.start();
+    await entity.stop();
+    opened.length = 0;
+    writeWakes([{ id: "643c9508", atMs: Date.parse("2026-10-12T09:00:00Z"), why: "water", scheduledIn: "other", repeat: "daily", clock: "09:00" }]);
+
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("end_turn")] }),
+      reply({ toolCalls: [call("cancel_wake", { id: "643c9508" }, "c1")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const reopened = await open(model, { nowMs: () => NOW });
+    await reopened.entity.start();
+    reopened.cli.send("What is set?");
+    await reopened.entity.idle();
+    expect(userTextOf(model.requests[0])).toContain("(id 643c9508): water.");
+
+    reopened.cli.send("Stop the watering.");
+    await reopened.entity.idle();
     expect(readStateFile().wakes).toEqual([]);
   });
 
@@ -2938,6 +2961,41 @@ describe("cache order: the slow sections first, then the rows that change", () =
     expect(block).toContain("Full text two.");
     expect(block).not.toContain("Brief two.");
     expect(user.split("Full text two.")).toHaveLength(2);
+  });
+
+  it("gives a thread that holds an old copy of a view the newest view of that game, and says it came from the game thread", async () => {
+    const world = feedWorld("fake");
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity } = await open(model, {}, [world.world]);
+    await entity.start();
+    world.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: "An old copy of the view.", view: "game", brief: "Old view brief.", wake: false });
+    world.emit({ world: "fake", place: GAME, source: "outside", text: "The newest full view.", view: "game", brief: "Newest view brief.", wake: false });
+    world.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: "Still there?" });
+    await entity.idle();
+
+    const user = userTextOf(model.requests[0]);
+    expect(user).toContain("Old view brief.");
+    expect(user).not.toContain("An old copy of the view.");
+    const at = user.indexOf("Current view (game, from the game thread):");
+    expect(at).toBeGreaterThan(user.indexOf("New:"));
+    expect(user.slice(at, user.indexOf("## now"))).toContain("The newest full view.");
+    expect(user.split("The newest full view.")).toHaveLength(2);
+  });
+
+  it("finds the newest view of a key past a page of other rows", async () => {
+    const world = feedWorld("fake");
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity } = await open(model, {}, [world.world]);
+    await entity.start();
+    world.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: "An old copy of the view.", view: "game", brief: "Old view brief.", wake: false });
+    world.emit({ world: "fake", place: GAME, source: "outside", text: "The newest full view.", view: "game", brief: "Newest view brief.", wake: false });
+    for (let i = 1; i <= 600; i += 1) world.emit({ world: "fake", place: GAME, source: "outside", text: `Game line ${i}.`, wake: false });
+    world.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: "Still there?" });
+    await entity.idle();
+
+    const user = userTextOf(model.requests[0]);
+    expect(user).toContain("Current view (game, from the game thread):");
+    expect(user).toContain("The newest full view.");
   });
 
   it("shows the same words as the old layout, the only addition being the brief of the newest view that now sits in its block", async () => {

@@ -65,8 +65,9 @@ export function gameOverlaySayTool(open: () => OverlayContext): Tool {
     spec: {
       name: "game_overlay_say",
       description:
-        "Put one line on the game overlay, the panel viewers see on the summoner's screen while the game is shown. " +
-        `Viewers read it. Your newest ${OVERLAY_FEED_MAX} lines show. Nothing of yours is on the overlay unless you put ` +
+        "Put one line on the game: it shows in the game as a notification from you, and on the overlay panel viewers see " +
+        "on the summoner's screen while the game is shown. Viewers read it. Use it for a short thought or feeling you want " +
+        `seen, one line. Your newest ${OVERLAY_FEED_MAX} lines show. Nothing of yours is on the overlay unless you put ` +
         "it there. clear removes your lines.",
       parameters: {
         type: "object",

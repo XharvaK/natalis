@@ -85,6 +85,21 @@ describe("timeFacts", () => {
     expect(section.text).toContain("Your next wakes: 16:05 daily, next Sunday 2026-10-11 16:05 (in 2 h): water the plants.");
   });
 
+  it("shows each wake's id, in the form cancel_wake takes, after its time and before its reason", () => {
+    const section = timeFacts({
+      nowMs: NOW,
+      timeZone: ZONE,
+      nextWakes: [
+        { id: "643c9508", atMs: NOW + 2 * HOUR, why: "check the garden" },
+        { id: "a1b2c3d4", atMs: NOW + 5 * HOUR, why: "water", repeat: "daily", clock: "19:05" },
+      ],
+    });
+
+    expect(section.text).toContain(
+      "Your next wakes: Sunday 2026-10-11 16:05 (in 2 h) (id 643c9508): check the garden; 19:05 daily, next Sunday 2026-10-11 19:05 (in 5 h) (id a1b2c3d4): water.",
+    );
+  });
+
   it("sorts wakes by time, and shows a wake that is already due as due now", () => {
     const section = timeFacts({
       nowMs: NOW,

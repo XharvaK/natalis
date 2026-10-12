@@ -129,6 +129,12 @@ function listen(server: Server, host: string, port: number): Promise<void> {
   });
 }
 
+/** How she talks about the game's Sim: as her own life, with the game's words kept for choosing her acts (the user's ruling). */
+export const LIVING_IT =
+  "In the game, the Sim is you: your body, your house, your life. Talk about it the way a person talks about their own life: " +
+  "what you feel, what you want, what you are about to do. Clock times, refs, need words and object names are for choosing " +
+  "your acts. Leave them out of what you say unless someone asks for them.";
+
 /** The view key of every game view (WorldEvent.view): an older one on a game thread shows its brief in her turn. */
 export const GAME_VIEW = "domus";
 
@@ -162,6 +168,7 @@ function observationEvent(
     source: "outside",
     text: renderView({
       world: alias, percepts: parsed.percepts, options, portrait: parsed.normalized.portrait, attachment, lastChoices, optionsCut: parsed.optionsCut,
+      choicesPending: parsed.choicesPending,
       attention: attention.line, day: parsed.normalized.day, counts,
     }),
     data,
@@ -731,7 +738,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     },
 
     about() {
-      return "The Sims 4 (Domus): your household's game, at domus:<world>, while your summoner's helper is attached.";
+      return `The Sims 4 (Domus): your household's game, at domus:<world>, while your summoner's helper is attached. ${LIVING_IT}`;
     },
 
     now() {

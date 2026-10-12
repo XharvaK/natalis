@@ -141,6 +141,14 @@ describe("observations (v1)", () => {
     expect(refusal(() => parseObservation(view({ options_cut: { objects: 1, rooms: [], extra: true } }), NOW)).code).toBe("invalid_body");
   });
 
+  it("reads choices_pending as a flag, false when it is not sent, and refuses a value that is not true or false", () => {
+    expect(parseObservation(view(), NOW).choicesPending).toBe(false);
+    expect(parseObservation(view({ choices_pending: true }), NOW).choicesPending).toBe(true);
+    expect(parseObservation(view({ choices_pending: true }), NOW).normalized.choices_pending).toBe(true);
+    expect(parseObservation(view({ choices_pending: false }), NOW).choicesPending).toBe(false);
+    expect(refusal(() => parseObservation(view({ choices_pending: "yes" }), NOW)).code).toBe("invalid_body");
+  });
+
   it("digests the same content the same way whatever order its keys came in", () => {
     const first = parseObservation(view(), NOW);
     const reordered = parseObservation(Object.fromEntries(Object.entries(view()).reverse()), NOW);
