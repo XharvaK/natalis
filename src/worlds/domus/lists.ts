@@ -181,7 +181,6 @@ export function listAnswer(kind: ListKind, items: ListItem[], room: string | und
   const lines = kind === "things" ? thingsLines(items, room) : items.map(LINE[kind]);
   const body = lines.length ? lines : [`The game's list of ${kind} is empty.`];
   if (kind === "places") return ["Travel moves your summoner's game too: ask them first.", ...body].join("\n");
-  if (kind === "things") return [...body, "New clothes are made in Create-a-Sim, which is your summoner's: ask them."].join("\n");
   return body.join("\n");
 }
 

@@ -143,7 +143,7 @@ describe("game_list", () => {
     const receipt = await list({ what: "things" });
     expect(receipt.summary).toContain("Things by room (ask again with room for one room's list): Kitchen 41, Bedroom 40.");
     expect(receipt.summary).toContain("In your inventory:\n- t900 Test Bag (in your inventory; value 5)");
-    expect(receipt.summary.endsWith("New clothes are made in Create-a-Sim, which is your summoner's: ask them.")).toBe(true);
+    expect(receipt.summary).not.toContain("Create-a-Sim"); // Q-k: the things answer carries no clothes line
     const room = await list({ what: "things", room: "kitchen" });
     expect(room.summary.split("\n").filter((line) => line.startsWith("- "))).toHaveLength(41);
   });
