@@ -110,6 +110,16 @@ describe("heartbeat state", () => {
     expect(again.latest()).toMatchObject({ session: "helper-1", attached: true, probeVersion: "2.30.0" });
   });
 
+  it("keeps the probe version a session named when a later heartbeat does not name one (NATALIS2-6)", () => {
+    const book = new HeartbeatBook(dir);
+    book.record("helper-1", { sentAtMs: NOW, attached: true, probeVersion: "2.40.0" }, NOW);
+    book.record("helper-1", { sentAtMs: NOW + 60_000, attached: true }, NOW + 60_000);
+    expect(book.probeOf("helper-1")).toBe("2.40.0");
+    expect(new HeartbeatBook(dir).probeOf("helper-1")).toBe("2.40.0");
+    book.record("helper-1", { sentAtMs: NOW + 120_000, attached: true, probeVersion: "2.41.0" }, NOW + 120_000);
+    expect(book.probeOf("helper-1")).toBe("2.41.0");
+  });
+
   it("keeps the time the attached value last changed, so 'not attached since' is right", () => {
     const book = new HeartbeatBook(dir);
     book.record("helper-1", { sentAtMs: NOW, attached: true }, NOW);

@@ -527,7 +527,8 @@ export class HeartbeatBook {
       changedAtMs: before && before.attached === input.attached ? before.changedAtMs : nowMs,
       ...(lastAttachedMs === undefined ? {} : { lastAttachedMs }),
       ...(world === undefined ? {} : { world }),
-      ...(input.probeVersion ? { probeVersion: input.probeVersion } : {}),
+      // A heartbeat that names no probe version keeps the one the session named last (the verb gate reads it).
+      ...(input.probeVersion ? { probeVersion: input.probeVersion } : before?.probeVersion ? { probeVersion: before.probeVersion } : {}),
     };
     this.prune();
     this.save();
