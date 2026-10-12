@@ -1604,7 +1604,7 @@ class Runtime implements Entity {
     snapshot: number,
     thinking: Thinking,
   ): { system: LayoutPart[]; tail: LayoutPart[]; sizes: string } {
-    const wakes = this.state.wakes.map((wake) => ({ atMs: wake.atMs, why: wake.why, repeat: wake.repeat, clock: wake.clock }));
+    const wakes = this.state.wakes.map((wake) => ({ id: wake.id, atMs: wake.atMs, why: wake.why, repeat: wake.repeat, clock: wake.clock }));
     // The slow sections stay the same from turn to turn, so they are the system text, and the provider can reuse them.
     // The nature is the default unless the Lar's folder has a nature.md: its text replaces the default, and an empty one leaves the section out.
     const nature = readNature(this.dir).text;
@@ -1770,7 +1770,7 @@ class Runtime implements Entity {
       lines.push("Next wakes: none.");
     } else {
       const wakes = [...this.state.wakes].sort((a, b) => a.atMs - b.atMs);
-      lines.push(`Next wakes: ${wakes.map((wake) => `${this.wakeWhen(wake)}: ${wake.why}`).join("; ")}.`);
+      lines.push(`Next wakes: ${wakes.map((wake) => `${this.wakeWhen(wake)} (id ${wake.id}): ${wake.why}`).join("; ")}.`);
     }
     return lines.join("\n");
   }

@@ -2244,7 +2244,7 @@ describe("repeating wakes", () => {
     // The board is read at the start of each turn, so the rhythm shows on the next one.
     cli.send("Anything else today?");
     await entity.idle();
-    expect(userTextOf(model.requests[2])).toContain("Next wakes: 09:00 daily (next 2026-10-12 09:00): look at the garden.");
+    expect(userTextOf(model.requests[2])).toMatch(/Next wakes: 09:00 daily \(next 2026-10-12 09:00\) \(id [0-9a-f]{8}\): look at the garden\./);
   });
 
   it("ends a series when cancel_wake names its id", async () => {
@@ -2263,6 +2263,29 @@ describe("repeating wakes", () => {
     reopened.cli.send("Stop the watering.");
     await reopened.entity.idle();
 
+    expect(readStateFile().wakes).toEqual([]);
+  });
+
+  it("shows a wake's id on the board in the form cancel_wake takes, and that id cancels it", async () => {
+    const { entity } = await open(new ScriptedModel([]), { nowMs: () => NOW });
+    await entity.start();
+    await entity.stop();
+    opened.length = 0;
+    writeWakes([{ id: "643c9508", atMs: Date.parse("2026-10-12T09:00:00Z"), why: "water", scheduledIn: "other", repeat: "daily", clock: "09:00" }]);
+
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("end_turn")] }),
+      reply({ toolCalls: [call("cancel_wake", { id: "643c9508" }, "c1")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const reopened = await open(model, { nowMs: () => NOW });
+    await reopened.entity.start();
+    reopened.cli.send("What is set?");
+    await reopened.entity.idle();
+    expect(userTextOf(model.requests[0])).toContain("(id 643c9508): water.");
+
+    reopened.cli.send("Stop the watering.");
+    await reopened.entity.idle();
     expect(readStateFile().wakes).toEqual([]);
   });
 
