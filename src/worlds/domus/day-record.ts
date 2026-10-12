@@ -46,12 +46,22 @@ function originWord(by: unknown): string | undefined {
   return own(DAY_ORIGIN_WORDS, origin) ?? own(ORIGIN_WORDS, origin);
 }
 
-/** The needs that moved, signed, by the game's stat name: "gloop +30, zing -10". */
+/** The words for a need the game's record names, by its plain name (VIEW3-7); any other need is "<need> need". */
+const NEED_WORDS: Readonly<Record<string, string>> = {
+  bladder: "the need for the toilet",
+  hunger: "hunger",
+  energy: "tiredness",
+  fun: "boredom",
+  social: "loneliness",
+  hygiene: "the need for a wash",
+};
+
+/** The needs that moved, as feelings and never as numbers: "hunger eased" when it rose, "hunger grew" when it fell. */
 function needsWords(needs: unknown): string | undefined {
   const items = Object.entries(rec(needs) ?? {}).map(([stat, value]) => {
     const name = plainName(stat);
-    if (!name || typeof value !== "number" || !Number.isFinite(value)) return undefined;
-    return `${name} ${value > 0 ? "+" : ""}${value}`;
+    if (!name || typeof value !== "number" || !Number.isFinite(value) || value === 0) return undefined;
+    return `${own(NEED_WORDS, name) ?? `${name} need`} ${value > 0 ? "eased" : "grew"}`;
   }).filter(defined);
   return items.length ? items.join(", ") : undefined;
 }
