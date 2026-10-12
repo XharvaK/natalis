@@ -19,8 +19,8 @@ const THINGS_IN_FULL = 80;
 
 export type ListItem = Record<string, unknown>;
 
-/** One list's newest row for a helper session: its digest, its items and the time it arrived. */
-export type StoredList = { digest: string; items: ListItem[]; atMs: number };
+/** One list's newest row for a helper session: its digest, its items, the time it arrived, and the game's total when it sent one. */
+export type StoredList = { digest: string; items: ListItem[]; atMs: number; total?: number };
 
 /** Lists and catalogue items of other helper sessions are kept this long after their last write, then let go. */
 export const LISTS_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
@@ -29,10 +29,13 @@ export const LISTS_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
  * Keeps the newest list of one kind for a helper session (one row per session and kind). The lists and catalogue items of
  * other sessions not written for LISTS_KEEP_MS are let go: their refs can no longer be used, and a things list is large.
  */
-export function storeList(db: DatabaseSync, input: { attachment: string; kind: ListKind; digest: string; items: ListItem[]; nowMs: number }): void {
-  db.prepare(`INSERT INTO lists (attachment, kind, digest, items_json, at_ms) VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT (attachment, kind) DO UPDATE SET digest = excluded.digest, items_json = excluded.items_json, at_ms = excluded.at_ms`)
-    .run(input.attachment, input.kind, input.digest, JSON.stringify(input.items), input.nowMs);
+export function storeList(db: DatabaseSync, input: {
+  attachment: string; kind: ListKind; digest: string; items: ListItem[]; nowMs: number; total?: number;
+}): void {
+  db.prepare(`INSERT INTO lists (attachment, kind, digest, items_json, at_ms, total) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT (attachment, kind) DO UPDATE SET digest = excluded.digest, items_json = excluded.items_json, at_ms = excluded.at_ms,
+      total = excluded.total`)
+    .run(input.attachment, input.kind, input.digest, JSON.stringify(input.items), input.nowMs, input.total ?? null);
   const before = input.nowMs - LISTS_KEEP_MS;
   db.prepare("DELETE FROM lists WHERE attachment != ? AND at_ms < ?").run(input.attachment, before);
   db.prepare("DELETE FROM catalog_seen WHERE attachment != ? AND at_ms < ?").run(input.attachment, before);
@@ -48,7 +51,7 @@ export function listDigests(db: DatabaseSync, attachment: string): Record<string
 /** The stored list of one kind for a helper session, or undefined when it has none. */
 export function readList(db: DatabaseSync, attachment: string | undefined, kind: string): StoredList | undefined {
   if (attachment === undefined) return undefined;
-  const row = db.prepare("SELECT digest, items_json, at_ms FROM lists WHERE attachment = ? AND kind = ?").get(attachment, kind) as Row | undefined;
+  const row = db.prepare("SELECT digest, items_json, at_ms, total FROM lists WHERE attachment = ? AND kind = ?").get(attachment, kind) as Row | undefined;
   if (!row) return undefined;
   let items: unknown;
   try { items = JSON.parse(String(row.items_json)); } catch { items = []; }
@@ -56,6 +59,7 @@ export function readList(db: DatabaseSync, attachment: string | undefined, kind:
     digest: String(row.digest),
     items: Array.isArray(items) ? items.filter((item): item is ListItem => typeof item === "object" && item !== null) : [],
     atMs: Number(row.at_ms),
+    ...(row.total === null ? {} : { total: Number(row.total) }),
   };
 }
 
@@ -82,17 +86,24 @@ export function findListed(db: DatabaseSync, attachment: string | undefined, kin
 
 /**
  * The count line of her view, from the stored lists: "You know 23 people; 9 places, 41 things, 6 kinds of event: game_list
- * shows them." A list Natalis lacks is left out. Undefined when it holds none.
+ * shows them." A list Natalis lacks is left out. When the game counted more than it sent, the count says so: "41 things (30
+ * listed)". Undefined when it holds none.
  */
 export function listCountLine(db: DatabaseSync, attachment: string): string | undefined {
-  const size = (kind: string): number | undefined => readList(db, attachment, kind)?.items.length;
-  const people = size("people");
+  const count = (kind: string, label: string): string | undefined => {
+    const list = readList(db, attachment, kind);
+    if (list === undefined) return undefined;
+    const listed = list.items.length;
+    const total = list.total ?? listed;
+    return total === listed ? `${total} ${label}` : `${total} ${label} (${listed} listed)`;
+  };
+  const people = count("people", "people");
   const rest = [
-    size("places") === undefined ? undefined : `${size("places")} places`,
-    size("things") === undefined ? undefined : `${size("things")} things`,
-    size("events") === undefined ? undefined : `${size("events")} kinds of event`,
+    count("places", "places"),
+    count("things", "things"),
+    count("events", "kinds of event"),
   ].filter((part): part is string => part !== undefined);
-  const head = people === undefined ? undefined : `You know ${people} people`;
+  const head = people === undefined ? undefined : `You know ${people}`;
   const words = [head, rest.length ? rest.join(", ") : undefined].filter((part): part is string => part !== undefined).join("; ");
   return words === "" ? undefined : `${words}: game_list shows them.`;
 }

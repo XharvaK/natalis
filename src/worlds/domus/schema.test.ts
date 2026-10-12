@@ -39,15 +39,15 @@ function writeVersionOne(): void {
   old.close();
 }
 
-describe("the Domus schema, version 3", () => {
-  it("is version 3 in code", () => {
-    expect(DOMUS_SCHEMA_VERSION).toBe(3);
+describe("the Domus schema, version 4", () => {
+  it("is version 4 in code", () => {
+    expect(DOMUS_SCHEMA_VERSION).toBe(4);
   });
 
   it("migrates a version 1 database: adds the act columns and the new tables, keeps the rows", () => {
     writeVersionOne();
     db = openDomusDb(dir);
-    expect(Number((db.prepare("PRAGMA user_version").get() as Row).user_version)).toBe(3);
+    expect(Number((db.prepare("PRAGMA user_version").get() as Row).user_version)).toBe(4);
     const columns = (db.prepare("PRAGMA table_info(acts)").all() as Row[]).map((column) => String(column.name));
     expect(columns).toEqual(expect.arrayContaining(["verb", "args_json", "words", "pulled_at_ms"]));
     const kept = db.prepare("SELECT label, words FROM acts WHERE act_id = 'a1'").get() as Row;
@@ -67,23 +67,35 @@ describe("the Domus schema, version 3", () => {
     db = openDomusDb(dir);
     // The row matched the word, so its text is forgotten; the row itself is kept.
     expect((db.prepare("SELECT label, words FROM acts WHERE act_id = 'a1'").get() as Row)).toEqual({ label: FORGOTTEN_LINE, words: FORGOTTEN_LINE });
-    expect(Number((db.prepare("PRAGMA user_version").get() as Row).user_version)).toBe(3);
+    expect(Number((db.prepare("PRAGMA user_version").get() as Row).user_version)).toBe(4);
     const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Row[]).map((row) => String(row.name));
     expect(tables).toEqual(expect.arrayContaining(["lists", "catalog_asks", "catalog_seen"]));
+  });
+
+  it("migrates a version 3 database: adds lists.total, and keeps the stored lists", () => {
+    openDomusDb(dir).close();
+    const old = new DatabaseSync(join(dir, DOMUS_FOLDER, DOMUS_DB_FILE));
+    old.exec("ALTER TABLE lists DROP COLUMN total; PRAGMA user_version = 3;");
+    old.exec("INSERT INTO lists (attachment, kind, digest, items_json, at_ms) VALUES ('helper-1', 'people', 'd', '[]', 1)");
+    old.close();
+    db = openDomusDb(dir);
+    expect((db.prepare("PRAGMA table_info(lists)").all() as Row[]).map((column) => String(column.name))).toContain("total");
+    expect(db.prepare("SELECT kind, total FROM lists").get()).toEqual({ kind: "people", total: null });
+    expect(Number((db.prepare("PRAGMA user_version").get() as Row).user_version)).toBe(4);
   });
 
   it("opens a version 2 database again without changes", () => {
     writeVersionOne();
     openDomusDb(dir).close();
     db = openDomusDb(dir);
-    expect(Number((db.prepare("PRAGMA user_version").get() as Row).user_version)).toBe(3);
+    expect(Number((db.prepare("PRAGMA user_version").get() as Row).user_version)).toBe(4);
   });
 
   it("refuses a database from a later version", () => {
     mkdirSync(join(dir, DOMUS_FOLDER), { recursive: true });
     const later = new DatabaseSync(join(dir, DOMUS_FOLDER, DOMUS_DB_FILE));
-    later.exec("PRAGMA user_version = 4");
+    later.exec("PRAGMA user_version = 5");
     later.close();
-    expect(() => openDomusDb(dir)).toThrow(/schema version 4/);
+    expect(() => openDomusDb(dir)).toThrow(/schema version 5/);
   });
 });

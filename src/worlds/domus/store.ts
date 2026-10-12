@@ -146,6 +146,7 @@ CREATE TABLE IF NOT EXISTS lists (
   digest TEXT NOT NULL,
   items_json TEXT NOT NULL,
   at_ms INTEGER NOT NULL,
+  total INTEGER,
   PRIMARY KEY (attachment, kind)
 );
 CREATE TABLE IF NOT EXISTS catalog_asks (
@@ -207,11 +208,15 @@ export type Row = Record<string, unknown>;
  * (what the Lar said to the Sim the act targets) and pulled_at_ms (when the helper first took the act). Version 2 adds
  * acts.verb and acts.args_json (the home and travel verbs, and a Sim an act names), and the tables lists, catalog_asks and
  * catalog_seen (the game's lists on demand, and the catalogue asks). Version 3 adds the table work_watch (whether her job was
- * at work in each game thread's last view, so a restart keeps the one work-end wake).
+ * at work in each game thread's last view, so a restart keeps the one work-end wake). Version 4 adds lists.total (the game's
+ * whole count of a list, when it counted more than it sent).
  */
-export const DOMUS_SCHEMA_VERSION = 3;
-const ACT_COLUMNS_V1: ReadonlyArray<readonly [name: string, type: string]> = [["words", "TEXT"], ["pulled_at_ms", "INTEGER"]];
-const ACT_COLUMNS_V2: ReadonlyArray<readonly [name: string, type: string]> = [["verb", "TEXT"], ["args_json", "TEXT"]];
+export const DOMUS_SCHEMA_VERSION = 4;
+/** The columns a version before this one lacks: each is added to its table only when missing (see migrateDomusDb). */
+const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, name: string, type: string]> = [
+  ["acts", "words", "TEXT"], ["acts", "pulled_at_ms", "INTEGER"], ["acts", "verb", "TEXT"], ["acts", "args_json", "TEXT"],
+  ["lists", "total", "INTEGER"],
+];
 
 /**
  * Brings an open Domus database to DOMUS_SCHEMA_VERSION. The schema's tables are created when missing (a store from before
@@ -224,12 +229,12 @@ export function migrateDomusDb(db: DatabaseSync): void {
     throw new Error(`The Domus database has schema version ${version}; this code reads version ${DOMUS_SCHEMA_VERSION}.`);
   }
   if (version === DOMUS_SCHEMA_VERSION) return;
-  const present = new Set((db.prepare("PRAGMA table_info(acts)").all() as Row[]).map((column) => String(column.name)));
   db.exec("BEGIN IMMEDIATE");
   try {
     db.exec(SCHEMA);
-    for (const [name, type] of [...ACT_COLUMNS_V1, ...ACT_COLUMNS_V2]) {
-      if (!present.has(name)) db.exec(`ALTER TABLE acts ADD COLUMN ${name} ${type}`);
+    for (const [table, name, type] of ADDED_COLUMNS) {
+      const present = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Row[]).map((column) => String(column.name)));
+      if (!present.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
     }
     db.exec(`PRAGMA user_version = ${DOMUS_SCHEMA_VERSION}`);
     db.exec("COMMIT");

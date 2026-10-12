@@ -150,6 +150,15 @@ describe("game_list", () => {
 });
 
 describe("the count line of her view", () => {
+  it("says the game's total with the number listed, when the game counted more things than it sent (T1)", () => {
+    const things = Array.from({ length: 30 }, (_, index) => ({ ref: `t${index + 1}`, id: String(index + 1), name: `Test Thing ${index + 1}`, where: "inventory" }));
+    storeList(db, { attachment: HELPER, kind: "things", digest: DIGEST, nowMs: clock, items: things, total: 41 });
+    expect(listCountLine(db, HELPER)).toBe("41 things (30 listed): game_list shows them.");
+    storeList(db, { attachment: HELPER, kind: "people", digest: DIGEST, nowMs: clock, items: [{ ref: "p1", id: "1", name: "A" }], total: 3 });
+    storeList(db, { attachment: HELPER, kind: "things", digest: DIGEST, nowMs: clock, items: things, total: 30 });
+    expect(listCountLine(db, HELPER)).toBe("You know 3 people (1 listed); 30 things: game_list shows them.");
+  });
+
   it("says what she knows from the stored lists, and leaves out a list that is not there", () => {
     expect(listCountLine(db, HELPER)).toBeUndefined();
     storeList(db, { attachment: HELPER, kind: "people", digest: DIGEST, nowMs: clock, items: [{ ref: "p1", id: "1", name: "A" }, { ref: "p2", id: "2", name: "B" }] });

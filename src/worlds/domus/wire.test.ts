@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BODY_LIMIT, canonicalJson, GUID64_PATTERN, gameThreadOf, isActPhase, MAX_SKEW_MS, MAX_WINDOW_MS, MIN_TOKEN_BYTES, observationDigest,
-  MEMORY_BODY_LIMIT, parseActSync, parseFeed, parseHeartbeat, parseMemory, parseObservation, parseSnapshot, parseUndo, tokenProblem, WireError,
+  MEMORY_BODY_LIMIT, parseActSync, parseFeed, parseHeartbeat, parseLists, parseMemory, parseObservation, parseSnapshot, parseUndo, tokenProblem, WireError,
 } from "./wire.js";
 
 const NOW = 1_800_000_000_000;
@@ -36,6 +36,29 @@ function refusal(fn: () => unknown): { status: number; code: string } {
   }
   throw new Error("expected a refusal");
 }
+
+/** A list post as the helper sends it: one thing, and the digest of its list. */
+function listPost(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    v: 1, helper_session: "helper-1", kind: "things", digest: "a".repeat(64),
+    items: [{ ref: "t1", id: "555", name: "Test Lamp", where: "inventory" }], ...overrides,
+  };
+}
+
+describe("lists: the game's total (T1)", () => {
+  it("accepts a whole total at least as many as the items sent, and keeps it", () => {
+    expect(parseLists(listPost({ total: 41 })).total).toBe(41);
+    expect(parseLists(listPost({ total: 1 })).total).toBe(1);
+    expect(parseLists(listPost()).total).toBeUndefined();
+  });
+
+  it("refuses a total below the items sent, or one that is not a whole number", () => {
+    expect(refusal(() => parseLists(listPost({ total: 0 })))).toEqual({ status: 400, code: "invalid_body" });
+    expect(refusal(() => parseLists(listPost({ total: "41" })))).toEqual({ status: 400, code: "invalid_body" });
+    expect(refusal(() => parseLists(listPost({ total: 1.5 })))).toEqual({ status: 400, code: "invalid_body" });
+    expect(refusal(() => parseLists(listPost({ total: null })))).toEqual({ status: 400, code: "invalid_body" });
+  });
+});
 
 describe("observations (v1)", () => {
   it("admits a view that answers a look: its percept of kind look is kept as sent", () => {

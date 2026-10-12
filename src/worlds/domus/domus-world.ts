@@ -499,7 +499,10 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
   /** The helper's lists, kept newest per kind for its session (POST /domus/lists). Nothing wakes her: the view's count line says what is known. */
   function listsRoute(body: unknown, res: ServerResponse): void {
     const parsed = parseLists(body);
-    storeList(requireDb(), { attachment: parsed.helperSession, kind: parsed.kind, digest: parsed.digest, items: parsed.items, nowMs: nowMs() });
+    storeList(requireDb(), {
+      attachment: parsed.helperSession, kind: parsed.kind, digest: parsed.digest, items: parsed.items, nowMs: nowMs(),
+      ...(parsed.total === undefined ? {} : { total: parsed.total }),
+    });
     send(res, 200, { status: "ok", stored: true });
   }
 

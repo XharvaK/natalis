@@ -449,9 +449,9 @@ const LIST_ITEM_KEYS: Readonly<Record<ListKind, ReadonlySet<string>>> = {
 };
 const PLACE_KINDS: ReadonlySet<string> = new Set(["home", "household", "venue"]);
 const REF_PATTERN = /^[a-z][0-9]{1,8}$/;
-const LISTS_KEYS = new Set(["v", "helper_session", "kind", "digest", "items"]);
+const LISTS_KEYS = new Set(["v", "helper_session", "kind", "digest", "items", "total"]);
 
-export type ParsedLists = { helperSession: string; kind: ListKind; digest: string; items: Record<string, unknown>[] };
+export type ParsedLists = { helperSession: string; kind: ListKind; digest: string; items: Record<string, unknown>[]; total?: number };
 
 /** A whole number of any sign, as the game sends a value or a cost. */
 function intOf(value: unknown): number {
@@ -505,11 +505,16 @@ export function parseLists(body: unknown): ParsedLists {
   const items = body.items.map((item) => listItem(listKind, item));
   // Two items under one ref would leave the second unreachable, so a list that repeats a ref is refused.
   if (new Set(items.map((item) => item.ref)).size !== items.length) fail(400, "invalid_body");
+  // The game's whole count, when it counted more than it sent (a things list is cut): a whole number, never below the items.
+  if ("total" in body && (typeof body.total !== "number" || !Number.isSafeInteger(body.total) || body.total < items.length)) {
+    fail(400, "invalid_body");
+  }
   return {
     helperSession: textOf(body.helper_session, 1, 64),
     kind: listKind,
     digest,
     items,
+    ...("total" in body ? { total: body.total as number } : {}),
   };
 }
 
