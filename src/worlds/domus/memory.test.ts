@@ -7,7 +7,7 @@ import type { Receipt, ToolContext } from "../../contracts.js";
 import { forgetText, openDomusDb } from "./store.js";
 import {
   ABOUT_MAX, expireMemory, gameMemoryTool, handMemory, MEMORY_TTL_MS, type MemoryContext, memoryEventText, type MemoryFacts,
-  settleMemory, withdrawMemory,
+  settleMemory,
 } from "./memory.js";
 
 const T0 = 1_800_000_000_000;
@@ -25,7 +25,6 @@ function context(overrides: Partial<NonNullable<MemoryContext>> = {}): MemoryCon
   return {
     db,
     nowMs: () => clock,
-    stopped: () => stopped,
     attachedSession: () => (attached ? HELPER : undefined),
     lastAttachedMs: () => clock - 1000,
     ...overrides,
@@ -86,16 +85,17 @@ describe("game_memory: she asks the game what it remembers", () => {
     expect(askedRows()).toEqual([expect.objectContaining({ thread: "cli:summoner", about: "Mara", status: "owed" })]);
   });
 
-  it("is refused while the world is not running, while the summoner's stop is on, and while the game is not attached", async () => {
+  it("is refused while the world is not running and while the game is not attached, and is still asked while the summoner's stop is on (Q-j: a read, not an act)", async () => {
     expect(await ask({ about: "Mara" }, () => null)).toMatchObject({ ok: false, refused: { code: "not_running" } });
     stopped = true;
-    expect(await ask({ about: "Mara" })).toMatchObject({ ok: false, refused: { code: "stopped" } });
+    // The question asked while the stop is on is kept (a read); the detached ask below adds none.
+    expect(await ask({ about: "Mara" })).toMatchObject({ ok: true });
     stopped = false;
     attached = false;
     const detached = await ask({ about: "Mara" });
     expect(detached).toMatchObject({ ok: false, refused: { code: "not_attached" } });
     expect(detached.refused?.reason).toContain("It was last attached at");
-    expect(askedRows()).toHaveLength(0);
+    expect(askedRows()).toHaveLength(1);
   });
 
   it("keeps one open question per thread, and a question on another thread is not blocked by it", async () => {
@@ -171,18 +171,6 @@ describe("the event that answers her", () => {
     expect(askedRows()[0]?.status).toBe("expired");
   });
 
-  it("withdraws the open asks, owed or handed, with a note and no wake, when the summoner's stop is on", async () => {
-    await ask({ about: "Brew Glimmer" });
-    handMemory(db, { helperSession: HELPER, nowMs: clock });
-    await ask({ about: "Pim" }, undefined, "domus:slot4");
-    const notes = withdrawMemory(db, clock + 1);
-    expect(notes.map((note) => [note.thread, note.text, note.wake])).toEqual([
-      [THREAD, "Your question to the game about \"Brew Glimmer\" was withdrawn: your summoner's emergency stop is on.", false],
-      ["domus:slot4", "Your question to the game about \"Pim\" was withdrawn: your summoner's emergency stop is on.", false],
-    ]);
-    expect(askedRows().map((row) => row.status)).toEqual(["withdrawn", "withdrawn"]);
-    expect(withdrawMemory(db, clock + 2)).toEqual([]);
-  });
 });
 
 describe("forgetting the words of a question", () => {

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ToolContext } from "../../contracts.js";
-import { catalogText, expireCatalog, gameCatalogTool, handCatalog, openCatalogAsk, settleCatalog, withdrawCatalog, CATALOG_TTL_MS } from "./catalog.js";
+import { catalogText, expireCatalog, gameCatalogTool, handCatalog, openCatalogAsk, settleCatalog, CATALOG_TTL_MS } from "./catalog.js";
 import { verbTools } from "./verbs.js";
 import { findListed, gameListTool, listCountLine, listDigests, LISTS_KEEP_MS, readList, storeList } from "./lists.js";
 import { openDomusDb } from "./store.js";
@@ -143,13 +143,22 @@ describe("game_list", () => {
     const receipt = await list({ what: "things" });
     expect(receipt.summary).toContain("Things by room (ask again with room for one room's list): Kitchen 41, Bedroom 40.");
     expect(receipt.summary).toContain("In your inventory:\n- t900 Test Bag (in your inventory; value 5)");
-    expect(receipt.summary.endsWith("New clothes are made in Create-a-Sim, which is your summoner's: ask them.")).toBe(true);
+    expect(receipt.summary).not.toContain("Create-a-Sim"); // Q-k: the things answer carries no clothes line
     const room = await list({ what: "things", room: "kitchen" });
     expect(room.summary.split("\n").filter((line) => line.startsWith("- "))).toHaveLength(41);
   });
 });
 
 describe("the count line of her view", () => {
+  it("says the game's total with the number listed, when the game counted more things than it sent (T1)", () => {
+    const things = Array.from({ length: 30 }, (_, index) => ({ ref: `t${index + 1}`, id: String(index + 1), name: `Test Thing ${index + 1}`, where: "inventory" }));
+    storeList(db, { attachment: HELPER, kind: "things", digest: DIGEST, nowMs: clock, items: things, total: 41 });
+    expect(listCountLine(db, HELPER)).toBe("41 things (30 listed): game_list shows them.");
+    storeList(db, { attachment: HELPER, kind: "people", digest: DIGEST, nowMs: clock, items: [{ ref: "p1", id: "1", name: "A" }], total: 3 });
+    storeList(db, { attachment: HELPER, kind: "things", digest: DIGEST, nowMs: clock, items: things, total: 30 });
+    expect(listCountLine(db, HELPER)).toBe("You know 3 people (1 listed); 30 things: game_list shows them.");
+  });
+
   it("says what she knows from the stored lists, and leaves out a list that is not there", () => {
     expect(listCountLine(db, HELPER)).toBeUndefined();
     storeList(db, { attachment: HELPER, kind: "people", digest: DIGEST, nowMs: clock, items: [{ ref: "p1", id: "1", name: "A" }, { ref: "p2", id: "2", name: "B" }] });
@@ -203,14 +212,12 @@ describe("the catalogue ask", () => {
     expect(handCatalog(db, { helperSession: HELPER, nowMs: clock })).toEqual([{ ask_id: expect.any(String), words: TEXT }]);
   });
 
-  it("expires after two minutes and withdraws on the stop", async () => {
+  it("expires after two minutes", async () => {
     await ask(TEXT);
     clock += CATALOG_TTL_MS + 1000;
     expect(openCatalogAsk(db, "domus:slot3", clock)).toBeUndefined();
     expect(expireCatalog(db, clock)).toEqual([expect.objectContaining({ thread: "domus:slot3", wake: false })]);
     expect(await ask("Test Lamp")).toMatchObject({ ok: true });
-    expect(withdrawCatalog(db, clock)).toEqual([expect.objectContaining({ wake: false })]);
-    expect(handCatalog(db, { helperSession: HELPER, nowMs: clock })).toEqual([]);
   });
 
   it("says that nothing matched in one line", () => {
@@ -255,5 +262,29 @@ describe("forgetting words reaches the new tables", () => {
     db.prepare("INSERT INTO catalog_asks (ask_id, thread, about, status, requested_at_ms, room) VALUES ('ask-f', 'domus:slot3', 'Test Shelf', 'answered', ?, 'Test Kitchen')").run(clock);
     expect(forgetText(db, ["test kitchen"])).toBe(1);
     expect(db.prepare("SELECT room FROM catalog_asks WHERE ask_id = 'ask-f'").get()).toEqual({ room: FORGOTTEN_LINE });
+  });
+});
+
+describe("the summoner's stop refuses acts only: the lists and the catalogue are still read (Q-j)", () => {
+  it("game_list answers while the stop is on, from the stored list", async () => {
+    storeList(db, { attachment: HELPER, kind: "people", digest: DIGEST, items: [{ ref: "p1", id: "1", name: "Test Friend" }], nowMs: clock });
+    const stoppedGame = () => ({ ...game(), stopped: () => true });
+    const receipt = await gameListTool(stoppedGame).run({ what: "people" }, { thread: "domus:slot3", turnId: "t", nowMs: clock } as ToolContext);
+    expect(receipt).toMatchObject({ ok: true });
+  });
+});
+
+describe("the game's lists and catalogue need the probe that answers them (NATALIS2-8)", () => {
+  it("game_list refuses a probe older than 2.40.0 with the same words the verbs use, and asks nothing", async () => {
+    const old = () => ({ ...game(), probeOf: () => "2.30.0" });
+    const receipt = await gameListTool(old).run({ what: "people" }, { thread: "domus:slot3", turnId: "t", nowMs: clock } as ToolContext);
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "probe_too_old" } });
+  });
+
+  it("game_catalog refuses a probe older than 2.40.0 before it asks the game", async () => {
+    const { gameCatalogTool } = await import("./catalog.js");
+    const old = () => ({ ...game(), probeOf: () => "2.30.0" });
+    const receipt = await gameCatalogTool(old).run({ words: "test lamp" }, { thread: "domus:slot3", turnId: "t", nowMs: clock } as ToolContext);
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "probe_too_old" } });
   });
 });

@@ -6,7 +6,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import { parseAtIso } from "../../entity/wake-schedule.js";
-import { gameThreadNow, oweLook, readAttention, writeAttention, type AttentionMode, type AttentionRow, lastLookHanded, lookOwed } from "./store.js";
+import { gameThreadNow, lastLookHanded, lookOwed, oweLook, readAtWork, readAttention, writeAtWork, writeAttention, type AttentionMode, type AttentionRow } from "./store.js";
 import type { Percept } from "./wire.js";
 
 export const LOOK_MIN = 5;
@@ -24,7 +24,7 @@ export type ViewFacts = {
   portrait: unknown;
   /** Whether the view carries the day's record (a sleep onset). */
   dayRecord: boolean;
-  /** Whether her job was at work in the game thread's last view and is not now (see createWorkWatch). */
+  /** Whether her job was at work in the game thread's last view and is not now (see workEnded). */
   workEnded: boolean;
   /** Whether the view is the first from the helper session the game is attached under now. */
   firstAfterAttach: boolean;
@@ -59,8 +59,9 @@ function needInDistress(portrait: unknown): boolean {
 }
 
 /**
- * Whether a view wakes her in this mode. A question put to her, a look she asked for, and a need that has just gone into
- * distress always wake her, in every mode (the body's alarm, as a held window is: she may still do nothing, D1).
+ * Whether a view wakes her in this mode. A question put to her, a look she asked for, and a call or a notice on her phone
+ * always wake her, in every mode (the body's alarm, as a held window is: she may still do nothing, D1). A need that has just
+ * gone into distress wakes her in every mode but quiet: quiet means quiet (Q-1).
  * Otherwise every_change wakes her on every view, quiet on none, and when_called on a call (someone addressed her,
  * someone arrived or is on the lot, the day's record, the first view after the game attached).
  *
@@ -74,7 +75,7 @@ export function wakesFor(mode: AttentionMode, view: ViewFacts): boolean {
   // A notice on her phone or a call held for her is hers to answer in every mode, at work too (W13).
   if (view.percepts.some((item) => item.kind === "phone" && (item.facts["what"] === "notice" || item.facts["what"] === "call"))) return true;
   const atWork = atWorkNow(view.portrait);
-  if (!atWork && view.percepts.some(isDistress)) return true;
+  if (mode !== "quiet" && !atWork && view.percepts.some(isDistress)) return true;
   if (view.workEnded && needInDistress(view.portrait)) return true;
   if (mode === "every_change") return !(atWork && view.percepts.length > 0 && view.percepts.every(isDistress));
   if (mode === "quiet") return false;
@@ -82,7 +83,6 @@ export function wakesFor(mode: AttentionMode, view: ViewFacts): boolean {
   return view.percepts.some((item) =>
     (item.kind === "social" && item.facts["bucket"] === "addressed")
     || (item.kind === "presence" && (item.facts["bucket"] === "arrived" || item.facts["bucket"] === "on_lot"))
-    || item.kind === "phone"
     || item.kind === "sleep_onset");
 }
 
@@ -93,21 +93,16 @@ function atWorkNow(portrait: unknown): boolean {
 }
 
 /**
- * Whether her job was at work in each game thread's last view, so a work end is seen once. In memory: a restart forgets
- * it, and the first view after a restart cannot show a work end. A view that reads no job leaves the thread as it was.
+ * Whether her job was at work in the game thread's last view and is not now, so a work end is seen once. The state is kept
+ * per thread in domus.sqlite (work_watch), so a restart keeps it. A view that reads no job leaves the thread as it was.
  */
-export function createWorkWatch(): { ended(thread: string, portrait: unknown): boolean } {
-  const atWorkBefore = new Map<string, boolean>();
-  return {
-    ended(thread, portrait) {
-      const jobs = asRecord(asRecord(portrait)?.self)?.jobs;
-      if (!Array.isArray(jobs)) return false;
-      const now = atWorkNow(portrait);
-      const before = atWorkBefore.get(thread);
-      atWorkBefore.set(thread, now);
-      return before === true && !now;
-    },
-  };
+export function workEnded(db: DatabaseSync, thread: string, portrait: unknown): boolean {
+  const jobs = asRecord(asRecord(portrait)?.self)?.jobs;
+  if (!Array.isArray(jobs)) return false;
+  const now = atWorkNow(portrait);
+  const before = readAtWork(db, thread);
+  writeAtWork(db, thread, now);
+  return before === true && !now;
 }
 
 function localParts(ms: number, timeZone: string | undefined): Record<string, string> {
@@ -185,14 +180,18 @@ function refused(code: string, reason: string): Receipt {
 }
 
 const SET_UP =
-  "Set how the game reaches you. every_change: every change in the game wakes you (the default). " +
-  "when_called: a change wakes you only when something calls you: a question put to you, someone speaking to you, someone " +
-  "arriving on the lot, the day's record at sleep, the first view after the game attached, or a look you asked for. " +
-  "quiet: nothing wakes you until until, then the mode goes back to what it was. until is a date and time, such as " +
-  "2026-10-12T14:30, in your own zone unless it has an offset, at most 24 hours ahead; it goes with quiet only. " +
-  "A question with a deadline always reaches you, in every mode. Changes still reach the game's thread, and you see them by " +
-  "their brief in your next turn. look_every_minutes (5 to 240, or 0 for off) asks the game for a fresh view while it is " +
-  "attached and nothing has woken you for that long.";
+  "Set how the game reaches you. Always, in every mode: a question the game holds open for you, a call or a notice on your " +
+  "phone, and a look you asked for. When work ends with a need still in distress you wake once, in every mode. " +
+  "Except in quiet, a need that goes into distress wakes you when you are not at work. " +
+  "every_change (the default): every other change in the game wakes you too; at work, a view whose only changes are needs " +
+  "in distress stays quiet. " +
+  "when_called: otherwise a change wakes you only when something calls you: someone speaking to you, someone arriving on the " +
+  "lot or being on it, the day's record at sleep, or the first view after the game attached. " +
+  "quiet: otherwise nothing wakes you until until, then the mode goes back to what it was. " +
+  "until is a date and time, such as 2026-10-12T14:30, in your own zone unless it has an offset, at most 24 hours ahead; " +
+  "it goes with quiet only. " +
+  "Changes still reach the game's thread, and you see them by their brief in your next turn. look_every_minutes (5 to 240, " +
+  "or 0 for off) asks the game for a fresh view while it is attached and nothing has woken you for that long.";
 
 export function gameAttentionTool(open: () => AttentionContext): Tool {
   return {

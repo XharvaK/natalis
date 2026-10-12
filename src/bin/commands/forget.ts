@@ -251,5 +251,7 @@ export async function forgetCommand(
   );
   out("If the Lar was running, stop it and run this again: a running Lar writes its own state file on its next save.");
   out("Older backups still hold the old text until they rotate out. The next backup does not contain it.");
+  // SEAM2-3 (rejected as a fix, kept as words): the game's own lists are the game's, so the words may come back with them.
+  if (counts.domus !== undefined) out("The game's own lists may show the words again: they are the game's, not the Lar's.");
   return 0;
 }

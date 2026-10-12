@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { findOption, type OptionObject } from "./options.js";
 import type { Found } from "./answers.js";
 import {
-  ACT_TTL_MS, actRequestedMeanwhile, expireDue, nextState, pendingCounts, PLAN_STEP_MAX_MS, requestAct, syncActs, type RequestResult, type SyncAct,
+  ACT_TTL_MS, actRequestedMeanwhile, CODE_WORDS, expireDue, nextState, pendingCounts, PLAN_STEP_MAX_MS, requestAct, syncActs, type RequestResult, type SyncAct, wordsOfCode,
 } from "./acts.js";
 import { openDomusDb } from "./store.js";
 import type { DomusActPhase, SyncEvent } from "./wire.js";
@@ -193,12 +193,23 @@ describe("requested acts", () => {
     expect(sync(T0 + 3).acts.find((act) => act.act_id === okId(plain))).not.toHaveProperty("owner");
   });
 
-  it("refuses a second choice in the same turn, and says so", () => {
+  it("keeps game acts in one turn one after another: a second and a third are accepted (Q-3)", () => {
     turn += 1;
-    const first = requestAct(db, { thread: THREAD, turnId: "same", attachment: HELPER, observationId: "x", found: found("a1"), label: "x", forSummoner: false, then: [], nowMs: T0 });
-    expect(first.ok).toBe(true);
-    const second = requestAct(db, { thread: THREAD, turnId: "same", attachment: HELPER, observationId: "x", found: found("a2"), label: "y", forSummoner: false, then: [], nowMs: T0 });
-    expect(second).toEqual({ ok: false, code: "one_act_per_turn" });
+    const request = (option: string) => requestAct(db, { thread: THREAD, turnId: "same", attachment: HELPER, observationId: "x", found: found(option), label: option, forSummoner: false, then: [], nowMs: T0 });
+    expect(request("a1").ok).toBe(true);
+    expect(request("a2").ok).toBe(true);
+    expect(request("a3").ok).toBe(true);
+  });
+
+  it("refuses a game act after travel, a save or a planned event in the same turn, and says the slot is held (Q-3)", () => {
+    const slot = (verb: string, turnId: string) => {
+      db.prepare("INSERT INTO acts (act_id, turn_id, thread, attachment, observation_id, option_ref, object_id, guid64, label, state, requested_at_ms, expires_at_ms, updated_at_ms, for_summoner, answer_json, words, verb, args_json) VALUES (?, ?, ?, ?, NULL, '', '0', '', 'slot', 'requested', ?, ?, ?, 0, NULL, NULL, ?, NULL)")
+        .run(`slot-${verb}-${turnId}`, turnId, THREAD, HELPER, T0, T0 + 60_000, T0, verb);
+    };
+    for (const verb of ["go", "save", "event"]) {
+      slot(verb, `after-${verb}`);
+      expect(requestAct(db, { thread: THREAD, turnId: `after-${verb}`, attachment: HELPER, observationId: "x", found: found("a1"), label: "x", forSummoner: false, then: [], nowMs: T0 })).toEqual({ ok: false, code: "turn_slot_held" });
+    }
   });
 
   it("counts what is requested and what is planned for the now board", () => {
@@ -209,6 +220,11 @@ describe("requested acts", () => {
 });
 
 describe("plans", () => {
+  it("holds a plan of six at most: the first act and five more (Q-4)", () => {
+    ask(T0, "a1", { then: ["a2", "a3", "a4", "a1", "a2", "a3"] });
+    expect(sync(T0 + 1).planned).toBe(5);
+  });
+
   it("runs a plan of three: each step is requested only when the one before completed", () => {
     const first = okId(ask(T0, "a1", { then: ["a3", "a4"], forSummoner: true }));
     const start = sync(T0 + 1);
@@ -379,9 +395,9 @@ describe("W12: her words, the game's refusals, windows, pulls and a session's en
   it("says the codes the game and the probe added for travel, events, saves and sales in plain words, with the code beside them", () => {
     const cases: Array<[string, string]> = [
       ["TRAVEL_PENDING", "a trip is already under way"],
-      ["IN_RABBIT_HOLE", "her Sim is busy in a rabbit hole"],
-      ["NOT_AN_EVENT", "that is not an event the game has listed for her"],
-      ["IN_INVENTORY", "that thing is in her inventory: place it, do not move it"],
+      ["IN_RABBIT_HOLE", "your Sim is busy in a rabbit hole"],
+      ["NOT_AN_EVENT", "that is not an event the game has listed for you"],
+      ["IN_INVENTORY", "that thing is in your inventory: place it, do not move it"],
       ["SAVE_BUSY", "the game is already saving"],
     ];
     for (const [code, words] of cases) {
@@ -391,7 +407,7 @@ describe("W12: her words, the game's refusals, windows, pulls and a session's en
     }
     const id = okId(requestWith(T0, "a1"));
     const unconfirmed = sync(T0 + 1, [ev(id, "unknown", T0 + 1, { code: "SELL_UNCONFIRMED" })]).notes[0];
-    expect(unconfirmed?.text).toContain("the thing was still there 30 seconds after the sale, so she was not paid (SELL_UNCONFIRMED)");
+    expect(unconfirmed?.text).toContain("the thing was still there 30 seconds after the sale, so you were not paid (SELL_UNCONFIRMED)");
   });
 
   it("words the refusal by who refused it, with the game's own sentence, cut to 240 characters", () => {
@@ -401,7 +417,7 @@ describe("W12: her words, the game's refusals, windows, pulls and a session's en
       [{ code: "BAD_ARGS", by: "helper", text: "helper text" }, "your helper refused it (BAD_ARGS) - helper text"],
       [{ code: "STOP", by: "host" }, "the host refused it (STOP)"],
       [{ code: "UNSAID" }, "it was refused (UNSAID)"],
-      [{ code: "SIM_NOT_CHOOSABLE", by: "probe", detail: "step 2 of the picker" }, "the game's side refused it (SIM_NOT_CHOOSABLE) - step 2 of the picker"],
+      [{ code: "SIM_NOT_CHOOSABLE", by: "probe", detail: "step 2 of the picker" }, "the game's side refused it (SIM_NOT_CHOOSABLE) - the game would not let that Sim be chosen for that act (step 2 of the picker)"],
     ];
     for (const [detail, words] of cases) {
       const id = okId(requestWith(T0, "a1"));
@@ -438,7 +454,7 @@ describe("W12: her words, the game's refusals, windows, pulls and a session's en
     const id = okId(requestWith(T0, "a1"));
     const noted = sync(T0 + 1, [ev(id, "noted", T0 + 1, { code: "SCREEN_WITHHELD" })]).notes[0];
     expect(noted).toMatchObject({ wake: false });
-    expect(noted?.text).toBe('Your act "Boil water (Test kettle)" (a1): the game opened a screen you cannot use, so it was cancelled.');
+    expect(noted?.text).toBe('Your act "Boil water (Test kettle)" (a1): the game opened a screen you cannot use, so it was cancelled (SCREEN_WITHHELD).');
     expect(db.prepare("SELECT state FROM acts WHERE act_id = ?").get(id)).toEqual({ state: "noted" });
     sync(T0 + 2, [ev(id, "pushed", T0 + 2)]);
     expect(db.prepare("SELECT state FROM acts WHERE act_id = ?").get(id)).toEqual({ state: "pushed" });
@@ -502,12 +518,63 @@ describe("W12: her words, the game's refusals, windows, pulls and a session's en
     expect(actRequestedMeanwhile(db, { thread: THREAD, nowMs: T0 + 4 })).toBeUndefined();
   });
 
-  it("lets an answer through the one-act rule, one answer per question per turn, and a second act after an answer", () => {
+  it("lets an answer through, one answer per question per turn, and game acts after it (Q-3)", () => {
     const answer = { json: '{"rows":[]}' };
     const turnId = "turn-answers";
     expect(requestWith(T0, "a9", { turnId, found: QUESTION, answer }).ok).toBe(true);
     expect(requestWith(T0 + 1, "a9", { turnId, found: QUESTION, answer })).toEqual({ ok: false, code: "answer_repeated" });
     expect(requestWith(T0 + 2, "a1", { turnId }).ok).toBe(true);
-    expect(requestWith(T0 + 3, "a2", { turnId })).toEqual({ ok: false, code: "one_act_per_turn" });
+    expect(requestWith(T0 + 3, "a2", { turnId }).ok).toBe(true);
+  });
+});
+
+describe("plain words for every code the game's side and the helper send (NATALIS2-2, 4, 11; SEAM2-6; T4)", () => {
+  /** Every code the probe and the helper send with an act, grepped from their sources (refused, unknown, finished, noted). */
+  const SENT_CODES = [
+    "NOT_SAMPLING", "E2_UNAVAILABLE", "BODY_UNAVAILABLE", "BODY_MISMATCH", "NO_OBJECT", "NOT_OFFERED", "OBJECT_EXCLUDED",
+    "EXCLUDED", "NOT_USER_DIRECTED", "SIM_NEEDED", "SIM_NOT_CHOOSABLE", "NOT_A_SIM_ACT", "VARIANT_GONE", "BAD_VARIANT",
+    "FIRE_REFUSED", "BUILD_MODE_REFUSED", "GAME_REFUSED", "PUSH_REFUSED", "PUSH_FAILED", "NO_DIALOG", "NOT_HELD", "NOT_HERS",
+    "SHOWN_TO_USER", "IDENTITY_USER", "TEXT_NOT_HELD", "TEXT_INVALID", "NO_LIMIT", "NO_ROW", "ROW_DISABLED", "ROW_COUNT",
+    "COUNT_INVALID", "NO_RESPONSE", "NO_PLAYER_SLOT", "SAVE_FAILED", "SAVE_LOCKED", "SAVE_BUSY", "SAVE_TOO_SOON",
+    "TRAVEL_PENDING", "IN_RABBIT_HOLE", "SAME_ZONE", "NO_ZONE", "NOT_AN_EVENT", "NO_FUNDS", "CREATE_FAILED", "START_PAST",
+    "NOT_HOME", "BUILD_MODE", "NOT_PURCHASABLE", "PRICE_ABOVE", "NO_SPOT", "NOT_FREE", "PLACE_FAILED", "NOT_IN_INVENTORY",
+    "IN_INVENTORY", "MOVE_FAILED", "IN_USE", "NOT_MOVABLE", "NOT_SELLABLE", "SELL_FAILED", "SELL_PENDING", "SPOT_FAILED",
+    "NOT_ATTACHED", "ARGS_INVALID", "ANSWER_INVALID", "UNKNOWN_ROOM", "PROBE_TOO_OLD", "REFUSED",
+    "CHARGE_UNKNOWN", "REMOVE_UNCONFIRMED", "SELL_UNCONFIRMED", "SAVE_UNCONFIRMED", "ROW_INVALID", "LEFT_QUEUE",
+    "SAMPLER_STOPPED", "TRAVEL_UNSEEN", "E2_EXCEPTION", "NO_PROBE_REPLY", "GAME_DETACHED", "NO_END_REPORTED", "SESSION_ENDED",
+    "SAVED", "ARRIVED", "CREATED", "PLACED", "MOVED", "SOLD", "ANSWERED", "ANSWER_SENT_OPEN", "SCREEN_WITHHELD",
+  ];
+
+  it("has words for every code in the list, in second person and with no 'she' or 'her'", () => {
+    for (const code of SENT_CODES) {
+      const words = wordsOfCode(code);
+      expect(words, code).toBeTruthy();
+      expect(words, code).not.toMatch(/\b(she|her)\b/);
+    }
+  });
+
+  it("gives the part before a colon's words to a code with a detail, and shows an unknown code as the code", () => {
+    expect(wordsOfCode("E2_EXCEPTION:TypeError")).toBe(CODE_WORDS.E2_EXCEPTION);
+    expect(wordsOfCode("NOT_A_REAL_CODE")).toBeUndefined();
+    const actId = okId(ask(T0, "a1"));
+    const result = sync(T0 + 1, [ev(actId, "rejected", T0 + 1, { code: "NOT_A_REAL_CODE", by: "probe" })]);
+    expect(result.notes[0]?.text).toBe('Your act "Boil water (Test kettle)" (a1): the game\'s side refused it (NOT_A_REAL_CODE).');
+  });
+
+  it("says a buy whose money could not be read may be paid for, and that the thing was taken back out (CHARGE_UNKNOWN)", () => {
+    const actId = okId(ask(T0, "a1"));
+    const result = sync(T0 + 1, [ev(actId, "unknown", T0 + 1, { code: "CHARGE_UNKNOWN" })]);
+    expect(result.notes[0]?.text).toContain("it is not known whether you paid (CHARGE_UNKNOWN)");
+    expect(result.notes[0]?.text).toContain("taken back out");
+  });
+
+  it("gives a finished verb with no result the words of its code (the game saved), and keeps 'it finished' for a code it does not know", () => {
+    const insert = db.prepare("INSERT INTO acts (act_id, turn_id, thread, attachment, observation_id, option_ref, object_id, guid64, label, state, requested_at_ms, expires_at_ms, updated_at_ms, for_summoner, answer_json, words, verb, args_json) VALUES (?, 't', ?, ?, NULL, '', '0', '', 'save the game', 'pushed', ?, ?, ?, 0, NULL, NULL, 'save', NULL)");
+    insert.run("sv1", THREAD, HELPER, T0, T0 + 60_000, T0);
+    insert.run("sv2", THREAD, HELPER, T0, T0 + 60_000, T0);
+    const done = sync(T0 + 1, [ev("sv1", "finished", T0 + 1, { code: "SAVED" })]).notes[0];
+    expect(done?.text).toBe('Your act "save the game": the game saved.');
+    const other = sync(T0 + 3, [ev("sv2", "finished", T0 + 3, { code: "SOMETHING_NEW" })]).notes[0];
+    expect(other?.text).toBe('Your act "save the game": it finished (SOMETHING_NEW).');
   });
 });

@@ -5,7 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import {
-  attentionLine, currentAttention, gameAttentionTool, LOOK_MAX, LOOK_MIN, reviewAttention, UNTIL_MAX_MS, wakesFor,
+  attentionLine, currentAttention, gameAttentionTool, LOOK_MAX, LOOK_MIN, reviewAttention, UNTIL_MAX_MS, wakesFor, workEnded,
 } from "./attention.js";
 import { admitObservation, lastLookHanded, lookOwed, openDomusDb, readAttention, takeLook, writeAttention, type AttentionRow } from "./store.js";
 import type { Percept } from "./wire.js";
@@ -48,10 +48,51 @@ function view(percepts: Percept[], overrides: { portrait?: unknown; dayRecord?: 
 const HELD = { asked: [{ title: "Pick a recipe", whose: "hers", held: true }] };
 const NOT_HELD = { asked: [{ title: "Pick a recipe", whose: "the User's", held: false }] };
 
+describe("the work watch is kept per game thread in domus.sqlite (NATALIS2-7, C6 F-3)", () => {
+  const job = (atWork: boolean) => ({ self: { jobs: [{ title: "Test Clerk", at_work: atWork }] } });
+
+  it("tells a work end apart from a shift that has not ended, once per game thread", () => {
+    expect(workEnded(db, "thread-a", job(true))).toBe(false);
+    expect(workEnded(db, "thread-a", job(true))).toBe(false);
+    expect(workEnded(db, "thread-a", job(false))).toBe(true);
+    expect(workEnded(db, "thread-a", job(false))).toBe(false);
+    expect(workEnded(db, "thread-b", job(false))).toBe(false);
+    // A view with no job read leaves the thread as it was.
+    expect(workEnded(db, "thread-c", job(true))).toBe(false);
+    expect(workEnded(db, "thread-c", undefined)).toBe(false);
+    expect(workEnded(db, "thread-c", job(false))).toBe(true);
+  });
+
+  it("still gives the one work end after a restart: the at-work flag is in the store", () => {
+    expect(workEnded(db, THREAD, job(true))).toBe(false);
+    db.close();
+    db = openDomusDb(dir);
+    expect(workEnded(db, THREAD, job(false))).toBe(true);
+    expect(workEnded(db, THREAD, job(false))).toBe(false);
+  });
+});
+
+describe("the game_attention description says what each mode wakes for (NATALIS2-5)", () => {
+  it("names what wakes her in every mode, and what each mode adds to it", () => {
+    const text = gameAttentionTool(() => null).spec.description;
+    expect(text).toContain("Always, in every mode: a question the game holds open for you, a call or a notice on your phone, and a look you asked for.");
+    expect(text).toContain("Except in quiet, a need that goes into distress wakes you when you are not at work.");
+    expect(text).toContain("When work ends with a need still in distress you wake once, in every mode.");
+    expect(text).toContain("at work, a view whose only changes are needs in distress stays quiet");
+    expect(text).toContain("when_called: otherwise a change wakes you only when something calls you");
+    expect(text).toContain("quiet: otherwise nothing wakes you until until");
+  });
+});
+
 describe("which views wake her, by her mode", () => {
   it("wakes her on every view in every change mode", () => {
     expect(wakesFor("every_change", view(PLAIN))).toBe(true);
     expect(wakesFor("every_change", view([percept("presence", { bucket: "left" })]))).toBe(true);
+  });
+
+  it("when called, a phone change that is neither a notice nor a call does not wake her (NATALIS2-12)", () => {
+    expect(wakesFor("when_called", view([percept("phone", { what: "message" })]))).toBe(false);
+    expect(wakesFor("when_called", view([percept("phone", { what: "notice" })]))).toBe(true);
   });
 
   it("when called, wakes her for a call and not for an ordinary change", () => {
@@ -73,11 +114,14 @@ describe("which views wake her, by her mode", () => {
     }
   });
 
-  it("in every mode, a need that has just gone into distress wakes her, and a need that has not does not (D1)", () => {
+  it("a need that has just gone into distress wakes her in every mode but quiet, and a need that has not does not (D1, Q-1)", () => {
     const distress = percept("need", { subject: "social", band: "distress" });
-    for (const mode of ["every_change", "when_called", "quiet"] as const) {
+    for (const mode of ["every_change", "when_called"] as const) {
       expect(wakesFor(mode, view([distress]))).toBe(true);
     }
+    // Quiet means quiet: a need in distress does not wake her in quiet, and a question, a call or a look still does.
+    expect(wakesFor("quiet", view([distress]))).toBe(false);
+    expect(wakesFor("quiet", view([percept("phone", { what: "call", from: "Test Friend" })]))).toBe(true);
     expect(wakesFor("when_called", view([percept("need", { subject: "hunger", band: "low" })]))).toBe(false);
     expect(wakesFor("quiet", view([percept("need", { subject: "fun", band: "ok" })]))).toBe(false);
   });

@@ -212,17 +212,19 @@ describe("game_act: requests", () => {
     expect(acts()).toEqual([]);
   });
 
-  it("allows at most two steps after the first", async () => {
+  it("allows at most five steps after the first, and refuses a sixth (Q-4)", async () => {
     view(VIEW);
-    expect(await run({ option: "a1", then: ["a2", "a3", "a4"] })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await run({ option: "a1", then: ["a2", "a3", "a4", "a1", "a2", "a3"] })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
     expect(acts()).toEqual([]);
+    expect(await run({ option: "a1", then: ["a2", "a3", "a4", "a1", "a2"] })).toMatchObject({ ok: true });
   });
 
-  it("refuses a second choice in the same turn", async () => {
+  it("accepts a second and a third choice in the same turn (Q-3)", async () => {
     view(VIEW);
     expect((await run({ option: "a1" }, THREAD, "one-turn")).ok).toBe(true);
-    expect(await run({ option: "a2" }, THREAD, "one-turn")).toMatchObject({ ok: false, refused: { code: "one_act_per_turn" } });
-    expect(acts()).toHaveLength(1);
+    expect((await run({ option: "a2" }, THREAD, "one-turn")).ok).toBe(true);
+    expect((await run({ option: "a3" }, THREAD, "one-turn")).ok).toBe(true);
+    expect(acts()).toHaveLength(3);
   });
 
   it("refuses arguments it does not know, and malformed ones, before anything is requested", async () => {
@@ -278,7 +280,7 @@ describe("game_act: the words she read still name the ref", () => {
     expect(await run({ option: "a1", expect: "x".repeat(201) })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
     expect(await run({ option: "a1", then: ["a3"], expect_then: "Sit" })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
     expect(await run({ option: "a1", then: ["a3"], expect_then: ["x".repeat(201)] })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
-    expect(await run({ option: "a1", then: ["a3"], expect_then: ["a", "b", "c"] })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await run({ option: "a1", then: ["a3"], expect_then: ["a", "b", "c", "d", "e", "f"] })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
     expect(acts()).toEqual([]);
   });
 

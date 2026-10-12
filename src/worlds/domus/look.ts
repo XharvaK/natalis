@@ -22,6 +22,8 @@ export function gameLookTool(open: () => LookContext): Tool {
   return {
     spec: {
       name: "game_look",
+      // Q-j (the User, 2026-10-12): the summoner's stop refuses acts, not reads; this one only reads the game.
+      safeWhenStopped: true,
       description:
         "Ask the game for a fresh view of how things are now, when you want to look rather than wait for a change. " +
         "The game shows it on its next sync. That view wakes you, and it comes to this thread too. This only asks; nothing in the game changes.",

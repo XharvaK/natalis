@@ -38,6 +38,12 @@ export type OptionObject = {
   near?: boolean;
   /** True for a Sim (a person): the only kind of option her words to them go with (S1). */
   person?: boolean;
+  /** The game's own reasons an act on this near object is refused, each a line (W12 C4). */
+  refused?: string[];
+  /** The object's states, in the words of the things list (at most four). */
+  states?: string[];
+  /** The phone acts the game left out of its menu, and the phone acts it refused, each a line (T2). */
+  left_out?: string[];
 };
 export type Found = { object: OptionObject; act: OptionAct };
 /** The answer as it is kept and sent to the helper: rows by the game's own option ids, counts resolved, text as typed. */

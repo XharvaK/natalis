@@ -1,11 +1,11 @@
-// The game_act tool: the Lar names one choice of the newest view of its game thread (and up to two more to follow it),
+// The game_act tool: the Lar names one choice of the newest view of its game thread (and up to five more to follow it),
 // and the world keeps the request for the helper. The tool never guesses a ref, never matches a word, and never
 // chooses for the Lar. Its receipts say requested; what the game did comes back later as notes on the game thread.
 
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import { answerFor, isAnswerClaim, type AnswerClaim, type Found } from "./answers.js";
-import { actRequestedMeanwhile, PLAN_MORE, requestAct } from "./acts.js";
+import { actRequestedMeanwhile, PLAN_MORE, requestAct, SLOT_HELD_REFUSAL } from "./acts.js";
 import { findOption, labelOf, optionsOf, refsOf } from "./options.js";
 import { findListed, listedSession } from "./lists.js";
 import { gameThreadNow, newestObservation, STALE_VIEW_CODE, STALE_VIEW_REASON } from "./store.js";
@@ -57,7 +57,7 @@ export function gameActTool(open: () => GameActContext): Tool {
       name: "game_act",
       description:
         "Ask the game to do one of the choices in its newest view, by the ref (for example a3). " +
-        "Put up to two more refs in then; each runs only after the one before it completes. Set for_summoner only when " +
+        "Put up to five more refs in then; each runs only after the one before it completes. Set for_summoner only when " +
         "your summoner asked for this act. If another of your threads asked the game for an act within the last 60 seconds, " +
         "the request is refused; set knowingly to true only to ask for this act anyway. " +
         "Answer a game question with answer: rows by ref (with a count where the question allows it) " +
@@ -70,7 +70,7 @@ export function gameActTool(open: () => GameActContext): Tool {
             type: "array",
             items: { type: "string" },
             maxItems: PLAN_MORE,
-            description: "Up to two more refs, each run after the one before it completes.",
+            description: "Up to five more refs, each run after the one before it completes.",
           },
           expect: {
             type: "string",
@@ -261,7 +261,7 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
     if (requested.code === "answer_repeated") {
       return refused(requested.code, "You already answered this question in this turn. Answer it again in your next turn, if it is still open.");
     }
-    return refused(requested.code, "You already asked the game for one act in this turn. Ask for the next one in your next turn.");
+    return refused(requested.code, SLOT_HELD_REFUSAL);
   }
   const planText = requested.steps.length
     ? ` Then, each after the one before completes: ${requested.steps.map((step) => `${step.ref} (${step.label})`).join("; ")}.`

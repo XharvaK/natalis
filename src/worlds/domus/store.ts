@@ -146,6 +146,7 @@ CREATE TABLE IF NOT EXISTS lists (
   digest TEXT NOT NULL,
   items_json TEXT NOT NULL,
   at_ms INTEGER NOT NULL,
+  total INTEGER,
   PRIMARY KEY (attachment, kind)
 );
 CREATE TABLE IF NOT EXISTS catalog_asks (
@@ -173,6 +174,10 @@ CREATE TABLE IF NOT EXISTS catalog_seen (
   price INTEGER,
   at_ms INTEGER NOT NULL,
   PRIMARY KEY (attachment, ref)
+);
+CREATE TABLE IF NOT EXISTS work_watch (
+  thread TEXT PRIMARY KEY,
+  at_work INTEGER NOT NULL
 );
 `;
 
@@ -202,15 +207,21 @@ export type Row = Record<string, unknown>;
  * The schema version this code reads and writes (PRAGMA user_version). Version 1 adds two nullable columns to acts: words
  * (what the Lar said to the Sim the act targets) and pulled_at_ms (when the helper first took the act). Version 2 adds
  * acts.verb and acts.args_json (the home and travel verbs, and a Sim an act names), and the tables lists, catalog_asks and
- * catalog_seen (the game's lists on demand, and the catalogue asks).
+ * catalog_seen (the game's lists on demand, and the catalogue asks). Version 3 adds the table work_watch (whether her job was
+ * at work in each game thread's last view, so a restart keeps the one work-end wake). Version 4 adds lists.total (the game's
+ * whole count of a list, when it counted more than it sent).
  */
-export const DOMUS_SCHEMA_VERSION = 2;
-const ACT_COLUMNS_V1: ReadonlyArray<readonly [name: string, type: string]> = [["words", "TEXT"], ["pulled_at_ms", "INTEGER"]];
-const ACT_COLUMNS_V2: ReadonlyArray<readonly [name: string, type: string]> = [["verb", "TEXT"], ["args_json", "TEXT"]];
+export const DOMUS_SCHEMA_VERSION = 4;
+/** The columns a version before this one lacks: each is added to its table only when missing (see migrateDomusDb). */
+const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, name: string, type: string]> = [
+  ["acts", "words", "TEXT"], ["acts", "pulled_at_ms", "INTEGER"], ["acts", "verb", "TEXT"], ["acts", "args_json", "TEXT"],
+  ["lists", "total", "INTEGER"],
+];
 
 /**
- * Brings an open Domus database to DOMUS_SCHEMA_VERSION. Each column is added only when it is missing, in one transaction
- * that also sets the version. A database from a later version is refused, not read.
+ * Brings an open Domus database to DOMUS_SCHEMA_VERSION. The schema's tables are created when missing (a store from before
+ * a table was added lacks it), each column is added only when it is missing, and all of it is one transaction that also sets
+ * the version. A database from a later version is refused, not read. Forgetting runs this too, so the tables come first.
  */
 export function migrateDomusDb(db: DatabaseSync): void {
   const version = Number((db.prepare("PRAGMA user_version").get() as Row).user_version);
@@ -218,11 +229,12 @@ export function migrateDomusDb(db: DatabaseSync): void {
     throw new Error(`The Domus database has schema version ${version}; this code reads version ${DOMUS_SCHEMA_VERSION}.`);
   }
   if (version === DOMUS_SCHEMA_VERSION) return;
-  const present = new Set((db.prepare("PRAGMA table_info(acts)").all() as Row[]).map((column) => String(column.name)));
   db.exec("BEGIN IMMEDIATE");
   try {
-    for (const [name, type] of [...ACT_COLUMNS_V1, ...ACT_COLUMNS_V2]) {
-      if (!present.has(name)) db.exec(`ALTER TABLE acts ADD COLUMN ${name} ${type}`);
+    db.exec(SCHEMA);
+    for (const [table, name, type] of ADDED_COLUMNS) {
+      const present = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Row[]).map((column) => String(column.name)));
+      if (!present.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
     }
     db.exec(`PRAGMA user_version = ${DOMUS_SCHEMA_VERSION}`);
     db.exec("COMMIT");
@@ -439,9 +451,10 @@ function withdrawForgotten(db: DatabaseSync, table: string, rowid: number, nowMs
 /**
  * Forgets words in the game's store. In every table that keeps game or Lar text, each row whose live text holds all the
  * words (case and form aside) has that text replaced: a marker for plain text, an empty object for JSON. Rows already
- * forgotten are not counted again. Returns how many rows were erased; the file is then vacuumed.
+ * forgotten are not counted again. A withdrawn act is stamped with nowMs (the world passes its own clock; the summoner's
+ * command, which has none, takes the wall clock). Returns how many rows were erased; the file is then vacuumed.
  */
-export function forgetText(db: DatabaseSync, words: readonly string[]): number {
+export function forgetText(db: DatabaseSync, words: readonly string[], nowMs: number = Date.now()): number {
   const wanted = words.map(foldForget).filter((word) => word.length > 0);
   if (wanted.length === 0) return 0;
   let erased = 0;
@@ -460,7 +473,7 @@ export function forgetText(db: DatabaseSync, words: readonly string[]): number {
           const sets = live.map((column) => `${column.name} = ?`).join(", ");
           db.prepare(`UPDATE ${spec.table} SET ${sets} WHERE rowid = ?`).run(...live.map((column) => column.erased), row.rid as number);
         }
-        withdrawForgotten(db, spec.table, row.rid as number, Date.now());
+        withdrawForgotten(db, spec.table, row.rid as number, nowMs);
         erased += 1;
       }
     }
@@ -473,14 +486,14 @@ export function forgetText(db: DatabaseSync, words: readonly string[]): number {
  * The summoner's forget in the game's store when no world is running: opens domus/domus.sqlite if it exists (it is not
  * created here), forgets, and closes it. Returns how many rows were erased; 0 when there is no store.
  */
-export function forgetInDomusFile(dir: string, words: readonly string[]): number {
+export function forgetInDomusFile(dir: string, words: readonly string[], nowMs: number = Date.now()): number {
   const path = join(dir, DOMUS_FOLDER, DOMUS_DB_FILE);
   if (!existsSync(path)) return 0;
   const db = new DatabaseSync(path);
   try {
     db.exec("PRAGMA busy_timeout = 5000");
     migrateDomusDb(db);
-    return forgetText(db, words);
+    return forgetText(db, words, nowMs);
   } finally {
     db.close();
   }
@@ -525,7 +538,8 @@ export class HeartbeatBook {
       changedAtMs: before && before.attached === input.attached ? before.changedAtMs : nowMs,
       ...(lastAttachedMs === undefined ? {} : { lastAttachedMs }),
       ...(world === undefined ? {} : { world }),
-      ...(input.probeVersion ? { probeVersion: input.probeVersion } : {}),
+      // A heartbeat that names no probe version keeps the one the session named last (the verb gate reads it).
+      ...(input.probeVersion ? { probeVersion: input.probeVersion } : before?.probeVersion ? { probeVersion: before.probeVersion } : {}),
     };
     this.prune();
     this.save();
@@ -597,6 +611,20 @@ function load(path: string): Record<string, HeartbeatRecord> {
     throw new Error(`The Domus state file (${DOMUS_FOLDER}/${DOMUS_STATE_FILE}) has an unknown version; not starting.`);
   }
   return sessions as Record<string, HeartbeatRecord>;
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Her work watch: whether her job was at work in each game thread's last view (see workEnded in attention.ts).
+
+/** Whether her job was at work in a game thread's last view, or undefined before one was read. */
+export function readAtWork(db: DatabaseSync, thread: string): boolean | undefined {
+  const row = db.prepare("SELECT at_work FROM work_watch WHERE thread = ?").get(thread) as Row | undefined;
+  return row === undefined ? undefined : Number(row.at_work) === 1;
+}
+
+export function writeAtWork(db: DatabaseSync, thread: string, atWork: boolean): void {
+  db.prepare(`INSERT INTO work_watch (thread, at_work) VALUES (?, ?)
+    ON CONFLICT (thread) DO UPDATE SET at_work = excluded.at_work`).run(thread, atWork ? 1 : 0);
 }
 
 // ---------------------------------------------------------------------------------------------------

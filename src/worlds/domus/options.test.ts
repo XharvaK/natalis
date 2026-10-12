@@ -328,3 +328,28 @@ describe("the game's record of the day in a view", () => {
     expect(viewBrief([])).toBe("An earlier view.");
   });
 });
+
+describe("an option object's refusals, states and left-out acts (T3, T2)", () => {
+  const KETTLE = {
+    object: "Test kettle", object_id: "obj-kettle", acts: [{ ref: "a1", guid64: "111", text: "Boil water" }],
+    refused: ["Boil water: refused: the water is off"], states: ["dirty", "broken"],
+    left_out: ["Call Test Friend: left out: it is not on your phone list"],
+  } as OptionObject;
+
+  it("renders the states and the reasons as indented lines under the object, in that order", () => {
+    const text = renderView({ world: "slot3", percepts: [], options: [KETTLE] });
+    expect(text).toContain(
+      "- Test kettle: a1 Boil water\n  States: dirty, broken.\n  Boil water: refused: the water is off\n  Call Test Friend: left out: it is not on your phone list",
+    );
+  });
+
+  it("adds the states, the refusals and the left-out acts to the choices, so a change lists them again", () => {
+    const sig = choicesSignature([KETTLE]);
+    expect(choicesSignature([{ ...KETTLE, refused: ["Boil water: refused: the water is cold"] }])).not.toBe(sig);
+    expect(choicesSignature([{ ...KETTLE, states: ["dirty"] }])).not.toBe(sig);
+    expect(choicesSignature([{ ...KETTLE, left_out: [] }])).not.toBe(sig);
+    const again = renderView({ world: "slot3", percepts: [], options: [{ ...KETTLE, refused: ["Boil water: refused: the water is cold"] }], lastChoices: sig });
+    expect(again).toContain("the water is cold");
+    expect(again).not.toContain("the same as in the last view");
+  });
+});

@@ -1,12 +1,12 @@
 // The W13 verbs: the travel and home acts she asks the game for. game_go, game_save and plan_event hold the turn's one-act
-// slot, as a game act does; game_buy, game_place, game_move and game_sell are home edits (six a turn). Each tool checks its
+// slot, as a game act does; game_buy, game_place, game_move and game_sell are home edits (no cap in a turn). Each tool checks its
 // arguments against the lists and the newest view of the game that is attached now, then keeps the act as a requested verb.
 // The game does it, or refuses, later; the result comes back as notes on her thread. Nothing here chooses for her.
 
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import type { OptionObject } from "./answers.js";
-import { actRequestedMeanwhile, HOME_EDITS_PER_TURN, HOME_VERBS, homeEditsIn, lastSaveAt, requestVerb } from "./acts.js";
+import { actRequestedMeanwhile, lastSaveAt, requestVerb, SLOT_HELD_REFUSAL, saveWaiting } from "./acts.js";
 import { seenItem } from "./catalog.js";
 import { findListed, listedSession, readList, REF_PATTERN } from "./lists.js";
 import { findOption, optionsOf } from "./options.js";
@@ -15,8 +15,10 @@ import { type GameContext, gameGate, refused, staleRef } from "./tool-context.js
 
 /** Saves are at least this far apart, in real time (the game's own save lock is separate). */
 export const SAVE_FLOOR_MS = 15 * 60_000;
-/** A plan's guests: at most this many. */
-const GUESTS_MAX = 16;
+/** A plan's guests: at most this many (the probe refuses past the event type's own limit, too many guests). */
+const GUESTS_MAX = 64;
+/** A plan's start: a day this many days ahead at most (0 is today, 1 tomorrow). */
+const DAY_OFFSET_MAX = 99;
 const KNOWINGLY = {
   type: "boolean",
   description: "True only to ask anyway, after a refusal that says another of your threads asked the game within the last 60 seconds.",
@@ -150,7 +152,7 @@ type VerbDef = {
 const VERBS: VerbDef[] = [
   {
     tool: "game_go",
-    description: "Travel to a place from game_list places (an h ref). Travel moves your summoner's game too. Ask them on Discord first, and go only after their yes. It is your one act for the turn.",
+    description: "Travel to a place from game_list places (an h ref). Travel moves your summoner's game too. Ask them on Discord first, and go only after their yes. It takes the turn's one act slot.",
     properties: { place: { type: "string", description: "The h ref of the place, from game_list places." } },
     required: ["place"],
     keys: ["place"],
@@ -165,11 +167,12 @@ const VERBS: VerbDef[] = [
   },
   {
     tool: "game_save",
-    description: "Save the game now. It is your one act for the turn. Refused within 15 minutes of your last save that was not refused.",
+    description: "Save the game now. It takes the turn's one act slot. Refused within 15 minutes of your last save that was not refused.",
     properties: {},
     required: [],
     keys: [],
     plan({ db, args: _args, nowMs }) {
+      if (saveWaiting(db)) return refused("save_pending", "You already asked the game to save, and it has not been done yet.");
       const last = lastSaveAt(db);
       if (last !== undefined && nowMs - last < SAVE_FLOOR_MS) {
         const left = Math.ceil((last + SAVE_FLOOR_MS - nowMs) / 60_000);
@@ -180,16 +183,14 @@ const VERBS: VerbDef[] = [
   },
   {
     tool: "plan_event",
-    description: "Plan a game event of a type from game_list events (an e ref), with guests from game_list people (p refs). It is your one act for the turn. start is now, or a day and a time on the game clock.",
+    description: "Plan a game event of a type from game_list events (an e ref), with guests from game_list people (p refs). It takes the turn's one act slot. start is now, or a day and a time on the game clock.",
     properties: {
       type: { type: "string", description: "The e ref of the event type." },
-      guests: { type: "array", items: { type: "string" }, maxItems: GUESTS_MAX, description: "Optional: up to 16 p refs." },
+      guests: { type: "array", items: { type: "string" }, maxItems: GUESTS_MAX, description: `Optional: up to ${GUESTS_MAX} p refs.` },
       start: {
-        description: "Optional: \"now\" (the default), or {day: \"today\" or \"tomorrow\", time: \"HH:MM\"}.",
-        oneOf: [
-          { type: "string", enum: ["now"] },
-          { type: "object", properties: { day: { type: "string", enum: ["today", "tomorrow"] }, time: { type: "string" } }, required: ["day", "time"] },
-        ],
+        type: ["string", "object"],
+        description: "Optional: \"now\" (the default), or {day_offset: 0 to 99 days ahead (0 is the same day), time: \"HH:MM\"} on the game clock.",
+        properties: { day_offset: { type: "integer", minimum: 0, maximum: DAY_OFFSET_MAX }, time: { type: "string" } },
       },
     },
     required: ["type"],
@@ -210,13 +211,16 @@ const VERBS: VerbDef[] = [
       let startWords = "";
       if (start === "now") {
         startArg = "now";
-      } else if (isRecord(start) && (start.day === "today" || start.day === "tomorrow") && typeof start.time === "string"
+      } else if (isRecord(start) && Number.isSafeInteger(start.day_offset) && (start.day_offset as number) >= 0
+        && (start.day_offset as number) <= DAY_OFFSET_MAX && typeof start.time === "string"
         && /^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(start.time)) {
+        const dayOffset = start.day_offset as number;
         const [hour, minute] = start.time.split(":").map(Number) as [number, number];
-        startArg = { day_offset: start.day === "tomorrow" ? 1 : 0, hour, minute };
-        startWords = ` at ${start.time} ${start.day}`;
+        startArg = { day_offset: dayOffset, hour, minute };
+        const day = dayOffset === 0 ? "today" : dayOffset === 1 ? "tomorrow" : `in ${dayOffset} days`;
+        startWords = ` at ${start.time} ${day}`;
       } else {
-        return refused("bad_args", "start is \"now\", or {day: \"today\" or \"tomorrow\", time: \"HH:MM\"} on the game clock.");
+        return refused("bad_args", `start is "now", or {day_offset: 0 to ${DAY_OFFSET_MAX} (0 is today), time: "HH:MM"} on the game clock.`);
       }
       const withWords = guests.length ? ` with ${guests.map((guest) => `${guest.name} (${guest.ref})`).join(", ")}` : "";
       return {
@@ -254,7 +258,7 @@ const VERBS: VerbDef[] = [
   },
   {
     tool: "game_place",
-    description: "Place an item from your inventory (a t ref) on your lot. A home edit: six a turn.",
+    description: "Place an item from your inventory (a t ref) on your lot. A home edit.",
     properties: { thing: { type: "string", description: "The t ref of an inventory item, from game_list things." }, place: { description: PLACE_TEXT, type: "object" } },
     required: ["thing", "place"],
     keys: ["thing", "place"],
@@ -274,7 +278,7 @@ const VERBS: VerbDef[] = [
   },
   {
     tool: "game_move",
-    description: "Move a thing on your lot (a t or a ref) to another place. A home edit: six a turn. A move that cuts off a route stays where you put it, and the result says which routes are cut.",
+    description: "Move a thing on your lot (a t or a ref) to another place. A home edit. A move that cuts off a route stays where you put it, and the result says which routes are cut.",
     properties: { thing: { type: "string", description: "A t ref from game_list things, or an a ref from the view." }, place: { description: PLACE_TEXT, type: "object" } },
     required: ["thing", "place"],
     keys: ["thing", "place"],
@@ -291,7 +295,7 @@ const VERBS: VerbDef[] = [
   },
   {
     tool: "game_sell",
-    description: "Sell a thing (a t or a ref) from your lot or your inventory. It is removed. A home edit: six a turn.",
+    description: "Sell a thing (a t or a ref) from your lot or your inventory. It is removed. A home edit.",
     properties: { thing: { type: "string", description: "A t ref from game_list things, or an a ref from the view." } },
     required: ["thing"],
     keys: ["thing"],
@@ -336,10 +340,6 @@ function runVerb(open: () => GameContext, def: VerbDef, args: Args, context: Too
   const attached = game.attachedSession(game.nowMs()) as string;
   const nowMs = game.nowMs();
   const view = viewOf(game.db, attached);
-  const isHome = HOME_VERBS.some((verb) => def.tool === `game_${verb}`);
-  if (isHome && homeEditsIn(game.db, context.turnId) >= HOME_EDITS_PER_TURN) {
-    return refused("home_edits_full", `You made ${HOME_EDITS_PER_TURN} home edits this turn already. The next turn can make more.`);
-  }
   const planned = def.plan({ db: game.db, listed: listedSession(game.db, attached), view, args, nowMs, ownerMs: game.ownerMs() });
   if (isReceipt(planned)) return planned;
   if (args.knowingly !== true) {
@@ -365,8 +365,7 @@ function runVerb(open: () => GameContext, def: VerbDef, args: Args, context: Too
     nowMs,
   });
   if (!kept.ok) {
-    if (kept.code === "home_edits_full") return refused(kept.code, `You made ${HOME_EDITS_PER_TURN} home edits this turn already. The next turn can make more.`);
-    return refused(kept.code, "You already asked the game for one act in this turn. Ask for the next one in your next turn.");
+    return refused(kept.code, SLOT_HELD_REFUSAL);
   }
   return {
     ok: true,

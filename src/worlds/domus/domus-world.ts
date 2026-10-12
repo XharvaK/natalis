@@ -7,13 +7,13 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { DatabaseSync } from "node:sqlite";
 import type { World, WorldBody, WorldEvent } from "../../contracts.js";
 import type { AttachmentNow } from "./body.js";
-import { attentionLine, type AttentionContext, createWorkWatch, currentAttention, gameAttentionTool, reviewAttention, wakesFor } from "./attention.js";
+import { attentionLine, type AttentionContext, currentAttention, gameAttentionTool, reviewAttention, wakesFor, workEnded } from "./attention.js";
 import { gameActTool, type GameActContext } from "./game-act.js";
 import { hasDayRecord, localStamp } from "./day-record.js";
 import { gameLookTool, type LookContext } from "./look.js";
 import { gameOverlaySayTool, type OverlayContext, overlayItems } from "./overlay.js";
-import { expireMemory, gameMemoryTool, handMemory, type MemoryContext, settleMemory, withdrawMemory } from "./memory.js";
-import { expireCatalog, gameCatalogTool, handCatalog, settleCatalog, withdrawCatalog } from "./catalog.js";
+import { expireMemory, gameMemoryTool, handMemory, type MemoryContext, settleMemory } from "./memory.js";
+import { expireCatalog, gameCatalogTool, handCatalog, settleCatalog } from "./catalog.js";
 import { gameListTool, listCountLine, listDigests, storeList } from "./lists.js";
 import { verbTools } from "./verbs.js";
 import { type GameContext } from "./tool-context.js";
@@ -22,7 +22,7 @@ import { expireDue, pendingCounts, syncActs, type ThreadNote, withdrawUndone, wi
 import { choicesSignature, optionsOf, renderView, unchangedLookLine, viewBrief } from "./options.js";
 import {
   checkSnapshot, expireSnapshots, gameSnapshotTool, openSnapshots, SNAPSHOT_PICTURE_NAME, SNAPSHOT_STATUS, settleFailed,
-  settleTaken, type SnapshotContext, withdrawSnapshots,
+  settleTaken, type SnapshotContext,
 } from "./snapshot.js";
 import {
   admitObservation, forgetInDomusFile, forgetText, HeartbeatBook, inTransaction, markSpanUndoneIn, newestObservation, openDomusDb,
@@ -323,7 +323,6 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     return {
       db: current,
       nowMs,
-      stopped: () => isStopOn(options.dir),
       attachedSession: (at: number) => heartbeats.attachedSession(at),
       lastAttachedMs: () => heartbeats.lastAttachedAt(),
     };
@@ -337,9 +336,6 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     return { db: current, nowMs, timeZone: options.timeZone, attachedSession: (at: number) => heartbeats.attachedSession(at) };
   };
 
-  /** Whether her job was at work in each game thread's last view (in memory; see createWorkWatch). */
-  const workWatch = createWorkWatch();
-
   /**
    * Her attention for an admitted view: whether it wakes her, and the line her body block starts with. The thread
    * keeps the view's helper session and the time it last woke her, so the first view after attach is known.
@@ -351,7 +347,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       percepts: parsed.percepts,
       portrait: parsed.normalized.portrait,
       dayRecord: parsed.normalized.day !== undefined,
-      workEnded: workWatch.ended(thread, parsed.normalized.portrait),
+      workEnded: workEnded(current, thread, parsed.normalized.portrait),
       firstAfterAttach: row.viewedSession !== parsed.fields.attachment,
     });
     writeAttention(current, { ...row, viewedSession: parsed.fields.attachment, lastWakeMs: wake ? now : row.lastWakeMs });
@@ -431,18 +427,19 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     // The summoner's stop reaches the game too: what was requested before it is withdrawn, not handed over.
     const stopped = isStopOn(options.dir);
     const withheld = stopped ? withholdForStop(requireDb(), now) : [];
-    const pictures = stopped ? withdrawSnapshots(requireDb(), now) : expireSnapshots(requireDb(), now);
-    const questions = stopped ? withdrawMemory(requireDb(), now) : expireMemory(requireDb(), now);
-    const catalogAsks = stopped ? withdrawCatalog(requireDb(), now) : expireCatalog(requireDb(), now);
+    const pictures = expireSnapshots(requireDb(), now);
+    // The stop refuses acts only (Q-j): pictures, looks, questions and catalogue asks are reads, so they stay open and are handed over.
+    const questions = expireMemory(requireDb(), now);
+    const catalogAsks = expireCatalog(requireDb(), now);
     const result = syncActs(requireDb(), { attachment: parsed.helperSession, events: parsed.events, nowMs: now });
-    const snapshots = stopped ? [] : openSnapshots(requireDb(), { helperSession: parsed.helperSession, nowMs: now });
+    const snapshots = openSnapshots(requireDb(), { helperSession: parsed.helperSession, nowMs: now });
     // The questions owed are handed to this helper, which answers them on its own time (POST /domus/memory).
-    const memory = stopped ? [] : handMemory(requireDb(), { helperSession: parsed.helperSession, nowMs: now });
+    const memory = handMemory(requireDb(), { helperSession: parsed.helperSession, nowMs: now });
     // W13: the catalogue asks owed (once each), and the digests of the lists she holds, so the helper resends what changed.
-    const catalog = stopped ? [] : handCatalog(requireDb(), { helperSession: parsed.helperSession, nowMs: now });
+    const catalog = handCatalog(requireDb(), { helperSession: parsed.helperSession, nowMs: now });
     const lists = listDigests(requireDb(), parsed.helperSession);
     reviewAttention(requireDb(), now, requireBook().attachedSession(now));
-    const look = stopped ? false : takeLook(requireDb(), parsed.helperSession, now);
+    const look = takeLook(requireDb(), parsed.helperSession, now);
     for (const note of withheld) deliver(noteEvent(note, now));
     for (const note of pictures) deliver(noteEvent(note, now));
     for (const note of questions) deliver(noteEvent(note, now));
@@ -481,13 +478,13 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
 
   /**
    * The helper's answer to a question she asked: applied once, to the session it was handed to, and only within its two
-   * minutes and while the summoner's stop is off (the stop withdraws what is open first). The answer wakes her.
+   * minutes. The summoner's stop does not stop a read, so the answer is taken while it is on too. The answer wakes her.
    */
   function memoryRoute(body: unknown, res: ServerResponse): void {
     const parsed = parseMemory(body);
     const now = nowMs();
     const db = requireDb();
-    for (const note of isStopOn(options.dir) ? withdrawMemory(db, now) : expireMemory(db, now)) deliver(noteEvent(note, now));
+    for (const note of expireMemory(db, now)) deliver(noteEvent(note, now));
     const result = settleMemory(db, {
       askId: parsed.askId,
       helperSession: parsed.helperSession,
@@ -502,19 +499,22 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
   /** The helper's lists, kept newest per kind for its session (POST /domus/lists). Nothing wakes her: the view's count line says what is known. */
   function listsRoute(body: unknown, res: ServerResponse): void {
     const parsed = parseLists(body);
-    storeList(requireDb(), { attachment: parsed.helperSession, kind: parsed.kind, digest: parsed.digest, items: parsed.items, nowMs: nowMs() });
+    storeList(requireDb(), {
+      attachment: parsed.helperSession, kind: parsed.kind, digest: parsed.digest, items: parsed.items, nowMs: nowMs(),
+      ...(parsed.total === undefined ? {} : { total: parsed.total }),
+    });
     send(res, 200, { status: "ok", stored: true });
   }
 
   /**
    * The helper's answer to a catalogue ask: applied once, to the session it was handed to, and only within its two minutes and
-   * while the summoner's stop is off. Her money is read from the newest view of the game, when there is one. The answer wakes her.
+   * whatever the summoner's stop says (it stops acts, not reads). Her money is read from the newest view of the game, when there is one. The answer wakes her.
    */
   function catalogRoute(body: unknown, res: ServerResponse): void {
     const parsed = parseCatalog(body);
     const now = nowMs();
     const db = requireDb();
-    for (const note of isStopOn(options.dir) ? withdrawCatalog(db, now) : expireCatalog(db, now)) deliver(noteEvent(note, now));
+    for (const note of expireCatalog(db, now)) deliver(noteEvent(note, now));
     const thread = gameThreadNow(db, parsed.helperSession);
     const newest = thread === undefined ? undefined : newestObservation(db, thread);
     const self = newest?.payload.portrait && typeof newest.payload.portrait === "object"
@@ -643,9 +643,9 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       checkAttachment(now);
       if (isStopOn(options.dir)) for (const note of withholdForStop(db, now)) deliver(noteEvent(note, now));
       for (const note of expireDue(db, now)) deliver(noteEvent(note, now));
-      for (const note of isStopOn(options.dir) ? withdrawSnapshots(db, now) : expireSnapshots(db, now)) deliver(noteEvent(note, now));
-      for (const note of isStopOn(options.dir) ? withdrawMemory(db, now) : expireMemory(db, now)) deliver(noteEvent(note, now));
-      for (const note of isStopOn(options.dir) ? withdrawCatalog(db, now) : expireCatalog(db, now)) deliver(noteEvent(note, now));
+      for (const note of expireSnapshots(db, now)) deliver(noteEvent(note, now));
+      for (const note of expireMemory(db, now)) deliver(noteEvent(note, now));
+      for (const note of expireCatalog(db, now)) deliver(noteEvent(note, now));
       reviewAttention(db, now, book?.attachedSession(now));
       if (now - lastPruneMs >= PRUNE_MS) {
         lastPruneMs = now;
@@ -755,7 +755,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     },
 
     forget(words) {
-      return db ? forgetText(db, words) : forgetInDomusFile(options.dir, words);
+      return db ? forgetText(db, words, nowMs()) : forgetInDomusFile(options.dir, words, nowMs());
     },
   };
 }

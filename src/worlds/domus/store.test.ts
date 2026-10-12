@@ -110,6 +110,16 @@ describe("heartbeat state", () => {
     expect(again.latest()).toMatchObject({ session: "helper-1", attached: true, probeVersion: "2.30.0" });
   });
 
+  it("keeps the probe version a session named when a later heartbeat does not name one (NATALIS2-6)", () => {
+    const book = new HeartbeatBook(dir);
+    book.record("helper-1", { sentAtMs: NOW, attached: true, probeVersion: "2.40.0" }, NOW);
+    book.record("helper-1", { sentAtMs: NOW + 60_000, attached: true }, NOW + 60_000);
+    expect(book.probeOf("helper-1")).toBe("2.40.0");
+    expect(new HeartbeatBook(dir).probeOf("helper-1")).toBe("2.40.0");
+    book.record("helper-1", { sentAtMs: NOW + 120_000, attached: true, probeVersion: "2.41.0" }, NOW + 120_000);
+    expect(book.probeOf("helper-1")).toBe("2.41.0");
+  });
+
   it("keeps the time the attached value last changed, so 'not attached since' is right", () => {
     const book = new HeartbeatBook(dir);
     book.record("helper-1", { sentAtMs: NOW, attached: true }, NOW);
@@ -166,6 +176,16 @@ describe("forgetText: the game's own words", () => {
     expect(db.prepare("SELECT detail_json FROM act_events").get()).toEqual({ detail_json: "{}" });
     expect(db.prepare("SELECT label FROM plan_steps").get()).toEqual({ label: FORGOTTEN_LINE });
     expect(db.prepare("SELECT reason FROM undos").get()).toEqual({ reason: FORGOTTEN_LINE });
+  });
+
+  it("stamps the withdrawal with the clock it is given, not the wall clock (NATALIS2-15)", () => {
+    db = openDomusDb(dir);
+    seedGameText(db);
+    db.prepare("UPDATE acts SET state = 'requested'").run();
+    forgetText(db, ["lantern", "yard"], 4242);
+    expect(db.prepare("SELECT updated_at_ms FROM acts WHERE act_id = 'act-1'").get()).toEqual({ updated_at_ms: 4242 });
+    expect(db.prepare("SELECT at_ms, received_at_ms FROM act_events WHERE act_id = 'act-1' AND phase = 'expired'").get())
+      .toEqual({ at_ms: 4242, received_at_ms: 4242 });
   });
 
   it("withdraws a requested act whose words it erased, with its waiting steps, and leaves the other waiting act", () => {
@@ -258,7 +278,7 @@ describe("schema migration (version 1 adds acts.words and acts.pulled_at_ms; ver
     expect(columnsOf(db)).toEqual(expect.arrayContaining(["words", "pulled_at_ms"]));
     const kept = db.prepare("SELECT label, words, pulled_at_ms FROM acts WHERE act_id = 'act1'").get() as Row;
     expect(kept).toEqual({ label: "Boil water (Kettle)", words: null, pulled_at_ms: null });
-    expect((db.prepare("PRAGMA user_version").get() as Row).user_version).toBe(2);
+    expect((db.prepare("PRAGMA user_version").get() as Row).user_version).toBe(4);
   });
 
   it("changes nothing when the store is already at version 1 or later, and opening it again is safe", () => {
@@ -266,7 +286,7 @@ describe("schema migration (version 1 adds acts.words and acts.pulled_at_ms; ver
     db.close();
     db = openDomusDb(dir);
     expect(columnsOf(db).filter((name) => name === "words")).toHaveLength(1);
-    expect((db.prepare("PRAGMA user_version").get() as Row).user_version).toBe(2);
+    expect((db.prepare("PRAGMA user_version").get() as Row).user_version).toBe(4);
   });
 
   it("forgets the words the Lar said in a store from before version 1, without opening it through the world", () => {

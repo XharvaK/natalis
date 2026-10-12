@@ -137,7 +137,7 @@ describe("game_go", () => {
   it("holds the turn's one-act slot: a save in the same turn is refused", async () => {
     seedView([]);
     expect(await call("game_go", { place: "h1" }, "t-same")).toMatchObject({ ok: true });
-    expect(await call("game_save", {}, "t-same")).toMatchObject({ ok: false, refused: { code: "one_act_per_turn" } });
+    expect(await call("game_save", {}, "t-same")).toMatchObject({ ok: false, refused: { code: "turn_slot_held" } });
   });
 
   it("is held for another thread's request within a minute, unless knowingly", async () => {
@@ -153,6 +153,9 @@ describe("game_save", () => {
   it("is refused within the fifteen-minute floor, and allowed after it", async () => {
     seedView([]);
     expect(await call("game_save", {}, "t-1")).toMatchObject({ ok: true, data: { verb: "save" } });
+    // The game does the save before the floor is tried again, so no save is still waiting.
+    const first = actRows().find((row) => row.verb === "save") as Row;
+    syncActs(db, { attachment: HELPER, nowMs: clock, events: [{ actId: String(first.act_id), phase: "finished", atMs: clock, detail: { code: "SAVED" } }] });
     clock += 5 * 60_000;
     const soon = await call("game_save", {}, "t-2");
     expect(soon).toMatchObject({ ok: false, refused: { code: "save_too_soon" } });
@@ -162,10 +165,29 @@ describe("game_save", () => {
   });
 });
 
+describe("a second save while the first is still waiting (NATALIS2-10)", () => {
+  it("says the first save has not been done yet, not that the floor refuses it", async () => {
+    seedView([]);
+    expect(await call("game_save", {}, "t-1")).toMatchObject({ ok: true });
+    const again = await call("game_save", {}, "t-2");
+    expect(again).toMatchObject({ ok: false, refused: { code: "save_pending" } });
+    expect(again.refused?.reason).toBe("You already asked the game to save, and it has not been done yet.");
+  });
+
+  it("goes back to the floor's words once the first save is done", async () => {
+    seedView([]);
+    expect(await call("game_save", {}, "t-1")).toMatchObject({ ok: true });
+    const first = actRows().find((row) => row.verb === "save") as Row;
+    syncActs(db, { attachment: HELPER, nowMs: clock, events: [{ actId: String(first.act_id), phase: "finished", atMs: clock, detail: { code: "SAVED" } }] });
+    clock += 60_000;
+    expect(await call("game_save", {}, "t-2")).toMatchObject({ ok: false, refused: { code: "save_too_soon" } });
+  });
+});
+
 describe("plan_event", () => {
   it("maps a day and a time on the game clock, and the guests to sim ids", async () => {
     seedView([]);
-    const receipt = await call("plan_event", { type: "e1", guests: ["p1"], start: { day: "tomorrow", time: "19:30" } });
+    const receipt = await call("plan_event", { type: "e1", guests: ["p1"], start: { day_offset: 1, time: "19:30" } });
     expect(receipt).toMatchObject({ ok: true, data: { verb: "event" } });
     const args = JSON.parse(String((actRows()[0] as Row).args_json)).args;
     expect(args).toEqual({ situation_id: "guid-party", guests: ["4001"], start: { day_offset: 1, hour: 19, minute: 30 } });
@@ -174,7 +196,9 @@ describe("plan_event", () => {
 
   it("refuses a time that is not HH:MM, and an unknown guest", async () => {
     seedView([]);
-    expect(await call("plan_event", { type: "e1", start: { day: "today", time: "7pm" } })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await call("plan_event", { type: "e1", start: { day_offset: 0, time: "7pm" } })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await call("plan_event", { type: "e1", start: { day_offset: 100, time: "19:00" } })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await call("plan_event", { type: "e1", start: { day_offset: -1, time: "19:00" } })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
     expect(await call("plan_event", { type: "e1", guests: ["p7"] })).toMatchObject({ ok: false, refused: { code: "stale_list" } });
   });
 });
@@ -182,26 +206,23 @@ describe("plan_event", () => {
 describe("home edits", () => {
   const shelfPlace = { on: "t9" };
 
-  it("lets a turn make six home edits, not held by the one-act rule, and refuses the seventh", async () => {
+  it("has no cap on home edits in a turn: the seventh and the tenth are accepted, not held by the one-act rule", async () => {
     seedView([]);
-    await call("game_go", { place: "h1" }, "t-home");
-    for (let index = 1; index <= 6; index++) {
-      expect(await call("game_buy", { item: `c${index}`, place: shelfPlace }, "t-home")).toMatchObject({ ok: true, data: { verb: "buy" } });
+    for (let index = 1; index <= 10; index++) {
+      // Eight catalogue items are seen (c1 to c8); the ninth and tenth buys reuse the first two.
+      const item = `c${((index - 1) % 8) + 1}`;
+      expect(await call("game_buy", { item, place: shelfPlace }, "t-home")).toMatchObject({ ok: true, data: { verb: "buy" } });
     }
-    expect(await call("game_buy", { item: "c7", place: shelfPlace }, "t-home")).toMatchObject({ ok: false, refused: { code: "home_edits_full" } });
+    expect(actRows().filter((row) => row.verb === "buy")).toHaveLength(10);
   });
 
-  it("does not count an edit the game or the helper refused, so a refused one frees its slot", async () => {
+  it("keeps home edits outside travel's slot: edits follow one another, a go after edits, edits after a go, and no second go (Q-3)", async () => {
     seedView([]);
-    for (let index = 1; index <= 6; index++) {
-      expect(await call("game_buy", { item: `c${index}`, place: shelfPlace }, "t-refused")).toMatchObject({ ok: true });
-    }
-    expect(await call("game_buy", { item: "c7", place: shelfPlace }, "t-refused")).toMatchObject({ ok: false, refused: { code: "home_edits_full" } });
-    const pulled = syncActs(db, { attachment: HELPER, events: [], nowMs: clock });
-    const refusedAct = pulled.acts[0]?.act_id as string;
-    syncActs(db, { attachment: HELPER, nowMs: clock + 1000, events: [{ actId: refusedAct, phase: "rejected", atMs: clock, detail: { code: "NO_SPOT" } }] });
-    expect(await call("game_buy", { item: "c7", place: shelfPlace }, "t-refused")).toMatchObject({ ok: true });
-    expect(await call("game_buy", { item: "c8", place: shelfPlace }, "t-refused")).toMatchObject({ ok: false, refused: { code: "home_edits_full" } });
+    expect(await call("game_buy", { item: "c1", place: shelfPlace }, "t-slot")).toMatchObject({ ok: true });
+    expect(await call("game_buy", { item: "c2", place: shelfPlace }, "t-slot")).toMatchObject({ ok: true });
+    expect(await call("game_go", { place: "h1" }, "t-slot")).toMatchObject({ ok: true });
+    expect(await call("game_buy", { item: "c3", place: shelfPlace }, "t-slot")).toMatchObject({ ok: true });
+    expect(await call("game_go", { place: "h1" }, "t-slot")).toMatchObject({ ok: false, refused: { code: "turn_slot_held" } });
   });
 
   it("buys a catalogue item beside a thing, with its label in the game's words", async () => {
@@ -282,5 +303,50 @@ describe("the sync hands a verb act to the helper, and its result comes back as 
     expect(await acting({ option: "a2", sim: "p1" }, "t-v")).toMatchObject({ ok: true });
     const sync = syncActs(db, { attachment: HELPER, events: [], nowMs: clock });
     expect(sync.acts).toEqual([expect.objectContaining({ guid64: "902", sim_id: "4001" })]);
+  });
+});
+
+describe("the tool schemas (NATALIS2-9)", () => {
+  it("gives plan_event's start a top-level type, so a validator that needs one still accepts the tool", () => {
+    const start = tool("plan_event").spec.parameters.properties.start as Record<string, unknown>;
+    expect(start.type).toEqual(["string", "object"]);
+    expect(start).not.toHaveProperty("oneOf");
+  });
+});
+
+describe("the summoner's stop refuses the verbs (Q-j)", () => {
+  it("refuses game_go, a save and a home edit while the stop is on, and asks nothing", async () => {
+    seedView([]);
+    const stoppedGame = (): GameContext => ({ ...game(), stopped: () => true });
+    const run = (name: string, args: Record<string, unknown>) => verbTools(stoppedGame).find((item) => item.spec.name === name)!
+      .run(args, { thread: THREAD, turnId: "t-stop", nowMs: clock } as ToolContext);
+    expect(await run("game_go", { place: "h1" })).toMatchObject({ ok: false, refused: { code: "stopped" } });
+    expect(await run("game_save", {})).toMatchObject({ ok: false, refused: { code: "stopped" } });
+    expect(await run("game_buy", { item: "c1", place: { on: "t9" } })).toMatchObject({ ok: false, refused: { code: "stopped" } });
+    expect(actRows()).toEqual([]);
+  });
+});
+
+describe("plan_event's limits: a day up to 99 days ahead, and up to 64 guests (Q-d)", () => {
+  it("takes a day offset from 0 to 99, and words it by its day", async () => {
+    seedView([]);
+    expect(await call("plan_event", { type: "e1", start: { day_offset: 99, time: "08:05" } }, "t-d1")).toMatchObject({ ok: true });
+    expect(String((actRows()[0] as Row).label)).toBe("plan Test Party (e1) at 08:05 in 99 days");
+    expect(JSON.parse(String((actRows()[0] as Row).args_json)).args.start).toEqual({ day_offset: 99, hour: 8, minute: 5 });
+  });
+
+  it("takes up to 64 guests and refuses a 65th", async () => {
+    seedView([]);
+    const many = Array.from({ length: 64 }, () => "p1");
+    expect(await call("plan_event", { type: "e1", guests: many }, "t-g1")).toMatchObject({ ok: true });
+    expect(await call("plan_event", { type: "e1", guests: [...many, "p1"] }, "t-g2")).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+  });
+
+  it("states the new limits in the tool schema", () => {
+    const properties = tool("plan_event").spec.parameters.properties as Record<string, Record<string, unknown>>;
+    expect(properties.guests?.maxItems).toBe(64);
+    expect(JSON.stringify(properties.start)).toContain("day_offset");
+    expect(JSON.stringify(properties.start)).not.toContain("tomorrow");
+    expect(properties.start?.properties).toEqual({ day_offset: { type: "integer", minimum: 0, maximum: 99 }, time: { type: "string" } });
   });
 });

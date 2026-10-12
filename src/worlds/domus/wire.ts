@@ -31,6 +31,12 @@ export const OPTIONS_MAX = 160;
 export const OPTIONS_BYTES = 32 * 1024;
 /** A room's name, and how many rooms an options_cut may name. */
 export const ROOM_MAX = 64;
+/** An option object's own lines, in characters: a refusal (the helper cuts it at 240), a left-out act (at most 160); states (at most four, 40 each). */
+const REFUSED_LINE_MAX = 240;
+const LEFT_OUT_LINE_MAX = 160;
+const LEFT_OUT_MAX = 12;
+const STATE_MAX = 40;
+const OPTION_STATES_MAX = 4;
 const CUT_ROOMS_MAX = 64;
 /** The helper's token must be at least this many bytes. */
 export const MIN_TOKEN_BYTES = 32;
@@ -143,7 +149,18 @@ function optionObject(item: Record<string, unknown>): Record<string, unknown> {
   if (item.room !== undefined) textOf(item.room, 1, ROOM_MAX);
   if (item.near !== undefined && typeof item.near !== "boolean") fail(400, "invalid_body");
   if (item.person !== undefined && typeof item.person !== "boolean") fail(400, "invalid_body");
+  // The game's words for an option object: its refusals (the helper caps them), its states (at most four) and the phone
+  // acts it left out (at most twelve). Each is a list of text; a wrong shape is refused.
+  if (item.refused !== undefined) textListOf(item.refused, Infinity, REFUSED_LINE_MAX);
+  if (item.states !== undefined) textListOf(item.states, OPTION_STATES_MAX, STATE_MAX);
+  if (item.left_out !== undefined) textListOf(item.left_out, LEFT_OUT_MAX, LEFT_OUT_LINE_MAX);
   return item;
+}
+
+/** A list of text: at most max items, each from 1 to size characters. Anything else is a wrong shape (400). */
+function textListOf(value: unknown, max: number, size: number): string[] {
+  if (!Array.isArray(value) || value.length > max) fail(400, "invalid_body");
+  return value.map((text) => textOf(text, 1, size));
 }
 
 /** options_cut: a whole count of the objects left out, and the rooms they are in (names, at most CUT_ROOMS_MAX). */
@@ -246,10 +263,10 @@ const UNDO_KEYS = new Set(["v", "world", "branch", "session", "after_source_time
 
 export type ParsedUndo = { world: string; branch: string; session: string; afterSourceTimeMs: number; reason: string };
 
-/** POST /domus/undo. */
 /** The widest time a JavaScript Date holds, either side of the epoch, in milliseconds. */
 const DATE_RANGE_MS = 8.64e15;
 
+/** POST /domus/undo. */
 export function parseUndo(body: unknown): ParsedUndo {
   if (!isRecord(body)) fail(400, "invalid_body");
   for (const key of Object.keys(body)) if (!UNDO_KEYS.has(key)) fail(400, "invalid_body");
@@ -449,9 +466,9 @@ const LIST_ITEM_KEYS: Readonly<Record<ListKind, ReadonlySet<string>>> = {
 };
 const PLACE_KINDS: ReadonlySet<string> = new Set(["home", "household", "venue"]);
 const REF_PATTERN = /^[a-z][0-9]{1,8}$/;
-const LISTS_KEYS = new Set(["v", "helper_session", "kind", "digest", "items"]);
+const LISTS_KEYS = new Set(["v", "helper_session", "kind", "digest", "items", "total"]);
 
-export type ParsedLists = { helperSession: string; kind: ListKind; digest: string; items: Record<string, unknown>[] };
+export type ParsedLists = { helperSession: string; kind: ListKind; digest: string; items: Record<string, unknown>[]; total?: number };
 
 /** A whole number of any sign, as the game sends a value or a cost. */
 function intOf(value: unknown): number {
@@ -505,11 +522,16 @@ export function parseLists(body: unknown): ParsedLists {
   const items = body.items.map((item) => listItem(listKind, item));
   // Two items under one ref would leave the second unreachable, so a list that repeats a ref is refused.
   if (new Set(items.map((item) => item.ref)).size !== items.length) fail(400, "invalid_body");
+  // The game's whole count, when it counted more than it sent (a things list is cut): a whole number, never below the items.
+  if ("total" in body && (typeof body.total !== "number" || !Number.isSafeInteger(body.total) || body.total < items.length)) {
+    fail(400, "invalid_body");
+  }
   return {
     helperSession: textOf(body.helper_session, 1, 64),
     kind: listKind,
     digest,
     items,
+    ...("total" in body ? { total: body.total as number } : {}),
   };
 }
 

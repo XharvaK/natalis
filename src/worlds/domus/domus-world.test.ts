@@ -304,7 +304,7 @@ describe("acts: the Lar asks, the helper pulls, the game reports", () => {
     const actId = acts[0]?.act_id;
     expect(await call("/domus/acts/sync", { v: 1, helper_session: "helper-2", events: [] })).toMatchObject({ body: { acts: [] } });
     // Another session's sync holds the pulled act as unknown, as a guess (SESSION_ENDED): helper-1's report still settles it.
-    expect(events.map((event) => event.text)).toEqual([expect.stringContaining("nothing says how it ended (SESSION_ENDED)")]);
+    expect(events.map((event) => event.text)).toEqual([expect.stringContaining("how it ended is not known (SESSION_ENDED)")]);
     events = [];
     const reported = await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [
       { act_id: actId, phase: "received", at_ms: T0 + 10 },
@@ -538,14 +538,17 @@ describe("game pictures: the Lar asks, the helper takes, the shelf keeps", () =>
     expect(await askForPicture()).toMatchObject({ ok: true });
   });
 
-  it("withdraws a waiting request when the summoner's stop goes on, and tells the Lar without a wake", async () => {
+  it("hands a waiting picture to the game while the summoner's stop is on: a picture is a read (Q-j)", async () => {
     await attach();
     await askForPicture();
     writeStop(dir, "test");
-    expect(await pendingSnapshotId()).toBe("");
-    expect(events.map((event) => [event.text, event.wake])).toEqual([
-      ["Your picture request was withdrawn: your summoner's emergency stop is on.", false],
-    ]);
+    expect(await pendingSnapshotId()).not.toBe("");
+    expect(events).toEqual([]);
+  });
+
+  it("marks the game's read tools, and only those, as safe while the stop is on (Q-j)", () => {
+    const safe = (world?.tools() ?? []).filter((item) => item.spec.safeWhenStopped === true).map((item) => item.spec.name).sort();
+    expect(safe).toEqual(["game_catalog", "game_list", "game_look", "game_memory", "game_snapshot"]);
   });
 });
 
@@ -556,7 +559,6 @@ describe("the world's surface", () => {
       "game_act", "game_snapshot", "game_attention", "game_look", "game_overlay_say", "game_memory", "game_list", "game_catalog",
       "game_go", "game_save", "plan_event", "game_buy", "game_place", "game_move", "game_sell",
     ]);
-    expect(world?.tools().map((item) => item.spec.safeWhenStopped)).toEqual(Array(15).fill(undefined));
     expect(world?.about?.()).toBe("The Sims 4 (Domus): your household's game, at domus:<world>, while your summoner's helper is attached.");
     expect(await world?.say("domus:slot3", "hello")).toMatchObject({ ok: false, refused: { code: "no_words" } });
   });
@@ -927,14 +929,13 @@ describe("game memory: she asks the game, the helper answers from its record", (
     expect(events.at(-1)).toMatchObject({ text: "The game did not answer about \"Brew Glimmer\".", source: "body", wake: false });
   });
 
-  it("withdraws her open question when the summoner's stop is on, and hands over nothing while it is on", async () => {
+  it("keeps her open question and hands it over while the summoner's stop is on: the stop refuses acts only (Q-j)", async () => {
     await attach();
     await askMemory("Brew Glimmer");
     writeStop(dir, "test");
     const reply = await sync();
-    expect(reply.body.memory).toEqual([]);
-    expect(events.at(-1)).toMatchObject({ text: "Your question to the game about \"Brew Glimmer\" was withdrawn: your summoner's emergency stop is on.", wake: false });
-    expect(await askMemory("Pim")).toMatchObject({ ok: false, refused: { code: "stopped" } });
+    expect(reply.body.memory).toEqual([expect.objectContaining({ about: "Brew Glimmer" })]);
+    expect(events.some((event) => String(event.text).includes("was withdrawn: your summoner's emergency stop is on"))).toBe(false);
   });
 
   it("refuses a second question on the same thread while one is open", async () => {

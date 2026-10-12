@@ -91,7 +91,7 @@ export function requestSnapshot(
 
 /**
  * The requests the helper may take now: open for its session and within their time, in the order asked. The caller
- * expires the stale ones first (expireSnapshots) and answers with nothing while the stop is on.
+ * expires the stale ones first (expireSnapshots). A picture is a read, so the stop does not hold it (Q-j).
  */
 export function openSnapshots(db: DatabaseSync, input: { helperSession: string; nowMs: number }): Array<{ snapshot_id: string }> {
   return (db.prepare("SELECT snapshot_id FROM snapshots WHERE attachment = ? AND status = 'requested' AND requested_at_ms > ? ORDER BY requested_at_ms, snapshot_id")
@@ -112,18 +112,6 @@ export function expireSnapshots(db: DatabaseSync, nowMs: number): ThreadNote[] {
   }));
 }
 
-/** While the stop is on, requests still waiting are withdrawn: the helper is not handed them. The Lar is told, without a wake. */
-export function withdrawSnapshots(db: DatabaseSync, nowMs: number): ThreadNote[] {
-  const waiting = db.prepare("SELECT snapshot_id, thread FROM snapshots WHERE status = 'requested'").all() as Row[];
-  if (waiting.length === 0) return [];
-  db.prepare("UPDATE snapshots SET status = 'withdrawn', reason = 'stopped', settled_at_ms = ? WHERE status = 'requested'").run(nowMs);
-  return waiting.map((row) => ({
-    thread: String(row.thread),
-    text: "Your picture request was withdrawn: your summoner's emergency stop is on.",
-    data: { snapshotId: String(row.snapshot_id), status: "withdrawn" },
-    wake: false,
-  }));
-}
 
 /**
  * Checks one answer of the helper against v1: the request must exist, be open, and be for this session. A picture is
@@ -183,6 +171,8 @@ export function gameSnapshotTool(open: () => SnapshotContext): Tool {
   return {
     spec: {
       name: "game_snapshot",
+      // Q-j (the User, 2026-10-12): the summoner's stop refuses acts, not reads; this one only reads the game.
+      safeWhenStopped: true,
       description:
         "Ask for one picture of the game as it looks now. The game takes it on its next sync, within ten minutes, and it is kept on your shelf as a picture id. Only one request is open at a time for this game. Nothing is sent anywhere by this: a picture comes to your shelf for you to look at, keep or send.",
       parameters: { type: "object", properties: {} },
