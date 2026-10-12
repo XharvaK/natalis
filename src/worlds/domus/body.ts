@@ -112,7 +112,9 @@ function companyLines(company: Record_[]): string[] {
     const said = textOrUndefined(item.said);
     // W12 (E2): her role with them (a neighbour, a courier) and what the game holds between them, after the rest.
     const role = wordOf(item.role);
-    const extra = [role, ...relationWords(item.relationship)].filter((part): part is string => part !== undefined);
+    // W13: a visitor waiting at her door (the company entry's waiting flag, from the visitor's situation job).
+    const waiting = item.waiting === true ? "waiting at your door" : undefined;
+    const extra = [role, waiting, ...relationWords(item.relationship)].filter((part): part is string => part !== undefined);
     if (said !== undefined) {
       // SS4-v3: what this Sim is saying or doing, in the helper's sentence, in brackets after the name (no dashes: she copies them).
       return `${name} (${away === undefined ? "" : `${away} m away: `}${withoutStop(said)}${extra.length ? `; ${extra.join(", ")}` : ""})`;
@@ -217,6 +219,13 @@ function moneyLine(funds: unknown): string | undefined {
   return amount === undefined ? undefined : `Money: ${amount < 0 ? "-" : ""}§${grouped(Math.abs(amount))}.`;
 }
 
+/** "at work until 17:00" from the game minute her shift ends (until_min); "at work now" when the game did not say when. */
+function atWorkWords(untilMin: unknown): string {
+  const minute = wholeOf(untilMin);
+  if (minute === undefined || minute < 0 || minute > 1439) return "; at work now";
+  return `; at work until ${twoDigits(Math.floor(minute / 60))}:${twoDigits(minute % 60)}`;
+}
+
 /** Her jobs, one line each; an empty list is "No job."; an absent list says nothing. */
 function jobLines(jobs: unknown): string[] {
   if (!Array.isArray(jobs)) return [];
@@ -227,7 +236,7 @@ function jobLines(jobs: unknown): string[] {
     const name = title !== undefined && job !== undefined ? `${title} (${job})` : title ?? job;
     if (name === undefined) return undefined;
     const level = wholeOf(item.level);
-    return `Job: ${name}${level === undefined ? "" : `, level ${level}`}${item.at_work === true ? "; at work now" : ""}.`;
+    return `Job: ${name}${level === undefined ? "" : `, level ${level}`}${item.at_work === true ? atWorkWords(item.until_min) : ""}.`;
   }).filter((item): item is string => item !== undefined);
 }
 

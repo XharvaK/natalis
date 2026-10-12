@@ -199,6 +199,8 @@ export interface Entity {
   idle(): Promise<void>;
   readonly river: River;
   readonly notebook: Notebook;
+  /** The time of the summoner's last message, or undefined when there is none (the worlds read it). */
+  lastOwnerMs?(): number | undefined;
 }
 
 export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
@@ -739,6 +741,10 @@ class Runtime implements Entity {
    */
   private seenSeqOf(thread: string): number {
     return Object.hasOwn(this.state.threads, thread) ? (this.state.threads[thread]?.seenSeq ?? 0) : this.state.lastSeq;
+  }
+
+  lastOwnerMs(): number | undefined {
+    return this.state.lastOwnerMs;
   }
 
   stop(): Promise<void> {

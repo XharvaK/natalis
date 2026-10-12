@@ -13,6 +13,10 @@ import { hasDayRecord, localStamp } from "./day-record.js";
 import { gameLookTool, type LookContext } from "./look.js";
 import { gameOverlaySayTool, type OverlayContext, overlayItems } from "./overlay.js";
 import { expireMemory, gameMemoryTool, handMemory, type MemoryContext, settleMemory, withdrawMemory } from "./memory.js";
+import { expireCatalog, gameCatalogTool, handCatalog, settleCatalog, withdrawCatalog } from "./catalog.js";
+import { gameListTool, listCountLine, listDigests, storeList } from "./lists.js";
+import { verbTools } from "./verbs.js";
+import { type GameContext } from "./tool-context.js";
 import { isStopOn } from "../../entity/stop.js";
 import { expireDue, pendingCounts, syncActs, type ThreadNote, withdrawUndone, withholdForStop } from "./acts.js";
 import { choicesSignature, optionsOf, renderView, unchangedLookLine, viewBrief } from "./options.js";
@@ -21,13 +25,13 @@ import {
   settleTaken, type SnapshotContext, withdrawSnapshots,
 } from "./snapshot.js";
 import {
-  admitObservation, forgetInDomusFile, forgetText, HeartbeatBook, inTransaction, markSpanUndoneIn, openDomusDb, pruneObservations,
-  takeLook, takeLookAskers, writeAttention,
+  admitObservation, forgetInDomusFile, forgetText, HeartbeatBook, inTransaction, markSpanUndoneIn, newestObservation, openDomusDb,
+  pruneObservations, gameThreadNow, takeLook, takeLookAskers, writeAttention,
 } from "./store.js";
 import {
-  BODY_LIMIT, canonicalJson, DOMUS_WORLD_ID, gameThreadOf, MEMORY_BODY_LIMIT, MIN_TOKEN_BYTES, observationDigest, parseActSync, parseFeed,
-  parseHeartbeat, parseMemory, parseObservation, parseSnapshot, parseUndo, type ParsedObservation, SNAPSHOT_BODY_LIMIT, tokenProblem,
-  tokensEqual, WireError,
+  BODY_LIMIT, canonicalJson, DOMUS_WORLD_ID, gameThreadOf, LISTS_BODY_LIMIT, MEMORY_BODY_LIMIT, MIN_TOKEN_BYTES, observationDigest, parseActSync,
+  parseCatalog, parseFeed, parseHeartbeat, parseLists, parseMemory, parseObservation, parseSnapshot, parseUndo, type ParsedObservation,
+  SNAPSHOT_BODY_LIMIT, tokenProblem, tokensEqual, WireError,
 } from "./wire.js";
 
 export const DOMUS_DEFAULT_HOST = "127.0.0.1";
@@ -50,6 +54,8 @@ export type DomusWorldOptions = {
   otherTokens?: readonly string[];
   /** The Lar's zone: a quiet's time without an offset is read in it, and shown in it. The host's zone when not given. */
   timeZone?: string;
+  /** The time of the summoner's last message (the runtime's lastOwnerMs), or undefined when there is none. */
+  lastOwnerMs?: () => number | undefined;
 };
 
 export interface DomusWorld extends World {
@@ -67,6 +73,7 @@ const TOKEN_MESSAGE: Record<"missing" | "too_short" | "matches_other", string> =
 
 const ROUTES = new Set([
   "/domus/observation", "/domus/heartbeat", "/domus/acts/sync", "/domus/snapshot", "/domus/feed", "/domus/undo", "/domus/memory",
+  "/domus/lists", "/domus/catalog",
 ]);
 
 function send(res: ServerResponse, status: number, body: unknown): void {
@@ -132,7 +139,7 @@ export const GAME_VIEW = "domus";
  */
 function observationEvent(
   parsed: ParsedObservation, attachment: AttachmentNow, lastChoices: string | undefined, attention: { line?: string; wake: boolean },
-  onThread?: string,
+  onThread?: string, counts?: string,
 ): WorldEvent {
   const gameThread = gameThreadOf(parsed.fields.world);
   const thread = onThread ?? gameThread;
@@ -155,7 +162,7 @@ function observationEvent(
     source: "outside",
     text: renderView({
       world: alias, percepts: parsed.percepts, options, portrait: parsed.normalized.portrait, attachment, lastChoices, optionsCut: parsed.optionsCut,
-      attention: attention.line, day: parsed.normalized.day,
+      attention: attention.line, day: parsed.normalized.day, counts,
     }),
     data,
     atMs: parsed.fields.sourceTimeMs,
@@ -232,6 +239,23 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       nowMs,
       attachedSession: (at: number) => heartbeats.attachedSession(at),
       lastAttachedMs: () => heartbeats.lastAttachedAt(),
+      probeOf: (session: string) => heartbeats.probeOf(session),
+    };
+  };
+
+  /** What the W13 tools read on each call (lists, catalogue, verbs): null while the world is not running. */
+  const openGame = (): GameContext => {
+    const current = db;
+    const heartbeats = book;
+    if (!current || !heartbeats) return null;
+    return {
+      db: current,
+      nowMs,
+      stopped: () => isStopOn(options.dir),
+      attachedSession: (at: number) => heartbeats.attachedSession(at),
+      lastAttachedMs: () => heartbeats.lastAttachedAt(),
+      probeOf: (session: string) => heartbeats.probeOf(session),
+      ownerMs: () => options.lastOwnerMs?.(),
     };
   };
 
@@ -369,15 +393,16 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
         lastChoices: choicesShown.get(thread),
         portrait: parsed.normalized.portrait, hasDay: parsed.normalized.day !== undefined,
       });
+      const counts = listCountLine(requireDb(), parsed.fields.attachment);
       deliver(unchanged === undefined
-        ? observationEvent(parsed, attachmentAt(now), choicesShown.get(thread), attention)
+        ? observationEvent(parsed, attachmentAt(now), choicesShown.get(thread), attention, undefined, counts)
         : unchangedLookEvent(parsed, thread, unchanged, attention.wake));
       choicesShown.set(thread, choicesSignature(optionsOf(parsed.options ?? [])));
       // A look view answers the looks asked for this helper session, from any thread: each thread that asked hears it too.
       if (parsed.percepts.some((item) => item.kind === "look")) {
         for (const asker of takeLookAskers(requireDb(), parsed.fields.attachment, now)) {
           if (asker === thread) continue;
-          deliver(observationEvent(parsed, attachmentAt(now), undefined, { wake: true }, asker));
+          deliver(observationEvent(parsed, attachmentAt(now), undefined, { wake: true }, asker, counts));
         }
       }
     }
@@ -404,17 +429,23 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     const withheld = stopped ? withholdForStop(requireDb(), now) : [];
     const pictures = stopped ? withdrawSnapshots(requireDb(), now) : expireSnapshots(requireDb(), now);
     const questions = stopped ? withdrawMemory(requireDb(), now) : expireMemory(requireDb(), now);
+    const catalogAsks = stopped ? withdrawCatalog(requireDb(), now) : expireCatalog(requireDb(), now);
     const result = syncActs(requireDb(), { attachment: parsed.helperSession, events: parsed.events, nowMs: now });
     const snapshots = stopped ? [] : openSnapshots(requireDb(), { helperSession: parsed.helperSession, nowMs: now });
     // The questions owed are handed to this helper, which answers them on its own time (POST /domus/memory).
     const memory = stopped ? [] : handMemory(requireDb(), { helperSession: parsed.helperSession, nowMs: now });
+    // W13: the catalogue asks owed (once each), and the digests of the lists she holds, so the helper resends what changed.
+    const catalog = stopped ? [] : handCatalog(requireDb(), { helperSession: parsed.helperSession, nowMs: now });
+    const lists = listDigests(requireDb(), parsed.helperSession);
     reviewAttention(requireDb(), now, requireBook().attachedSession(now));
     const look = stopped ? false : takeLook(requireDb(), parsed.helperSession, now);
     for (const note of withheld) deliver(noteEvent(note, now));
     for (const note of pictures) deliver(noteEvent(note, now));
     for (const note of questions) deliver(noteEvent(note, now));
+    for (const note of catalogAsks) deliver(noteEvent(note, now));
     send(res, 200, {
-      status: "ok", applied: result.applied, acts: result.acts, planned: result.planned, snapshots, memory, ...(look ? { look: true } : {}),
+      status: "ok", applied: result.applied, acts: result.acts, planned: result.planned, snapshots, memory, catalog, lists,
+      ...(look ? { look: true } : {}),
     });
     for (const note of result.notes) deliver(noteEvent(note, now));
   }
@@ -459,6 +490,39 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       facts: parsed.facts,
       nowMs: now,
       stamp: (ms) => localStamp(ms, options.timeZone),
+    });
+    send(res, 200, { status: "ok", applied: result.applied });
+    if (result.applied) deliver(answerEvent(result.note, now));
+  }
+
+  /** The helper's lists, kept newest per kind for its session (POST /domus/lists). Nothing wakes her: the view's count line says what is known. */
+  function listsRoute(body: unknown, res: ServerResponse): void {
+    const parsed = parseLists(body);
+    storeList(requireDb(), { attachment: parsed.helperSession, kind: parsed.kind, digest: parsed.digest, items: parsed.items, nowMs: nowMs() });
+    send(res, 200, { status: "ok", stored: true });
+  }
+
+  /**
+   * The helper's answer to a catalogue ask: applied once, to the session it was handed to, and only within its two minutes and
+   * while the summoner's stop is off. Her money is read from the newest view of the game, when there is one. The answer wakes her.
+   */
+  function catalogRoute(body: unknown, res: ServerResponse): void {
+    const parsed = parseCatalog(body);
+    const now = nowMs();
+    const db = requireDb();
+    for (const note of isStopOn(options.dir) ? withdrawCatalog(db, now) : expireCatalog(db, now)) deliver(noteEvent(note, now));
+    const thread = gameThreadNow(db, parsed.helperSession);
+    const newest = thread === undefined ? undefined : newestObservation(db, thread);
+    const self = newest?.payload.portrait && typeof newest.payload.portrait === "object"
+      ? (newest.payload.portrait as Record<string, unknown>).self : undefined;
+    const funds = self && typeof self === "object" ? (self as Record<string, unknown>).funds : undefined;
+    const result = settleCatalog(db, {
+      askId: parsed.askId,
+      helperSession: parsed.helperSession,
+      matched: parsed.matched,
+      items: parsed.items,
+      ...(typeof funds === "number" && Number.isSafeInteger(funds) ? { funds } : {}),
+      nowMs: now,
     });
     send(res, 200, { status: "ok", applied: result.applied });
     if (result.applied) deliver(answerEvent(result.note, now));
@@ -515,7 +579,8 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
         send(res, 404, { error: "not_found" });
         return;
       }
-      const raw = await readBody(req, path === "/domus/snapshot" ? SNAPSHOT_BODY_LIMIT : path === "/domus/memory" ? MEMORY_BODY_LIMIT : BODY_LIMIT);
+      const raw = await readBody(req, path === "/domus/snapshot" ? SNAPSHOT_BODY_LIMIT : path === "/domus/memory" ? MEMORY_BODY_LIMIT
+        : path === "/domus/lists" ? LISTS_BODY_LIMIT : BODY_LIMIT);
       if (raw === "too_large") {
         send(res, 413, { error: "payload_too_large" });
         return;
@@ -534,6 +599,8 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
         }
         case "/domus/snapshot": return snapshotRoute(body, res);
         case "/domus/memory": return memoryRoute(body, res);
+        case "/domus/lists": return listsRoute(body, res);
+        case "/domus/catalog": return catalogRoute(body, res);
       }
     } catch (error) {
       if (error instanceof WireError) {
@@ -574,6 +641,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       for (const note of expireDue(db, now)) deliver(noteEvent(note, now));
       for (const note of isStopOn(options.dir) ? withdrawSnapshots(db, now) : expireSnapshots(db, now)) deliver(noteEvent(note, now));
       for (const note of isStopOn(options.dir) ? withdrawMemory(db, now) : expireMemory(db, now)) deliver(noteEvent(note, now));
+      for (const note of isStopOn(options.dir) ? withdrawCatalog(db, now) : expireCatalog(db, now)) deliver(noteEvent(note, now));
       reviewAttention(db, now, book?.attachedSession(now));
       if (now - lastPruneMs >= PRUNE_MS) {
         lastPruneMs = now;
@@ -653,7 +721,8 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     tools() {
       return [
         gameActTool(open), gameSnapshotTool(openSnapshot), gameAttentionTool(openAttention), gameLookTool(openLook),
-        gameOverlaySayTool(openOverlay), gameMemoryTool(openMemory),
+        gameOverlaySayTool(openOverlay), gameMemoryTool(openMemory), gameListTool(openGame), gameCatalogTool(openGame),
+        ...verbTools(openGame),
       ];
     },
 

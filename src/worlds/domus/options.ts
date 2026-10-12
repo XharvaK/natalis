@@ -105,6 +105,12 @@ function sentence(value: unknown): string | undefined {
 export function perceptSentence(percept: Percept): string | undefined {
   const facts = percept.facts;
   switch (percept.kind) {
+    case "phone": {
+      // W13: a text or a call, by the name of the one who sent it (the game's name, never a guess).
+      const from = textOrUndefined(facts.from);
+      if (!from) return undefined;
+      return `${from} ${facts.kind === "call" ? "is calling you" : "texted you"}.`;
+    }
     case "need": {
       const subject = textOrUndefined(facts.subject);
       const band = textOrUndefined(facts.band);
@@ -221,13 +227,15 @@ export function renderView(input: {
   world: string; percepts: readonly Percept[]; options: readonly OptionObject[]; portrait?: unknown; attachment?: AttachmentNow;
   /** Her attention, the first line of the body block (see attentionLine). */
   attention?: string;
+  /** The count line of her lists (see listCountLine), shown after her money. */
+  counts?: string;
   /** The game's record of the day, when the view carries one. Its section comes after the body block (see day-record.ts). */
   day?: unknown;
   /** The choices of the last view rendered on this thread (see choicesSignature), or undefined when there was none. */
   lastChoices?: string;
   optionsCut?: OptionsCut;
 }): string {
-  const body = bodyLines(input.portrait, input.attachment, input.attention);
+  const body = withCountLine(bodyLines(input.portrait, input.attachment, input.attention), input.counts);
   const record = dayRecordLines(input.day);
   const head = [
     ...(body.length ? ["Your body now:", ...body, ""] : []),
@@ -272,6 +280,14 @@ export function renderView(input: {
   }
   if (cut) lines.push(cut);
   return lines.join("\n");
+}
+
+/** The count line goes right after her money line; with no money line, it closes the body block. */
+function withCountLine(lines: string[], counts: string | undefined): string[] {
+  if (counts === undefined) return lines;
+  const money = lines.findIndex((line) => line.startsWith("Money: "));
+  if (money === -1) return [...lines, counts];
+  return [...lines.slice(0, money + 1), counts, ...lines.slice(money + 1)];
 }
 
 /** Near her: the helper's near flag, or a where that starts "here" (what older helpers send). */

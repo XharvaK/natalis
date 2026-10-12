@@ -56,15 +56,23 @@ export function wakesFor(mode: AttentionMode, view: ViewFacts): boolean {
   if (view.percepts.some((item) => item.kind === "look")) return true;
   if (view.percepts.some((item) => item.kind === "env" && item.facts["bucket"] === "asked")) return true;
   if (heldForHer(view.portrait)) return true;
-  // The helper sends a need's percept when its band changes, so this one is the change into distress (D1).
-  if (view.percepts.some((item) => item.kind === "need" && item.facts["band"] === "distress")) return true;
+  // The helper sends a need's percept when its band changes, so this one is the change into distress (D1). At work the
+  // game looks after her needs in the rabbit hole, so a distress does not wake her then (W13: quiet at work).
+  if (!atWorkNow(view.portrait) && view.percepts.some((item) => item.kind === "need" && item.facts["band"] === "distress")) return true;
   if (mode === "every_change") return true;
   if (mode === "quiet") return false;
   if (view.firstAfterAttach || view.dayRecord) return true;
   return view.percepts.some((item) =>
     (item.kind === "social" && item.facts["bucket"] === "addressed")
     || (item.kind === "presence" && (item.facts["bucket"] === "arrived" || item.facts["bucket"] === "on_lot"))
+    || item.kind === "phone"
     || item.kind === "sleep_onset");
+}
+
+/** Whether any of her jobs in the portrait is at work now (the job's at_work flag). */
+function atWorkNow(portrait: unknown): boolean {
+  const jobs = asRecord(asRecord(portrait)?.self)?.jobs;
+  return Array.isArray(jobs) && jobs.some((job) => asRecord(job)?.at_work === true);
 }
 
 function localParts(ms: number, timeZone: string | undefined): Record<string, string> {

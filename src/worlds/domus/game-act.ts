@@ -7,10 +7,12 @@ import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import { answerFor, isAnswerClaim, type AnswerClaim, type Found } from "./answers.js";
 import { actRequestedMeanwhile, PLAN_MORE, requestAct } from "./acts.js";
 import { findOption, labelOf, optionsOf, refsOf } from "./options.js";
+import { findListed } from "./lists.js";
 import { gameThreadNow, newestObservation, STALE_VIEW_CODE, STALE_VIEW_REASON } from "./store.js";
+import { PROBE_NEEDED, probeAtLeast, staleRef } from "./tool-context.js";
 
 const REF = /^[A-Za-z0-9._-]{1,16}$/;
-const ARG_KEYS = new Set(["option", "then", "for_summoner", "knowingly", "answer", "expect", "expect_then", "words"]);
+const ARG_KEYS = new Set(["option", "then", "for_summoner", "knowingly", "answer", "expect", "expect_then", "words", "sim"]);
 const EXPECT_MAX = 200;
 /** Her words to a Sim: 1 to this many characters. */
 export const WORDS_MAX = 240;
@@ -21,6 +23,8 @@ export const WORDS_MAX = 240;
  */
 export type GameActContext = {
   db: DatabaseSync; nowMs: () => number; attachedSession: (nowMs: number) => string | undefined; lastAttachedMs: () => number | undefined;
+  /** The probe version a helper session named (a Sim picker needs probe 2.40.0). */
+  probeOf?: (session: string) => string | undefined;
 } | null;
 
 function refused(code: string, reason: string, summary: string = reason): Receipt {
@@ -83,6 +87,10 @@ export function gameActTool(open: () => GameActContext): Tool {
           knowingly: {
             type: "boolean",
             description: "True only to request an act that another of your threads asked for in the last 60 seconds, after a refusal that says so.",
+          },
+          sim: {
+            type: "string",
+            description: "The ref of a person, such as p3, from game_list people: required for an act the view marks as needing a Sim, and refused for any other.",
           },
           words: {
             type: "string",
@@ -155,6 +163,10 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
   if (words !== undefined && !(typeof words === "string" && [...words].length >= 1 && [...words].length <= WORDS_MAX)) {
     return refused("bad_args", `words must be what you say to the person, 1 to ${WORDS_MAX} characters.`);
   }
+  const sim = args.sim;
+  if (sim !== undefined && !(typeof sim === "string" && REF.test(sim) && sim.startsWith("p"))) {
+    return refused("bad_args", "sim must be a person's ref, such as p3, from game_list people.");
+  }
 
   const nowMs = game.nowMs();
   const gameThread = gameThreadNow(game.db, attached);
@@ -183,10 +195,26 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
     }
     then.push({ ref, found });
   }
+  const picker = first.act.needs_sim === true;
+  if (sim !== undefined && !picker) {
+    return refused("not_a_sim_act", `${option} does not need a Sim, so sim does not apply to it. Nothing was requested.`);
+  }
+  if (picker && sim === undefined) {
+    return refused("sim_needed", `${option} opens a picker for a Sim: name one with sim, a p ref from game_list people.`);
+  }
+  let person: { id: string; name: string } | undefined;
+  if (typeof sim === "string") {
+    if (game.probeOf && !probeAtLeast(game.probeOf(attached))) {
+      return refused("probe_too_old", `Choosing a Sim needs the game's helper at probe ${PROBE_NEEDED} or later, and it is not. Nothing was requested.`);
+    }
+    const listed = findListed(game.db, attached, "people", sim);
+    if (!listed) return staleRef(sim, "game_list people");
+    person = { id: String(listed.id), name: String(listed.name) };
+  }
   if (typeof words === "string" && first.object.person !== true) {
     return refused("not_a_person", `Words go only with an act on a person, and ${option} is not one in the newest view. Nothing was requested.`);
   }
-  let label = labelOf(first);
+  let label = person ? `${labelOf(first)} with ${person.name} (${sim})` : labelOf(first);
   let answer: { json: string } | undefined;
   if (claim !== undefined) {
     const result = answerFor(first, claim);
@@ -218,6 +246,7 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
     forSummoner: args.for_summoner === true,
     ...(answer ? { answer } : {}),
     ...(typeof words === "string" ? { words } : {}),
+    ...(person ? { simId: person.id } : {}),
     then,
     nowMs,
   });

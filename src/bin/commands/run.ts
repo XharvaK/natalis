@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { World } from "../../contracts.js";
 import { loadEntityConfig } from "../../entity/config.js";
-import { openEntity } from "../../entity/runtime.js";
+import { type Entity, openEntity } from "../../entity/runtime.js";
 import { modelFromConfig, worldModelsFromConfig } from "../../model/from-config.js";
 import { createSecretScanner } from "../../secrets/index.js";
 import { createDiscordWorld } from "../../worlds/discord/index.js";
@@ -39,6 +39,9 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
   const scanner = createSecretScanner({ knownValues: knownValueList(held) });
 
   const worlds: World[] = [];
+  // The summoner's last message, read from the entity once it is open (the Domus world reads it on each travel).
+  let opened: Entity | undefined;
+  const lastOwnerMs = (): number | undefined => opened?.lastOwnerMs?.();
   const discordPath = join(dir, DISCORD_FILE);
   if (existsSync(discordPath)) {
     const discord = parseDiscordFile(JSON.parse(readFileSync(discordPath, "utf8")) as unknown);
@@ -96,7 +99,7 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
     }
     worlds.push(createDomusWorld({ dir, token, ...(domus.host !== undefined ? { host: domus.host } : {}),
       ...(domus.port !== undefined ? { port: domus.port } : {}), otherTokens,
-      ...(config.timeZone !== undefined ? { timeZone: config.timeZone } : {}) }));
+      ...(config.timeZone !== undefined ? { timeZone: config.timeZone } : {}), lastOwnerMs }));
   }
   if (worlds.length === 0) {
     err(`No worlds to run in: add ${DISCORD_FILE} to ${dir}, or use natalis chat for the terminal.`);
@@ -108,6 +111,7 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
     worlds,
     scanner,
   });
+  opened = entity;
   const stopped = new Promise<void>((resolveStopped) => {
     process.once("SIGINT", () => resolveStopped());
     process.once("SIGTERM", () => resolveStopped());
