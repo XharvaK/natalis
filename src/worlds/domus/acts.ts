@@ -181,11 +181,11 @@ export type VerbInput = {
   observationId: string | null;
   verb: string;
   label: string;
-  /** The thing the verb is about (a thing\x27s id), or "0" when it is about none. */
+  /** The thing the verb is about (a thing's id), or "0" when it is about none. */
   objectId: string;
-  /** The probe command\x27s args, without act_id. */
+  /** The probe command's args, without act_id. */
   args: Record<string, unknown>;
-  /** What the Lar\x27s side keeps and the helper never sees (the summoner\x27s last message, for travel). */
+  /** What the Lar's side keeps and the helper never sees (the summoner's last message, for travel). */
   record?: Record<string, unknown>;
   nowMs: number;
 };
@@ -195,7 +195,7 @@ export type VerbResult =
   | { ok: false; code: "one_act_per_turn" | "home_edits_full" };
 
 /**
- * Keeps a home or travel verb as a requested act (W13). Travel, saving and planning an event hold the turn\x27s one-act slot,
+ * Keeps a home or travel verb as a requested act (W13). Travel, saving and planning an event hold the turn's one-act slot,
  * as a game act does, and replace what a plan still waited to do. A home edit does neither: it is counted, and a turn may
  * make HOME_EDITS_PER_TURN of them.
  */
@@ -371,8 +371,8 @@ function phaseSentence(phase: DomusActPhase, detail: Record<string, unknown>, la
 }
 
 /**
- * A verb act\x27s words for its phase: a finished one says what the helper saw in the game (detail.result, in its words),
- * else that it finished; the other phases are the game act\x27s own sentences.
+ * A verb act's words for its phase: a finished one says what the helper saw in the game (detail.result, in its words),
+ * else that it finished; the other phases are the game act's own sentences.
  */
 function verbSentence(phase: DomusActPhase, detail: Record<string, unknown>, late: boolean): string {
   if (phase !== "finished") return phaseSentence(phase, detail, late);

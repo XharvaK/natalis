@@ -21,11 +21,20 @@ export type ListItem = Record<string, unknown>;
 /** One list's newest row for a helper session: its digest, its items and the time it arrived. */
 export type StoredList = { digest: string; items: ListItem[]; atMs: number };
 
-/** Keeps the newest list of one kind for a helper session (one row per session and kind). */
+/** Lists and catalogue items of other helper sessions are kept this long after their last write, then let go. */
+export const LISTS_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Keeps the newest list of one kind for a helper session (one row per session and kind). The lists and catalogue items of
+ * other sessions not written for LISTS_KEEP_MS are let go: their refs can no longer be used, and a things list is large.
+ */
 export function storeList(db: DatabaseSync, input: { attachment: string; kind: ListKind; digest: string; items: ListItem[]; nowMs: number }): void {
   db.prepare(`INSERT INTO lists (attachment, kind, digest, items_json, at_ms) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT (attachment, kind) DO UPDATE SET digest = excluded.digest, items_json = excluded.items_json, at_ms = excluded.at_ms`)
     .run(input.attachment, input.kind, input.digest, JSON.stringify(input.items), input.nowMs);
+  const before = input.nowMs - LISTS_KEEP_MS;
+  db.prepare("DELETE FROM lists WHERE attachment != ? AND at_ms < ?").run(input.attachment, before);
+  db.prepare("DELETE FROM catalog_seen WHERE attachment != ? AND at_ms < ?").run(input.attachment, before);
 }
 
 /** The lists a helper session holds, by kind and digest: what the sync answer says, so the helper resends only what changed. */

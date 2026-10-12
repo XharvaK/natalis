@@ -5,7 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ToolContext } from "../../contracts.js";
 import { catalogText, expireCatalog, gameCatalogTool, handCatalog, openCatalogAsk, settleCatalog, withdrawCatalog, CATALOG_TTL_MS } from "./catalog.js";
-import { findListed, gameListTool, listCountLine, listDigests, readList, storeList } from "./lists.js";
+import { findListed, gameListTool, listCountLine, listDigests, LISTS_KEEP_MS, readList, storeList } from "./lists.js";
 import { openDomusDb } from "./store.js";
 import { parseActSync, parseCatalog, parseLists, RESULT_MAX } from "./wire.js";
 import type { GameContext } from "./tool-context.js";
@@ -43,6 +43,17 @@ afterEach(() => {
 });
 
 describe("the lists the helper sends", () => {
+  it("lets go of another session's lists and catalogue items a week after their last write, and keeps younger ones", () => {
+    storeList(db, { attachment: "old", kind: "people", digest: DIGEST, items: [], nowMs: clock });
+    db.prepare("INSERT INTO catalog_seen (attachment, ref, definition_id, name, price, at_ms) VALUES ('old', 'c1', '9', 'Test Chair', 5, ?)").run(clock);
+    storeList(db, { attachment: "young", kind: "people", digest: DIGEST, items: [], nowMs: clock + LISTS_KEEP_MS });
+    storeList(db, { attachment: HELPER, kind: "people", digest: DIGEST, items: [], nowMs: clock + LISTS_KEEP_MS + 1 });
+    expect(readList(db, "old", "people")).toBeUndefined();
+    expect(db.prepare("SELECT COUNT(*) AS n FROM catalog_seen WHERE attachment = 'old'").get()).toEqual({ n: 0 });
+    expect(readList(db, "young", "people")).toBeDefined();
+    expect(readList(db, HELPER, "people")).toBeDefined();
+  });
+
   it("keeps the newest list per session and kind, and reports its digest in the sync answer", () => {
     storeList(db, { attachment: HELPER, kind: "people", digest: DIGEST, items: [{ ref: "p1", id: "1", name: "Ana Example" }], nowMs: clock });
     storeList(db, { attachment: HELPER, kind: "people", digest: "b".repeat(64), items: [{ ref: "p2", id: "2", name: "Ben Example" }], nowMs: clock + 1 });
