@@ -33,10 +33,13 @@ Every part of a request declares how often it changes:
 
 | Class | Changes when | Parts |
 |---|---|---|
-| `fixed` | Natalis changes, or the model changes | tools, who you are, how you act, pictures, the order note |
-| `notes` | a file she or the summoner edits changes | nature, constitution, character, your life, privacy list, index |
-| `page` | Recent here moves on by a page (cache-order) | Recent here up to the page start, and the cut line |
-| `turn` | every turn | the rows since the page start, New, Current view, Already done, now, time, recall, the dropped note |
+| `fixed` | Natalis changes, the model changes, or the summoner edits `nature.md` | tools, who you are, a lar's nature, how you act, pictures, the order note |
+| `notes` | a file in her notebook, or the privacy list, changes | constitution, character, your life, privacy list, index |
+| `page` | Recent here moves on by a page (cache-order) | "Recent here:", the cut line and the first 30 rows of the window (before a page is full, the whole block is `turn`) |
+| `turn` | every turn | the rows after those 30, New, Current view, Already done, now, time, recall, the dropped note |
+
+As built (49250dc, a43e540): the order note is fixed text in the system text, between the fixed sections and the
+notes, so the user message starts with Recent here.
 
 - A single function, `layoutRequest`, builds the system text and the user message from the declared parts:
   - It orders them by class, keeping the declared order inside a class.

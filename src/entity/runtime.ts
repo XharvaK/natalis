@@ -1595,9 +1595,10 @@ class Runtime implements Entity {
     const nature = readNature(this.dir).text;
     const slow: Section[] = [
       { name: "who you are", text: this.identityText(nowMs, thinking), priority: 100, core: true, cls: "fixed" },
+      // The nature is the default or the summoner's nature.md, never her notebook: it changes as seldom as the code does.
+      ...(nature === undefined ? [] : [{ name: "a lar's nature", text: nature, priority: 100, core: true, cls: "fixed" as const }]),
       { name: "how you act", text: HOW_YOU_ACT, priority: 100, core: true, cls: "fixed" },
       { name: "pictures", text: pictureAbility(this.config.model.vision === true), priority: 100, core: true, cls: "fixed" },
-      ...(nature === undefined ? [] : [{ name: "a lar's nature", text: nature, priority: 100, core: true, cls: "notes" as const }]),
       { name: "constitution", text: this.constitutionText(), priority: 100, core: true, cls: "notes" },
       { name: "character", text: this.noteOr("self/character.md", CHARACTER_STUB), priority: 100, core: true, cls: "notes" },
       { name: "your life", text: this.noteOr(LIFE_PATH, LIFE_STUB), priority: 100, core: true, cls: "notes" },

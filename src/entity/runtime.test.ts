@@ -1015,7 +1015,7 @@ describe("the owner's privacy list", () => {
     expect(system).not.toContain("Lantern Yard");
   });
 
-  it("shows a Lar's nature after the fixed parts and before the constitution", async () => {
+  it("shows a Lar's nature after who it is and before how it acts", async () => {
     const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
     const { entity, cli } = await open(model);
     await entity.start();
@@ -1024,9 +1024,8 @@ describe("the owner's privacy list", () => {
 
     const system = systemTextOf(model.requests[0]);
     const nature = system.indexOf("## a lar's nature");
-    expect(nature).toBeGreaterThan(system.indexOf("## pictures"));
-    expect(nature).toBeGreaterThan(system.indexOf("Each turn's message lists, in order:"));
-    expect(nature).toBeLessThan(system.indexOf("## constitution"));
+    expect(nature).toBeGreaterThan(system.indexOf("## who you are"));
+    expect(nature).toBeLessThan(system.indexOf("## how you act"));
     expect(system).toContain("You are someone, not a service.");
   });
 
