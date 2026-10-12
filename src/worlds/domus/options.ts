@@ -320,6 +320,42 @@ function isQueue(object: OptionObject): boolean {
   return !hasRoom && (object.object_id === QUEUE_OBJECT_ID || object.where === QUEUE_WHERE);
 }
 
+/** The helper's words for a refused act the game gave no reason for (see the helper's refusal lines). */
+const NO_REASON = ": refused: no reason given";
+/** The helper's words for an act left out of the menu: "<act>: left out: <reason>". */
+const LEFT_OUT = /^(.*?): left out: (.*)$/;
+
+/**
+ * The refusals and left-out acts of one object, in plain words. A refusal with a reason stays word for word. The refusals
+ * the game gave no reason for become one count line. The left-out acts of her phone become one line, grouped by reason.
+ */
+function awayLines(refused: readonly string[], leftOut: readonly string[]): string[] {
+  const groups = new Map<string, string[]>();
+  const words: string[] = [];
+  let withoutReason = 0;
+  for (const raw of [...refused, ...leftOut]) {
+    const line = dropTokens(raw);
+    const left = LEFT_OUT.exec(line);
+    if (left) {
+      const [, act = "", reason = ""] = left;
+      groups.set(reason, [...(groups.get(reason) ?? []), act]);
+    } else if (line.endsWith(NO_REASON)) {
+      withoutReason++;
+    } else {
+      words.push(line);
+    }
+  }
+  const lines: string[] = [...words];
+  if (withoutReason > 0) {
+    lines.push(`${withoutReason} more ${withoutReason === 1 ? "act" : "acts"} the game does not offer here now.`);
+  }
+  if (groups.size) {
+    const parts = [...groups].map(([reason, acts]) => `${acts.join(", ")} (${reason})`);
+    lines.push(`Left out of your phone: ${parts.join(", ")}.`);
+  }
+  return lines;
+}
+
 /** One object's line, its states, the game's reasons and the acts left out under it, and its answer rules when it is a question. */
 function objectLines(object: OptionObject): string[] {
   const where = object.where ? ` (${object.where})` : "";
@@ -330,7 +366,7 @@ function objectLines(object: OptionObject): string[] {
     .join("; ");
   const lines = [`- ${dropTokens(object.object)}${where}${noWay}: ${acts}`];
   if (object.states?.length) lines.push(`  States: ${object.states.map((state) => dropTokens(state)).join(", ")}.`);
-  for (const line of [...(object.refused ?? []), ...(object.left_out ?? [])]) lines.push(`  ${dropTokens(line)}`);
+  for (const line of awayLines(object.refused ?? [], object.left_out ?? [])) lines.push(`  ${line}`);
   const rules = answerRulesOf(object);
   if (rules) lines.push(`  Answer rules: ${describeRules(rules)}.`);
   return lines;

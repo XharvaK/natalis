@@ -379,8 +379,30 @@ describe("an option object's refusals, states and left-out acts (T3, T2)", () =>
   it("renders the states and the reasons as indented lines under the object, in that order", () => {
     const text = renderView({ world: "slot3", percepts: [], options: [KETTLE] });
     expect(text).toContain(
-      "- Test kettle: a1 Boil water\n  States: dirty, broken.\n  Boil water: refused: the water is off\n  Call Test Friend: left out: it is not on your phone list",
+      "- Test kettle: a1 Boil water\n  States: dirty, broken.\n  Boil water: refused: the water is off\n  Left out of your phone: Call Test Friend (it is not on your phone list).",
     );
+  });
+
+  it("keeps a refusal that has a reason word for word, and says the ones with no reason as one count line", () => {
+    const text = renderView({
+      world: "slot3", percepts: [], options: [{ ...KETTLE, refused: ["Boil water: refused: the water is off", "Tidy up: refused: no reason given", "Sit: refused: no reason given"] }],
+    });
+    expect(text).toContain("  Boil water: refused: the water is off\n  2 more acts the game does not offer here now.");
+    expect(text).not.toContain("no reason given");
+    const one = renderView({ world: "slot3", percepts: [], options: [{ ...KETTLE, refused: ["Tidy up: refused: no reason given"] }] });
+    expect(one).toContain("  1 more act the game does not offer here now.");
+  });
+
+  it("groups her phone's left-out acts into one line by reason, with the plain reason in brackets", () => {
+    const text = renderView({
+      world: "slot3",
+      percepts: [],
+      options: [{
+        object: "Test phone", object_id: "obj-phone", near: true, acts: [{ ref: "a1", guid64: "1", text: "Call Mara" }],
+        left_out: ["8: left out: it takes you off the lot", "72: left out: a debug or cheat act", "9: left out: it takes you off the lot"],
+      }],
+    });
+    expect(text).toContain("  Left out of your phone: 8, 9 (it takes you off the lot), 72 (a debug or cheat act).");
   });
 
   it("adds the states, the refusals and the left-out acts to the choices, so a change lists them again", () => {
