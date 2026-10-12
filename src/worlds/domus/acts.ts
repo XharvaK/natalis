@@ -316,6 +316,21 @@ function keepEvent(db: DatabaseSync, actId: string, phase: string, atMs: number,
 }
 
 /** Who refused an act, in words she reads. A refusal with no source named is said as that: it was refused. */
+/** Plain words for a refused code the game or the helper gave no words of its own for (the code stays beside them). */
+const CODE_WORDS: Readonly<Record<string, string>> = {
+  TRAVEL_PENDING: "a trip is already under way",
+  IN_RABBIT_HOLE: "her Sim is busy in a rabbit hole",
+  NOT_AN_EVENT: "that is not an event the game has listed for her",
+  IN_INVENTORY: "that thing is in her inventory: place it, do not move it",
+  SAVE_BUSY: "the game is already saving",
+};
+
+/** Plain words for an unknown code, which says how far the game got (the code stays beside them). */
+const UNKNOWN_CODE_WORDS: Readonly<Record<string, string>> = {
+  SELL_UNCONFIRMED: "the thing was still there 30 seconds after the sale, so she was not paid",
+  ROW_INVALID: "the game's report of it could not be read, so there is no result",
+};
+
 const REFUSED_BY: Readonly<Record<string, string>> = {
   game: "the game refused it",
   probe: "the game's side refused it",
@@ -328,7 +343,8 @@ const REFUSED_BY: Readonly<Record<string, string>> = {
 function refusedText(detail: Record<string, unknown>): string | undefined {
   const text = typeof detail.text === "string" && detail.text.trim() !== "" ? detail.text.trim()
     : typeof detail.reason === "string" && detail.reason.trim() !== "" ? detail.reason.trim()
-      : typeof detail.detail === "string" && detail.detail.trim() !== "" ? detail.detail.trim().slice(0, 200) : undefined;
+      : typeof detail.detail === "string" && detail.detail.trim() !== "" ? detail.detail.trim().slice(0, 200)
+        : typeof detail.code === "string" && Object.hasOwn(CODE_WORDS, detail.code) ? CODE_WORDS[detail.code] : undefined;
   return text === undefined ? undefined : text.slice(0, 240);
 }
 
@@ -365,6 +381,9 @@ function phaseSentence(phase: DomusActPhase, detail: Record<string, unknown>, la
       // The game took the act out of its queue and never said how it ended: the words say only that.
       if (detail.code === "LEFT_QUEUE") {
         return "the game took it out of its queue and did not say how it ended; what changed in your next view tells what it did";
+      }
+      if (typeof detail.code === "string" && Object.hasOwn(UNKNOWN_CODE_WORDS, detail.code)) {
+        return `${UNKNOWN_CODE_WORDS[detail.code]}${code}`;
       }
       return `nothing says how it ended${code}${detail.reason ? ` - ${String(detail.reason).slice(0, 200)}` : ""}`;
     case "expired":
