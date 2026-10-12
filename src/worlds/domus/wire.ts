@@ -279,6 +279,14 @@ export function parseFeed(body: unknown): { helperSession: string } {
 // ---------------------------------------------------------------------------------------------------
 // Acts sync.
 
+/** A verb act's result, in the helper's words: at most this many characters. */
+export const RESULT_MAX = 400;
+
+/** A result longer than RESULT_MAX is cut to it (not a half surrogate pair at the end); any other detail is kept as it is. */
+function cutResult(detail: unknown): unknown {
+  if (!isRecord(detail) || typeof detail.result !== "string" || detail.result.length <= RESULT_MAX) return detail;
+  return { ...detail, result: detail.result.slice(0, RESULT_MAX).replace(/[\uD800-\uDBFF]$/, "") };
+}
 const SYNC_KEYS = new Set(["v", "helper_session", "events"]);
 const SYNC_EVENT_KEYS = new Set(["act_id", "phase", "at_ms", "detail"]);
 const PHASES: ReadonlySet<string> = new Set([
@@ -300,11 +308,13 @@ export function parseActSync(body: unknown): { helperSession: string; events: Sy
     if (!isRecord(item)) fail(400, "invalid_body");
     for (const key of Object.keys(item)) if (!SYNC_EVENT_KEYS.has(key)) fail(400, "invalid_body");
     if (!isActPhase(item.phase)) fail(400, "invalid_body");
+    // A verb act's report may carry the game's facts in words (detail.result); a longer one is cut, not refused.
+    if ("detail" in item && isRecord(item.detail) && "result" in item.detail && typeof item.detail.result !== "string") fail(400, "invalid_body");
     return {
       actId: textOf(item.act_id, 1, 64, /^[A-Za-z0-9]+$/),
       phase: item.phase,
       atMs: safeInt(item.at_ms),
-      ...("detail" in item ? { detail: jsonObject(item.detail, 1024) } : {}),
+      ...("detail" in item ? { detail: jsonObject(cutResult(item.detail), 1024) } : {}),
     };
   });
   return { helperSession: textOf(body.helper_session, 1, 64), events };
@@ -419,5 +429,118 @@ export function parseMemory(body: unknown): ParsedMemory {
     helperSession,
     askId,
     facts: { matched, acts: facts.acts.map(memoryAct), people: facts.people.map(memoryPerson) },
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Lists and the catalogue (the game's lists on demand, and the helper's answer to a catalogue ask).
+
+/** The lists route reads at most this many bytes of JSON (a whole list of things is the largest body). */
+export const LISTS_BODY_LIMIT = 128 * 1024;
+export const LIST_KINDS = ["people", "places", "things", "events"] as const;
+export type ListKind = (typeof LIST_KINDS)[number];
+/** The most items one list may carry. */
+const LIST_ITEMS_MAX: Readonly<Record<ListKind, number>> = { people: 200, places: 120, things: 600, events: 200 };
+const LIST_ITEM_KEYS: Readonly<Record<ListKind, ReadonlySet<string>>> = {
+  people: new Set(["ref", "id", "name", "how", "home", "here", "waiting"]),
+  places: new Set(["ref", "id", "name", "kind", "what"]),
+  things: new Set(["ref", "id", "name", "where", "value", "made_by_her", "states", "in_use", "count", "placement"]),
+  events: new Set(["ref", "id", "name", "cost"]),
+};
+const PLACE_KINDS: ReadonlySet<string> = new Set(["home", "household", "venue"]);
+const REF_PATTERN = /^[a-z][0-9]{1,8}$/;
+const LISTS_KEYS = new Set(["v", "helper_session", "kind", "digest", "items"]);
+
+export type ParsedLists = { helperSession: string; kind: ListKind; digest: string; items: Record<string, unknown>[] };
+
+/** A whole number of any sign, as the game sends a value or a cost. */
+function intOf(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) fail(400, "invalid_body");
+  return value;
+}
+
+function boolOf(value: unknown): boolean {
+  if (typeof value !== "boolean") fail(400, "invalid_body");
+  return value;
+}
+
+/** One item of a list, checked against its kind's keys (the helper words the values; Natalis checks their shape only). */
+function listItem(kind: ListKind, item: unknown): Record<string, unknown> {
+  if (!isRecord(item)) fail(400, "invalid_body");
+  const allowed = LIST_ITEM_KEYS[kind];
+  for (const key of Object.keys(item)) if (!allowed.has(key)) fail(400, "invalid_body");
+  if (typeof item.ref !== "string" || !REF_PATTERN.test(item.ref)) fail(400, "invalid_body");
+  textOf(item.id, 1, 64);
+  textOf(item.name, 1, 64);
+  if ("how" in item) textOf(item.how, 0, 80);
+  if ("what" in item) textOf(item.what, 0, 40);
+  if ("home" in item) boolOf(item.home);
+  if ("here" in item) boolOf(item.here);
+  if ("waiting" in item) boolOf(item.waiting);
+  if ("made_by_her" in item && item.made_by_her !== null) boolOf(item.made_by_her);
+  if ("in_use" in item) boolOf(item.in_use);
+  if ("where" in item) textOf(item.where, 1, 64);
+  if ("value" in item) intOf(item.value);
+  if ("count" in item) safeInt(item.count);
+  if ("cost" in item && item.cost !== null) intOf(item.cost);
+  if ("placement" in item && item.placement !== null) textOf(item.placement, 1, 16);
+  if ("states" in item) {
+    if (!Array.isArray(item.states) || item.states.length > 4) fail(400, "invalid_body");
+    for (const state of item.states) textOf(state, 1, 40);
+  }
+  if (kind === "places" && (typeof item.kind !== "string" || !PLACE_KINDS.has(item.kind))) fail(400, "invalid_body");
+  return item;
+}
+
+/** POST /domus/lists: one whole list of a kind, with its digest. Throws WireError for every refusal. */
+export function parseLists(body: unknown): ParsedLists {
+  if (!isRecord(body)) fail(400, "invalid_body");
+  for (const key of Object.keys(body)) if (!LISTS_KEYS.has(key)) fail(400, "invalid_body");
+  if (body.v !== 1) fail(400, "invalid_body");
+  const kind = body.kind;
+  if (typeof kind !== "string" || !(LIST_KINDS as readonly string[]).includes(kind)) fail(400, "invalid_body");
+  const listKind = kind as ListKind;
+  const digest = textOf(body.digest, 64, 64, /^[0-9a-f]{64}$/);
+  if (!Array.isArray(body.items) || body.items.length > LIST_ITEMS_MAX[listKind]) fail(400, "invalid_body");
+  const items = body.items.map((item) => listItem(listKind, item));
+  // Two items under one ref would leave the second unreachable, so a list that repeats a ref is refused.
+  if (new Set(items.map((item) => item.ref)).size !== items.length) fail(400, "invalid_body");
+  return {
+    helperSession: textOf(body.helper_session, 1, 64),
+    kind: listKind,
+    digest,
+    items,
+  };
+}
+
+/** The most items one catalogue answer may carry. */
+export const CATALOG_ITEMS_MAX = 12;
+const CATALOG_KEYS = new Set(["v", "helper_session", "ask_id", "matched", "items"]);
+const CATALOG_ITEM_KEYS = new Set(["ref", "id", "name", "price", "placement", "category"]);
+
+export type ParsedCatalog = { helperSession: string; askId: string; matched: number; items: Record<string, unknown>[] };
+
+/** POST /domus/catalog: the helper's answer to one catalogue ask. Throws WireError for every refusal. */
+export function parseCatalog(body: unknown): ParsedCatalog {
+  if (!isRecord(body)) fail(400, "invalid_body");
+  for (const key of Object.keys(body)) if (!CATALOG_KEYS.has(key)) fail(400, "invalid_body");
+  if (body.v !== 1) fail(400, "invalid_body");
+  if (!Array.isArray(body.items) || body.items.length > CATALOG_ITEMS_MAX) fail(400, "invalid_body");
+  const items = body.items.map((item) => {
+    if (!isRecord(item)) fail(400, "invalid_body");
+    for (const key of Object.keys(item)) if (!CATALOG_ITEM_KEYS.has(key)) fail(400, "invalid_body");
+    if (typeof item.ref !== "string" || !REF_PATTERN.test(item.ref)) fail(400, "invalid_body");
+    textOf(item.id, 1, 64);
+    textOf(item.name, 1, 64);
+    intOf(item.price);
+    if (item.placement !== null && item.placement !== undefined) textOf(item.placement, 1, 16);
+    if ("category" in item) textOf(item.category, 0, 40);
+    return item;
+  });
+  return {
+    helperSession: textOf(body.helper_session, 1, 64),
+    askId: textOf(body.ask_id, 1, 64, /^[A-Za-z0-9-]+$/),
+    matched: safeInt(body.matched),
+    items,
   };
 }

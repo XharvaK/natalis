@@ -50,12 +50,18 @@ export type ThreadNote = { thread: string; text: string; data: Record<string, un
 export type SyncAct = {
   act_id: string;
   object_id: string;
-  guid64: string;
+  /** A game act's guid. A verb act carries none (see verb). */
+  guid64?: string;
   expires_at_ms: number;
   owner?: true;
   answer?: StoredAnswer;
   /** Her own words to the Sim the act targets, when she gave some (S1). */
   words?: string;
+  /** A game act that opens a Sim picker: the Sim she chose (digits). */
+  sim_id?: string;
+  /** A home or travel verb (W13): the probe command, and its args without act_id. */
+  verb?: string;
+  args?: Record<string, unknown>;
 };
 
 export type RequestInput = {
@@ -69,6 +75,8 @@ export type RequestInput = {
   answer?: { json: string };
   /** Her words to the Sim the act targets (1 to 240 characters); the game's social act still decides what happens. */
   words?: string;
+  /** The Sim she chose for a game act that needs one (a people ref, resolved by the caller to the sim id). */
+  simId?: string;
   /** The plan's later steps, already resolved against the same view. */
   then: Array<{ ref: string; found: Found }>;
   nowMs: number;
@@ -94,11 +102,13 @@ const DROP_REASON: Readonly<Record<string, string>> = {
 function insertAct(db: DatabaseSync, row: {
   actId: string; turnId: string; thread: string; attachment: string; observationId: string | null; ref: string;
   objectId: string; guid64: string; label: string; nowMs: number; forSummoner: boolean; answerJson: string | null; words: string | null;
+  verb: string | null; argsJson: string | null;
 }): void {
   db.prepare(`INSERT INTO acts (act_id, turn_id, thread, attachment, observation_id, option_ref, object_id, guid64, label, state,
-    requested_at_ms, expires_at_ms, updated_at_ms, for_summoner, answer_json, words) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'requested', ?, ?, ?, ?, ?, ?)`)
+    requested_at_ms, expires_at_ms, updated_at_ms, for_summoner, answer_json, words, verb, args_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'requested', ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(row.actId, row.turnId, row.thread, row.attachment, row.observationId, row.ref, row.objectId, row.guid64, row.label,
-      row.nowMs, row.nowMs + ACT_TTL_MS, row.nowMs, row.forSummoner ? 1 : 0, row.answerJson, row.words);
+      row.nowMs, row.nowMs + ACT_TTL_MS, row.nowMs, row.forSummoner ? 1 : 0, row.answerJson, row.words, row.verb, row.argsJson);
 }
 
 /**
@@ -130,7 +140,8 @@ export function requestAct(db: DatabaseSync, input: RequestInput): RequestResult
         .get(input.turnId, input.found.object.object_id)) {
         return { ok: false as const, code: "answer_repeated" as const };
       }
-    } else if (db.prepare("SELECT 1 FROM acts WHERE turn_id = ? AND answer_json IS NULL LIMIT 1").get(input.turnId)) {
+    } else if (db.prepare(`SELECT 1 FROM acts WHERE turn_id = ? AND answer_json IS NULL AND (verb IS NULL OR verb IN (${SLOT_VERB_SQL})) LIMIT 1`)
+      .get(input.turnId)) {
       return { ok: false as const, code: "one_act_per_turn" as const };
     }
     dropPlanned(db, { attachment: input.attachment, reason: "replaced", notify: false, nowMs: input.nowMs });
@@ -139,6 +150,7 @@ export function requestAct(db: DatabaseSync, input: RequestInput): RequestResult
       actId, turnId: input.turnId, thread: input.thread, attachment: input.attachment, observationId: input.observationId,
       ref: input.found.act.ref, objectId: input.found.object.object_id, guid64: input.found.act.guid64, label: input.label,
       nowMs: input.nowMs, forSummoner: input.forSummoner, answerJson: input.answer?.json ?? null, words: input.words ?? null,
+      verb: null, argsJson: input.simId === undefined ? null : JSON.stringify({ args: { sim_id: input.simId } }),
     });
     const steps = input.then.slice(0, PLAN_MORE).map((step, index) => {
       const label = labelOf(step.found);
@@ -150,6 +162,84 @@ export function requestAct(db: DatabaseSync, input: RequestInput): RequestResult
     });
     return { ok: true as const, actId, expiresAtMs: input.nowMs + ACT_TTL_MS, steps };
   });
+}
+
+/** The home edits one turn may make (buy, place, move, sell): each has its own receipt and is not held by the one-act rule. */
+export const HOME_EDITS_PER_TURN = 6;
+/** The verbs that are home edits (see HOME_EDITS_PER_TURN). */
+export const HOME_VERBS: readonly string[] = ["buy", "place", "move", "sell"];
+/** The verbs that hold the one-act slot of a turn, as a game act does: travel, saving and planning an event. */
+export const SLOT_VERBS: readonly string[] = ["go", "save", "event"];
+const SLOT_VERB_SQL = SLOT_VERBS.map((verb) => `'${verb}'`).join(", ");
+const HOME_VERB_SQL = HOME_VERBS.map((verb) => `'${verb}'`).join(", ");
+
+export type VerbInput = {
+  thread: string;
+  turnId: string;
+  attachment: string;
+  /** The newest view the choice was made on, or null when the game has shown none yet. */
+  observationId: string | null;
+  verb: string;
+  label: string;
+  /** The thing the verb is about (a thing's id), or "0" when it is about none. */
+  objectId: string;
+  /** The probe command's args, without act_id. */
+  args: Record<string, unknown>;
+  /** What the Lar's side keeps and the helper never sees (the summoner's last message, for travel). */
+  record?: Record<string, unknown>;
+  nowMs: number;
+};
+
+export type VerbResult =
+  | { ok: true; actId: string; expiresAtMs: number }
+  | { ok: false; code: "one_act_per_turn" | "home_edits_full" };
+
+/**
+ * Keeps a home or travel verb as a requested act (W13). Travel, saving and planning an event hold the turn's one-act slot,
+ * as a game act does, and replace what a plan still waited to do. A home edit does neither: it is counted, and a turn may
+ * make HOME_EDITS_PER_TURN of them.
+ */
+export function requestVerb(db: DatabaseSync, input: VerbInput): VerbResult {
+  return inTransaction(db, () => {
+    const holdsSlot = SLOT_VERBS.includes(input.verb);
+    if (holdsSlot) {
+      if (db.prepare(`SELECT 1 FROM acts WHERE turn_id = ? AND answer_json IS NULL AND (verb IS NULL OR verb IN (${SLOT_VERB_SQL})) LIMIT 1`)
+        .get(input.turnId)) {
+        return { ok: false as const, code: "one_act_per_turn" as const };
+      }
+      dropPlanned(db, { attachment: input.attachment, reason: "replaced", notify: false, nowMs: input.nowMs });
+    } else {
+      if (homeEditsIn(db, input.turnId) >= HOME_EDITS_PER_TURN) return { ok: false as const, code: "home_edits_full" as const };
+    }
+    const actId = randomUUID().replaceAll("-", "");
+    insertAct(db, {
+      actId, turnId: input.turnId, thread: input.thread, attachment: input.attachment, observationId: input.observationId,
+      ref: "", objectId: input.objectId, guid64: "", label: input.label, nowMs: input.nowMs, forSummoner: false,
+      answerJson: null, words: null, verb: input.verb,
+      argsJson: JSON.stringify({ args: input.args, ...(input.record ? { record: input.record } : {}) }),
+    });
+    return { ok: true as const, actId, expiresAtMs: input.nowMs + ACT_TTL_MS };
+  });
+}
+
+/** The home edits a turn has made so far (refused ones are not kept, so these are the ones the game was asked for). */
+/**
+ * The home edits of a turn that count: each request she made, except one the game or the helper refused (rejected) and one
+ * that expired. A refused edit frees its slot.
+ */
+export function homeEditsIn(db: DatabaseSync, turnId: string): number {
+  return Number((db.prepare(`SELECT COUNT(*) AS n FROM acts WHERE turn_id = ? AND verb IN (${HOME_VERB_SQL})
+    AND state NOT IN ('rejected', 'expired')`).get(turnId) as Row).n);
+}
+
+/**
+ * The time of her newest save that was not refused, or undefined. The save floor counts from it. A save the game refused, or
+ * one that expired before the game took it up, is not a save.
+ */
+export function lastSaveAt(db: DatabaseSync): number | undefined {
+  const row = db.prepare(`SELECT requested_at_ms FROM acts WHERE verb = 'save' AND state NOT IN ('rejected', 'expired')
+    ORDER BY requested_at_ms DESC LIMIT 1`).get() as Row | undefined;
+  return row === undefined ? undefined : Number(row.requested_at_ms);
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -226,6 +316,21 @@ function keepEvent(db: DatabaseSync, actId: string, phase: string, atMs: number,
 }
 
 /** Who refused an act, in words she reads. A refusal with no source named is said as that: it was refused. */
+/** Plain words for a refused code the game or the helper gave no words of its own for (the code stays beside them). */
+const CODE_WORDS: Readonly<Record<string, string>> = {
+  TRAVEL_PENDING: "a trip is already under way",
+  IN_RABBIT_HOLE: "her Sim is busy in a rabbit hole",
+  NOT_AN_EVENT: "that is not an event the game has listed for her",
+  IN_INVENTORY: "that thing is in her inventory: place it, do not move it",
+  SAVE_BUSY: "the game is already saving",
+};
+
+/** Plain words for an unknown code, which says how far the game got (the code stays beside them). */
+const UNKNOWN_CODE_WORDS: Readonly<Record<string, string>> = {
+  SELL_UNCONFIRMED: "the thing was still there 30 seconds after the sale, so she was not paid",
+  ROW_INVALID: "the game's report of it could not be read, so there is no result",
+};
+
 const REFUSED_BY: Readonly<Record<string, string>> = {
   game: "the game refused it",
   probe: "the game's side refused it",
@@ -234,9 +339,12 @@ const REFUSED_BY: Readonly<Record<string, string>> = {
 };
 
 /** The game's own sentence for a refusal (or the reason key's words), cleaned by the helper and cut here to 240 characters. */
+/** The reason in words: the text or the reason the helper or the game gave, else the probe's detail (the step, the price, the wait). */
 function refusedText(detail: Record<string, unknown>): string | undefined {
   const text = typeof detail.text === "string" && detail.text.trim() !== "" ? detail.text.trim()
-    : typeof detail.reason === "string" && detail.reason.trim() !== "" ? detail.reason.trim() : undefined;
+    : typeof detail.reason === "string" && detail.reason.trim() !== "" ? detail.reason.trim()
+      : typeof detail.detail === "string" && detail.detail.trim() !== "" ? detail.detail.trim().slice(0, 200)
+        : typeof detail.code === "string" && Object.hasOwn(CODE_WORDS, detail.code) ? CODE_WORDS[detail.code] : undefined;
   return text === undefined ? undefined : text.slice(0, 240);
 }
 
@@ -274,6 +382,9 @@ function phaseSentence(phase: DomusActPhase, detail: Record<string, unknown>, la
       if (detail.code === "LEFT_QUEUE") {
         return "the game took it out of its queue and did not say how it ended; what changed in your next view tells what it did";
       }
+      if (typeof detail.code === "string" && Object.hasOwn(UNKNOWN_CODE_WORDS, detail.code)) {
+        return `${UNKNOWN_CODE_WORDS[detail.code]}${code}`;
+      }
       return `nothing says how it ended${code}${detail.reason ? ` - ${String(detail.reason).slice(0, 200)}` : ""}`;
     case "expired":
       if (detail.code === "STOPPED") return "it was withdrawn before the game picked it up, because your summoner's stop is on";
@@ -283,16 +394,30 @@ function phaseSentence(phase: DomusActPhase, detail: Record<string, unknown>, la
   }
 }
 
+/**
+ * A verb act's words for its phase: a finished one says what the helper saw in the game (detail.result, in its words),
+ * else that it finished; the other phases are the game act's own sentences.
+ */
+function verbSentence(phase: DomusActPhase, detail: Record<string, unknown>, late: boolean): string {
+  if (phase !== "finished") return phaseSentence(phase, detail, late);
+  const result = typeof detail.result === "string" ? detail.result.trim().replace(/[.!?]+$/, "") : "";
+  return result === "" ? "it finished" : result;
+}
+
 function noteFor(act: Row, phase: DomusActPhase, detail: Record<string, unknown>, late: boolean): ThreadNote {
   const label = String(act.label);
   const ref = String(act.option_ref);
-  const sentence = phaseSentence(phase, detail, late);
+  const verb = typeof act.verb === "string";
+  const sentence = verb ? verbSentence(phase, detail, late) : phaseSentence(phase, detail, late);
   // Her own words to the Sim are kept on the act line (S1); they say what she said, not what the game did with it.
   const said = typeof act.words === "string" && act.words !== "" ? ` You said: "${act.words}".` : "";
+  const named = verb ? `Your act "${label}"` : `Your act "${label}" (${ref})`;
   return {
     thread: String(act.thread),
-    text: `Your act "${label}" (${ref}): ${sentence}${late ? " (this report came after the act had already ended)" : ""}.${said}`,
-    data: { actId: String(act.act_id), option: ref, phase, ...(late ? { late: true } : {}) },
+    text: `${named}: ${sentence}${late ? " (this report came after the act had already ended)" : ""}.${said}`,
+    data: verb
+      ? { actId: String(act.act_id), verb: act.verb, phase, ...(late ? { late: true } : {}) }
+      : { actId: String(act.act_id), option: ref, phase, ...(late ? { late: true } : {}) },
     wake: WAKING.has(phase),
   };
 }
@@ -335,18 +460,29 @@ export function syncActs(db: DatabaseSync, input: { attachment: string; events: 
     }
     dropPlanned(db, { notAttachment: input.attachment, reason: "session_ended", notify: true, nowMs: input.nowMs }, notes);
     releasePlans(db, { attachment: input.attachment, nowMs: input.nowMs }, notes);
-    const acts = (db.prepare(`SELECT act_id, object_id, guid64, expires_at_ms, for_summoner, answer_json, words FROM acts
+    const acts = (db.prepare(`SELECT act_id, object_id, guid64, expires_at_ms, for_summoner, answer_json, words, verb, args_json FROM acts
       WHERE attachment = ? AND state = 'requested' AND expires_at_ms > ? ORDER BY requested_at_ms, act_id`)
       .all(input.attachment, input.nowMs) as Row[]).map((row): SyncAct => {
       const answer = row.answer_json === null || row.answer_json === undefined ? undefined : parseDetail(row.answer_json) as StoredAnswer;
       // The helper's pull is recorded here: from now on the act is the helper's, and its report is owed (B8).
       db.prepare("UPDATE acts SET pulled_at_ms = ? WHERE act_id = ? AND pulled_at_ms IS NULL").run(input.nowMs, String(row.act_id));
+      const stored = parseDetail(row.args_json);
+      const args = isRecord(stored.args) ? stored.args : {};
+      if (typeof row.verb === "string") {
+        // A verb act: no guid; its args are the probe command's, and the record (kept here only) stays behind.
+        return {
+          act_id: String(row.act_id), object_id: String(row.object_id), verb: row.verb, args,
+          expires_at_ms: Number(row.expires_at_ms),
+          ...(Number(row.for_summoner) === 1 ? { owner: true as const } : {}),
+        };
+      }
       return {
         act_id: String(row.act_id), object_id: String(row.object_id), guid64: String(row.guid64),
         expires_at_ms: Number(row.expires_at_ms),
         ...(Number(row.for_summoner) === 1 ? { owner: true as const } : {}),
         ...(answer !== undefined && Object.keys(answer).length > 0 ? { answer } : {}),
         ...(typeof row.words === "string" && row.words !== "" ? { words: row.words } : {}),
+        ...(typeof args.sim_id === "string" ? { sim_id: args.sim_id } : {}),
       };
     });
     const planned = Number((db.prepare("SELECT COUNT(*) AS n FROM plan_steps WHERE attachment = ? AND state = 'planned'")
@@ -439,7 +575,7 @@ function releasePlan(db: DatabaseSync, planId: string, nowMs: number, notes: Thr
         actId, turnId: `plan:${planId}:${nextStep}`, thread: String(next.thread), attachment: String(next.attachment),
         observationId: head.observation_id === null ? null : String(head.observation_id), ref: String(next.option_ref),
         objectId: String(next.object_id), guid64: String(next.guid64), label: String(next.label), nowMs,
-        forSummoner: Number(next.for_summoner) === 1, answerJson: null, words: null,
+        forSummoner: Number(next.for_summoner) === 1, answerJson: null, words: null, verb: null, argsJson: null,
       });
       db.prepare("UPDATE plan_steps SET state = 'released', act_id = ?, updated_at_ms = ? WHERE plan_id = ? AND step = ?")
         .run(actId, nowMs, planId, nextStep);

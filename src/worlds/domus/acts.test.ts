@@ -376,6 +376,24 @@ describe("W12: her words, the game's refusals, windows, pulls and a session's en
     expect(sync(T0 + 1).acts.find((act) => act.act_id === id)).not.toHaveProperty("words");
   });
 
+  it("says the codes the game and the probe added for travel, events, saves and sales in plain words, with the code beside them", () => {
+    const cases: Array<[string, string]> = [
+      ["TRAVEL_PENDING", "a trip is already under way"],
+      ["IN_RABBIT_HOLE", "her Sim is busy in a rabbit hole"],
+      ["NOT_AN_EVENT", "that is not an event the game has listed for her"],
+      ["IN_INVENTORY", "that thing is in her inventory: place it, do not move it"],
+      ["SAVE_BUSY", "the game is already saving"],
+    ];
+    for (const [code, words] of cases) {
+      const id = okId(requestWith(T0, "a1"));
+      const note = sync(T0 + 1, [ev(id, "rejected", T0 + 1, { code, by: "probe" })]).notes[0];
+      expect(note?.text).toContain(`(${code}) - ${words}`);
+    }
+    const id = okId(requestWith(T0, "a1"));
+    const unconfirmed = sync(T0 + 1, [ev(id, "unknown", T0 + 1, { code: "SELL_UNCONFIRMED" })]).notes[0];
+    expect(unconfirmed?.text).toContain("the thing was still there 30 seconds after the sale, so she was not paid (SELL_UNCONFIRMED)");
+  });
+
   it("words the refusal by who refused it, with the game's own sentence, cut to 240 characters", () => {
     const cases: Array<[Record<string, unknown>, string]> = [
       [{ code: "NOT_ATTACHED", by: "game", text: "The game would not let her sit." }, "the game refused it (NOT_ATTACHED) - The game would not let her sit."],
@@ -383,6 +401,7 @@ describe("W12: her words, the game's refusals, windows, pulls and a session's en
       [{ code: "BAD_ARGS", by: "helper", text: "helper text" }, "your helper refused it (BAD_ARGS) - helper text"],
       [{ code: "STOP", by: "host" }, "the host refused it (STOP)"],
       [{ code: "UNSAID" }, "it was refused (UNSAID)"],
+      [{ code: "SIM_NOT_CHOOSABLE", by: "probe", detail: "step 2 of the picker" }, "the game's side refused it (SIM_NOT_CHOOSABLE) - step 2 of the picker"],
     ];
     for (const [detail, words] of cases) {
       const id = okId(requestWith(T0, "a1"));

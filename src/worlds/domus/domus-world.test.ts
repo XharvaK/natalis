@@ -552,8 +552,11 @@ describe("game pictures: the Lar asks, the helper takes, the shelf keeps", () =>
 describe("the world's surface", () => {
   it("offers one game tool, says what it is about, and refuses words", async () => {
     expect(world?.id).toBe("domus");
-    expect(world?.tools().map((item) => item.spec.name)).toEqual(["game_act", "game_snapshot", "game_attention", "game_look", "game_overlay_say", "game_memory"]);
-    expect(world?.tools().map((item) => item.spec.safeWhenStopped)).toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
+    expect(world?.tools().map((item) => item.spec.name)).toEqual([
+      "game_act", "game_snapshot", "game_attention", "game_look", "game_overlay_say", "game_memory", "game_list", "game_catalog",
+      "game_go", "game_save", "plan_event", "game_buy", "game_place", "game_move", "game_sell",
+    ]);
+    expect(world?.tools().map((item) => item.spec.safeWhenStopped)).toEqual(Array(15).fill(undefined));
     expect(world?.about?.()).toBe("The Sims 4 (Domus): your household's game, at domus:<world>, while your summoner's helper is attached.");
     expect(await world?.say("domus:slot3", "hello")).toMatchObject({ ok: false, refused: { code: "no_words" } });
   });

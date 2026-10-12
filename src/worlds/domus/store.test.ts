@@ -227,7 +227,7 @@ describe("forgetText: the game's own words", () => {
   });
 });
 
-describe("schema migration (version 1: acts.words, acts.pulled_at_ms)", () => {
+describe("schema migration (version 1 adds acts.words and acts.pulled_at_ms; version 2 is checked in schema.test.ts)", () => {
   /** The acts table as version 0 wrote it, with one act in it, and no user_version set. */
   function writeVersionZeroStore(): void {
     // Every table as it is, then acts rebuilt with the version 0 columns (no words, no pulled_at_ms) and one act in it.
@@ -258,15 +258,15 @@ describe("schema migration (version 1: acts.words, acts.pulled_at_ms)", () => {
     expect(columnsOf(db)).toEqual(expect.arrayContaining(["words", "pulled_at_ms"]));
     const kept = db.prepare("SELECT label, words, pulled_at_ms FROM acts WHERE act_id = 'act1'").get() as Row;
     expect(kept).toEqual({ label: "Boil water (Kettle)", words: null, pulled_at_ms: null });
-    expect((db.prepare("PRAGMA user_version").get() as Row).user_version).toBe(1);
+    expect((db.prepare("PRAGMA user_version").get() as Row).user_version).toBe(2);
   });
 
-  it("changes nothing when the store is already at version 1, and opening it again is safe", () => {
+  it("changes nothing when the store is already at version 1 or later, and opening it again is safe", () => {
     db = openDomusDb(dir);
     db.close();
     db = openDomusDb(dir);
     expect(columnsOf(db).filter((name) => name === "words")).toHaveLength(1);
-    expect((db.prepare("PRAGMA user_version").get() as Row).user_version).toBe(1);
+    expect((db.prepare("PRAGMA user_version").get() as Row).user_version).toBe(2);
   });
 
   it("forgets the words the Lar said in a store from before version 1, without opening it through the world", () => {

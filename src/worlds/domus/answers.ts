@@ -28,7 +28,8 @@ export type AnswerRules = {
   text?: TextRule[];
 };
 
-export type OptionAct = { ref: string; guid64: string; text: string; opens?: string };
+/** needs_sim (W13): a phone act that opens a Sim picker; her act names the Sim (game_act sim). */
+export type OptionAct = { ref: string; guid64: string; text: string; opens?: string; needs_sim?: boolean };
 export type OptionObject = {
   object: string; object_id: string; where?: string; acts: OptionAct[]; noWay?: string; answer_rules?: unknown;
   /** The room the object is in, by its name; absent when the helper does not know it. */
