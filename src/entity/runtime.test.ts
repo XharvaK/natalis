@@ -2887,7 +2887,7 @@ describe("cache order: the slow sections first, then the rows that change", () =
     for (const heading of ["## now", "## time", "## recall"]) expect(system).not.toContain(heading);
 
     // The order note is fixed text, so it sits in the system text, once.
-    expect(system.match(/come after the new rows/g)).toHaveLength(1);
+    expect(system.match(/Each turn's message lists, in this order/g)).toHaveLength(1);
     expect(user.startsWith("Recent here:")).toBe(true);
     const order = ["Recent here:", "New:", "## now", "## time", "## recall"].map((heading) => user.indexOf(heading));
     order.forEach((at, i) => {

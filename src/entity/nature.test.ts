@@ -19,7 +19,17 @@ afterEach(() => {
 
 describe("a Lar's nature", () => {
   it("says the character note wins over it", () => {
-    expect(LAR_NATURE).toContain("where the two differ, your character note wins");
+    expect(LAR_NATURE).toContain("Where the two differ, your character note wins.");
+  });
+
+  it("says how to write: the point first, no announcing, no private labels, and a manual's plainness for technical talk", () => {
+    expect(LAR_NATURE).toContain("Put the point first.");
+    expect(LAR_NATURE).toContain("don't announce it first");
+    expect(LAR_NATURE).toContain("Write for someone who has none of your notes");
+    expect(LAR_NATURE).toContain("Don't coin labels");
+    expect(LAR_NATURE).toContain("Brief means saying fewer things, not fewer words per thing");
+    expect(LAR_NATURE).toContain("write like a good technical manual. One fact per sentence.");
+    expect(LAR_NATURE).toContain("Casual talk is just talk");
   });
 
   it("says a Lar is someone, not a service, and talks like a person", () => {
