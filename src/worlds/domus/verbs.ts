@@ -15,8 +15,10 @@ import { type GameContext, gameGate, refused, staleRef } from "./tool-context.js
 
 /** Saves are at least this far apart, in real time (the game's own save lock is separate). */
 export const SAVE_FLOOR_MS = 15 * 60_000;
-/** A plan's guests: at most this many. */
-const GUESTS_MAX = 16;
+/** A plan's guests: at most this many (the probe refuses past the event type's own limit, too many guests). */
+const GUESTS_MAX = 64;
+/** A plan's start: a day this many days ahead at most (0 is today, 1 tomorrow). */
+const DAY_OFFSET_MAX = 99;
 const KNOWINGLY = {
   type: "boolean",
   description: "True only to ask anyway, after a refusal that says another of your threads asked the game within the last 60 seconds.",
@@ -184,11 +186,11 @@ const VERBS: VerbDef[] = [
     description: "Plan a game event of a type from game_list events (an e ref), with guests from game_list people (p refs). It takes the turn's one act slot. start is now, or a day and a time on the game clock.",
     properties: {
       type: { type: "string", description: "The e ref of the event type." },
-      guests: { type: "array", items: { type: "string" }, maxItems: GUESTS_MAX, description: "Optional: up to 16 p refs." },
+      guests: { type: "array", items: { type: "string" }, maxItems: GUESTS_MAX, description: `Optional: up to ${GUESTS_MAX} p refs.` },
       start: {
         type: ["string", "object"],
-        description: "Optional: \"now\" (the default), or {day: \"today\" or \"tomorrow\", time: \"HH:MM\"}.",
-        properties: { day: { type: "string", enum: ["today", "tomorrow"] }, time: { type: "string" } },
+        description: "Optional: \"now\" (the default), or {day_offset: 0 to 99 days ahead (0 is the same day), time: \"HH:MM\"} on the game clock.",
+        properties: { day_offset: { type: "integer", minimum: 0, maximum: DAY_OFFSET_MAX }, time: { type: "string" } },
       },
     },
     required: ["type"],
@@ -209,13 +211,16 @@ const VERBS: VerbDef[] = [
       let startWords = "";
       if (start === "now") {
         startArg = "now";
-      } else if (isRecord(start) && (start.day === "today" || start.day === "tomorrow") && typeof start.time === "string"
+      } else if (isRecord(start) && Number.isSafeInteger(start.day_offset) && (start.day_offset as number) >= 0
+        && (start.day_offset as number) <= DAY_OFFSET_MAX && typeof start.time === "string"
         && /^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(start.time)) {
+        const dayOffset = start.day_offset as number;
         const [hour, minute] = start.time.split(":").map(Number) as [number, number];
-        startArg = { day_offset: start.day === "tomorrow" ? 1 : 0, hour, minute };
-        startWords = ` at ${start.time} ${start.day}`;
+        startArg = { day_offset: dayOffset, hour, minute };
+        const day = dayOffset === 0 ? "today" : dayOffset === 1 ? "tomorrow" : `in ${dayOffset} days`;
+        startWords = ` at ${start.time} ${day}`;
       } else {
-        return refused("bad_args", "start is \"now\", or {day: \"today\" or \"tomorrow\", time: \"HH:MM\"} on the game clock.");
+        return refused("bad_args", `start is "now", or {day_offset: 0 to ${DAY_OFFSET_MAX} (0 is today), time: "HH:MM"} on the game clock.`);
       }
       const withWords = guests.length ? ` with ${guests.map((guest) => `${guest.name} (${guest.ref})`).join(", ")}` : "";
       return {

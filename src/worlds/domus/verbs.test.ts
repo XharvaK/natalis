@@ -187,7 +187,7 @@ describe("a second save while the first is still waiting (NATALIS2-10)", () => {
 describe("plan_event", () => {
   it("maps a day and a time on the game clock, and the guests to sim ids", async () => {
     seedView([]);
-    const receipt = await call("plan_event", { type: "e1", guests: ["p1"], start: { day: "tomorrow", time: "19:30" } });
+    const receipt = await call("plan_event", { type: "e1", guests: ["p1"], start: { day_offset: 1, time: "19:30" } });
     expect(receipt).toMatchObject({ ok: true, data: { verb: "event" } });
     const args = JSON.parse(String((actRows()[0] as Row).args_json)).args;
     expect(args).toEqual({ situation_id: "guid-party", guests: ["4001"], start: { day_offset: 1, hour: 19, minute: 30 } });
@@ -196,7 +196,9 @@ describe("plan_event", () => {
 
   it("refuses a time that is not HH:MM, and an unknown guest", async () => {
     seedView([]);
-    expect(await call("plan_event", { type: "e1", start: { day: "today", time: "7pm" } })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await call("plan_event", { type: "e1", start: { day_offset: 0, time: "7pm" } })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await call("plan_event", { type: "e1", start: { day_offset: 100, time: "19:00" } })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await call("plan_event", { type: "e1", start: { day_offset: -1, time: "19:00" } })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
     expect(await call("plan_event", { type: "e1", guests: ["p7"] })).toMatchObject({ ok: false, refused: { code: "stale_list" } });
   });
 });
@@ -323,5 +325,29 @@ describe("the summoner's stop refuses the verbs (Q-j)", () => {
     expect(await run("game_save", {})).toMatchObject({ ok: false, refused: { code: "stopped" } });
     expect(await run("game_buy", { item: "c1", place: { on: "t9" } })).toMatchObject({ ok: false, refused: { code: "stopped" } });
     expect(actRows()).toEqual([]);
+  });
+});
+
+describe("plan_event's limits: a day up to 99 days ahead, and up to 64 guests (Q-d)", () => {
+  it("takes a day offset from 0 to 99, and words it by its day", async () => {
+    seedView([]);
+    expect(await call("plan_event", { type: "e1", start: { day_offset: 99, time: "08:05" } }, "t-d1")).toMatchObject({ ok: true });
+    expect(String((actRows()[0] as Row).label)).toBe("plan Test Party (e1) at 08:05 in 99 days");
+    expect(JSON.parse(String((actRows()[0] as Row).args_json)).args.start).toEqual({ day_offset: 99, hour: 8, minute: 5 });
+  });
+
+  it("takes up to 64 guests and refuses a 65th", async () => {
+    seedView([]);
+    const many = Array.from({ length: 64 }, () => "p1");
+    expect(await call("plan_event", { type: "e1", guests: many }, "t-g1")).toMatchObject({ ok: true });
+    expect(await call("plan_event", { type: "e1", guests: [...many, "p1"] }, "t-g2")).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+  });
+
+  it("states the new limits in the tool schema", () => {
+    const properties = tool("plan_event").spec.parameters.properties as Record<string, Record<string, unknown>>;
+    expect(properties.guests?.maxItems).toBe(64);
+    expect(JSON.stringify(properties.start)).toContain("day_offset");
+    expect(JSON.stringify(properties.start)).not.toContain("tomorrow");
+    expect(properties.start?.properties).toEqual({ day_offset: { type: "integer", minimum: 0, maximum: 99 }, time: { type: "string" } });
   });
 });
