@@ -84,7 +84,20 @@ export type RequestInput = {
 
 export type RequestResult =
   | { ok: true; actId: string; expiresAtMs: number; steps: Array<{ ref: string; label: string }> }
-  | { ok: false; code: "one_act_per_turn" | "answer_repeated" };
+  | { ok: false; code: "turn_slot_held" | "answer_repeated" };
+
+/** The words a refusal for the turn's one act slot gives (game_act, and the verbs). */
+export const SLOT_HELD_REFUSAL = "Travel, a save and a planned event hold the turn's one act slot: none can come after another act or home edit in the same turn, and no act or home edit can come after one of them. Ask for it in your next turn.";
+
+/**
+ * The turn's one act slot (Q-3). Travel, a save and a planned event hold it: one of them is refused when any act or verb was
+ * already requested this turn, and any act or verb is refused once one of them was. Game acts and home edits are not limited
+ * to one in a turn. An answer is not an act and is never held here.
+ */
+function slotRefused(db: DatabaseSync, turnId: string, holdsSlot: boolean): boolean {
+  if (db.prepare(`SELECT 1 FROM acts WHERE turn_id = ? AND answer_json IS NULL AND verb IN (${SLOT_VERB_SQL}) LIMIT 1`).get(turnId)) return true;
+  return holdsSlot && db.prepare("SELECT 1 FROM acts WHERE turn_id = ? AND answer_json IS NULL LIMIT 1").get(turnId) !== undefined;
+}
 
 /** A reason a waiting plan step is let go, in the words the Lar reads. */
 const DROP_REASON: Readonly<Record<string, string>> = {
@@ -130,8 +143,8 @@ export function actRequestedMeanwhile(db: DatabaseSync, input: { thread: string;
 
 /**
  * Keeps the Lar's choice as a requested act, with its plan. A new choice replaces what an earlier plan still waited
- * to do. One act per turn: a second act in the same turn is refused, not queued behind the first. An answer is a reply
- * to a question the game holds open, not an act: it is not held by the one-act rule, and one answer per question per turn.
+ * to do. A game act is refused only when the turn's slot is held by travel, a save or a planned event (see slotRefused). An
+ * answer is a reply to a question the game holds open, not an act: one answer per question per turn.
  */
 export function requestAct(db: DatabaseSync, input: RequestInput): RequestResult {
   return inTransaction(db, () => {
@@ -140,9 +153,8 @@ export function requestAct(db: DatabaseSync, input: RequestInput): RequestResult
         .get(input.turnId, input.found.object.object_id)) {
         return { ok: false as const, code: "answer_repeated" as const };
       }
-    } else if (db.prepare(`SELECT 1 FROM acts WHERE turn_id = ? AND answer_json IS NULL AND (verb IS NULL OR verb IN (${SLOT_VERB_SQL})) LIMIT 1`)
-      .get(input.turnId)) {
-      return { ok: false as const, code: "one_act_per_turn" as const };
+    } else if (slotRefused(db, input.turnId, false)) {
+      return { ok: false as const, code: "turn_slot_held" as const };
     }
     dropPlanned(db, { attachment: input.attachment, reason: "replaced", notify: false, nowMs: input.nowMs });
     const actId = randomUUID().replaceAll("-", "");
@@ -187,22 +199,18 @@ export type VerbInput = {
 
 export type VerbResult =
   | { ok: true; actId: string; expiresAtMs: number }
-  | { ok: false; code: "one_act_per_turn" };
+  | { ok: false; code: "turn_slot_held" };
 
 /**
- * Keeps a home or travel verb as a requested act (W13). Travel, saving and planning an event hold the turn's one-act slot,
- * as a game act does, and replace what a plan still waited to do. A home edit (buy, place, move, sell) does neither: it has
- * no cap in a turn, and is bounded only by the game's own answers and the meanwhile hold.
+ * Keeps a home or travel verb as a requested act (W13). Travel, saving and planning an event hold the turn's one act slot
+ * (see slotRefused), and replace what a plan still waited to do. A home edit (buy, place, move, sell) has no cap in a turn,
+ * and is bounded only by the game's own answers and the meanwhile hold.
  */
 export function requestVerb(db: DatabaseSync, input: VerbInput): VerbResult {
   return inTransaction(db, () => {
-    if (SLOT_VERBS.includes(input.verb)) {
-      if (db.prepare(`SELECT 1 FROM acts WHERE turn_id = ? AND answer_json IS NULL AND (verb IS NULL OR verb IN (${SLOT_VERB_SQL})) LIMIT 1`)
-        .get(input.turnId)) {
-        return { ok: false as const, code: "one_act_per_turn" as const };
-      }
-      dropPlanned(db, { attachment: input.attachment, reason: "replaced", notify: false, nowMs: input.nowMs });
-    }
+    const holdsSlot = SLOT_VERBS.includes(input.verb);
+    if (slotRefused(db, input.turnId, holdsSlot)) return { ok: false as const, code: "turn_slot_held" as const };
+    if (holdsSlot) dropPlanned(db, { attachment: input.attachment, reason: "replaced", notify: false, nowMs: input.nowMs });
     const actId = randomUUID().replaceAll("-", "");
     insertAct(db, {
       actId, turnId: input.turnId, thread: input.thread, attachment: input.attachment, observationId: input.observationId,

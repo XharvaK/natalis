@@ -137,7 +137,7 @@ describe("game_go", () => {
   it("holds the turn's one-act slot: a save in the same turn is refused", async () => {
     seedView([]);
     expect(await call("game_go", { place: "h1" }, "t-same")).toMatchObject({ ok: true });
-    expect(await call("game_save", {}, "t-same")).toMatchObject({ ok: false, refused: { code: "one_act_per_turn" } });
+    expect(await call("game_save", {}, "t-same")).toMatchObject({ ok: false, refused: { code: "turn_slot_held" } });
   });
 
   it("is held for another thread's request within a minute, unless knowingly", async () => {
@@ -206,7 +206,6 @@ describe("home edits", () => {
 
   it("has no cap on home edits in a turn: the seventh and the tenth are accepted, not held by the one-act rule", async () => {
     seedView([]);
-    await call("game_go", { place: "h1" }, "t-home");
     for (let index = 1; index <= 10; index++) {
       // Eight catalogue items are seen (c1 to c8); the ninth and tenth buys reuse the first two.
       const item = `c${((index - 1) % 8) + 1}`;
@@ -215,12 +214,14 @@ describe("home edits", () => {
     expect(actRows().filter((row) => row.verb === "buy")).toHaveLength(10);
   });
 
-  it("keeps the one-act slot of a turn for travel, and home edits still do not take it", async () => {
+  it("lets home edits follow one another, and holds travel's slot: no go after an edit, and no edit after a go (Q-3)", async () => {
     seedView([]);
     expect(await call("game_buy", { item: "c1", place: shelfPlace }, "t-slot")).toMatchObject({ ok: true });
     expect(await call("game_buy", { item: "c2", place: shelfPlace }, "t-slot")).toMatchObject({ ok: true });
-    expect(await call("game_go", { place: "h1" }, "t-slot")).toMatchObject({ ok: true });
-    expect(await call("game_go", { place: "h1" }, "t-slot")).toMatchObject({ ok: false, refused: { code: "one_act_per_turn" } });
+    expect(await call("game_go", { place: "h1" }, "t-slot")).toMatchObject({ ok: false, refused: { code: "turn_slot_held" } });
+    expect(await call("game_go", { place: "h1" }, "t-travel")).toMatchObject({ ok: true });
+    expect(await call("game_buy", { item: "c3", place: shelfPlace }, "t-travel")).toMatchObject({ ok: false, refused: { code: "turn_slot_held" } });
+    expect(await call("game_go", { place: "h1" }, "t-travel")).toMatchObject({ ok: false, refused: { code: "turn_slot_held" } });
   });
 
   it("buys a catalogue item beside a thing, with its label in the game's words", async () => {

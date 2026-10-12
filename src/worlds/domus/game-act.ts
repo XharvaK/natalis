@@ -5,7 +5,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import { answerFor, isAnswerClaim, type AnswerClaim, type Found } from "./answers.js";
-import { actRequestedMeanwhile, PLAN_MORE, requestAct } from "./acts.js";
+import { actRequestedMeanwhile, PLAN_MORE, requestAct, SLOT_HELD_REFUSAL } from "./acts.js";
 import { findOption, labelOf, optionsOf, refsOf } from "./options.js";
 import { findListed, listedSession } from "./lists.js";
 import { gameThreadNow, newestObservation, STALE_VIEW_CODE, STALE_VIEW_REASON } from "./store.js";
@@ -261,7 +261,7 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
     if (requested.code === "answer_repeated") {
       return refused(requested.code, "You already answered this question in this turn. Answer it again in your next turn, if it is still open.");
     }
-    return refused(requested.code, "You already asked the game for one act in this turn. Ask for the next one in your next turn.");
+    return refused(requested.code, SLOT_HELD_REFUSAL);
   }
   const planText = requested.steps.length
     ? ` Then, each after the one before completes: ${requested.steps.map((step) => `${step.ref} (${step.label})`).join("; ")}.`

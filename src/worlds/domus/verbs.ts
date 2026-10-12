@@ -6,7 +6,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import type { OptionObject } from "./answers.js";
-import { actRequestedMeanwhile, lastSaveAt, requestVerb, saveWaiting } from "./acts.js";
+import { actRequestedMeanwhile, lastSaveAt, requestVerb, SLOT_HELD_REFUSAL, saveWaiting } from "./acts.js";
 import { seenItem } from "./catalog.js";
 import { findListed, listedSession, readList, REF_PATTERN } from "./lists.js";
 import { findOption, optionsOf } from "./options.js";
@@ -150,7 +150,7 @@ type VerbDef = {
 const VERBS: VerbDef[] = [
   {
     tool: "game_go",
-    description: "Travel to a place from game_list places (an h ref). Travel moves your summoner's game too. Ask them on Discord first, and go only after their yes. It is your one act for the turn.",
+    description: "Travel to a place from game_list places (an h ref). Travel moves your summoner's game too. Ask them on Discord first, and go only after their yes. It takes the turn's one act slot.",
     properties: { place: { type: "string", description: "The h ref of the place, from game_list places." } },
     required: ["place"],
     keys: ["place"],
@@ -165,7 +165,7 @@ const VERBS: VerbDef[] = [
   },
   {
     tool: "game_save",
-    description: "Save the game now. It is your one act for the turn. Refused within 15 minutes of your last save that was not refused.",
+    description: "Save the game now. It takes the turn's one act slot. Refused within 15 minutes of your last save that was not refused.",
     properties: {},
     required: [],
     keys: [],
@@ -181,7 +181,7 @@ const VERBS: VerbDef[] = [
   },
   {
     tool: "plan_event",
-    description: "Plan a game event of a type from game_list events (an e ref), with guests from game_list people (p refs). It is your one act for the turn. start is now, or a day and a time on the game clock.",
+    description: "Plan a game event of a type from game_list events (an e ref), with guests from game_list people (p refs). It takes the turn's one act slot. start is now, or a day and a time on the game clock.",
     properties: {
       type: { type: "string", description: "The e ref of the event type." },
       guests: { type: "array", items: { type: "string" }, maxItems: GUESTS_MAX, description: "Optional: up to 16 p refs." },
@@ -360,7 +360,7 @@ function runVerb(open: () => GameContext, def: VerbDef, args: Args, context: Too
     nowMs,
   });
   if (!kept.ok) {
-    return refused(kept.code, "You already asked the game for one act in this turn. Ask for the next one in your next turn.");
+    return refused(kept.code, SLOT_HELD_REFUSAL);
   }
   return {
     ok: true,

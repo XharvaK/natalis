@@ -218,11 +218,12 @@ describe("game_act: requests", () => {
     expect(acts()).toEqual([]);
   });
 
-  it("refuses a second choice in the same turn", async () => {
+  it("accepts a second and a third choice in the same turn (Q-3)", async () => {
     view(VIEW);
     expect((await run({ option: "a1" }, THREAD, "one-turn")).ok).toBe(true);
-    expect(await run({ option: "a2" }, THREAD, "one-turn")).toMatchObject({ ok: false, refused: { code: "one_act_per_turn" } });
-    expect(acts()).toHaveLength(1);
+    expect((await run({ option: "a2" }, THREAD, "one-turn")).ok).toBe(true);
+    expect((await run({ option: "a3" }, THREAD, "one-turn")).ok).toBe(true);
+    expect(acts()).toHaveLength(3);
   });
 
   it("refuses arguments it does not know, and malformed ones, before anything is requested", async () => {

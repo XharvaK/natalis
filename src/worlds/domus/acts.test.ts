@@ -193,12 +193,23 @@ describe("requested acts", () => {
     expect(sync(T0 + 3).acts.find((act) => act.act_id === okId(plain))).not.toHaveProperty("owner");
   });
 
-  it("refuses a second choice in the same turn, and says so", () => {
+  it("keeps game acts in one turn one after another: a second and a third are accepted (Q-3)", () => {
     turn += 1;
-    const first = requestAct(db, { thread: THREAD, turnId: "same", attachment: HELPER, observationId: "x", found: found("a1"), label: "x", forSummoner: false, then: [], nowMs: T0 });
-    expect(first.ok).toBe(true);
-    const second = requestAct(db, { thread: THREAD, turnId: "same", attachment: HELPER, observationId: "x", found: found("a2"), label: "y", forSummoner: false, then: [], nowMs: T0 });
-    expect(second).toEqual({ ok: false, code: "one_act_per_turn" });
+    const request = (option: string) => requestAct(db, { thread: THREAD, turnId: "same", attachment: HELPER, observationId: "x", found: found(option), label: option, forSummoner: false, then: [], nowMs: T0 });
+    expect(request("a1").ok).toBe(true);
+    expect(request("a2").ok).toBe(true);
+    expect(request("a3").ok).toBe(true);
+  });
+
+  it("refuses a game act after travel, a save or a planned event in the same turn, and says the slot is held (Q-3)", () => {
+    const slot = (verb: string, turnId: string) => {
+      db.prepare("INSERT INTO acts (act_id, turn_id, thread, attachment, observation_id, option_ref, object_id, guid64, label, state, requested_at_ms, expires_at_ms, updated_at_ms, for_summoner, answer_json, words, verb, args_json) VALUES (?, ?, ?, ?, NULL, '', '0', '', 'slot', 'requested', ?, ?, ?, 0, NULL, NULL, ?, NULL)")
+        .run(`slot-${verb}-${turnId}`, turnId, THREAD, HELPER, T0, T0 + 60_000, T0, verb);
+    };
+    for (const verb of ["go", "save", "event"]) {
+      slot(verb, `after-${verb}`);
+      expect(requestAct(db, { thread: THREAD, turnId: `after-${verb}`, attachment: HELPER, observationId: "x", found: found("a1"), label: "x", forSummoner: false, then: [], nowMs: T0 })).toEqual({ ok: false, code: "turn_slot_held" });
+    }
   });
 
   it("counts what is requested and what is planned for the now board", () => {
@@ -502,13 +513,13 @@ describe("W12: her words, the game's refusals, windows, pulls and a session's en
     expect(actRequestedMeanwhile(db, { thread: THREAD, nowMs: T0 + 4 })).toBeUndefined();
   });
 
-  it("lets an answer through the one-act rule, one answer per question per turn, and a second act after an answer", () => {
+  it("lets an answer through, one answer per question per turn, and game acts after it (Q-3)", () => {
     const answer = { json: '{"rows":[]}' };
     const turnId = "turn-answers";
     expect(requestWith(T0, "a9", { turnId, found: QUESTION, answer }).ok).toBe(true);
     expect(requestWith(T0 + 1, "a9", { turnId, found: QUESTION, answer })).toEqual({ ok: false, code: "answer_repeated" });
     expect(requestWith(T0 + 2, "a1", { turnId }).ok).toBe(true);
-    expect(requestWith(T0 + 3, "a2", { turnId })).toEqual({ ok: false, code: "one_act_per_turn" });
+    expect(requestWith(T0 + 3, "a2", { turnId }).ok).toBe(true);
   });
 });
 
