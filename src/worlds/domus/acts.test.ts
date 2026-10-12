@@ -6,8 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { findOption, type OptionObject } from "./options.js";
 import type { Found } from "./answers.js";
 import {
-  ACT_TTL_MS, actRequestedMeanwhile, CODE_WORDS, expireDue, nextState, pendingCounts, PLAN_STEP_MAX_MS, requestAct, syncActs, type RequestResult, type SyncAct, wordsOfCode,
-} from "./acts.js";
+  ACT_TTL_MS, actRequestedMeanwhile, CODE_WORDS, expireDue, nextState, pendingCounts, PLAN_STEP_MAX_MS, requestAct, syncActs, type RequestResult, type SyncAct, wordsOfCode, ACT_BOARD_MS, recentActsBoard } from "./acts.js";
 import { openDomusDb } from "./store.js";
 import type { DomusActPhase, SyncEvent } from "./wire.js";
 
@@ -427,6 +426,30 @@ describe("W12: her words, the game's refusals, windows, pulls and a session's en
     expect(unknown).toBe('Your act "Boil water (Test kettle)" (a1): the game\'s side refused it.');
   });
 
+  it("lists the game acts asked in the last 30 minutes, with their state in words and no code (CORE3-3)", () => {
+    const waiting = okId(requestWith(T0, "a1"));
+    expect(waiting).toBeTruthy();
+    const refused = okId(requestWith(T0, "a1"));
+    sync(T0 + 1, [ev(refused, "rejected", T0 + 1, { code: "NOT_OFFERED", by: "game", text: "The game would not let her sit." })]);
+    const texts = recentActsBoard(db, T0 + 2).map((item) => item.text);
+    expect(texts).toContain("Boil water (Test kettle): waiting for the game.");
+    expect(texts).toContain("Boil water (Test kettle): refused: The game would not let her sit.");
+    expect(recentActsBoard(db, T0 + ACT_BOARD_MS + 1_000)).toEqual([]);
+  });
+
+  it("says the money steps the probe reports in words, with no code and no bare detail", () => {
+    const charged = okId(requestWith(T0, "a1"));
+    const refunded = sync(T0 + 1, [ev(charged, "rejected", T0 + 1, { code: "CHARGE_UNKNOWN", by: "probe", detail: "charged, and refunded" })]).notes[0]?.text ?? "";
+    expect(refunded).toContain("the game's side refused it: you were charged, and the money was refunded");
+    expect(refunded).not.toContain("not known whether you paid");
+    expect(refunded).not.toContain("CHARGE_UNKNOWN");
+    const funds = okId(requestWith(T0, "a1"));
+    const unread = sync(T0 + 1, [ev(funds, "unknown", T0 + 1, { code: "FUNDS_UNREAD", detail: "no event; the money is not known" })]).notes[0]?.text ?? "";
+    expect(unread).toContain("the event may or may not have been made, and your money could not be read");
+    expect(unread).toContain("the game does not say whether any event was made");
+    expect(unread).not.toContain("FUNDS_UNREAD");
+  });
+
   it("words the refusal by who refused it, with the game's own sentence or the code's words, and no code", () => {
     const cases: Array<[Record<string, unknown>, string]> = [
       [{ code: "NOT_ATTACHED", by: "game", text: "The game would not let her sit." }, "the game refused it: The game would not let her sit."],
@@ -593,6 +616,6 @@ describe("plain words for every code the game's side and the helper send (NATALI
     const done = sync(T0 + 1, [ev("sv1", "finished", T0 + 1, { code: "SAVED" })]).notes[0];
     expect(done?.text).toBe('Your act "save the game": the game saved.');
     const other = sync(T0 + 3, [ev("sv2", "finished", T0 + 3, { code: "SOMETHING_NEW" })]).notes[0];
-    expect(other?.text).toBe('Your act "save the game": it finished (SOMETHING_NEW).');
+    expect(other?.text).toBe('Your act "save the game": it finished.');
   });
 });

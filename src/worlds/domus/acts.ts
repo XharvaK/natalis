@@ -396,6 +396,7 @@ export const CODE_WORDS: Readonly<Record<string, string>> = {
   CHARGE_UNKNOWN: "the game could not read your money after the buy, so the thing was taken back out, and it is not known whether you paid",
   REMOVE_UNCONFIRMED: "the game did not confirm that the thing was taken back out, so it may still be there; nothing was refunded",
   SELL_UNCONFIRMED: "the thing was still there 30 seconds after the sale, so you were not paid",
+  FUNDS_UNREAD: "the event may or may not have been made, and your money could not be read",
   SAVE_UNCONFIRMED: "the game did not confirm the save in two minutes, so it may or may not have been saved",
   ROW_INVALID: "the game's report of it could not be read, so there is no result",
   LEFT_QUEUE: "the game took it out of its queue and did not say how it ended; what changed in your next view tells what it did",
@@ -455,7 +456,27 @@ export const DETAIL_WORDS: Readonly<Record<string, string>> = {
   "not paid": "you were not paid",
   "refund failed": "the refund failed",
   "not released": "the thing was not released",
+  // The details the probe's newer steps give (the money, the sale and the confirm window).
+  "no event; the money is not known": "the game does not say whether any event was made, and the money is not known",
+  "the money did not fall": "the money did not go down",
+  "the object is still there; the payment may still come": "the thing is still there, and the payment may still come",
+  "paid after the confirm window": "the payment came after the game's confirm window",
 };
+
+/**
+ * The probe's details that are the outcome of a money step: the sentence stands alone, in place of the code's words (the
+ * code's words say what was not known, and the outcome says what happened).
+ */
+export const OUTCOME_WORDS: Readonly<Record<string, string>> = {
+  "charged, and refunded": "you were charged, and the money was refunded",
+  "the money could not be read after the removal; not refunded": "the money could not be read after the removal, so it was not refunded",
+  "charged; the refund failed": "you were charged, and the refund failed",
+};
+
+/** The outcome sentence of a money step's detail, when the detail is one (see OUTCOME_WORDS). */
+function outcomeOf(detail: unknown): string | undefined {
+  return typeof detail === "string" && Object.hasOwn(OUTCOME_WORDS, detail.trim()) ? OUTCOME_WORDS[detail.trim()] : undefined;
+}
 
 /** The detail words of a step, when the probe sent one she can read; a price or a count of seconds is said with its number. */
 function detailWords(detail: unknown): string | undefined {
@@ -485,6 +506,8 @@ function refusedText(detail: Record<string, unknown>): string | undefined {
   const own = typeof detail.text === "string" && detail.text.trim() !== "" ? detail.text.trim()
     : typeof detail.reason === "string" && detail.reason.trim() !== "" ? detail.reason.trim() : undefined;
   if (own !== undefined) return own.slice(0, 240);
+  const outcome = outcomeOf(detail.detail);
+  if (outcome !== undefined) return outcome;
   const extra = detailWords(detail.detail);
   const words = wordsOfCode(detail.code);
   if (words !== undefined) return (extra === undefined ? words : `${words}: ${extra}`).slice(0, 240);
@@ -521,7 +544,10 @@ function phaseSentence(phase: DomusActPhase, detail: Record<string, unknown>, la
     case "unknown": {
       // The game took the act out of its queue and never said how it ended: the words say only that.
       if (detail.code === "LEFT_QUEUE") return wordsOfCode(detail.code) ?? "the game took it out of its queue and did not say how it ended";
-      const reason = detail.reason ? `: ${String(detail.reason).slice(0, 200)}` : "";
+      const outcome = outcomeOf(detail.detail);
+      if (outcome !== undefined) return outcome;
+      const extra = detailWords(detail.detail);
+      const reason = detail.reason ? `: ${String(detail.reason).slice(0, 200)}` : extra === undefined ? "" : `: ${extra}`;
       const words = wordsOfCode(detail.code);
       if (words !== undefined) return `${words}${reason}`;
       return `nothing says how it ended${reason}`;
@@ -543,7 +569,10 @@ function verbSentence(phase: DomusActPhase, detail: Record<string, unknown>, lat
   const result = typeof detail.result === "string" ? detail.result.trim().replace(/[.!?]+$/, "") : "";
   if (result !== "") return result;
   // No words of the game's own: the finished code says what happened (the game saved, you arrived), else it just finished.
-  return wordsOfCode(detail.code) ?? (typeof detail.code === "string" && detail.code !== "" ? `it finished (${detail.code})` : "it finished");
+  // A detail the probe gives (a payment after the confirm window) is said after those words.
+  const base = wordsOfCode(detail.code) ?? "it finished";
+  const extra = detailWords(detail.detail);
+  return extra === undefined ? base : `${base}: ${extra}`;
 }
 
 function noteFor(act: Row, phase: DomusActPhase, detail: Record<string, unknown>, late: boolean): ThreadNote {
@@ -812,4 +841,40 @@ export function pendingCounts(db: DatabaseSync, nowMs: number): { requested: num
   const requested = Number((db.prepare("SELECT COUNT(*) AS n FROM acts WHERE state = 'requested' AND expires_at_ms > ?").get(nowMs) as Row).n);
   const planned = Number((db.prepare("SELECT COUNT(*) AS n FROM plan_steps WHERE state = 'planned'").get() as Row).n);
   return { requested, planned };
+}
+
+/** How far back the other threads' game acts show on the now board. */
+export const ACT_BOARD_MS = 30 * 60_000;
+
+/** A game act one thread asked for, as the other threads' now board says it: when it was asked, and its state in words. */
+export type ActBoardItem = { thread: string; atMs: number; text: string };
+
+/** The state of a requested act in words, for the now board: waiting, done, or refused with the reason in words. */
+function boardStateWords(state: string, rejected: Record<string, unknown> | undefined): string {
+  if (state === "finished") return "done";
+  if (state === "rejected") return `refused: ${(refusedText(rejected ?? {}) ?? "the game gave no reason").replace(/[.!?]+$/, "")}`;
+  if (state === "expired") return "refused: it expired before the game picked it up";
+  if (state === "unknown") return "how it ended is not known";
+  if (state === "stopped" || state === "undone" || state === "dropped") return "withdrawn";
+  return "waiting for the game";
+}
+
+/**
+ * The game acts requested in the last ACT_BOARD_MS, from every thread, newest first, each in one line of words: its label
+ * and its state. The reason of a refusal is read from the helper's rejected report, in words (no code). The board names
+ * the thread and leaves out the asking thread's own acts.
+ */
+export function recentActsBoard(db: DatabaseSync, nowMs: number): ActBoardItem[] {
+  const rows = db.prepare(`SELECT act_id, thread, label, state, requested_at_ms FROM acts
+    WHERE requested_at_ms >= ? ORDER BY requested_at_ms DESC LIMIT 40`).all(nowMs - ACT_BOARD_MS) as Row[];
+  return rows.map((row) => {
+    const rejected = String(row.state) === "rejected"
+      ? parseDetail((db.prepare("SELECT detail_json FROM act_events WHERE act_id = ? AND phase = 'rejected'").get(String(row.act_id)) as Row | undefined)?.detail_json)
+      : undefined;
+    return {
+      thread: String(row.thread),
+      atMs: Number(row.requested_at_ms),
+      text: `${String(row.label)}: ${boardStateWords(String(row.state), rejected)}.`,
+    };
+  });
 }

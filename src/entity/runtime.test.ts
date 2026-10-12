@@ -2244,7 +2244,7 @@ describe("repeating wakes", () => {
     // The board is read at the start of each turn, so the rhythm shows on the next one.
     cli.send("Anything else today?");
     await entity.idle();
-    expect(userTextOf(model.requests[2])).toMatch(/Next wakes: 09:00 daily \(next 2026-10-12 09:00\) \(id [0-9a-f]{8}\): look at the garden\./);
+    expect(userTextOf(model.requests[2])).toMatch(/Your next wakes: 09:00 daily, next [A-Za-z]+ 2026-10-12 09:00 \(in [^)]*\) \(id [0-9a-f]{8}\), set in [^,]+: look at the garden\./);
   });
 
   it("ends a series when cancel_wake names its id", async () => {
@@ -2282,7 +2282,7 @@ describe("repeating wakes", () => {
     await reopened.entity.start();
     reopened.cli.send("What is set?");
     await reopened.entity.idle();
-    expect(userTextOf(model.requests[0])).toContain("(id 643c9508): water.");
+    expect(userTextOf(model.requests[0])).toContain("(id 643c9508), set in other: water.");
 
     reopened.cli.send("Stop the watering.");
     await reopened.entity.idle();
@@ -2328,7 +2328,7 @@ describe("repeating wakes", () => {
       }),
       reply({ toolCalls: [call("end_turn")] }),
     ]);
-    const { entity, cli } = await open(model, { config: { ...CONFIG, timeZone: "America/New_York" } });
+    const { entity, cli } = await open(model, { nowMs: () => NOW, config: { ...CONFIG, timeZone: "America/New_York" } });
     await entity.start();
     cli.send("Go.");
     await entity.idle();
@@ -2896,6 +2896,40 @@ describe("cache order: the slow sections first, then the rows that change", () =
     return { users: model.requests.map(userTextOf), systems: model.requests.map(systemTextOf) };
   }
 
+  it("says a world's line cannot be read, and the turn still runs (CORE3-2)", async () => {
+    const broken = feedWorld("broken");
+    const world: World = { ...broken.world, now: () => { throw new Error("the read failed"); } };
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model, {}, [world]);
+    await entity.start();
+    cli.send("Are you there?");
+    await entity.idle();
+    const user = userTextOf(model.requests[0]);
+    expect(user).toContain("- broken: not available right now.");
+    expect(user).toContain("Body note: broken could not give its line this turn");
+  });
+
+  it("lists the game acts and looks the other threads asked for, with their state, on the board (CORE3-3)", async () => {
+    const CLOCK = Date.parse("2026-10-12T09:00:00Z");
+    const feed = feedWorld("fake");
+    const asked: World = {
+      ...feed.world,
+      actsNow: () => [
+        { thread: GAME, atMs: CLOCK - 5 * 60_000, text: "Boil water (Test kettle): waiting for the game." },
+        { thread: GAME, atMs: CLOCK - 2 * 60_000, text: "a fresh look, not answered yet." },
+      ],
+    };
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity } = await open(model, { nowMs: () => CLOCK }, [asked]);
+    await entity.start();
+    feed.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: "Still there?" });
+    await entity.idle();
+    const user = userTextOf(model.requests[0]);
+    expect(user).toContain("Game acts and looks other threads asked for (last 30 minutes):");
+    expect(user).toContain(`- ${GAME}, 5 min ago: Boil water (Test kettle): waiting for the game.`);
+    expect(user).toContain(`- ${GAME}, 2 min ago: a fresh look, not answered yet.`);
+  });
+
   it("holds the slow sections in the system text, and puts the new rows before the now board, time and recall", async () => {
     const { users, systems } = await runBatches([40, 1], { 1: "The lighthouse keeper waves.", 41: "The lighthouse lamp is lit." });
     const user = users[1] ?? "";
@@ -2954,7 +2988,7 @@ describe("cache order: the slow sections first, then the rows that change", () =
     expect(recent).toContain("Brief two.");
     expect(recent).not.toContain("Full text two.");
 
-    const at = user.indexOf("Current view (game):");
+    const at = user.indexOf("Current view of the game, seen at");
     expect(at).toBeGreaterThan(user.indexOf("New:"));
     expect(at).toBeLessThan(user.indexOf("## now"));
     const block = user.slice(at, user.indexOf("## now"));
@@ -2963,7 +2997,7 @@ describe("cache order: the slow sections first, then the rows that change", () =
     expect(user.split("Full text two.")).toHaveLength(2);
   });
 
-  it("gives a thread that holds an old copy of a view the newest view of that game, and says it came from the game thread", async () => {
+  it("gives a thread that holds an old copy of a view the newest view of that game, and says it is newer than the one in its rows", async () => {
     const world = feedWorld("fake");
     const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
     const { entity } = await open(model, {}, [world.world]);
@@ -2976,7 +3010,7 @@ describe("cache order: the slow sections first, then the rows that change", () =
     const user = userTextOf(model.requests[0]);
     expect(user).toContain("Old view brief.");
     expect(user).not.toContain("An old copy of the view.");
-    const at = user.indexOf("Current view (game, from the game thread):");
+    const at = user.indexOf("Current view of the game, newer than the one in your rows, seen at");
     expect(at).toBeGreaterThan(user.indexOf("New:"));
     expect(user.slice(at, user.indexOf("## now"))).toContain("The newest full view.");
     expect(user.split("The newest full view.")).toHaveLength(2);
@@ -2994,7 +3028,7 @@ describe("cache order: the slow sections first, then the rows that change", () =
     await entity.idle();
 
     const user = userTextOf(model.requests[0]);
-    expect(user).toContain("Current view (game, from the game thread):");
+    expect(user).toContain("Current view of the game, newer than the one in your rows, seen at");
     expect(user).toContain("The newest full view.");
   });
 

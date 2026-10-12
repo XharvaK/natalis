@@ -18,7 +18,7 @@ import { gameListTool, listCountLine, listDigests, storeList } from "./lists.js"
 import { verbTools } from "./verbs.js";
 import { type GameContext } from "./tool-context.js";
 import { isStopOn } from "../../entity/stop.js";
-import { expireDue, pendingCounts, syncActs, type ThreadNote, withdrawUndone, withholdForStop } from "./acts.js";
+import { expireDue, pendingCounts, recentActsBoard, syncActs, type ThreadNote, withdrawUndone, withholdForStop } from "./acts.js";
 import { choicesSignature, optionsOf, renderView, unchangedLookLine, viewBrief } from "./options.js";
 import {
   checkSnapshot, expireSnapshots, gameSnapshotTool, openSnapshots, SNAPSHOT_PICTURE_NAME, SNAPSHOT_STATUS, settleFailed,
@@ -26,7 +26,7 @@ import {
 } from "./snapshot.js";
 import {
   admitObservation, forgetInDomusFile, forgetText, HeartbeatBook, inTransaction, markSpanUndoneIn, newestObservation, openDomusDb,
-  pruneObservations, gameThreadNow, takeLook, takeLookAskers, writeAttention,
+  pruneObservations, gameThreadNow, LOOK_ASK_KEEP_MS, looksAskedSince, takeLook, takeLookAskers, writeAttention,
 } from "./store.js";
 import {
   BODY_LIMIT, canonicalJson, DOMUS_WORLD_ID, gameThreadOf, LISTS_BODY_LIMIT, MEMORY_BODY_LIMIT, MIN_TOKEN_BYTES, observationDigest, parseActSync,
@@ -754,6 +754,14 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       }
       if (pending.requested > 0) line += ` ${pending.requested} requested act(s) wait for the game.`;
       return line;
+    },
+
+    actsNow(at) {
+      if (!db) return [];
+      // The game acts the threads asked for, and the looks still waiting for the game: one line each, newest first (CORE3-3).
+      const looks = looksAskedSince(db, at - LOOK_ASK_KEEP_MS)
+        .map((item) => ({ thread: item.thread, atMs: item.atMs, text: "a fresh look, not answered yet." }));
+      return [...recentActsBoard(db, at), ...looks].sort((a, b) => b.atMs - a.atMs);
     },
 
     listeningAddress() {

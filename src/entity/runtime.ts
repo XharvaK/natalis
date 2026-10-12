@@ -20,6 +20,7 @@ import { openRiver } from "../river/index.js";
 import { createWitness, withWitness, type CacheWitness } from "../model/witness.js";
 import { openLedger, type Ledger, type LedgerRow, type ThreadKind } from "../river/ledger.js";
 import { checkRiver } from "../river/integrity.js";
+import { indexedRiver, ViewIndex, viewKeyOfRow } from "../river/view-index.js";
 import { createSecretScanner, guardModel, guardNotebook, guardRiver, KNOWN_VALUE_KIND } from "../secrets/index.js";
 import { notebookTools } from "../tools/index.js";
 import { MEDIA_FOLDER, openShelf, shelfBody, type Shelf } from "../media/shelf.js";
@@ -144,9 +145,19 @@ const CUT_ENDS = new Set(["model_error", "aborted"]);
 /** Recent here shows at least this many rows: the oldest shown row moves on only in steps of RECENT_PAGE, so it holds 30 to 39. */
 const RECENT_LIMIT = 30;
 const RECENT_PAGE = 10;
+/** The most other threads' game acts the now board lists; the rest are said as a count. */
+const BOARD_ASKS_MAX = 20;
+/** A world's own text, or undefined when the world throws while it reads it: one world's error never ends a turn (CORE3-2). */
+function worldSaid<T>(read: () => T): T | undefined {
+  try {
+    return read();
+  } catch {
+    return undefined;
+  }
+}
 /** Fixed text in the system text: the order each turn's user message comes in. The same every turn, so the start of the prompt never changes. */
 const ORDER_NOTE =
-  "Each turn's message lists, in this order: the recent rows, the new rows, the current view of anything that changed, the now board, the time, and recall.";
+  "Each turn's message lists, in this order: the recent rows, the new rows, the current view of anything that changed, then, on a retry, what was already done, then the now board, the time, and recall. A note at the end names any part that was left out for size.";
 /** A section of the prompt, and the class that says how often it changes. Every section must declare one. */
 type Section = ContextSection & { cls: PromptPartClass };
 const RECALL_LIMIT = 8;
@@ -543,6 +554,8 @@ type RuntimeInit = {
 class Runtime implements Entity {
   readonly river: River;
   readonly notebook: Notebook;
+  /** The newest view rows of each view key, in memory (see newestViews). */
+  private readonly viewIndex: ViewIndex;
 
   private readonly config: EntityConfig;
   private readonly model: ModelPort;
@@ -628,10 +641,12 @@ class Runtime implements Entity {
     // The body's outward check reads the privacy list through the same watch as the say, so a damaged list is noticed there too.
     this.body = shelfBody(init.shelf, init.nowMs, (texts) => outwardHold(this.privacyNow(), texts));
     this.ceiling = init.config.ceiling ?? DEFAULT_CEILING;
-    this.river = init.river;
+    this.viewIndex = new ViewIndex();
+    this.viewIndex.build(init.river);
+    this.river = indexedRiver(init.river, this.viewIndex);
     this.ledger = openLedger(join(init.dir, RIVER_LEDGER_FILE));
     this.witness = createWitness({ write: (row) => this.ledger.appendCall(row), now: () => this.nowMs() });
-    this.larRiver = this.riverForLar(init.river);
+    this.larRiver = this.riverForLar(this.river);
     this.notebook = init.notebook;
     this.clockFormat = new Intl.DateTimeFormat("en-GB", {
       timeZone: init.config.timeZone,
@@ -958,9 +973,14 @@ class Runtime implements Entity {
     }
     user.push({ name: "new", cls: "turn", text: ["New:", ...fresh.map((row) => this.lineFor(row, briefed.has(row.seq)))].join("\n") });
     for (const { key, row } of current) {
-      // A view written on another thread says so: the game's newest view can be on the game thread while this one holds an old copy.
-      const from = row.thread === thread ? "" : ", from the game thread";
-      user.push({ name: `current view (${key})`, cls: "turn", text: [`Current view (${key}${from}):`, this.lineFor(row)].join("\n") });
+      // The heading names the game's view, not its key (CORE3-11), with when it was seen and how old it is (CORE3-5). A view
+      // on another thread can be newer than the one in this thread's rows: the game's newest view can be on the game thread
+      // while this one holds an old copy.
+      const seen = `seen at ${this.stamp(row.atMs).slice(-5)} (${formatDuration(nowMs - row.atMs)} ago)`;
+      const heading = row.thread === thread
+        ? `Current view of the game, ${seen}:`
+        : `Current view of the game, newer than the one in your rows, ${seen}:`;
+      user.push({ name: `current view (${key})`, cls: "turn", text: [heading, this.lineFor(row)].join("\n") });
     }
     if (done.length > 0) {
       user.push({
@@ -1606,7 +1626,7 @@ class Runtime implements Entity {
     snapshot: number,
     thinking: Thinking,
   ): { system: LayoutPart[]; tail: LayoutPart[]; sizes: string } {
-    const wakes = this.state.wakes.map((wake) => ({ id: wake.id, atMs: wake.atMs, why: wake.why, repeat: wake.repeat, clock: wake.clock }));
+    const wakes = this.state.wakes.map((wake) => ({ id: wake.id, atMs: wake.atMs, why: wake.why, repeat: wake.repeat, clock: wake.clock, scheduledIn: wake.scheduledIn }));
     // The slow sections stay the same from turn to turn, so they are the system text, and the provider can reuse them.
     // The nature is the default unless the Lar's folder has a nature.md: its text replaces the default, and an empty one leaves the section out.
     const nature = readNature(this.dir).text;
@@ -1668,7 +1688,7 @@ class Runtime implements Entity {
       bornMs: this.state.bornMs ?? nowMs,
       timeZone: this.config.timeZone,
       young: character === null || character.trim() === "" || character.trim() === CHARACTER_STUB.trim(),
-      worlds: this.worlds.map((world) => world.about?.() ?? world.id),
+      worlds: this.worlds.map((world) => worldSaid(() => world.about?.()) ?? world.id),
       summonerAlias: this.config.owner.alias,
       rhythm: (this.config.rhythm ?? DEFAULT_RHYTHM).length > 0,
     });
@@ -1695,7 +1715,17 @@ class Runtime implements Entity {
       lines.push(`EMERGENCY STOP: your summoner has paused outward acts${reason ? `: ${oneLine(reason)}` : ""}. You can still answer your summoner.`, "");
     }
     lines.push("Worlds:");
-    for (const world of this.worlds) lines.push(`- ${world.id}: ${world.now()}`);
+    // A world whose line cannot be read says so, and the turn goes on (CORE3-2): one world never silences the others.
+    const unreadable: string[] = [];
+    for (const world of this.worlds) {
+      const said = worldSaid(() => world.now());
+      if (said === undefined) {
+        unreadable.push(world.id);
+        lines.push(`- ${world.id}: not available right now.`);
+      } else {
+        lines.push(`- ${world.id}: ${said}`);
+      }
+    }
     const shelf = this.shelf.summary();
     lines.push(
       shelf.count === 0
@@ -1724,6 +1754,17 @@ class Runtime implements Entity {
     lines.push("", "Places another thread spoke in lately (last 2 minutes):");
     const claims = this.placeClaimLines(thread, nowMs);
     lines.push(...(claims.length === 0 ? ["- none"] : claims));
+
+    // The game acts and looks the other threads asked for in the last 30 minutes: what, when, and the state (CORE3-3).
+    const asks = this.worlds
+      .flatMap((world) => worldSaid(() => world.actsNow?.(nowMs)) ?? [])
+      .filter((item) => item.thread !== thread)
+      .sort((a, b) => b.atMs - a.atMs);
+    if (asks.length > 0) {
+      lines.push("", "Game acts and looks other threads asked for (last 30 minutes):");
+      for (const item of asks.slice(0, BOARD_ASKS_MAX)) lines.push(`- ${item.thread}, ${formatDuration(nowMs - item.atMs)} ago: ${item.text}`);
+      if (asks.length > BOARD_ASKS_MAX) lines.push(`- ${asks.length - BOARD_ASKS_MAX} more not listed.`);
+    }
 
     const acts = this.isOwnerPlace(thread) ? this.summonerActs(snapshot) : { rows: [], omitted: 0 };
     if (acts.rows.length > 0) {
@@ -1756,6 +1797,7 @@ class Runtime implements Entity {
     if (privacy.problem !== undefined) {
       lines.push(`Body note: your summoner's privacy list cannot be read, so nothing leaves until it is fixed (${privacy.problem}).`);
     }
+    for (const id of unreadable) lines.push(`Body note: ${id} could not give its line this turn, so the line says it is not available.`);
     const nature = readNature(this.dir);
     if (nature.problem !== undefined) {
       lines.push(`Body note: nature.md could not be read (${nature.problem}), so the default nature is in use.`);
@@ -1767,12 +1809,6 @@ class Runtime implements Entity {
     if (this.state.proposals.length > 0) {
       lines.push("", "Commitments you proposed, waiting for your summoner:");
       for (const item of this.state.proposals) lines.push(`- ${item.id}: ${firstChars(item.text, PROPOSAL_SHOW)}`);
-    }
-    if (this.state.wakes.length === 0) {
-      lines.push("Next wakes: none.");
-    } else {
-      const wakes = [...this.state.wakes].sort((a, b) => a.atMs - b.atMs);
-      lines.push(`Next wakes: ${wakes.map((wake) => `${this.wakeWhen(wake)} (id ${wake.id}): ${wake.why}`).join("; ")}.`);
     }
     return lines.join("\n");
   }
@@ -1835,13 +1871,14 @@ class Runtime implements Entity {
       return base !== "README.md" && !base.startsWith(".");
     });
     if (entries.length === 0) return "Your notebook has no notes yet.";
-    return entries.map((entry) => `- ${entry.path} — ${entry.firstLine.trim() || "(empty)"}`).join("\n");
+    return entries.map((entry) => `- ${entry.path}: ${entry.firstLine.trim() || "(empty)"}`).join("\n");
   }
 
   private recallText(thread: string, fresh: RiverRow[], shown: Set<number>): string {
     // River search ANDs its terms, so each word is searched on its own and the rows that match most words win.
     const words: string[] = [];
     for (const row of fresh) {
+      if (viewKeyOf(row) !== undefined) continue;
       for (const match of (row.text ?? "").toLowerCase().matchAll(/[\p{L}\p{N}]{4,}/gu)) {
         const word = match[0];
         if (!words.includes(word)) words.push(word);
@@ -1882,6 +1919,15 @@ class Runtime implements Entity {
       if (key !== undefined) pending.add(key);
     }
     const newest = new Map<string, RiverRow>();
+    for (const key of [...pending]) {
+      const seq = this.viewIndex.atOrBefore(key, snapshot);
+      if (seq === undefined) continue;
+      const [row] = this.river.read({ kinds: ["event"], sinceSeq: seq - 1, untilSeq: seq, limit: 1 });
+      if (row !== undefined && viewKeyOf(row) === key) {
+        newest.set(key, row);
+        pending.delete(key);
+      }
+    }
     let until = snapshot;
     while (pending.size > 0 && until > 0) {
       const page = this.river.read({ kinds: ["event"], untilSeq: until, newestFirst: true, limit: VIEW_SCAN_PAGE });
