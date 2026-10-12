@@ -95,7 +95,7 @@ after the zone is running:
   True, None), send_save_message=True, check_cooldown=False)` with the current slot from `get_save_slot_proto_buff()`
   (READ). The game shows its own "saved" message.
   - Refused when the slot id is 1 or less (no player slot is loaded), when a save lock holds it (the game's own lock
-    tooltip is the reason), or within 10 real minutes of her last save.
+    tooltip is the reason), or within 15 real minutes of her last save (the User, 2026-10-12).
   - The probe writes the save's result when `on_save_complete` reports it.
 - **D9.2 Catalogue.** The probe writes a `catalog` record once per game version: each buyable definition's id, name
   key, price, buy category flags, placement flags (floor, wall, surface) and tags (READ: `Definition.price`,
@@ -104,7 +104,7 @@ after the zone is running:
 - **D9.3 Buy and place.** `game_buy(item, place)`, where place is a relational intent:
   - `on <object>`: a free surface slot of that object;
   - `beside <object>`: FGL starting beside it, against the same wall when the item is wall-placed;
-  - `against the <side> wall of <room>`;
+  - `against a wall of <room>` (the game finds a free wall spot; no compass sides, 2026-10-12);
   - `in <room>`: FGL from the room's middle;
   - `in place of <object>`: that object's transform, after it is sold or moved.
 
@@ -154,6 +154,9 @@ after the zone is running:
 - **Her visiting the User's home** does not exist: a traveller has no home.
 
 ## Build plan
+
+The exact contracts, the User's rulings of 2026-10-12 (lists on demand, 6 home edits per turn, the 15-minute save
+floor, quiet at work, blocked routes reported) and the briefs are in [w13-build.md](w13-build.md).
 
 - **W13-P1 (probe, people and places):** discovery, D4.1–D4.4, D5.1, D5.2.
 - **W13-P2 (probe, home):** D9.1–D9.7, the catalogue record.
