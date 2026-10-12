@@ -68,7 +68,16 @@ after the zone is running:
 
   `game_go(place)` calls `world.travel_service.travel_sim_to_zone(her id, zone id)` (READ: it pauses the clock and
   asks the client to travel). A trip is refused with a reason when she is in a rabbit hole, a save is locked, or she
-  is carrying a baby. The probe's sampling survives the zone change already (D41). The deny parts `travel`, `goto`,
+  is carrying a baby.
+  - **She asks the User first** (User, 2026-10-12). The game renders one place at a time and asks "which Sims travel
+    with you", so her trip moves the User's game too.
+    - She asks on Discord, and calls `game_go` only after the User's yes. That is her word to keep: the host does not
+      gate it.
+    - The tool text and her view's Places list both say so.
+    - The record shows each trip with the time of the User's last DM message before it. Those are facts only: the
+      host never judges whether a message was a yes.
+  - The game's "travel with" picker is an ordinary game question. Like any pop-up, she answers it, and her answer is
+    recorded. The probe's sampling survives the zone change already (D41). The deny parts `travel`, `goto`,
   `go_to`, `go_here` and `leave` drop out of the act filter for phone travel acts only when `game_go` exists, so both
   routes are the game's own.
 - **D5.2 Work.** At work time the game itself sends a player Sim to work (READ: `_start_work_callback` puts her in the
