@@ -14,6 +14,9 @@ export const VIEW_TEXT_MAX = 20_000;
 /** The longest an older view's brief may be, in characters. The rest is said as a count. */
 export const BRIEF_MAX = 1_000;
 const FACT_MAX = 80;
+/** The helper's id and where for her queue (its acts are the ones she has queued). */
+const QUEUE_OBJECT_ID = "queue:her";
+const QUEUE_WHERE = "your queue";
 
 function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
@@ -275,10 +278,17 @@ export function renderView(input: {
   lines.push("", "Choices you can name with game_act, by ref:");
   for (const object of input.options.filter(isNear)) lines.push(...objectLines(object));
   const elsewhere = input.options.filter((object) => !isNear(object));
-  if (elsewhere.length) {
+  // Her queue is not in a room: it is its own group, right after the near objects, and never under a room heading.
+  const queue = elsewhere.filter(isQueue);
+  if (queue.length) {
+    lines.push("What you are doing now:");
+    for (const object of queue) lines.push(...objectLines(object));
+  }
+  const rest = elsewhere.filter((object) => !isQueue(object));
+  if (rest.length) {
     lines.push("Elsewhere on the lot:");
     const rooms = new Map<string, OptionObject[]>();
-    for (const object of elsewhere) {
+    for (const object of rest) {
       const room = typeof object.room === "string" && object.room !== "" ? object.room : "Other rooms";
       rooms.set(room, [...(rooms.get(room) ?? []), object]);
     }
@@ -302,6 +312,12 @@ function withCountLine(lines: string[], counts: string | undefined): string[] {
 /** Near her: the helper's near flag, or a where that starts "here" (what older helpers send). */
 function isNear(object: OptionObject): boolean {
   return object.near === true || (typeof object.where === "string" && object.where.startsWith("here"));
+}
+
+/** Her queue: the helper's queue object, which has no room (its where is "your queue"). */
+function isQueue(object: OptionObject): boolean {
+  const hasRoom = typeof object.room === "string" && object.room !== "";
+  return !hasRoom && (object.object_id === QUEUE_OBJECT_ID || object.where === QUEUE_WHERE);
 }
 
 /** One object's line, its states, the game's reasons and the acts left out under it, and its answer rules when it is a question. */

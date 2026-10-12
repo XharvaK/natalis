@@ -145,6 +145,24 @@ describe("rendering the choices of a whole lot", () => {
     expect(text.endsWith("The game left out 3 more choice object(s) on the lot, in Test garden.")).toBe(true);
   });
 
+  it("gives her queue its own group after the near objects, never under a room, and says Elsewhere only when objects follow it", () => {
+    const queue: OptionObject = { object: "What you are doing", object_id: "queue:her", where: "your queue", acts: [{ ref: "a5", guid64: "5", text: "Sit down" }] };
+    const text = renderView({ world: "slot3", percepts: [], options: [LOT[0]!, queue, LOT[1]!] });
+    const near = text.indexOf("- Test fridge");
+    const doing = text.indexOf("What you are doing now:\n- What you are doing (your queue): a5 Sit down");
+    const elsewhere = text.indexOf("Elsewhere on the lot:");
+    expect(near).toBeGreaterThan(-1);
+    expect(near).toBeLessThan(doing);
+    expect(doing).toBeLessThan(elsewhere);
+    expect(text).not.toContain("Other rooms:");
+    expect(text).toContain("Test hall:\n- Test mailbox: a2 Check the mail");
+
+    const onlyQueue = renderView({ world: "slot3", percepts: [], options: [LOT[0]!, queue] });
+    expect(onlyQueue).toContain("What you are doing now:");
+    expect(onlyQueue).not.toContain("Elsewhere on the lot:");
+    expect(renderView({ world: "slot3", percepts: [], options: [LOT[0]!] })).not.toContain("Elsewhere on the lot:");
+  });
+
   it("says the rooms it left out as not named when the game named none", () => {
     const text = renderView({ world: "slot3", percepts: [], options: LOT, optionsCut: { objects: 2, rooms: [] } });
     expect(text).toContain("The game left out 2 more choice object(s) on the lot, in rooms it did not name.");
