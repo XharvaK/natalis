@@ -162,6 +162,7 @@ function observationEvent(
     source: "outside",
     text: renderView({
       world: alias, percepts: parsed.percepts, options, portrait: parsed.normalized.portrait, attachment, lastChoices, optionsCut: parsed.optionsCut,
+      choicesPending: parsed.choicesPending,
       attention: attention.line, day: parsed.normalized.day, counts,
     }),
     data,

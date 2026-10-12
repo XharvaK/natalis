@@ -246,6 +246,8 @@ export function renderView(input: {
   /** The choices of the last view rendered on this thread (see choicesSignature), or undefined when there was none. */
   lastChoices?: string;
   optionsCut?: OptionsCut;
+  /** True while the game has not sent its first whole choices this session: the view says they are still coming. */
+  choicesPending?: boolean;
 }): string {
   const body = withCountLine(bodyLines(input.portrait, input.attachment, input.attention), input.counts);
   const record = dayRecordLines(input.day);
@@ -265,8 +267,10 @@ export function renderView(input: {
     shown++;
   }
   if (shown < all.length) lines.push(`- (${all.length - shown} more not shown)`);
+  // Until the game's first whole menu of this session, its choices are not in yet. With none sent so far, the view says
+  // so instead of a list; a near part of the menu that did come is shown as it is.
   if (input.options.length === 0) {
-    lines.push("", "The game offers no choices in this view.");
+    lines.push("", input.choicesPending ? "The game has not sent its choices yet. They come with a later view." : "The game offers no choices in this view.");
     return lines.join("\n");
   }
   const cut = optionsCutLine(input.optionsCut);

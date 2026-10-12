@@ -145,6 +145,16 @@ describe("rendering the choices of a whole lot", () => {
     expect(text.endsWith("The game left out 3 more choice object(s) on the lot, in Test garden.")).toBe(true);
   });
 
+  it("says the game's choices are still coming, instead of a choices block, until its first whole menu", () => {
+    const pending = renderView({ world: "slot3", percepts: [], options: [], choicesPending: true });
+    expect(pending).toContain("\nThe game has not sent its choices yet. They come with a later view.");
+    expect(pending).not.toContain("Choices you can name");
+    expect(pending).not.toContain("offers no choices");
+    const settled = renderView({ world: "slot3", percepts: [], options: [], choicesPending: false });
+    expect(settled).toContain("The game offers no choices in this view.");
+    expect(settled).not.toContain("has not sent its choices");
+  });
+
   it("gives her queue its own group after the near objects, never under a room, and says Elsewhere only when objects follow it", () => {
     const queue: OptionObject = { object: "What you are doing", object_id: "queue:her", where: "your queue", acts: [{ ref: "a5", guid64: "5", text: "Sit down" }] };
     const text = renderView({ world: "slot3", percepts: [], options: [LOT[0]!, queue, LOT[1]!] });

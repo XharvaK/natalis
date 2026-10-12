@@ -119,7 +119,7 @@ export function tokenProblem(token: string, otherTokens: readonly string[]): "mi
 
 const OBSERVATION_KEYS = new Set([
   "v", "observation_id", "world", "branch", "session", "attachment", "body", "snapshot",
-  "seq", "source_time_ms", "expires_at_ms", "lineage_class", "percepts", "portrait", "day", "options", "options_cut",
+  "seq", "source_time_ms", "expires_at_ms", "lineage_class", "percepts", "portrait", "day", "options", "options_cut", "choices_pending",
 ]);
 
 export type Percept = { kind: string; salience: number; facts: Record<string, unknown> };
@@ -137,6 +137,8 @@ export type ParsedObservation = {
   options: Record<string, unknown>[] | undefined;
   /** How many choice objects the game left out of the table, and in which rooms (the helper's own count). */
   optionsCut?: OptionsCut;
+  /** True while the helper has not yet had a whole menu from the game this session: the choices are still coming. */
+  choicesPending: boolean;
 };
 
 export type OptionsCut = { objects: number; rooms: string[] };
@@ -213,6 +215,9 @@ export function parseObservation(body: unknown, nowMs: number): ParsedObservatio
     optionsCut = optionsCutOf(body.options_cut);
     normalized.options_cut = { objects: optionsCut.objects, rooms: optionsCut.rooms };
   }
+  if ("choices_pending" in body && typeof body.choices_pending !== "boolean") fail(400, "invalid_body");
+  const choicesPending = body.choices_pending === true;
+  if ("choices_pending" in body) normalized.choices_pending = choicesPending;
   if (expiresAtMs <= sourceTimeMs || expiresAtMs - sourceTimeMs > MAX_WINDOW_MS) fail(400, "invalid_body");
   if (sourceTimeMs > nowMs + MAX_SKEW_MS) fail(400, "clock_skew");
   if (nowMs > expiresAtMs) fail(410, "expired");
@@ -223,6 +228,7 @@ export function parseObservation(body: unknown, nowMs: number): ParsedObservatio
     percepts,
     options,
     optionsCut,
+    choicesPending,
   };
 }
 

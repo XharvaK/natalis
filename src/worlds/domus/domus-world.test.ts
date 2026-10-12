@@ -177,6 +177,16 @@ describe("observations", () => {
     expect(events[1]?.brief).not.toContain("Money:");
   });
 
+  it("says in the first view that the game's choices are still coming, when the helper has sent none yet", async () => {
+    const body = viewBody({ choices_pending: true });
+    delete body.options;
+    const reply = await call("/domus/observation", body);
+    expect(reply.status).toBe(202);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.text).toContain("The game has not sent its choices yet. They come with a later view.");
+    expect(events[0]?.text).not.toContain("Choices you can name");
+  });
+
   it("admits a new view with 202, and emits one outside event on the game thread with its refs", async () => {
     const reply = await call("/domus/observation", viewBody());
     expect(reply.status).toBe(202);
