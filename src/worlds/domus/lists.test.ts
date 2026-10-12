@@ -141,7 +141,7 @@ describe("game_list", () => {
     items.push({ ref: "t900", id: "5000", name: "Test Bag", where: "inventory", value: 5 } as never);
     storeList(db, { attachment: HELPER, kind: "things", digest: DIGEST, nowMs: clock, items: items as never });
     const receipt = await list({ what: "things" });
-    expect(receipt.summary).toContain("Things by room (ask again with room for one room's list): Kitchen 41, Bedroom 40.");
+    expect(receipt.summary).toContain("Things by room (ask again with room for one room's list): Kitchen: 41 things; Bedroom: 40 things.");
     expect(receipt.summary).toContain("In your inventory:\n- t900 Test Bag (in your inventory; value 5)");
     expect(receipt.summary).not.toContain("Create-a-Sim"); // Q-k: the things answer carries no clothes line
     const room = await list({ what: "things", room: "kitchen" });

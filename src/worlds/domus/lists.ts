@@ -167,7 +167,7 @@ function thingsLines(items: ListItem[], room: string | undefined): string[] {
     const name = text(item.where) || "outside";
     counts.set(name, (counts.get(name) ?? 0) + 1);
   }
-  const perRoom = [...counts].map(([name, count]) => `${name} ${count}`).join(", ");
+  const perRoom = [...counts].map(([name, count]) => `${name}: ${count} ${count === 1 ? "thing" : "things"}`).join("; ");
   const inventory = items.filter((item) => item.where === "inventory");
   return [
     `Things by room (ask again with room for one room's list): ${perRoom || "none"}.`,
