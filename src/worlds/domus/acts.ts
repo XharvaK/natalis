@@ -28,9 +28,16 @@ export const ACT_MEANWHILE_MS = 60_000;
 
 const TERMINAL: ReadonlySet<string> = new Set(["rejected", "finished", "unknown", "expired"]);
 const RANK: Readonly<Record<string, number>> = { requested: 0, received: 1, accepted: 2, pushed: 3 };
-/** An unknown the helper guessed (the game was detached, or it never answered) is not final. */
-const GUESSED_UNKNOWN_CODES: ReadonlySet<string> = new Set(["GAME_DETACHED", "NO_PROBE_REPLY"]);
-const REPLACES_GUESS: ReadonlySet<string> = new Set(["received", "accepted", "pushed", "finished", "rejected"]);
+/**
+ * An unknown the helper guessed is not final: the game was detached, it never answered, or the helper's session ended
+ * while the act was in flight (the game may still report how it ended).
+ */
+const GUESSED_UNKNOWN_CODES: ReadonlySet<string> = new Set(["GAME_DETACHED", "NO_PROBE_REPLY", "SESSION_ENDED"]);
+const REPLACES_GUESS: ReadonlySet<string> = new Set(["received", "accepted", "pushed", "waiting", "noted", "finished", "rejected"]);
+/** States in which an act is still going to the game or has gone: the ones another thread's request holds for (B11). */
+const LIVE_STATES: readonly string[] = ["requested", "received", "accepted", "pushed", "waiting", "noted", "finished"];
+/** States in which the helper holds an act it has not reported finished: its session ending makes the act unknown. */
+const IN_FLIGHT_STATES: readonly string[] = ["received", "accepted", "pushed", "waiting", "noted"];
 /**
  * Every final phase wakes the Lar's thread, a finished act included: whatever way an act ended, the Lar should act on it.
  * The phases before the end (received, accepted, pushed) are kept as notes for its next turn and do not wake it.
@@ -47,6 +54,8 @@ export type SyncAct = {
   expires_at_ms: number;
   owner?: true;
   answer?: StoredAnswer;
+  /** Her own words to the Sim the act targets, when she gave some (S1). */
+  words?: string;
 };
 
 export type RequestInput = {
@@ -58,6 +67,8 @@ export type RequestInput = {
   label: string;
   forSummoner: boolean;
   answer?: { json: string };
+  /** Her words to the Sim the act targets (1 to 240 characters); the game's social act still decides what happens. */
+  words?: string;
   /** The plan's later steps, already resolved against the same view. */
   then: Array<{ ref: string; found: Found }>;
   nowMs: number;
@@ -65,7 +76,7 @@ export type RequestInput = {
 
 export type RequestResult =
   | { ok: true; actId: string; expiresAtMs: number; steps: Array<{ ref: string; label: string }> }
-  | { ok: false; code: "one_act_per_turn" };
+  | { ok: false; code: "one_act_per_turn" | "answer_repeated" };
 
 /** A reason a waiting plan step is let go, in the words the Lar reads. */
 const DROP_REASON: Readonly<Record<string, string>> = {
@@ -82,34 +93,44 @@ const DROP_REASON: Readonly<Record<string, string>> = {
 
 function insertAct(db: DatabaseSync, row: {
   actId: string; turnId: string; thread: string; attachment: string; observationId: string | null; ref: string;
-  objectId: string; guid64: string; label: string; nowMs: number; forSummoner: boolean; answerJson: string | null;
+  objectId: string; guid64: string; label: string; nowMs: number; forSummoner: boolean; answerJson: string | null; words: string | null;
 }): void {
   db.prepare(`INSERT INTO acts (act_id, turn_id, thread, attachment, observation_id, option_ref, object_id, guid64, label, state,
-    requested_at_ms, expires_at_ms, updated_at_ms, for_summoner, answer_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'requested', ?, ?, ?, ?, ?)`)
+    requested_at_ms, expires_at_ms, updated_at_ms, for_summoner, answer_json, words) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'requested', ?, ?, ?, ?, ?, ?)`)
     .run(row.actId, row.turnId, row.thread, row.attachment, row.observationId, row.ref, row.objectId, row.guid64, row.label,
-      row.nowMs, row.nowMs + ACT_TTL_MS, row.nowMs, row.forSummoner ? 1 : 0, row.answerJson);
+      row.nowMs, row.nowMs + ACT_TTL_MS, row.nowMs, row.forSummoner ? 1 : 0, row.answerJson, row.words);
 }
 
 /**
- * The newest request of any other thread of hers within ACT_MEANWHILE_MS, or undefined. A released plan step is an act
- * row of the thread that planned it, so it counts as that thread's request, at the time it was released.
+ * The newest request of any other thread of hers within ACT_MEANWHILE_MS that is still live, or undefined. A refused,
+ * expired or withdrawn request holds nobody (B11). A released plan step is an act row of the thread that planned it, so it
+ * counts as that thread's request, at the time it was released.
  */
 export function actRequestedMeanwhile(db: DatabaseSync, input: { thread: string; nowMs: number }): {
   thread: string; label: string; requestedAtMs: number;
 } | undefined {
+  const live = LIVE_STATES.map(() => "?").join(", ");
   const row = db.prepare(`SELECT thread, label, requested_at_ms FROM acts WHERE thread != ? AND requested_at_ms >= ?
-    ORDER BY requested_at_ms DESC, act_id LIMIT 1`).get(input.thread, input.nowMs - ACT_MEANWHILE_MS) as Row | undefined;
+    AND state IN (${live}) AND (state != 'requested' OR expires_at_ms > ?)
+    ORDER BY requested_at_ms DESC, act_id LIMIT 1`)
+    .get(input.thread, input.nowMs - ACT_MEANWHILE_MS, ...LIVE_STATES, input.nowMs) as Row | undefined;
   if (!row) return undefined;
   return { thread: String(row.thread), label: String(row.label), requestedAtMs: Number(row.requested_at_ms) };
 }
 
 /**
  * Keeps the Lar's choice as a requested act, with its plan. A new choice replaces what an earlier plan still waited
- * to do. One act per turn: a second choice in the same turn is refused, not queued behind the first.
+ * to do. One act per turn: a second act in the same turn is refused, not queued behind the first. An answer is a reply
+ * to a question the game holds open, not an act: it is not held by the one-act rule, and one answer per question per turn.
  */
 export function requestAct(db: DatabaseSync, input: RequestInput): RequestResult {
   return inTransaction(db, () => {
-    if (db.prepare("SELECT 1 FROM acts WHERE turn_id = ? LIMIT 1").get(input.turnId)) {
+    if (input.answer !== undefined) {
+      if (db.prepare("SELECT 1 FROM acts WHERE turn_id = ? AND object_id = ? AND answer_json IS NOT NULL LIMIT 1")
+        .get(input.turnId, input.found.object.object_id)) {
+        return { ok: false as const, code: "answer_repeated" as const };
+      }
+    } else if (db.prepare("SELECT 1 FROM acts WHERE turn_id = ? AND answer_json IS NULL LIMIT 1").get(input.turnId)) {
       return { ok: false as const, code: "one_act_per_turn" as const };
     }
     dropPlanned(db, { attachment: input.attachment, reason: "replaced", notify: false, nowMs: input.nowMs });
@@ -117,7 +138,7 @@ export function requestAct(db: DatabaseSync, input: RequestInput): RequestResult
     insertAct(db, {
       actId, turnId: input.turnId, thread: input.thread, attachment: input.attachment, observationId: input.observationId,
       ref: input.found.act.ref, objectId: input.found.object.object_id, guid64: input.found.act.guid64, label: input.label,
-      nowMs: input.nowMs, forSummoner: input.forSummoner, answerJson: input.answer?.json ?? null,
+      nowMs: input.nowMs, forSummoner: input.forSummoner, answerJson: input.answer?.json ?? null, words: input.words ?? null,
     });
     const steps = input.then.slice(0, PLAN_MORE).map((step, index) => {
       const label = labelOf(step.found);
@@ -163,6 +184,26 @@ function isGuessedUnknown(db: DatabaseSync, actId: string): boolean {
   return typeof code === "string" && GUESSED_UNKNOWN_CODES.has(code);
 }
 
+/**
+ * An unknown that a later report may still settle: a guess (isGuessedUnknown), or one written before the game ever said
+ * it pushed the act, so the act never reached her queue as far as anyone was told (B6).
+ */
+function isReplaceableUnknown(db: DatabaseSync, actId: string): boolean {
+  if (isGuessedUnknown(db, actId)) return true;
+  return db.prepare("SELECT 1 FROM act_events WHERE act_id = ? AND phase = 'pushed' LIMIT 1").get(actId) === undefined;
+}
+
+/**
+ * An act of an earlier helper session that the session's end made unknown (SESSION_ENDED): a later report for it is
+ * still taken, from the session that now holds it (B5). Any other act of another session is not.
+ */
+function sessionLostRow(db: DatabaseSync, actId: string): Row | undefined {
+  const row = actRow(db, actId);
+  if (!row || String(row.state) !== "unknown") return undefined;
+  const unknown = db.prepare("SELECT detail_json FROM act_events WHERE act_id = ? AND phase = 'unknown'").get(actId) as Row | undefined;
+  return parseDetail(unknown?.detail_json).code === "SESSION_ENDED" ? row : undefined;
+}
+
 /** The next state for a phase, or null when the phase does not move the act (it is kept all the same). */
 export function nextState(current: string, phase: DomusActPhase, guessed: boolean): string | null {
   if (guessed && REPLACES_GUESS.has(phase)) return phase;
@@ -184,28 +225,56 @@ function keepEvent(db: DatabaseSync, actId: string, phase: string, atMs: number,
   return Number(changed.changes) > 0;
 }
 
+/** Who refused an act, in words she reads. A refusal with no source named is said as that: it was refused. */
+const REFUSED_BY: Readonly<Record<string, string>> = {
+  game: "the game refused it",
+  probe: "the game's side refused it",
+  helper: "your helper refused it",
+  host: "the host refused it",
+};
+
+/** The game's own sentence for a refusal (or the reason key's words), cleaned by the helper and cut here to 240 characters. */
+function refusedText(detail: Record<string, unknown>): string | undefined {
+  const text = typeof detail.text === "string" && detail.text.trim() !== "" ? detail.text.trim()
+    : typeof detail.reason === "string" && detail.reason.trim() !== "" ? detail.reason.trim() : undefined;
+  return text === undefined ? undefined : text.slice(0, 240);
+}
+
+function refusedSentence(detail: Record<string, unknown>): string {
+  const code = typeof detail.code === "string" && detail.code ? ` (${detail.code})` : "";
+  const text = refusedText(detail);
+  const who = typeof detail.by === "string" ? REFUSED_BY[detail.by] : undefined;
+  return `${who ?? "it was refused"}${code}${text === undefined ? "" : ` - ${text}`}`;
+}
+
 function phaseSentence(phase: DomusActPhase, detail: Record<string, unknown>, late: boolean): string {
   const code = typeof detail.code === "string" && detail.code ? ` (${detail.code})` : "";
-  const reason = typeof detail.reason === "string" && detail.reason ? ` - ${detail.reason.slice(0, 200)}` : "";
   switch (phase) {
     case "received": return "your helper took it up and passed it on to the game";
     case "accepted": return "the game accepted it";
     case "pushed": return "the game put it in its queue";
+    case "waiting": {
+      const window = typeof detail.window === "string" && detail.window.trim() !== "" ? ` (${detail.window.trim().slice(0, 80)})` : "";
+      return `a window is open on the game${window}, so the game keeps it out of your queue until the window closes`;
+    }
+    case "noted":
+      if (detail.code === "SCREEN_WITHHELD") return "the game opened a screen you cannot use, so it was cancelled";
+      return `the game noted something about it${code}`;
     case "finished": {
+      if (detail.code === "ANSWER_SENT_OPEN") return "your answer was sent, but the game's question is still open";
       const ending = endingOf(detail.finishing_type, detail.started);
       if (ending.ended === "completed") return "it finished";
       if (ending.ended === "asked") return "it opened a question from the game, which you answer with game_act";
       if (ending.ended === "answered") return "you answered the game's question";
       return `it was cut short: ${ending.why ?? "the game ended it early"}`;
     }
-    case "rejected": return `the game refused it${code}${reason}`;
+    case "rejected": return refusedSentence(detail);
     case "unknown":
-      // A phone act runs at once and never waits in her queue; "nothing says how it ended (LEFT_QUEUE)" read as if it had
-      // waited, so that code gets its own words.
+      // The game took the act out of its queue and never said how it ended: the words say only that.
       if (detail.code === "LEFT_QUEUE") {
-        return "it never waited in her queue: the game took it at once or dropped it, and did not say how it ended. A phone act often runs this way; what changed in your next view tells";
+        return "the game took it out of its queue and did not say how it ended; what changed in your next view tells what it did";
       }
-      return `nothing says how it ended${code}${reason}`;
+      return `nothing says how it ended${code}${detail.reason ? ` - ${String(detail.reason).slice(0, 200)}` : ""}`;
     case "expired":
       if (detail.code === "STOPPED") return "it was withdrawn before the game picked it up, because your summoner's stop is on";
       if (detail.code === "UNDONE") return "it was withdrawn, because the game went back before the view you chose it from";
@@ -218,9 +287,11 @@ function noteFor(act: Row, phase: DomusActPhase, detail: Record<string, unknown>
   const label = String(act.label);
   const ref = String(act.option_ref);
   const sentence = phaseSentence(phase, detail, late);
+  // Her own words to the Sim are kept on the act line (S1); they say what she said, not what the game did with it.
+  const said = typeof act.words === "string" && act.words !== "" ? ` You said: "${act.words}".` : "";
   return {
     thread: String(act.thread),
-    text: `Your act "${label}" (${ref}): ${sentence}${late ? " (this report came after the act had already ended)" : ""}.`,
+    text: `Your act "${label}" (${ref}): ${sentence}${late ? " (this report came after the act had already ended)" : ""}.${said}`,
     data: { actId: String(act.act_id), option: ref, phase, ...(late ? { late: true } : {}) },
     wake: WAKING.has(phase),
   };
@@ -237,22 +308,24 @@ export function syncActs(db: DatabaseSync, input: { attachment: string; events: 
     const notes: ThreadNote[] = [];
     let applied = 0;
     for (const event of input.events) {
-      const act = actRow(db, event.actId, input.attachment);
+      // A session that ended left its in-flight acts unknown, as a guess: a report for one of them still counts (B5).
+      const act = actRow(db, event.actId, input.attachment) ?? sessionLostRow(db, event.actId);
       if (!act) continue;
       const actId = String(act.act_id);
       const detail = event.detail ?? {};
       if (!keepEvent(db, actId, event.phase, event.atMs, input.nowMs, detail)) continue;
       applied++;
       const current = String(act.state);
-      const guessed = current === "unknown" && isGuessedUnknown(db, actId);
+      const guessed = current === "unknown" && isReplaceableUnknown(db, actId);
       const next = nextState(current, event.phase, guessed);
       if (next !== null) setState(db, actId, next, input.nowMs);
       notes.push(noteFor(act, event.phase, detail, next === null));
     }
     notes.push(...expireRequested(db, input.nowMs));
-    // Acts still in flight from an earlier helper session can no longer be told about: unknown, for good.
-    const orphans = db.prepare(`SELECT act_id FROM acts WHERE attachment != ? AND state IN ('received', 'accepted', 'pushed')`)
-      .all(input.attachment) as Row[];
+    // Acts still in flight from an earlier helper session can no longer be told about: unknown, as a guess, so a later
+    // report can still settle them. Requested acts the old session had already taken (pulled) are in flight too.
+    const orphans = db.prepare(`SELECT act_id FROM acts WHERE attachment != ? AND (state IN (${IN_FLIGHT_STATES.map(() => "?").join(", ")})
+      OR (state = 'requested' AND pulled_at_ms IS NOT NULL))`).all(input.attachment, ...IN_FLIGHT_STATES) as Row[];
     for (const orphan of orphans) {
       const actId = String(orphan.act_id);
       keepEvent(db, actId, "unknown", input.nowMs, input.nowMs, { code: "SESSION_ENDED" });
@@ -262,15 +335,18 @@ export function syncActs(db: DatabaseSync, input: { attachment: string; events: 
     }
     dropPlanned(db, { notAttachment: input.attachment, reason: "session_ended", notify: true, nowMs: input.nowMs }, notes);
     releasePlans(db, { attachment: input.attachment, nowMs: input.nowMs }, notes);
-    const acts = (db.prepare(`SELECT act_id, object_id, guid64, expires_at_ms, for_summoner, answer_json FROM acts
+    const acts = (db.prepare(`SELECT act_id, object_id, guid64, expires_at_ms, for_summoner, answer_json, words FROM acts
       WHERE attachment = ? AND state = 'requested' AND expires_at_ms > ? ORDER BY requested_at_ms, act_id`)
       .all(input.attachment, input.nowMs) as Row[]).map((row): SyncAct => {
       const answer = row.answer_json === null || row.answer_json === undefined ? undefined : parseDetail(row.answer_json) as StoredAnswer;
+      // The helper's pull is recorded here: from now on the act is the helper's, and its report is owed (B8).
+      db.prepare("UPDATE acts SET pulled_at_ms = ? WHERE act_id = ? AND pulled_at_ms IS NULL").run(input.nowMs, String(row.act_id));
       return {
         act_id: String(row.act_id), object_id: String(row.object_id), guid64: String(row.guid64),
         expires_at_ms: Number(row.expires_at_ms),
         ...(Number(row.for_summoner) === 1 ? { owner: true as const } : {}),
         ...(answer !== undefined && Object.keys(answer).length > 0 ? { answer } : {}),
+        ...(typeof row.words === "string" && row.words !== "" ? { words: row.words } : {}),
       };
     });
     const planned = Number((db.prepare("SELECT COUNT(*) AS n FROM plan_steps WHERE attachment = ? AND state = 'planned'")
@@ -279,9 +355,14 @@ export function syncActs(db: DatabaseSync, input: { attachment: string; events: 
   });
 }
 
-/** Requested acts whose time is up expire here, whoever asks: the game never sees them. */
+/**
+ * Requested acts whose time is up expire here, whoever asks: the game never sees them. An act the helper has pulled is
+ * the helper's: its time runs from the pull (a full TTL), so a report that is a little late does not leave the act expired
+ * while the game runs it (B8).
+ */
 function expireRequested(db: DatabaseSync, nowMs: number): ThreadNote[] {
-  const stale = db.prepare("SELECT * FROM acts WHERE state = 'requested' AND expires_at_ms <= ?").all(nowMs) as Row[];
+  const stale = db.prepare(`SELECT * FROM acts WHERE state = 'requested'
+    AND (CASE WHEN pulled_at_ms IS NULL THEN expires_at_ms ELSE pulled_at_ms + ? END) <= ?`).all(ACT_TTL_MS, nowMs) as Row[];
   return stale.map((row) => {
     const actId = String(row.act_id);
     keepEvent(db, actId, "expired", nowMs, nowMs, {});
@@ -335,10 +416,6 @@ function releasePlan(db: DatabaseSync, planId: string, nowMs: number, notes: Thr
   const steps = db.prepare("SELECT * FROM plan_steps WHERE plan_id = ? ORDER BY step").all(planId) as Row[];
   const next = steps.find((step) => String(step.state) === "planned");
   if (!next) return;
-  if (nowMs - Number(next.planned_at_ms) > PLAN_STEP_MAX_MS) {
-    dropPlanSteps(db, planId, "too_old", nowMs, notes, next);
-    return;
-  }
   const nextStep = Number(next.step);
   const previous = nextStep === 1 ? undefined : steps.find((step) => Number(step.step) === nextStep - 1);
   if (previous && String(previous.state) !== "released") return;
@@ -346,6 +423,13 @@ function releasePlan(db: DatabaseSync, planId: string, nowMs: number, notes: Thr
   const head = actRow(db, headId);
   if (!head) return;
   const headState = String(head.state);
+  // The step is aged from the end of the act before it, not from the time it was chosen (B7): a long first act does not
+  // let the rest go. While that act still runs, the step waits.
+  if (!TERMINAL.has(headState)) return;
+  if (nowMs - Number(head.updated_at_ms) > PLAN_STEP_MAX_MS) {
+    dropPlanSteps(db, planId, "too_old", nowMs, notes, next);
+    return;
+  }
   if (headState === "finished") {
     const finished = finishedDetail(db, headId);
     const ending = endingOf(finished.finishing_type, finished.started);
@@ -355,7 +439,7 @@ function releasePlan(db: DatabaseSync, planId: string, nowMs: number, notes: Thr
         actId, turnId: `plan:${planId}:${nextStep}`, thread: String(next.thread), attachment: String(next.attachment),
         observationId: head.observation_id === null ? null : String(head.observation_id), ref: String(next.option_ref),
         objectId: String(next.object_id), guid64: String(next.guid64), label: String(next.label), nowMs,
-        forSummoner: Number(next.for_summoner) === 1, answerJson: null,
+        forSummoner: Number(next.for_summoner) === 1, answerJson: null, words: null,
       });
       db.prepare("UPDATE plan_steps SET state = 'released', act_id = ?, updated_at_ms = ? WHERE plan_id = ? AND step = ?")
         .run(actId, nowMs, planId, nextStep);
@@ -365,7 +449,7 @@ function releasePlan(db: DatabaseSync, planId: string, nowMs: number, notes: Thr
     return;
   }
   if (headState === "unknown" && isGuessedUnknown(db, headId)) return;
-  if (TERMINAL.has(headState)) dropPlanSteps(db, planId, `after_${headState}`, nowMs, notes, next);
+  dropPlanSteps(db, planId, `after_${headState}`, nowMs, notes, next);
 }
 
 function dropPlanSteps(db: DatabaseSync, planId: string, reason: string, nowMs: number, notes: ThreadNote[], first: Row): void {
