@@ -87,16 +87,17 @@ export type RequestResult =
   | { ok: false; code: "turn_slot_held" | "answer_repeated" };
 
 /** The words a refusal for the turn's one act slot gives (game_act, and the verbs). */
-export const SLOT_HELD_REFUSAL = "Travel, a save and a planned event hold the turn's one act slot: none can come after another act or home edit in the same turn, and no act or home edit can come after one of them. Ask for it in your next turn.";
+export const SLOT_HELD_REFUSAL = "Travel, a save and a planned event hold the turn's one act slot: none can come after a game act or another of them in the same turn, and no game act can come after one of them. Home edits are outside the slot. Ask for it in your next turn.";
 
 /**
- * The turn's one act slot (Q-3). Travel, a save and a planned event hold it: one of them is refused when any act or verb was
- * already requested this turn, and any act or verb is refused once one of them was. Game acts and home edits are not limited
- * to one in a turn. An answer is not an act and is never held here.
+ * The turn's one act slot (the User's ruling; Q-3 lifted only the one game act a turn). Travel, a save and a planned event
+ * hold it: one of them is refused when a game act or another of them was already requested this turn, and a game act is
+ * refused once one of them was. Game acts are not limited to one in a turn. Home edits (buy, place, move, sell) are outside
+ * the slot: they never hold it and are never refused by it. An answer is not an act and is never held here.
  */
 function slotRefused(db: DatabaseSync, turnId: string, holdsSlot: boolean): boolean {
   if (db.prepare(`SELECT 1 FROM acts WHERE turn_id = ? AND answer_json IS NULL AND verb IN (${SLOT_VERB_SQL}) LIMIT 1`).get(turnId)) return true;
-  return holdsSlot && db.prepare("SELECT 1 FROM acts WHERE turn_id = ? AND answer_json IS NULL LIMIT 1").get(turnId) !== undefined;
+  return holdsSlot && db.prepare("SELECT 1 FROM acts WHERE turn_id = ? AND answer_json IS NULL AND verb IS NULL LIMIT 1").get(turnId) !== undefined;
 }
 
 /** A reason a waiting plan step is let go, in the words the Lar reads. */
@@ -209,7 +210,8 @@ export type VerbResult =
 export function requestVerb(db: DatabaseSync, input: VerbInput): VerbResult {
   return inTransaction(db, () => {
     const holdsSlot = SLOT_VERBS.includes(input.verb);
-    if (slotRefused(db, input.turnId, holdsSlot)) return { ok: false as const, code: "turn_slot_held" as const };
+    // A home edit is outside the slot (W13; Q-3 did not change it).
+    if (holdsSlot && slotRefused(db, input.turnId, true)) return { ok: false as const, code: "turn_slot_held" as const };
     if (holdsSlot) dropPlanned(db, { attachment: input.attachment, reason: "replaced", notify: false, nowMs: input.nowMs });
     const actId = randomUUID().replaceAll("-", "");
     insertAct(db, {

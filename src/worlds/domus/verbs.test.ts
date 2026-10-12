@@ -216,14 +216,13 @@ describe("home edits", () => {
     expect(actRows().filter((row) => row.verb === "buy")).toHaveLength(10);
   });
 
-  it("lets home edits follow one another, and holds travel's slot: no go after an edit, and no edit after a go (Q-3)", async () => {
+  it("keeps home edits outside travel's slot: edits follow one another, a go after edits, edits after a go, and no second go (Q-3)", async () => {
     seedView([]);
     expect(await call("game_buy", { item: "c1", place: shelfPlace }, "t-slot")).toMatchObject({ ok: true });
     expect(await call("game_buy", { item: "c2", place: shelfPlace }, "t-slot")).toMatchObject({ ok: true });
+    expect(await call("game_go", { place: "h1" }, "t-slot")).toMatchObject({ ok: true });
+    expect(await call("game_buy", { item: "c3", place: shelfPlace }, "t-slot")).toMatchObject({ ok: true });
     expect(await call("game_go", { place: "h1" }, "t-slot")).toMatchObject({ ok: false, refused: { code: "turn_slot_held" } });
-    expect(await call("game_go", { place: "h1" }, "t-travel")).toMatchObject({ ok: true });
-    expect(await call("game_buy", { item: "c3", place: shelfPlace }, "t-travel")).toMatchObject({ ok: false, refused: { code: "turn_slot_held" } });
-    expect(await call("game_go", { place: "h1" }, "t-travel")).toMatchObject({ ok: false, refused: { code: "turn_slot_held" } });
   });
 
   it("buys a catalogue item beside a thing, with its label in the game's words", async () => {
