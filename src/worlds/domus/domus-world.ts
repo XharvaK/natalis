@@ -752,7 +752,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     },
 
     forget(words) {
-      return db ? forgetText(db, words) : forgetInDomusFile(options.dir, words);
+      return db ? forgetText(db, words, nowMs()) : forgetInDomusFile(options.dir, words, nowMs());
     },
   };
 }

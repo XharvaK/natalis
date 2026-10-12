@@ -178,6 +178,16 @@ describe("forgetText: the game's own words", () => {
     expect(db.prepare("SELECT reason FROM undos").get()).toEqual({ reason: FORGOTTEN_LINE });
   });
 
+  it("stamps the withdrawal with the clock it is given, not the wall clock (NATALIS2-15)", () => {
+    db = openDomusDb(dir);
+    seedGameText(db);
+    db.prepare("UPDATE acts SET state = 'requested'").run();
+    forgetText(db, ["lantern", "yard"], 4242);
+    expect(db.prepare("SELECT updated_at_ms FROM acts WHERE act_id = 'act-1'").get()).toEqual({ updated_at_ms: 4242 });
+    expect(db.prepare("SELECT at_ms, received_at_ms FROM act_events WHERE act_id = 'act-1' AND phase = 'expired'").get())
+      .toEqual({ at_ms: 4242, received_at_ms: 4242 });
+  });
+
   it("withdraws a requested act whose words it erased, with its waiting steps, and leaves the other waiting act", () => {
     db = openDomusDb(dir);
     seedGameText(db);

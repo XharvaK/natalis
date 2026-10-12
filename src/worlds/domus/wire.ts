@@ -246,10 +246,10 @@ const UNDO_KEYS = new Set(["v", "world", "branch", "session", "after_source_time
 
 export type ParsedUndo = { world: string; branch: string; session: string; afterSourceTimeMs: number; reason: string };
 
-/** POST /domus/undo. */
 /** The widest time a JavaScript Date holds, either side of the epoch, in milliseconds. */
 const DATE_RANGE_MS = 8.64e15;
 
+/** POST /domus/undo. */
 export function parseUndo(body: unknown): ParsedUndo {
   if (!isRecord(body)) fail(400, "invalid_body");
   for (const key of Object.keys(body)) if (!UNDO_KEYS.has(key)) fail(400, "invalid_body");

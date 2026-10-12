@@ -446,9 +446,10 @@ function withdrawForgotten(db: DatabaseSync, table: string, rowid: number, nowMs
 /**
  * Forgets words in the game's store. In every table that keeps game or Lar text, each row whose live text holds all the
  * words (case and form aside) has that text replaced: a marker for plain text, an empty object for JSON. Rows already
- * forgotten are not counted again. Returns how many rows were erased; the file is then vacuumed.
+ * forgotten are not counted again. A withdrawn act is stamped with nowMs (the world passes its own clock; the summoner's
+ * command, which has none, takes the wall clock). Returns how many rows were erased; the file is then vacuumed.
  */
-export function forgetText(db: DatabaseSync, words: readonly string[]): number {
+export function forgetText(db: DatabaseSync, words: readonly string[], nowMs: number = Date.now()): number {
   const wanted = words.map(foldForget).filter((word) => word.length > 0);
   if (wanted.length === 0) return 0;
   let erased = 0;
@@ -467,7 +468,7 @@ export function forgetText(db: DatabaseSync, words: readonly string[]): number {
           const sets = live.map((column) => `${column.name} = ?`).join(", ");
           db.prepare(`UPDATE ${spec.table} SET ${sets} WHERE rowid = ?`).run(...live.map((column) => column.erased), row.rid as number);
         }
-        withdrawForgotten(db, spec.table, row.rid as number, Date.now());
+        withdrawForgotten(db, spec.table, row.rid as number, nowMs);
         erased += 1;
       }
     }
@@ -480,14 +481,14 @@ export function forgetText(db: DatabaseSync, words: readonly string[]): number {
  * The summoner's forget in the game's store when no world is running: opens domus/domus.sqlite if it exists (it is not
  * created here), forgets, and closes it. Returns how many rows were erased; 0 when there is no store.
  */
-export function forgetInDomusFile(dir: string, words: readonly string[]): number {
+export function forgetInDomusFile(dir: string, words: readonly string[], nowMs: number = Date.now()): number {
   const path = join(dir, DOMUS_FOLDER, DOMUS_DB_FILE);
   if (!existsSync(path)) return 0;
   const db = new DatabaseSync(path);
   try {
     db.exec("PRAGMA busy_timeout = 5000");
     migrateDomusDb(db);
-    return forgetText(db, words);
+    return forgetText(db, words, nowMs);
   } finally {
     db.close();
   }
