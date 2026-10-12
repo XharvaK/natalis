@@ -14,11 +14,16 @@ Nothing chooses for her, ranks for her, or hides a choice from her for her own g
   read tool, `game_list`. The helper sends a list only when it changes, and Natalis keeps the newest. Her view carries
   one count line. A list costs tokens only when she looks.
 - **Home edits per turn.** She may make up to 6 home edits (buy, place, move, sell) in one turn, each with its own
-  receipt. They are not held by the one-act rule. Save, travel and events count as her one act for the turn, as a game
-  act does.
+  receipt. They are not held by the one-act rule. A request the game or the helper refused frees its slot (audit
+  ruling, 2026-10-12). Save, travel and events count as her one act for the turn, as a game act does.
 - **Save floor.** 15 real minutes between her saves, besides the game's own save lock.
-- **Quiet at work.** While she is at work, a need going into distress does not wake her: the game looks after her
-  needs in the rabbit hole. Questions, held windows, calls, texts and looks wake her as always.
+- **Quiet at work.** While she is at work, a need going into distress does not wake her, in every attention mode: the
+  game looks after her needs in the rabbit hole. When work ends with a need still in distress, she wakes once.
+  Questions, held windows, calls, phone notifications and looks wake her as always (audit ruling, 2026-10-12).
+- **Reads before the live record** (audit ruling, 2026-10-12). 2.40.0 reads what the game index shows safely: place
+  names from the household, relationship track values, the rabbit-hole refusal. Venues, event scheduling, off-lot
+  facts and career early/available wait for the live discovery record; until then they are absent or None, and the
+  lists say so.
 - **Placement vocabulary** (the lead's call): on a thing, beside a thing, against a wall of a room, in a room, in
   place of a thing, plus an optional facing (a thing, or the room). No compass sides. The result names the wall in
   words. Wall landmarks can come later if she needs them.
@@ -67,6 +72,9 @@ sections, each optional:
 - `career`: her career name, its work days and hours, `can_work_early`, `available_for_work`.
 - `population`: the story-progression settings that touch a household with no lot (for P3).
 
+In 2.40.0, `off_lot`, `population`, the scheduling flag of `situations` and the career's `can_work_early` and
+`available_for_work` are not read yet (the reads ruling above).
+
 The helper stores each discovery record as one JSON file in its data folder (`discovery/<telemetry session>.json`)
 and logs one line. It is evidence for the lead, not part of her view.
 
@@ -77,23 +85,35 @@ and on a `lists_now` command.
 
 | Kind | Item keys |
 |---|---|
-| `people` | `sim_id`, `first_name`, `last_name`, `labels` (relationship bit names, at most 4), `tracks` ({track: value}, at most 4), `household_id`, `has_home` (bool), `on_lot` (bool), `waiting` (bool: a visitor waiting at her door) |
-| `places` | `zone_id`, `kind` (`home`, `household`, `venue`), `lot_name` (string, at most 64), `venue` (tuning name), `household_id` (for `household`) |
-| `events` | `situation_id`, `name_key`, `cost` (int or None), `schedulable` (bool) |
-| `things` | `object_id`, `definition_id`, `name_key`, `where` (`room` with `room_id`, `inventory`, or `outside`), `value` (int), `made_by_her` (bool or None), `states` (at most 4 {state, value}, from the near-object conditions code), `in_use` (bool), `count` (inventory stacks), `placement` (`floor`, `wall`, `surface` or None) |
+| `people` | `sim_id`, `first_name`, `last_name`, `labels` (relationship bit names, at most 4), `tracks` ({track type name: int value}, the visible tracks, at most 4), `household_id`, `has_home` (bool), `on_lot` (bool), `waiting` (bool: a visitor waiting at her door) |
+| `places` | `zone_id`, `kind` (`home`, `household`, `venue`), `lot_name` (string, at most 64: a home's household name), `venue` (tuning name), `household_id` (for `household`) |
+| `events` | `situation_id`, `name_key`, `cost` (int or None), `schedulable` (bool, None in 2.40.0) |
+| `things` | `object_id`, `definition_id`, `name_key`, `where` (`room` with `room_id`, `inventory`, or `outside`), `value` (int), `made_by_her` (bool or None), `states` (at most 4 {state, value}, from the near-object conditions code), `in_use` (bool), `count` (inventory stacks), `placement` (`floor`, `wall`, `surface` or None, from the definition's placement flags as for the catalogue) |
 
 - People: her relationships from her relationship tracker, at most 200, ordered by the game's own order.
 - Places: home, the homes of the households of the people she knows, and venues by type from the venue service, at
-  most 120.
+  most 120. Venues are not read in 2.40.0.
+- Events: only the user-facing types in this list can be planned (`NOT_AN_EVENT` otherwise).
+- Lists are written through one writer per kind (one `list_rev` counter); a list counts as written only when all its
+  parts were. The `digest` on a probe record is the probe's own change check.
 - Things: every object on her home lot that her household owns and that buy mode would list (not Sims, walls,
   floors, roofs, terrain or stairs), and her inventory. At most 600. On a lot that is not her home, only her
   inventory.
 
-**`catalog`** (P2). Written only on a `catalog_dump` command, in parts of at most 256 items (`catalog_rev` = the
-game's version string, `part`, `parts`). Each item: `definition_id`, `price`, `buy_category` (the game's flag names,
-at most 4), `placement` (`floor`, `wall`, `surface` flags), `tags` (at most 8 tag names), `purchasable` (bool: not
-hidden, debug or cheat-only). The helper sends `catalog_dump` when its `catalog.db` has no flags for the running game
-version.
+**`catalog`** (P2). Written only on a `catalog_dump` command, in parts of at most 256 items (`catalog_rev`, `part`,
+`parts`). `catalog_rev` is the probe's target build, for information only: the helper keys its flags by the game
+build it detects. Each item: `definition_id` (digits), `price`, `buy_category`, `placement`, `tags` (at most 8 tag
+names), `purchasable`.
+- `buy_category`: the names of the set bits of `build_buy.get_object_buy_category_flags(definition id)` among
+  APPLIANCES, ELECTRONICS, ENTERTAINMENT, LIGHTING, PLUMBING, DECOR, KIDS, STORAGE, COMFORT, SURFACE, VEHICLE (the
+  unused bits and DEFAULT are ignored); None when unreadable.
+- `placement`: a list of one word from `build_buy.get_object_placement_flags(definition id)`: `wall` when a wall flag
+  is set (CENTER_ON_WALL, EDGE_AGAINST_WALL, ADJUST_HEIGHT_ON_WALL, GROUNDED_AGAINST_WALL, ON_WALL_TOP), else `surface`
+  when REQUIRES_SLOT is set, else `floor`; None when unreadable.
+- `purchasable`: the price is an int of 0 or more, the item has a buy category (buy mode lists it), and no tag says
+  hidden, debug or cheat. Only purchasable items are written and bought.
+
+The helper sends `catalog_dump` when its `catalog.db` has no flags for the running game build.
 
 ### Act menu
 
@@ -109,8 +129,11 @@ version.
 ### Phone
 
 - An incoming call is held for her by the caller's sim id, not by its resolver. Its title names the caller (E6).
-- A text (`PhoneNotificationOp`) writes a `phone` event: `kind` (`text` or `call`), `from_sim_id`, and the guid of the
-  phone act it notifies, when readable.
+- A `phone` event has `kind`, `from_sim_id` and `notifies`:
+  - `notice`: her phone shows a notification. The game's `PhoneNotificationOp` carries the phone owner's sim id and
+    the guid of the phone act it notifies (`ui_send_phone_notification`), and no sender. It is written only when the
+    owner is her Sim; `from_sim_id` is None and `notifies` is that guid.
+  - `call`: a call held for her; `from_sim_id` is the caller when readable.
 
 ### Commands
 
@@ -120,33 +143,43 @@ command that does something carries `act_id`, and its outcome is written as `act
 
 | Command | Args | Phases and codes |
 |---|---|---|
-| `act` | gains optional `sim_id` (digits), only for a `needs_sim` act | REJECTED `SIM_NOT_CHOOSABLE` with `detail` naming the generator step, or `SIM_NEEDED` |
-| `go` | `act_id`, `zone_id` | ACCEPTED, PUSHED (travel asked of the client), FINISHED `ARRIVED` (her Sim is in that zone after the load); REJECTED `IN_RABBIT_HOLE`, `SAVE_LOCKED`, `CARRYING_BABY`, `SAME_ZONE`, `NO_ZONE`; UNKNOWN `TRAVEL_UNSEEN` if no zone change within 5 real minutes |
-| `save` | `act_id` | ACCEPTED, FINISHED `SAVED` when `on_save_complete` reports success; REJECTED `NO_PLAYER_SLOT`, `SAVE_LOCKED` (the lock's tooltip key in `reason_key`), `SAVE_TOO_SOON` (within 15 real minutes of her last save: a backstop for the host's floor), `SAVE_FAILED` |
-| `event` | `act_id`, `situation_id`, `guests` (0 to 16 sim ids), `start` (`"now"` or `{day_offset: 0 or 1, hour, minute}`) | FINISHED `CREATED`; REJECTED `NO_FUNDS`, `ZONE_FORBIDS`, `START_PAST`, `CREATE_FAILED`, `NOT_SCHEDULABLE` |
-| `buy` | `act_id`, `definition_id`, `place`, optional `max_price` | FINISHED `PLACED`; REJECTED `NOT_HOME`, `BUILD_MODE`, `NOT_PURCHASABLE`, `PRICE_ABOVE` (live price above `max_price`), `NO_FUNDS`, `NO_SPOT`, `PLACE_FAILED` (money returned, the new object removed) |
-| `place` | `act_id`, `object_id` (an inventory item), `place` | FINISHED `PLACED`; REJECTED `NOT_HOME`, `BUILD_MODE`, `NOT_IN_INVENTORY`, `NO_SPOT`, `PLACE_FAILED` |
-| `move` | `act_id`, `object_id`, `place` | FINISHED `MOVED`; REJECTED `NOT_HOME`, `BUILD_MODE`, `NOT_HERS`, `IN_USE`, `NOT_MOVABLE`, `NO_SPOT`, `MOVE_FAILED` |
-| `sell` | `act_id`, `object_id` | FINISHED `SOLD`; REJECTED `NOT_HOME`, `BUILD_MODE`, `NOT_HERS`, `IN_USE`, `NOT_SELLABLE` (a Sim, door, window, wall, stair, or anything that holds a Sim) |
+| `act` | gains optional `sim_id` (digits), only for a `needs_sim` act | REJECTED `SIM_NOT_CHOOSABLE` with the game's own refusal reason in `detail` (the game's test decides, never a host guess), or `SIM_NEEDED` |
+| `go` | `act_id`, `zone_id` | ACCEPTED, PUSHED (travel asked of the client), FINISHED `ARRIVED` (her Sim is in that zone after the load); REJECTED `IN_RABBIT_HOLE`, `SAVE_LOCKED`, `SAME_ZONE`, `NO_ZONE`, `TRAVEL_PENDING` (a trip of hers is still pending), `PUSH_FAILED`; UNKNOWN `TRAVEL_UNSEEN` if no zone change within 5 real minutes, `SAMPLER_STOPPED` |
+| `save` | `act_id` | ACCEPTED, FINISHED `SAVED` on the game's manual-save callback (the game calls it only for a successful save to a player slot); REJECTED `NO_PLAYER_SLOT`, `SAVE_LOCKED` (the lock's tooltip key in `reason_key`), `SAVE_BUSY` (a save is already running), `SAVE_TOO_SOON` (within 15 real minutes of her last save: a backstop for the host's floor), `SAVE_FAILED`; UNKNOWN `SAVE_UNCONFIRMED` when no callback came within 120 s |
+| `event` | `act_id`, `situation_id`, `guests` (0 to 16 sim ids), `start` (`"now"` or `{day_offset: 0 or 1, hour, minute}`) | FINISHED `CREATED`; REJECTED `NOT_AN_EVENT` (not in her newest events list), `NO_FUNDS`, `START_PAST`, `CREATE_FAILED` (detail `cost unread` before any charge, or `refund failed`); `ZONE_FORBIDS` and `NOT_SCHEDULABLE` wait for the live record |
+| `buy` | `act_id`, `definition_id`, `place`, optional `max_price` | FINISHED `PLACED`; REJECTED `NOT_HOME`, `BUILD_MODE`, `NOT_PURCHASABLE`, `PRICE_ABOVE` (live price above `max_price`), `NO_FUNDS`, `NO_SPOT`, `NOT_FREE`, `PLACE_FAILED` (money returned, the new object removed); UNKNOWN with the object id when a just-made object could not be removed (no refund then) |
+| `place` | `act_id`, `object_id` (an inventory item), `place` | FINISHED `PLACED`; REJECTED `NOT_HOME`, `BUILD_MODE`, `NOT_IN_INVENTORY`, `NO_SPOT`, `NOT_FREE`, `PLACE_FAILED` (the item back in her inventory) |
+| `move` | `act_id`, `object_id`, `place` | FINISHED `MOVED`; REJECTED `NOT_HOME`, `BUILD_MODE`, `NOT_HERS`, `IN_USE`, `NOT_MOVABLE`, `IN_INVENTORY` (use `place`), `NO_SPOT`, `NOT_FREE`, `MOVE_FAILED` |
+| `sell` | `act_id`, `object_id` | FINISHED `SOLD` once the object is gone (she is paid then); REJECTED `NOT_HOME`, `BUILD_MODE`, `NOT_HERS`, `IN_USE`, `NOT_SELLABLE` (a Sim, door, window, wall, stair, or anything that holds a Sim), `SELL_FAILED`; UNKNOWN `SELL_UNCONFIRMED` (not gone within 30 s; not paid) |
 | `catalog_dump` | none | writes the `catalog` record; idempotent |
 | `lists_now` | none | writes every list now; idempotent |
+
+Every verb may also be REJECTED `NOT_SAMPLING`, `E2_UNAVAILABLE`, `BODY_UNAVAILABLE` or `BODY_MISMATCH`, or end
+UNKNOWN `E2_EXCEPTION:<type>`. When the probe cannot write a verb's row (its schema refuses it), it writes UNKNOWN
+`ROW_INVALID` without a result, so no act is left without an outcome.
 
 **`place`** (the argument): `{"rel": R, ...}` with R one of:
 - `on`, with `target_id`: a free surface slot of that object (its runtime slots, found defensively);
 - `beside`, with `target_id`: FGL starting beside it, against the same wall when the item is wall-placed;
-- `wall`, with `room_id`: FGL against a wall of that room;
+- `wall`, with `room_id`: FGL from the room's border cells nearest its middle, facing into the room;
 - `in`, with `room_id`: FGL from the room's middle;
-- `instead`, with `target_id`: that object's spot; refused `NOT_FREE` unless the target was sold or moved first.
+- `instead`, with `target_id`: that object's spot; refused `NOT_FREE` while the target still stands (sell or move it
+  first).
 
-Optional `facing`: an object id (digits), or `"room"` (towards the room's middle). The probe finds the spot first
-(`create_starting_location`, `create_fgl_context_for_object`, `find_good_location`, as `standable_spot` does), and
-only then charges, creates and moves.
+A room is found by sampling the lot about every metre with the game's `build_buy.get_room_id`, cached per zone and
+level and cleared after a home edit: its middle is the mean of its cells (an empty room works), its border the cells
+next to another room or outside. Optional `facing`: an object id (digits), or `"room"` (towards the room's middle); it
+is the start orientation given to the search, never a turn after it. The probe makes a buy's object unplaced first,
+to measure its footprint, then finds the spot, then charges, then moves it; the object is removed on every miss before
+the charge. A placement from her inventory takes the item out of the inventory the way the game does
+(`try_remove_object_by_id`), and puts it back if the move fails.
 
 **`result`** (new optional key on a FINISHED `act_event`): plain facts for the helper to word.
-- For `buy`, `place`, `move`: `room_id`, `wall` (bool: it backs on a wall), `wall_has` (at most 2 object ids on that
-  wall: a window, a door), `beside` (at most 4 object ids within 1.5 m), `facing_id` (an object id, or None), and
-  `routes_lost`: which of `door`, `bed`, `toilet`, `fridge` were reachable before and are not now. Plus `price` and
-  `funds` for `buy`.
+- For `buy`, `place`, `move`: `room_id`, `wall` (bool: the spot is within a metre of its room's border), `wall_has`
+  (at most 2 object ids on that wall: a window, a door) with `wall_kinds` (`door` or `window` for each), `beside` (at
+  most 4 object ids within 1.5 m, on the same level, no Sims, nothing in an inventory), `facing_id` (the object it
+  faces, or None), and `routes_lost`: which of `door`, `bed`, `toilet`, `fridge` were reachable before and are not
+  now. Plus `price` and `funds` for `buy`.
 - For `sell`: `value` and `funds`.
 - For `event`: `cost`, `funds`, `start_min` (game minute of the start).
 - For `go`: `zone_id`.
@@ -159,13 +192,20 @@ Natalis deploys first and accepts every new key and route before any helper send
 
 **Lists: `POST /domus/lists`.**
 - Body: `{v: 1, helper_session, kind, digest, items}`. `kind` is one of `people`, `places`, `things`, `events`.
-  `digest` is the SHA-256 hex of the canonical items. Body limit 128 KiB.
+  `digest` is the SHA-256 hex of the canonical JSON (sorted keys, no spaces, UTF-8) of the items as the helper sends
+  them. It is the helper's change marker: Natalis stores and compares it as a string and does not recompute it. Body
+  limit 128 KiB; the helper cuts a list at 120 KiB, her inventory kept first.
+- The helper assembles a probe list only when every part of one `list_rev` carries the same digest and count and the
+  items number `count`.
+- Room labels belong to the helper and come from the newest things list: each room is "the room with ..." its
+  things; equal labels get " (2)", " (3)" in room id order; a room with no thing has no label. A thing's `where` is its
+  room's label. The helper maps a label back to the probe's `room_id` (a digit string) from the same table.
 - Items, as the helper words them (names resolved, tokens cleaned):
 
   | Kind | Item keys |
   |---|---|
-  | `people` | `ref`, `id`, `name` (at most 64), `how` (at most 80: labels and tracks in words), `home` (bool), `here` (bool), `waiting` (bool) |
-  | `places` | `ref`, `id`, `name` (at most 64), `kind` (`home`, `household`, `venue`), `what` (at most 40: the venue type, or whose home) |
+  | `people` | `ref`, `id`, `name` (at most 64; "unnamed" when unreadable), `how` (at most 80: labels and tracks in words), `home` (bool), `here` (bool), `waiting` (bool) |
+  | `places` | `ref`, `id`, `name` (at most 64), `kind` (`home`, `household`, `venue`), `what` (at most 40: the venue type, or the owner's name) |
   | `things` | `ref`, `id`, `name` (at most 64), `where` (a room name, `inventory` or `outside`), `value`, `made_by_her` (bool or absent), `states` (at most 4 words), `in_use` (bool), `count` (inventory), `placement` |
   | `events` | `ref`, `id`, `name` (at most 64), `cost` (int or absent) |
 
@@ -175,10 +215,10 @@ Natalis deploys first and accepts every new key and route before any helper send
   list whose digest differs, or that Natalis lacks.
 
 **Catalogue: `game_catalog` asks.**
-- The sync answer gains `catalog`: `[{ask_id, words, room?, max_price?, placement?}]`, handed once, as memory asks
-  are.
+- The sync answer gains `catalog`: `[{ask_id, words, max_price?, placement?}]`, handed once, as memory asks are.
+  (An ask has no room: the catalogue cannot filter by room.)
 - The helper answers with `POST /domus/catalog`: `{v: 1, helper_session, ask_id, matched, items}`. At most 12 items:
-  `{ref, id (definition id), name, price, placement, category (at most 40)}`.
+  `{ref, id (definition id), name, price, placement (one word), category (at most 40)}`.
 - Only purchasable furniture and decor are searched: no build items (walls, floors, doors, windows, stairs, roofs,
   terrain), nothing hidden, debug or cheat-only. Items are matched on words and filtered by `max_price` and
   `placement`, then ordered by match. The helper never ranks by taste, price or what suits her.
@@ -194,11 +234,14 @@ Natalis deploys first and accepts every new key and route before any helper send
 - The helper gates each verb on the probe: `PROBE_NEEDS` for every verb, and for `sim_id`, is 2.40.0.
 - A sync event of a verb act may carry `detail.result`: the helper's words for the probe's result facts, at most 400
   characters (room and object names resolved, the wall and what is on it, what it is beside, which way it faces, the
-  routes now cut off, the price and her funds).
+  routes now cut off, the price and her funds). An event's start is worded "Starts at HH:MM today" (or "tomorrow",
+  from the act's own `day_offset`), or "Starts now". Natalis cuts a longer result to 400 rather than refuse the sync.
+- An envelope the helper's command box refuses is rejected `ARGS_INVALID` with the box's code in `detail`.
 
 **Phone and visitors.**
-- A `phone` event becomes a percept `phone`: `{kind, from}` (a name).
-- A company entry may carry `waiting: true`.
+- A `phone` event becomes a percept `phone`: `notice` (with `act`, the name of the phone act it notifies, when the
+  current act menu has it) or `call` (with `from`, a name).
+- A company entry carries `waiting: true` when the visitor's presence or any of its situations says so.
 
 ## Natalis
 
@@ -215,9 +258,11 @@ Domus database version 2:
 ### Tools
 
 Every tool refuses `not_running`, `not_attached` and `stopped` as `game_memory` does. Every verb tool also refuses
-`probe_too_old` when the heartbeat's probe version is below 2.40.0. Refs resolve only against the lists, options and
-catalogue answers of the attachment that is attached now. Otherwise the tool refuses `stale_list`, naming the tool
-that refreshes it.
+`probe_too_old` when the heartbeat's probe version is below 2.40.0 or unknown. Refs resolve only against the lists,
+options and catalogue answers of the attachment that is attached now, and a list ref only while the attachment that
+answered her last `game_list` or `game_catalog` is still attached (the helper numbers refs per attachment).
+Otherwise the tool refuses `stale_list`, naming the tool that refreshes it. Forgetting a word that a stored list
+contains drops that list; the helper sends it again.
 
 - **`game_list(what, room?)`**. `what` is one of `people`, `places`, `things`, `events`. It answers at once from the
   stored list: one line per item, with its ref. It changes nothing in the game.
@@ -228,14 +273,15 @@ that refreshes it.
   any other.
 - **`game_go(place)`** (an `h` ref). A verb act that counts as her one act for the turn.
   - Tool text: "Travel moves your summoner's game too. Ask them on Discord first, and go only after their yes."
-  - The act's args and the receipt keep `summonerLastMessageMs`: the time of the summoner's last message before the
-    trip, from the runtime's `lastOwnerMs`, or null. That is a fact only: nothing judges it.
+  - The act's record (kept beside its args, never sent to the game) and the receipt keep `summonerLastMessageMs`: the
+    time of the summoner's last message before the trip, from the runtime's `lastOwnerMs`, or null. That is a fact
+    only: nothing judges it.
 - **`game_save()`**. A verb act that counts as her one act. Refused `save_too_soon` within 15 real minutes of her last
   save that was not refused, saying when she can save again.
 - **`plan_event(type, guests?, start?)`**: `type` an `e` ref, `guests` up to 16 `p` refs, and `start` either "now"
   (the default) or `{day: "today" | "tomorrow", time: "HH:MM"}` on the game clock. A verb act that counts as her one
   act.
-- **`game_catalog(words, room?, max_price?, placement?)`**: `words` 1 to 80 characters. One open ask per thread, with
+- **`game_catalog(words, max_price?, placement?)`**: `words` 1 to 80 characters. One open ask per thread, with
   a 2-minute expiry, a withdrawal on stop and a wake on the answer, as `game_memory`. The answer note lists each item
   with its `c` ref, name, price and placement, and her money. The items go into `catalog_seen`.
 - **`game_buy(item, place, max_price?)`**: `item` a `c` ref from a catalogue answer of this attachment.
@@ -247,13 +293,13 @@ that refreshes it.
   relation. A room name resolves only against the rooms of the newest view and the things list, exactly, ignoring
   case. Otherwise `unknown_room`, listing the rooms.
 - **Limits.** Home edits (buy, place, move, sell): at most 6 per turn (`home_edits_full`), not held by the one-act
-  rule. `game_go`, `game_save` and `plan_event` hold the one-act slot like a game act. The meanwhile hold (another
+  rule; a request the game or the helper refused (or that expired) does not count. `game_go`, `game_save` and `plan_event` hold the one-act slot like a game act. The meanwhile hold (another
   thread within 60 s) applies to every verb, and `knowingly` overrides it as today.
 - **Labels and notes.**
   - The label is the verb in words and its target, e.g. "buy Wooden Nightstand (c4) beside the bed (t9)".
   - A finished verb act's note is its label, then `detail.result` when present. A refused one uses today's
     refusal wording.
-  - Plans (`then`) stay for game acts only.
+  - Plans (`then`) stay for game acts only, and a plan step cannot name a Sim (`sim_needed`).
 
 ### View
 
@@ -261,13 +307,15 @@ that refreshes it.
   event: game_list shows them." A list Natalis lacks is left out of the line.
 - At work: the job line reads "at work until 17:00" from `until_min` (on the game clock).
 - A company entry with `waiting` reads "waiting at your door".
-- A `phone` percept reads "<name> texted you" or "<name> is calling you". It wakes her in `when_called`, as being
-  addressed does.
+- An option that needs a Sim says so: "(needs a Sim: name one with sim)".
+- A `phone` percept reads "Your phone shows a new notification." (plus "It is about: <act>." when known) or "<name>
+  is calling you." It wakes her in every mode, at work too, as being addressed does.
 
 ### Attention
 
-- `wakesFor`: while any job in the portrait has `at_work` true, a need percept in `distress` does not wake her (quiet
-  at work). Every other wake rule is unchanged.
+- `wakesFor`: while any job in the portrait has `at_work` true, a need percept in `distress` does not wake her, in
+  every attention mode (quiet at work). When `at_work` turns false and a need is still in distress, she wakes once.
+  Every other wake rule is unchanged.
 
 ## Briefs
 
@@ -342,4 +390,10 @@ Both probe workers:
   - a move and a sale;
   - an event planned for later;
   - a trip she asked the User about first;
-  - a work day (quiet, then home).
+  - a work day (quiet, then home);
+  - added by the audit (2026-10-12): what the ring dialog's `target_sim_id` names; a phone notice; how long a sold
+    object takes to go; an inventory placement; the room sampling's cost on her lot; the buy-category and placement
+    flags of a few catalogue items; a trip refused in a rabbit hole.
+
+The pre-smoke audit (six read-only audits, the lead's checks in the game bytecode, the verdicts and fix briefs) is
+kept with the lead's working notes, outside this repository.
