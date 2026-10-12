@@ -153,12 +153,34 @@ describe("game_save", () => {
   it("is refused within the fifteen-minute floor, and allowed after it", async () => {
     seedView([]);
     expect(await call("game_save", {}, "t-1")).toMatchObject({ ok: true, data: { verb: "save" } });
+    // The game does the save before the floor is tried again, so no save is still waiting.
+    const first = actRows().find((row) => row.verb === "save") as Row;
+    syncActs(db, { attachment: HELPER, nowMs: clock, events: [{ actId: String(first.act_id), phase: "finished", atMs: clock, detail: { code: "SAVED" } }] });
     clock += 5 * 60_000;
     const soon = await call("game_save", {}, "t-2");
     expect(soon).toMatchObject({ ok: false, refused: { code: "save_too_soon" } });
     expect(soon.refused?.reason).toContain("10 minute");
     clock += SAVE_FLOOR_MS;
     expect(await call("game_save", {}, "t-3")).toMatchObject({ ok: true });
+  });
+});
+
+describe("a second save while the first is still waiting (NATALIS2-10)", () => {
+  it("says the first save has not been done yet, not that the floor refuses it", async () => {
+    seedView([]);
+    expect(await call("game_save", {}, "t-1")).toMatchObject({ ok: true });
+    const again = await call("game_save", {}, "t-2");
+    expect(again).toMatchObject({ ok: false, refused: { code: "save_pending" } });
+    expect(again.refused?.reason).toBe("You already asked the game to save, and it has not been done yet.");
+  });
+
+  it("goes back to the floor's words once the first save is done", async () => {
+    seedView([]);
+    expect(await call("game_save", {}, "t-1")).toMatchObject({ ok: true });
+    const first = actRows().find((row) => row.verb === "save") as Row;
+    syncActs(db, { attachment: HELPER, nowMs: clock, events: [{ actId: String(first.act_id), phase: "finished", atMs: clock, detail: { code: "SAVED" } }] });
+    clock += 60_000;
+    expect(await call("game_save", {}, "t-2")).toMatchObject({ ok: false, refused: { code: "save_too_soon" } });
   });
 });
 

@@ -6,7 +6,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import type { OptionObject } from "./answers.js";
-import { actRequestedMeanwhile, lastSaveAt, requestVerb } from "./acts.js";
+import { actRequestedMeanwhile, lastSaveAt, requestVerb, saveWaiting } from "./acts.js";
 import { seenItem } from "./catalog.js";
 import { findListed, listedSession, readList, REF_PATTERN } from "./lists.js";
 import { findOption, optionsOf } from "./options.js";
@@ -170,6 +170,7 @@ const VERBS: VerbDef[] = [
     required: [],
     keys: [],
     plan({ db, args: _args, nowMs }) {
+      if (saveWaiting(db)) return refused("save_pending", "You already asked the game to save, and it has not been done yet.");
       const last = lastSaveAt(db);
       if (last !== undefined && nowMs - last < SAVE_FLOOR_MS) {
         const left = Math.ceil((last + SAVE_FLOOR_MS - nowMs) / 60_000);

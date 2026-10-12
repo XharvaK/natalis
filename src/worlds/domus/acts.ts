@@ -215,6 +215,16 @@ export function requestVerb(db: DatabaseSync, input: VerbInput): VerbResult {
 }
 
 /**
+ * Whether her newest save (one not refused or expired) is still waiting for the game: asked, and not yet done or ended.
+ * A save the game finished, or that ended unknown, is not waiting.
+ */
+export function saveWaiting(db: DatabaseSync): boolean {
+  const row = db.prepare(`SELECT state FROM acts WHERE verb = 'save' AND state NOT IN ('rejected', 'expired')
+    ORDER BY requested_at_ms DESC LIMIT 1`).get() as Row | undefined;
+  return row !== undefined && ["requested", "received", "accepted", "pushed", "waiting", "noted"].includes(String(row.state));
+}
+
+/**
  * The time of her newest save that was not refused, or undefined. The save floor counts from it. A save the game refused, or
  * one that expired before the game took it up, is not a save.
  */
