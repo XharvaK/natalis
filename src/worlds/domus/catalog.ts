@@ -4,6 +4,7 @@
 // with each item's c ref, which game_buy takes. The asks live in domus.sqlite (catalog_asks), the items in catalog_seen.
 // The tool only asks: nothing in the game changes.
 
+import { moneyWords } from "./words.js";
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
@@ -42,8 +43,8 @@ export function gameCatalogTool(open: () => GameContext): Tool {
       // Q-j (the User, 2026-10-12): the summoner's stop refuses acts, not reads; this one only reads the game.
       safeWhenStopped: true,
       description:
-        "Ask the game's catalogue what it sells for some words: furniture and decor you can buy. The answer comes on its next " +
-        "sync, within two minutes, as up to twelve items, each with a c ref for game_buy, its price and its placement. Nothing is bought.",
+        "Ask the game's catalogue what it sells for some words: furniture and decor you can buy. The answer comes from the link to the game " +
+        "within two minutes, as up to twelve items, each with a catalogue ref for game_buy, its price and its placement. Nothing is bought.",
       parameters: {
         type: "object",
         properties: {
@@ -90,7 +91,7 @@ function gameCatalog(open: () => GameContext, args: Record<string, unknown>, con
       typeof args.max_price === "number" ? args.max_price : null, typeof args.placement === "string" ? args.placement : null);
   return {
     ok: true,
-    summary: `Asked the game's catalogue for ${words}. The answer comes on its next sync and wakes you.`,
+    summary: `Asked the game's catalogue for ${words}. The answer comes from the link to the game and wakes you.`,
     data: { askId, expiresAtMs: nowMs + CATALOG_TTL_MS },
   };
 }
@@ -143,15 +144,15 @@ export function settleCatalog(
   };
 }
 
-/** The answer in plain words: each item with its c ref, name, price and placement, and her money when it is known. */
+/** The answer in plain words: each item with its catalogue ref, name, price and placement, and her money when it is known. */
 export function catalogText(words: string, matched: number, items: CatalogItem[], funds: number | undefined): string {
   const lines = items.map((item) => {
     const placement = typeof item.placement === "string" ? `, ${item.placement}` : "";
-    return `- ${String(item.ref)} ${String(item.name)}, §${String(item.price)}${placement}`;
+    return `- ${String(item.ref)} ${String(item.name)}, §${moneyWords(item.price)}${placement}`;
   });
   const head = matched === 0 ? `The game's catalogue has nothing for "${words}".`
     : `What the game's catalogue has for "${words}" (${matched} matched${matched > items.length ? `, ${items.length} shown` : ""}):`;
-  const money = funds === undefined ? [] : [`Your money: §${funds}.`];
+  const money = funds === undefined ? [] : [`Your money: §${moneyWords(funds)}.`];
   return [head, ...lines, ...money].join("\n");
 }
 

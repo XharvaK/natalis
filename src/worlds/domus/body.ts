@@ -3,7 +3,7 @@
 // feels them: never a number, never a level word. It never says what she should do, never ranks anything, and never
 // speaks for her. A field that is missing or malformed is skipped; a portrait never makes the view fail.
 
-import { capitalised, plainName, textOrUndefined, withStop, withoutStop } from "./words.js";
+import { capitalised, gameName, plainName, textOrUndefined, withStop, withoutStop } from "./words.js";
 
 /** The longest text of an open window the block shows, in characters. */
 const WINDOW_TEXT_MAX = 160;
@@ -91,10 +91,10 @@ const NEED_FEELINGS: Readonly<Record<string, readonly [string, string, string, s
 
 /** The words of a need the table does not name, by grade: "<need> is getting low." and so on. */
 const OTHER_NEED_FEELINGS: readonly [string, string, string, string] = [
-  "is getting low.",
-  "is low.",
-  "is very low.",
-  "is about to give out.",
+  "is starting to bother you.",
+  "is bothering you.",
+  "is bothering you badly.",
+  "is about to overwhelm you.",
 ];
 
 /** The grade of a need by its value (0 to 100); undefined at 60 or more. */
@@ -231,7 +231,7 @@ function windowLines(asked: Record_[]): string[] {
     const text = textOrUndefined(item.text);
     const tail = text === undefined ? "" : ` ${clip(text, WINDOW_TEXT_MAX)}`;
     if (item.whose === "the User's") return `Open on your summoner's screen: ${title}.`;
-    if (item.whose === "hers") {
+    if (item.whose === "yours") {
       const held = item.held === true ? `held for you${holdLeftWords(item.hold_left_s)}` : "not held for you";
       const answers = item.answers_itself === true ? " It answers itself." : "";
       return `Open for you: ${title} (${held}).${tail}${answers}`;
@@ -245,7 +245,7 @@ function flagLines(portrait: Record_): string[] {
     [portrait.building === true, "Build mode is on."],
     [portrait.fire_on_lot === true, "A fire is burning on the lot."],
     [portrait.user_plays_another === true, "Your summoner is playing another Sim of the household, so your acts are refused for now."],
-    [portrait.company_complete === false, "The company list missed someone in this sample."],
+    [portrait.company_complete === false, "The list of people with you may be missing someone."],
     [portrait.more_nearby === true, "More Sims are nearby than the list shows."],
   ];
   return flags.filter(([on]) => on).map(([, text]) => text);
@@ -298,9 +298,10 @@ function jobLines(jobs: unknown): string[] {
   if (!Array.isArray(jobs)) return [];
   if (jobs.length === 0) return ["No job."];
   return records(jobs).map((item) => {
+    // VIEW3-15: the job's title only; the game's job id is for the logs, not for her.
+    // A job the game gave no title for is "a job"; one with neither a title nor a name is skipped.
     const title = wordOf(item.title);
-    const job = wordOf(item.job);
-    const name = title !== undefined && job !== undefined ? `${title} (${job})` : title ?? job;
+    const name = title ?? (wordOf(item.job) === undefined ? undefined : "a job");
     if (name === undefined) return undefined;
     const level = wholeOf(item.level);
     return `Job: ${name}${level === undefined ? "" : `, level ${level}`}${item.at_work === true ? atWorkWords(item.until_min) : ""}.`;
@@ -453,17 +454,17 @@ export function bodyLines(portrait: unknown, attachment?: AttachmentNow, attenti
   lines.push(...talkingLines(records(p.addressed_by), records(p.company)));
   lines.push(...windowLines(records(p.asked)));
   const recent = records(p.windows).map((item) => {
+    // VIEW3-15: the pop-up's name and when it was; its window code is for the logs.
     const event = textOrUndefined(item.event);
-    const code = textOrUndefined(item.code);
     const ago = typeof item.ago_min === "number" && Number.isFinite(item.ago_min) ? Math.max(0, Math.round(item.ago_min)) : undefined;
     if (event === undefined) return undefined;
-    return `${plainName(event)}${code ? ` (${plainName(code)})` : ""}${ago === undefined ? "" : `, ${ago} min ago`}`;
+    return `${plainName(event)}${ago === undefined ? "" : `, ${ago} min ago`}`;
   }).filter((item): item is string => item !== undefined);
-  if (recent.length) lines.push(`Recent windows: ${recent.join("; ")}.`);
+  if (recent.length) lines.push(`Recent pop-ups: ${recent.join("; ")}.`);
   const near = records(p.near_conditions).slice(0, LISTED_MAX).map((item) => {
     const object = textOrUndefined(item.object);
     const states = namesOf(item.states);
-    return object === undefined ? undefined : `${plainName(object)}${states.length ? ` (${states.join(", ")})` : ""}`;
+    return object === undefined ? undefined : `${gameName(object)}${states.length ? ` (${states.join(", ")})` : ""}`;
   }).filter((item): item is string => item !== undefined);
   if (near.length) lines.push(`Near you: ${near.join("; ")}.`);
   lines.push(...flagLines(p));

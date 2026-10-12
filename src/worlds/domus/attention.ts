@@ -187,7 +187,7 @@ const SET_UP =
   "in distress stays quiet. " +
   "when_called: otherwise a change wakes you only when something calls you: someone speaking to you, someone arriving on the " +
   "lot or being on it, the day's record at sleep, or the first view after the game attached. " +
-  "quiet: otherwise nothing wakes you until until, then the mode goes back to what it was. " +
+  "quiet: otherwise nothing wakes you until, then the mode goes back to what it was. " +
   "until is a date and time, such as 2026-10-12T14:30, in your own zone unless it has an offset, at most 24 hours ahead; " +
   "it goes with quiet only. " +
   "Changes still reach the game's thread, and you see them by their brief in your next turn. look_every_minutes (5 to 240, " +

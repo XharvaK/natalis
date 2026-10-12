@@ -409,6 +409,11 @@ export interface World {
   tools(): Tool[];
   /** One or two plain lines for the now board: connected or not, places open. */
   now(): string;
+  /**
+   * The game acts and looks this world's threads asked for lately, one line each (what it asked, and its state in words),
+   * for the now board of the other threads. Optional: a world with no such acts does not define it.
+   */
+  actsNow?(nowMs: number): Array<{ thread: string; atMs: number; text: string }>;
   /** One stable line saying what this world is and which places in it are hers, for "who you are". */
   about?(): string;
   /**

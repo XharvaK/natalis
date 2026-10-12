@@ -4,6 +4,7 @@
 // session her last list answer named, and only while that session is attached (see listedSession and findListed). Her view
 // carries one count line from these lists (listCountLine).
 
+import { moneyWords } from "./words.js";
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import { type GameContext, gameGate, refused } from "./tool-context.js";
@@ -145,7 +146,7 @@ function thingLine(item: ListItem): string {
 }
 
 function eventLine(item: ListItem): string {
-  const cost = typeof item.cost === "number" ? ` (cost §${item.cost})` : "";
+  const cost = typeof item.cost === "number" ? ` (cost §${moneyWords(item.cost)})` : "";
   return `- ${text(item.ref)} ${text(item.name)}${cost}`;
 }
 
@@ -171,8 +172,7 @@ function thingsLines(items: ListItem[], room: string | undefined): string[] {
   const inventory = items.filter((item) => item.where === "inventory");
   return [
     `Things by room (ask again with room for one room's list): ${perRoom || "none"}.`,
-    "In your inventory:",
-    ...inventory.map(LINE.things),
+    ...(inventory.length ? ["In your inventory:", ...inventory.map(LINE.things)] : []),
   ];
 }
 
@@ -180,7 +180,6 @@ function thingsLines(items: ListItem[], room: string | undefined): string[] {
 export function listAnswer(kind: ListKind, items: ListItem[], room: string | undefined): string {
   const lines = kind === "things" ? thingsLines(items, room) : items.map(LINE[kind]);
   const body = lines.length ? lines : [`The game's list of ${kind} is empty.`];
-  if (kind === "places") return ["Travel moves your summoner's game too: ask them first.", ...body].join("\n");
   return body.join("\n");
 }
 

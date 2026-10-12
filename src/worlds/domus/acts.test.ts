@@ -6,8 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { findOption, type OptionObject } from "./options.js";
 import type { Found } from "./answers.js";
 import {
-  ACT_TTL_MS, actRequestedMeanwhile, CODE_WORDS, expireDue, nextState, pendingCounts, PLAN_STEP_MAX_MS, requestAct, syncActs, type RequestResult, type SyncAct, wordsOfCode,
-} from "./acts.js";
+  ACT_TTL_MS, actRequestedMeanwhile, CODE_WORDS, expireDue, nextState, pendingCounts, PLAN_STEP_MAX_MS, requestAct, syncActs, type RequestResult, type SyncAct, wordsOfCode, ACT_BOARD_MS, recentActsBoard } from "./acts.js";
 import { openDomusDb } from "./store.js";
 import type { DomusActPhase, SyncEvent } from "./wire.js";
 
@@ -143,7 +142,8 @@ describe("requested acts", () => {
     const actId = okId(ask(T0, "a1"));
     const rejected = sync(T0 + 1, [ev(actId, "rejected", T0 + 1, { code: "NOT_ATTACHED", by: "game" })]).notes[0];
     expect(rejected).toMatchObject({ wake: true });
-    expect(rejected?.text).toContain("the game refused it (NOT_ATTACHED)");
+    expect(rejected?.text).toContain("the game refused it: the link to the game is not connected to the game");
+    expect(rejected?.text).not.toContain("NOT_ATTACHED");
     const other = okId(ask(T0, "a2"));
     expect(sync(T0 + 1, [ev(other, "pushed", T0 + 1)]).notes[0]).toMatchObject({ wake: false });
   });
@@ -284,7 +284,7 @@ describe("plans", () => {
   it("keeps the wording, with the code and the reason, for any other unknown", () => {
     const actId = okId(ask(T0, "a1"));
     const result = sync(T0 + 1, [ev(actId, "unknown", T0 + 1, { code: "SOMETHING_ELSE", reason: "the game gave no answer" })]);
-    expect(result.notes[0]?.text).toBe('Your act "Boil water (Test kettle)" (a1): nothing says how it ended (SOMETHING_ELSE) - the game gave no answer.');
+    expect(result.notes[0]?.text).toBe('Your act "Boil water (Test kettle)" (a1): nothing says how it ended: the game gave no answer.');
   });
 
   it("keeps an unknown the game did not guess as final, and ends the plan", () => {
@@ -392,32 +392,72 @@ describe("W12: her words, the game's refusals, windows, pulls and a session's en
     expect(sync(T0 + 1).acts.find((act) => act.act_id === id)).not.toHaveProperty("words");
   });
 
-  it("says the codes the game and the probe added for travel, events, saves and sales in plain words, with the code beside them", () => {
+  it("says the codes the game and the probe added for travel, events, saves and sales in plain words, and never the code", () => {
     const cases: Array<[string, string]> = [
       ["TRAVEL_PENDING", "a trip is already under way"],
-      ["IN_RABBIT_HOLE", "your Sim is busy in a rabbit hole"],
+      ["IN_RABBIT_HOLE", "you are busy somewhere the game does not show"],
       ["NOT_AN_EVENT", "that is not an event the game has listed for you"],
-      ["IN_INVENTORY", "that thing is in your inventory: place it, do not move it"],
+      ["IN_INVENTORY", "that thing is in your inventory, so it cannot be moved."],
       ["SAVE_BUSY", "the game is already saving"],
     ];
     for (const [code, words] of cases) {
       const id = okId(requestWith(T0, "a1"));
       const note = sync(T0 + 1, [ev(id, "rejected", T0 + 1, { code, by: "probe" })]).notes[0];
-      expect(note?.text).toContain(`(${code}) - ${words}`);
+      expect(note?.text).toContain(`the game's side refused it: ${words}`);
+      expect(note?.text).not.toContain(code);
     }
     const id = okId(requestWith(T0, "a1"));
     const unconfirmed = sync(T0 + 1, [ev(id, "unknown", T0 + 1, { code: "SELL_UNCONFIRMED" })]).notes[0];
-    expect(unconfirmed?.text).toContain("the thing was still there 30 seconds after the sale, so you were not paid (SELL_UNCONFIRMED)");
+    expect(unconfirmed?.text).toContain("the thing was still there 30 seconds after the sale, so you were not paid");
+    expect(unconfirmed?.text).not.toContain("SELL_UNCONFIRMED");
   });
 
-  it("words the refusal by who refused it, with the game's own sentence, cut to 240 characters", () => {
+  it("says the probe's reason for a left-out act in words, and never a detail word she cannot read", () => {
+    const left = okId(requestWith(T0, "a1"));
+    const excluded = sync(T0 + 1, [ev(left, "rejected", T0 + 1, { code: "EXCLUDED", by: "probe", detail: "deny_name" })]).notes[0]?.text ?? "";
+    expect(excluded).toContain("that act is left out of your choices: a debug, cheat or test act");
+    expect(excluded).not.toContain("deny_name");
+    const clock = okId(requestWith(T0, "a1"));
+    const created = sync(T0 + 1, [ev(clock, "rejected", T0 + 1, { code: "CREATE_FAILED", by: "probe", detail: "clock" })]).notes[0]?.text ?? "";
+    expect(created).toContain("the game would not make the event: the game's clock could not be read");
+    expect(created).not.toContain("CREATE_FAILED");
+    const odd = okId(requestWith(T0, "a1"));
+    const unknown = sync(T0 + 1, [ev(odd, "rejected", T0 + 1, { code: "NOT_A_REAL_CODE", by: "probe", detail: "step 9 of the picker" })]).notes[0]?.text ?? "";
+    expect(unknown).toBe('Your act "Boil water (Test kettle)" (a1): the game\'s side refused it.');
+  });
+
+  it("lists the game acts asked in the last 30 minutes, with their state in words and no code (CORE3-3)", () => {
+    const waiting = okId(requestWith(T0, "a1"));
+    expect(waiting).toBeTruthy();
+    const refused = okId(requestWith(T0, "a1"));
+    sync(T0 + 1, [ev(refused, "rejected", T0 + 1, { code: "NOT_OFFERED", by: "game", text: "The game would not let her sit." })]);
+    const texts = recentActsBoard(db, T0 + 2).map((item) => item.text);
+    expect(texts).toContain("Boil water (Test kettle): waiting for the game.");
+    expect(texts).toContain("Boil water (Test kettle): refused: The game would not let her sit.");
+    expect(recentActsBoard(db, T0 + ACT_BOARD_MS + 1_000)).toEqual([]);
+  });
+
+  it("says the money steps the probe reports in words, with no code and no bare detail", () => {
+    const charged = okId(requestWith(T0, "a1"));
+    const refunded = sync(T0 + 1, [ev(charged, "rejected", T0 + 1, { code: "CHARGE_UNKNOWN", by: "probe", detail: "charged, and refunded" })]).notes[0]?.text ?? "";
+    expect(refunded).toContain("the game's side refused it: you were charged, and the money was refunded");
+    expect(refunded).not.toContain("not known whether you paid");
+    expect(refunded).not.toContain("CHARGE_UNKNOWN");
+    const funds = okId(requestWith(T0, "a1"));
+    const unread = sync(T0 + 1, [ev(funds, "unknown", T0 + 1, { code: "FUNDS_UNREAD", detail: "no event; the money is not known" })]).notes[0]?.text ?? "";
+    expect(unread).toContain("the event may or may not have been made, and your money could not be read");
+    expect(unread).toContain("the game does not say whether any event was made");
+    expect(unread).not.toContain("FUNDS_UNREAD");
+  });
+
+  it("words the refusal by who refused it, with the game's own sentence or the code's words, and no code", () => {
     const cases: Array<[Record<string, unknown>, string]> = [
-      [{ code: "NOT_ATTACHED", by: "game", text: "The game would not let her sit." }, "the game refused it (NOT_ATTACHED) - The game would not let her sit."],
-      [{ code: "VARIANT_GONE", by: "probe" }, "the game's side refused it (VARIANT_GONE)"],
-      [{ code: "BAD_ARGS", by: "helper", text: "helper text" }, "your helper refused it (BAD_ARGS) - helper text"],
-      [{ code: "STOP", by: "host" }, "the host refused it (STOP)"],
-      [{ code: "UNSAID" }, "it was refused (UNSAID)"],
-      [{ code: "SIM_NOT_CHOOSABLE", by: "probe", detail: "step 2 of the picker" }, "the game's side refused it (SIM_NOT_CHOOSABLE) - the game would not let that Sim be chosen for that act (step 2 of the picker)"],
+      [{ code: "NOT_ATTACHED", by: "game", text: "The game would not let her sit." }, "the game refused it: The game would not let her sit."],
+      [{ code: "VARIANT_GONE", by: "probe" }, "the game's side refused it: that choice is no longer in the game's menu"],
+      [{ code: "BAD_ARGS", by: "helper", text: "helper text" }, "the link to the game refused it: helper text"],
+      [{ code: "STOP", by: "host" }, "the host refused it"],
+      [{ code: "UNSAID" }, "it was refused"],
+      [{ code: "SIM_NOT_CHOOSABLE", by: "probe", detail: "step 2 of the picker" }, "the game's side refused it: the game would not let that Sim be chosen for that act"],
     ];
     for (const [detail, words] of cases) {
       const id = okId(requestWith(T0, "a1"));
@@ -427,7 +467,7 @@ describe("W12: her words, the game's refusals, windows, pulls and a session's en
     }
     const long = okId(requestWith(T0, "a1"));
     const text = sync(T0 + 1, [ev(long, "rejected", T0 + 1, { code: "X", by: "game", text: "z".repeat(400) })]).notes[0]?.text ?? "";
-    expect(text.endsWith(` - ${"z".repeat(240)}.`)).toBe(true);
+    expect(text.endsWith(`: ${"z".repeat(240)}.`)).toBe(true);
   });
 
   it("holds a waiting act (not final) until the window closes, then finishes it, and says what the window is", () => {
@@ -454,7 +494,7 @@ describe("W12: her words, the game's refusals, windows, pulls and a session's en
     const id = okId(requestWith(T0, "a1"));
     const noted = sync(T0 + 1, [ev(id, "noted", T0 + 1, { code: "SCREEN_WITHHELD" })]).notes[0];
     expect(noted).toMatchObject({ wake: false });
-    expect(noted?.text).toBe('Your act "Boil water (Test kettle)" (a1): the game opened a screen you cannot use, so it was cancelled (SCREEN_WITHHELD).');
+    expect(noted?.text).toBe('Your act "Boil water (Test kettle)" (a1): the game opened a screen you cannot use, so it was cancelled.');
     expect(db.prepare("SELECT state FROM acts WHERE act_id = ?").get(id)).toEqual({ state: "noted" });
     sync(T0 + 2, [ev(id, "pushed", T0 + 2)]);
     expect(db.prepare("SELECT state FROM acts WHERE act_id = ?").get(id)).toEqual({ state: "pushed" });
@@ -553,18 +593,19 @@ describe("plain words for every code the game's side and the helper send (NATALI
     }
   });
 
-  it("gives the part before a colon's words to a code with a detail, and shows an unknown code as the code", () => {
+  it("gives the part before a colon's words to a code with a detail, and shows an unknown code as no words at all", () => {
     expect(wordsOfCode("E2_EXCEPTION:TypeError")).toBe(CODE_WORDS.E2_EXCEPTION);
     expect(wordsOfCode("NOT_A_REAL_CODE")).toBeUndefined();
     const actId = okId(ask(T0, "a1"));
     const result = sync(T0 + 1, [ev(actId, "rejected", T0 + 1, { code: "NOT_A_REAL_CODE", by: "probe" })]);
-    expect(result.notes[0]?.text).toBe('Your act "Boil water (Test kettle)" (a1): the game\'s side refused it (NOT_A_REAL_CODE).');
+    expect(result.notes[0]?.text).toBe('Your act "Boil water (Test kettle)" (a1): the game\'s side refused it.');
   });
 
-  it("says a buy whose money could not be read may be paid for, and that the thing was taken back out (CHARGE_UNKNOWN)", () => {
+  it("says a buy whose money could not be read may be paid for, and that the thing was taken back out", () => {
     const actId = okId(ask(T0, "a1"));
     const result = sync(T0 + 1, [ev(actId, "unknown", T0 + 1, { code: "CHARGE_UNKNOWN" })]);
-    expect(result.notes[0]?.text).toContain("it is not known whether you paid (CHARGE_UNKNOWN)");
+    expect(result.notes[0]?.text).toContain("it is not known whether you paid");
+    expect(result.notes[0]?.text).not.toContain("CHARGE_UNKNOWN");
     expect(result.notes[0]?.text).toContain("taken back out");
   });
 
@@ -575,6 +616,6 @@ describe("plain words for every code the game's side and the helper send (NATALI
     const done = sync(T0 + 1, [ev("sv1", "finished", T0 + 1, { code: "SAVED" })]).notes[0];
     expect(done?.text).toBe('Your act "save the game": the game saved.');
     const other = sync(T0 + 3, [ev("sv2", "finished", T0 + 3, { code: "SOMETHING_NEW" })]).notes[0];
-    expect(other?.text).toBe('Your act "save the game": it finished (SOMETHING_NEW).');
+    expect(other?.text).toBe('Your act "save the game": it finished.');
   });
 });

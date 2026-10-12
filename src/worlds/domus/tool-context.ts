@@ -57,9 +57,9 @@ export function gameGate(game: NonNullable<GameContext>, options: { probe: boole
   }
   if (options.probe && !probeAtLeast(game.probeOf(session))) {
     if (game.probeOf(session) === undefined) {
-      return refused("probe_too_old", "The game's helper has not said which probe it runs, so this is not asked. Nothing was asked.");
+      return refused("probe_too_old", "The link to the game has not said what the game's side is, so this is not asked. Nothing was asked.");
     }
-    return refused("probe_too_old", `The game's helper must run probe ${PROBE_NEEDED} or later for this, and it does not. Nothing was asked.`);
+    return refused("probe_too_old", "The game's side is too old for this, and it needs an update. Nothing was asked.");
   }
   return undefined;
 }

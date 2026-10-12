@@ -12,9 +12,9 @@ function portraitWith(job: Record<string, unknown>, extra: Record<string, unknow
 
 describe("the job line at work", () => {
   it("says when the shift ends, in the game's clock, and falls back to now when it does not say", () => {
-    expect(bodyLines(portraitWith({ at_work: true, until_min: 17 * 60 + 5 }))).toContain("Job: Test Clerk (Test Office), level 2; at work until 17:05.");
-    expect(bodyLines(portraitWith({ at_work: true }))).toContain("Job: Test Clerk (Test Office), level 2; at work now.");
-    expect(bodyLines(portraitWith({ at_work: false, until_min: 600 }))).toContain("Job: Test Clerk (Test Office), level 2.");
+    expect(bodyLines(portraitWith({ at_work: true, until_min: 17 * 60 + 5 }))).toContain("Job: Test Clerk, level 2; at work until 17:05.");
+    expect(bodyLines(portraitWith({ at_work: true }))).toContain("Job: Test Clerk, level 2; at work now.");
+    expect(bodyLines(portraitWith({ at_work: false, until_min: 600 }))).toContain("Job: Test Clerk, level 2.");
   });
 
   it("places the count line right after the money line", () => {

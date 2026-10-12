@@ -47,7 +47,7 @@ export function gameMemoryTool(open: () => MemoryContext): Tool {
       safeWhenStopped: true,
       description:
         "Ask the game what it remembers about one act, one person or one object, in your own words. The game's record is " +
-        "searched on its next sync, and the answer comes to you within two minutes as the facts it recorded (when, how long, " +
+        "searched at the link to the game's next check-in, and the answer comes to you within two minutes as the facts it recorded (when, how long, " +
         "what it did to needs and moods, who was there). It says what was recorded, never whether anything was good or bad.",
       parameters: {
         type: "object",
@@ -87,7 +87,7 @@ function gameMemory(open: () => MemoryContext, args: Record<string, unknown>, co
     .run(askId, context.thread, about, nowMs);
   return {
     ok: true,
-    summary: `Asked the game what it remembers about ${about}. The answer comes on its next sync and wakes you.`,
+    summary: `Asked the game what it remembers about ${about}. The answer comes from the link to the game and wakes you.`,
     data: { askId, expiresAtMs: nowMs + MEMORY_TTL_MS },
   };
 }

@@ -7,20 +7,19 @@ import { answerRulesOf } from "./answers.js";
 import type { OptionsCut, Percept } from "./wire.js";
 import { type AttachmentNow, bodyLines, clockLine, needFeeling, needGradeOfBand, needGradeOfValue } from "./body.js";
 import { DAY_BRIEF_LINE, dayRecordLines } from "./day-record.js";
-import { capitalised, dropTokens, ORIGIN_WORDS, plainName, textOrUndefined } from "./words.js";
+import { capitalised, dropTokens, ORIGIN_WORDS, plainName, textOrUndefined, withStop } from "./words.js";
 
 /** The longest the rendered view may be, in characters. The rest is said as a count. */
 export const VIEW_TEXT_MAX = 20_000;
 /** The longest an older view's brief may be, in characters. The rest is said as a count. */
 export const BRIEF_MAX = 1_000;
-const FACT_MAX = 80;
 /** The helper's id and where for her queue (its acts are the ones she has queued). */
 const QUEUE_OBJECT_ID = "queue:her";
 const QUEUE_WHERE = "your queue";
-
-function clip(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
-}
+/** The words the view keeps for the end of the choices: the count line and the game's "more to come" line. */
+const CHOICES_MORE = "More of the game's choices are still coming; these are the ones near you.";
+/** The room of an object whose room the game did not name, in the view's headings. */
+const OTHER_ROOMS = "Other rooms";
 
 /** The options of a stored view, exactly as the helper sent them; anything malformed offers nothing. */
 export function optionsOf(options: unknown): OptionObject[] {
@@ -64,10 +63,10 @@ export function labelOf(found: Found): string {
 function describeRules(rules: AnswerRules): string {
   const parts: string[] = [];
   if (rules.select) {
-    parts.push(`pick ${rules.select.min} to ${rules.select.max === 0 ? "any number of" : rules.select.max} row(s)`);
+    parts.push(`pick ${rules.select.min} to ${rules.select.max === 0 ? "any number of" : rules.select.max} ${rules.select.max === 1 ? "row" : "rows"}`);
   }
   if (rules.counts) {
-    parts.push(`up to ${rules.counts.max_in_row} of one row, at most ${rules.counts.max_rows} row(s)`);
+    parts.push(`up to ${rules.counts.max_in_row} of one row, at most ${rules.counts.max_rows} ${rules.counts.max_rows === 1 ? "row" : "rows"}`);
   }
   for (const field of rules.text ?? []) {
     const bounds = field.max_length === null ? `at least ${field.min_length}` : `${field.min_length} to ${field.max_length}`;
@@ -75,17 +74,6 @@ function describeRules(rules: AnswerRules): string {
     parts.push(`type "${field.name}" (${field.label}), ${bounds} characters${numeric}`);
   }
   return parts.length ? parts.join("; ") : "none";
-}
-
-function factsText(facts: Record<string, unknown>): string {
-  return Object.entries(facts)
-    .map(([key, value]) => {
-      const shown = typeof value === "string" ? dropTokens(value)
-        : typeof value === "number" || typeof value === "boolean" || value === null ? String(value)
-          : JSON.stringify(value) ?? "";
-      return `${key} ${clip(shown, FACT_MAX)}`;
-    })
-    .join(", ");
 }
 
 /** A text the game sent, trimmed; anything that is not text, or is empty, is undefined. */
@@ -101,9 +89,38 @@ function sentence(value: unknown): string | undefined {
   return text === undefined ? undefined : /[.!?]$/.test(text) ? text : `${text}.`;
 }
 
+/** A number the game sent, as a number or as a string of digits (the helper sends some values as text); else undefined. */
+function numberOf(value: unknown): number | undefined {
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  return typeof value === "string" && /^\d+$/.test(value) ? Number(value) : undefined;
+}
+
+/**
+ * The words of a life-line record, one plain sentence per class (VOICE3-4, VIEW3-5). A save that only continues her life
+ * says nothing. A death is named, with the game's cause when it is known. Undefined when there is nothing to say.
+ */
+export function lineageSentence(lineage: string | undefined, reason: string | undefined, deathType: string | undefined): string | undefined {
+  if (lineage === undefined) return undefined;
+  if (lineage === "BODY_GONE") {
+    const cause = deathType === undefined ? "" : ` The game gives the cause as ${plainName(deathType)}.`;
+    return reason === "GHOST"
+      ? `You died in the game, and you are a ghost now.${cause}`
+      : `You died in the game.${cause}`;
+  }
+  if (lineage === "CONTINUES_LAST_SAVE" || lineage === "PENDING") return undefined;
+  if (lineage === "ROLLBACK") return "The game went back to an earlier save.";
+  if (lineage === "UNOBSERVED_SAVE") return "The game saved without the link to the game seeing it.";
+  if (lineage === "FORK") return "A second save was started from the one you were in.";
+  if (lineage === "LINEAGE_TRANSFER") return "You are now in a different save from the one you had.";
+  if (lineage === "FOREIGN_OR_UNKNOWN") return "The game is in a save the link to the game does not know.";
+  if (lineage === "BODY_MISMATCH") return "The save the game is in does not match your body.";
+  if (lineage.startsWith("READ_FAILURE")) return "The link to the game could not read the save.";
+  return "The game's save changed.";
+}
+
 /**
  * One percept as one plain sentence, from its fixed form. Returns undefined for a kind it does not know, or a
- * percept missing what its sentence needs; the caller then keeps the old "kind: facts" line, so nothing is lost.
+ * percept missing what its sentence needs; such a percept has no line, and its raw facts are not shown to her.
  */
 export function perceptSentence(percept: Percept): string | undefined {
   const facts = percept.facts;
@@ -124,7 +141,7 @@ export function perceptSentence(percept: Percept): string | undefined {
       // is not felt (ok) has no words, so the view does not show it.
       const subject = textOrUndefined(facts.subject);
       if (!subject) return undefined;
-      const value = typeof facts.value === "number" && Number.isFinite(facts.value) ? facts.value : undefined;
+      const value = numberOf(facts.value);
       const grade = value !== undefined ? needGradeOfValue(value) : needGradeOfBand(textOrUndefined(facts.band));
       return grade === undefined ? undefined : needFeeling(subject, grade);
     }
@@ -136,18 +153,25 @@ export function perceptSentence(percept: Percept): string | undefined {
       return `Mood: ${mood(to)} now${from ? ` (was ${mood(from)})` : ""}.`;
     }
     case "interaction": {
+      // VIEW3-4, VOICE2-2, VOICE3-5: one plain sentence per bucket. The game's codes and detail words stay in the logs;
+      // with no act name the sentence says "your act" or "an act", never the bucket as its own name.
       const bucket = textOrUndefined(facts.bucket);
-      if (!bucket) return undefined;
       const affordance = textOrUndefined(facts.affordance_text) ?? textOrUndefined(facts.tuning_name);
-      const name = affordance ? plainName(affordance) : plainName(bucket);
+      const name = affordance ? plainName(affordance) : undefined;
       const origin = textOrUndefined(facts.origin);
       const from = origin ? ORIGIN_WORDS[origin] : undefined;
-      const coded = [
-        textOrUndefined(facts.code) ? `Result code ${textOrUndefined(facts.code)}` : undefined,
-        textOrUndefined(facts.detail) ? `detail ${textOrUndefined(facts.detail)}` : undefined,
-      ].filter((part): part is string => part !== undefined);
-      const tail = coded.length ? ` ${coded.join(", ")}.` : "";
-      return `${capitalised(plainName(bucket))}: ${name}${from ? ` (${from})` : ""}.${tail}`;
+      const mine = from === "your act";
+      const who = name ?? (mine ? "your act" : "an act");
+      const cause = from && !mine ? ` (${from})` : "";
+      if (bucket === "idle") return "You are idle.";
+      if (bucket === "started" || bucket === "ended") {
+        const verb = bucket === "started" ? "started" : "ended";
+        return name ? `${capitalised(name)} ${verb}${from ? ` (${from})` : ""}.` : `${capitalised(who)} ${verb}${cause}.`;
+      }
+      if (bucket === "act_rejected") return `The game refused ${who}.`;
+      if (bucket === "act_unknown") return `It is not known what became of ${who}.`;
+      if (bucket === "act_never_started") return name ? `${capitalised(name)} never started.` : "Your act never started.";
+      return undefined;
     }
     case "presence": {
       const bucket = textOrUndefined(facts.bucket);
@@ -181,11 +205,8 @@ export function perceptSentence(percept: Percept): string | undefined {
       return facts.from_room !== undefined ? "You moved rooms." : undefined;
     case "sleep_onset":
       return "You fell asleep.";
-    case "lineage": {
-      const lineage = textOrUndefined(facts.bucket);
-      const reason = textOrUndefined(facts.reason);
-      return `Your life line changed${lineage ? ` (${plainName(lineage)})` : ""}${reason ? `: ${reason}` : ""}.`;
-    }
+    case "lineage":
+      return lineageSentence(textOrUndefined(facts.bucket), textOrUndefined(facts.reason), textOrUndefined(facts.death_type));
     case "notice": {
       const text = sentence(facts.text);
       const title = facts.title === undefined ? "" : said(facts.title);
@@ -236,15 +257,13 @@ export function viewBrief(percepts: readonly Percept[], dayRecord = false): stri
  * Shows the ref and the game's words only; no id, no matcher hint, no advice.
  */
 export function renderView(input: {
-  world: string; percepts: readonly Percept[]; options: readonly OptionObject[]; portrait?: unknown; attachment?: AttachmentNow;
+  percepts: readonly Percept[]; options: readonly OptionObject[]; portrait?: unknown; attachment?: AttachmentNow;
   /** Her attention, the first line of the body block (see attentionLine). */
   attention?: string;
   /** The count line of her lists (see listCountLine), shown after her money. */
   counts?: string;
   /** The game's record of the day, when the view carries one. Its section comes after the body block (see day-record.ts). */
   day?: unknown;
-  /** The choices of the last view rendered on this thread (see choicesSignature), or undefined when there was none. */
-  lastChoices?: string;
   optionsCut?: OptionsCut;
   /** True while the game has not sent its first whole choices this session: the view says they are still coming. */
   choicesPending?: boolean;
@@ -254,55 +273,112 @@ export function renderView(input: {
   const head = [
     ...(body.length ? ["Your body now:", ...body, ""] : []),
     ...(record.length ? [...record, ""] : []),
-    `The game (${input.world}) shows:`,
+    "The game shows:",
   ];
   const lines: string[] = [...head];
-  const all = input.percepts.map(perceptLine).filter((line): line is string => line !== undefined);
-  let shown = 0;
-  let used = head.reduce((sum, line) => sum + line.length + 1, 0);
-  for (const line of all) {
-    if (used + line.length > VIEW_TEXT_MAX) break;
-    lines.push(line);
-    used += line.length;
-    shown++;
-  }
-  if (shown < all.length) lines.push(`- (${all.length - shown} more not shown)`);
+  // VIEW3-11: a percept that says what the body block already says is not said twice. The newest first (VIEW3-19).
+  const bodyText = [...body, ...record].join("\n");
+  const all = [...input.percepts]
+    .sort((a, b) => b.salience - a.salience)
+    .map(perceptSentence)
+    .filter((sentence): sentence is string => sentence !== undefined && !bodyText.includes(sentence))
+    .map((sentence) => `- ${sentence}`);
+  // The whole view is capped (VIEW3-8). The choices take what the percepts leave: the near ones are kept whole, the
+  // farthest objects are cut first and said as a count.
+  const percepts = fitLines(all, VIEW_TEXT_MAX - used(head) - CHOICES_RESERVE);
+  lines.push(...percepts.kept);
+  if (percepts.cut > 0) lines.push(`- (${percepts.cut} more not shown)`);
   // Until the game's first whole menu of this session, its choices are not in yet. With none sent so far, the view says
   // so instead of a list; a near part of the menu that did come is shown as it is.
   if (input.options.length === 0) {
     lines.push("", input.choicesPending ? "The game has not sent its choices yet. They come with a later view." : "The game offers no choices in this view.");
     return lines.join("\n");
   }
-  const cut = optionsCutLine(input.optionsCut);
-  if (input.lastChoices !== undefined && input.lastChoices === choicesSignature(input.options)) {
-    lines.push("", "Choices: the same as in the last view.");
-    if (cut) lines.push(cut);
-    return lines.join("\n");
-  }
-  lines.push("", "Choices you can name with game_act, by ref:");
-  for (const object of input.options.filter(isNear)) lines.push(...objectLines(object));
-  const elsewhere = input.options.filter((object) => !isNear(object));
-  // Her queue is not in a room: it is its own group, right after the near objects, and never under a room heading.
-  const queue = elsewhere.filter(isQueue);
-  if (queue.length) {
-    lines.push("What you are doing now:");
-    for (const object of queue) lines.push(...objectLines(object));
-  }
-  const rest = elsewhere.filter((object) => !isQueue(object));
-  if (rest.length) {
-    lines.push("Elsewhere on the lot:");
-    const rooms = new Map<string, OptionObject[]>();
-    for (const object of rest) {
-      const room = typeof object.room === "string" && object.room !== "" ? object.room : "Other rooms";
-      rooms.set(room, [...(rooms.get(room) ?? []), object]);
-    }
-    for (const [room, objects] of rooms) {
-      lines.push(`${room}:`);
-      for (const object of objects) lines.push(...objectLines(object));
-    }
-  }
-  if (cut) lines.push(cut);
+  const choices = choicesBlock(input.options, input.optionsCut, VIEW_TEXT_MAX - used(lines) - TAIL_RESERVE);
+  lines.push("", ...choices);
+  if (input.choicesPending) lines.push(CHOICES_MORE);
   return lines.join("\n");
+}
+
+/** The room of the lines kept after the cap, and what it cut. */
+function fitLines(all: readonly string[], budget: number): { kept: string[]; cut: number } {
+  const kept: string[] = [];
+  let spent = 0;
+  for (const line of all) {
+    if (spent + line.length + 1 > budget) break;
+    kept.push(line);
+    spent += line.length + 1;
+  }
+  return { kept, cut: all.length - kept.length };
+}
+
+/** The characters of a list of lines, each with its newline. */
+function used(lines: readonly string[]): number {
+  return lines.reduce((sum, line) => sum + line.length + 1, 0);
+}
+
+/** Kept room for the choices and their heading, when the percepts are cut: the choices always have room to show. */
+const CHOICES_RESERVE = 600;
+/** Kept room after the choices: the count of cut things and the game's "more to come" line. */
+const TAIL_RESERVE = 240;
+
+/** The distance a where names ("elsewhere, 12.0 m"), in metres; an object with none sorts last. */
+function distanceOf(object: OptionObject): number {
+  const found = typeof object.where === "string" ? /, ([\d.]+) m$/.exec(object.where) : null;
+  return found ? Number(found[1]) : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * The choices block: the heading, the near objects, her queue, then the rest by room. The rest is kept nearest first, and
+ * what does not fit the budget is cut farthest first and said in one line (VIEW3-8, item 14). Every object keeps its
+ * refs. The view's count line of the game's own cut is added to the count.
+ */
+function choicesBlock(options: readonly OptionObject[], cut: OptionsCut | undefined, budget: number): string[] {
+  const near = options.filter(isNear);
+  // Her queue is not in a room: it is its own group, right after the near objects, and never under a room heading.
+  const queue = options.filter((object) => !isNear(object) && isQueue(object));
+  const rest = options.filter((object) => !isNear(object) && !isQueue(object))
+    .map((object, index) => ({ object, index }))
+    .sort((a, b) => distanceOf(a.object) - distanceOf(b.object) || a.index - b.index)
+    .map((item) => item.object);
+  const block = (kept: readonly OptionObject[]) => {
+    const out: string[] = ["Choices you can name with game_act, by ref:"];
+    for (const object of near) out.push(...objectLines(object));
+    if (queue.length) {
+      out.push("What you are doing now:");
+      for (const object of queue) out.push(...objectLines(object, { queue: true }));
+    }
+    const groups = new Map<string, OptionObject[]>();
+    for (const object of kept) {
+      const room = typeof object.room === "string" && object.room !== "" ? object.room : OTHER_ROOMS;
+      groups.set(room, [...(groups.get(room) ?? []), object]);
+    }
+    if (groups.size) out.push("Elsewhere on the lot:");
+    for (const [room, objects] of groups) out.push(...roomLines(room, objects));
+    return out;
+  };
+  let kept = rest;
+  let lines = block(kept);
+  while (kept.length > 0 && used(lines) > budget) {
+    kept = kept.slice(0, -1);
+    lines = block(kept);
+  }
+  const more = optionsCutLine(rest.length - kept.length + (cut?.objects ?? 0));
+  return more ? [...lines, more] : lines;
+}
+
+/**
+ * One room under the "Elsewhere on the lot" heading: its name, the no-way sentence it shares once when every object there
+ * carries the same one (VIEW3-12), and its objects.
+ */
+function roomLines(room: string, objects: readonly OptionObject[]): string[] {
+  const first = objects[0]?.noWay;
+  const shared = typeof first === "string" && objects.every((object) => object.noWay === first) ? first : undefined;
+  return [
+    `${room}:`,
+    ...(shared !== undefined ? [`  ${withStop(capitalised(dropTokens(shared)))}`] : []),
+    ...objects.flatMap((object) => objectLines(object, { underRoom: true, noWayInHeading: shared !== undefined })),
+  ];
 }
 
 /** The count line goes right after her money line; with no money line, it closes the body block. */
@@ -328,23 +404,33 @@ function isQueue(object: OptionObject): boolean {
 const NO_REASON = ": refused: no reason given";
 /** The helper's words for an act left out of the menu: "<act>: left out: <reason>". */
 const LEFT_OUT = /^(.*?): left out: (.*)$/;
+/** The helper's count for the acts past its line cap, one line per reason: "<N> more acts: left out: <reason>" (R5). */
+const LEFT_OUT_MORE = /^(\d+) more acts?: left out: (.*)$/;
 /** The most acts of one left-out reason the view names; more are said as a count. */
 const LEFT_OUT_NAMED_MAX = 5;
 
 /**
  * The refusals and left-out acts of one object, in plain words. A refusal with a reason stays word for word. The refusals
- * the game gave no reason for become one count line. The left-out acts become one line, grouped by reason.
+ * the game gave no reason for become one count line. The left-out acts become one line, grouped by reason; the helper's
+ * "more acts" count for a reason adds to that reason's count (R5).
  */
 function awayLines(refused: readonly string[], leftOut: readonly string[]): string[] {
-  const groups = new Map<string, string[]>();
+  const groups = new Map<string, { acts: string[]; more: number }>();
+  const group = (reason: string) => {
+    const found = groups.get(reason) ?? { acts: [], more: 0 };
+    groups.set(reason, found);
+    return found;
+  };
   const words: string[] = [];
   let withoutReason = 0;
   for (const raw of [...refused, ...leftOut]) {
     const line = dropTokens(raw);
-    const left = LEFT_OUT.exec(line);
-    if (left) {
-      const [, act = "", reason = ""] = left;
-      groups.set(reason, [...(groups.get(reason) ?? []), act]);
+    const more = LEFT_OUT_MORE.exec(line);
+    const left = more ? undefined : LEFT_OUT.exec(line);
+    if (more) {
+      group(more[2] ?? "").more += Number(more[1]);
+    } else if (left) {
+      group(left[2] ?? "").acts.push(left[1] ?? "");
     } else if (line.endsWith(NO_REASON)) {
       withoutReason++;
     } else {
@@ -356,22 +442,32 @@ function awayLines(refused: readonly string[], leftOut: readonly string[]): stri
     lines.push(`${withoutReason} more ${withoutReason === 1 ? "act" : "acts"} the game does not offer here now.`);
   }
   if (groups.size) {
-    // A small group names its acts; a large one is said as a count, so a long list of cheat acts does not fill the view.
-    const parts = [...groups].map(([reason, acts]) => `${acts.length <= LEFT_OUT_NAMED_MAX ? acts.join(", ") : `${acts.length} acts`} (${reason})`);
-    lines.push(`Left out: ${parts.join("; ")}.`);
+    // A small group names its acts; a large one, or one the helper counted past its cap, is said as a count, so a long
+    // list of cheat acts does not fill the view.
+    const parts = [...groups].map(([reason, { acts, more }]) => {
+      const total = acts.length + more;
+      const named = more === 0 && total <= LEFT_OUT_NAMED_MAX ? acts.join(", ") : `${total} ${total === 1 ? "act" : "acts"}`;
+      return `${named} (${reason})`;
+    });
+    lines.push(`Left out of your phone: ${parts.join("; ")}.`);
   }
   return lines;
 }
 
-/** One object's line, its states, the game's reasons and the acts left out under it, and its answer rules when it is a question. */
-function objectLines(object: OptionObject): string[] {
-  const where = object.where ? ` (${object.where})` : "";
-  const noWay = typeof object.noWay === "string" ? ` [${object.noWay}]` : "";
+/**
+ * One object's line, its states, the game's reasons and the acts left out under it, and its answer rules when it is a question.
+ * Under a room heading the object's place is its distance only ("elsewhere" is said by the heading), and a no-way sentence
+ * the room says once is not repeated. Her queue has no name of its own: its heading says what it is (VIEW3-27).
+ */
+function objectLines(object: OptionObject, shape: { underRoom?: boolean; noWayInHeading?: boolean; queue?: boolean } = {}): string[] {
+  const place = shape.underRoom ? object.where?.replace(/^elsewhere(, )?/, "") : object.where;
+  const where = place ? ` (${place})` : "";
+  const noWay = typeof object.noWay === "string" && !shape.noWayInHeading ? ` [${object.noWay}]` : "";
   const acts = object.acts
     .filter((act) => act && typeof act === "object" && typeof act.ref === "string" && typeof act.text === "string")
     .map((act) => `${act.ref} ${dropTokens(act.text)}${act.needs_sim === true ? " (needs a Sim: name one with sim)" : ""}${typeof act.opens === "string" ? ` [${act.opens}]` : ""}`)
     .join("; ");
-  const lines = [`- ${dropTokens(object.object)}${where}${noWay}: ${acts}`];
+  const lines = [shape.queue ? `- ${acts}` : `- ${dropTokens(object.object)}${where}${noWay}: ${acts}`];
   if (object.states?.length) lines.push(`  States: ${object.states.map((state) => dropTokens(state)).join(", ")}.`);
   for (const line of awayLines(object.refused ?? [], object.left_out ?? [])) lines.push(`  ${line}`);
   const rules = answerRulesOf(object);
@@ -418,9 +514,8 @@ export function unchangedLookLine(input: {
   return `Your look: no change in the game since your last view, and the choices are the same.${clock ? ` ${clock}` : ""}`;
 }
 
-/** The line that says how many choice objects the game left out of the table, and in which rooms. */
-function optionsCutLine(cut: OptionsCut | undefined): string | undefined {
-  if (!cut || cut.objects <= 0) return undefined;
-  const rooms = cut.rooms.length ? cut.rooms.join(", ") : "rooms it did not name";
-  return `The game left out ${cut.objects} more choice object(s) on the lot, in ${rooms}.`;
+/** The line that says how many things on the lot are not in the choices, for the game's cut or the view's own cut. */
+function optionsCutLine(count: number): string | undefined {
+  if (count <= 0) return undefined;
+  return `${count} more ${count === 1 ? "thing" : "things"} on the lot ${count === 1 ? "is" : "are"} not listed, to keep this view short.`;
 }

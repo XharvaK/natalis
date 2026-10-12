@@ -26,7 +26,7 @@ export function gameLookTool(open: () => LookContext): Tool {
       safeWhenStopped: true,
       description:
         "Ask the game for a fresh view of how things are now, when you want to look rather than wait for a change. " +
-        "The game shows it on its next sync. That view wakes you, and it comes to this thread too. This only asks; nothing in the game changes.",
+        "The game shows it at the link to the game's next check-in. That view wakes you, and it comes to this thread too. This only asks; nothing in the game changes.",
       parameters: { type: "object", properties: {} },
     },
     async run(args: Record<string, unknown>, context: ToolContext): Promise<Receipt> {
@@ -49,12 +49,12 @@ function gameLook(open: () => LookContext, args: Record<string, unknown>, contex
   // The thread that asked is kept, so the look view comes to it as well as to the game's thread.
   recordLookAsk(game.db, session, context.thread, game.nowMs());
   if (lookOwed(game.db, session)) {
-    return { ok: true, summary: "You already asked for a fresh view of now. It comes on the game's next sync.", data: { owed: true } };
+    return { ok: true, summary: "You already asked for a fresh view of now. It comes at the link to the game's next check-in.", data: { owed: true } };
   }
   oweLook(game.db, session);
   return {
     ok: true,
-    summary: "Asked the game for a fresh view of now. It comes on its next sync, and that view wakes you.",
+    summary: "Asked the game for a fresh view of now. It comes at the link to the game's next check-in, and that view wakes you.",
     data: { owed: true },
   };
 }

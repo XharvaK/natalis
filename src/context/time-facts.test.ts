@@ -160,3 +160,19 @@ describe("the age line", () => {
     expect(nextDay.split("\n")[1]).toBe("Your age: 4 days.");
   });
 });
+
+describe("the wakes, with the place each was set in (CORE3-8)", () => {
+  it("says where a wake was set, in the board's place name, and a daily rhythm wake as the rhythm's", () => {
+    const NOW = Date.parse("2026-10-12T09:00:00Z");
+    const section = timeFacts({
+      nowMs: NOW,
+      timeZone: "UTC",
+      nextWakes: [
+        { id: "a1b2c3d4", atMs: NOW + 3_600_000, why: "Tell the summoner.", scheduledIn: "discord:room:general" },
+        { id: "e5f6a7b8", atMs: NOW + 7_200_000, why: "Your daily rhythm.", scheduledIn: "self" },
+      ],
+    });
+    expect(section.text).toContain("(id a1b2c3d4), set in discord:room:general: Tell the summoner.");
+    expect(section.text).toContain("(id e5f6a7b8), set by your daily rhythm: Your daily rhythm.");
+  });
+});

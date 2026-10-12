@@ -504,3 +504,29 @@ describe("file-backed river", () => {
     expect(() => river.append({ thread: "self", kind: "note", source: "body" })).toThrow(RiverError);
   });
 });
+
+describe("a stored row whose data is not JSON (CORE3-15)", () => {
+  it("reads the row with no data, and the other rows still read", () => {
+    const file = path.join(os.tmpdir(), `river-bad-${process.pid}-${Date.now()}.db`);
+    const river = openRiver(file, { nowMs: () => 1_000 });
+    river.append({ thread: "dm:owner", kind: "event", source: "owner", text: "Good row.", data: { view: "game" } });
+    river.append({ thread: "dm:owner", kind: "event", source: "owner", text: "Bad row." });
+    river.close();
+
+    const raw = new DatabaseSync(file);
+    raw.prepare("UPDATE rows SET data_json = ? WHERE seq = 2").run("{not json");
+    raw.close();
+
+    const again = openRiver(file, { nowMs: () => 2_000 });
+    try {
+      const rows = again.read({ thread: "dm:owner", limit: 10 });
+      expect(rows.map((row) => row.seq)).toEqual([1, 2]);
+      expect(rows[0]?.data).toEqual({ view: "game" });
+      expect(rows[1]?.data).toBeUndefined();
+      expect(rows[1]?.text).toBe("Bad row.");
+    } finally {
+      again.close();
+      fs.rmSync(file, { force: true });
+    }
+  });
+});

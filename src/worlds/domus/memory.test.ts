@@ -63,9 +63,9 @@ afterEach(() => {
 });
 
 describe("game_memory: she asks the game what it remembers", () => {
-  it("records one owed ask for her thread and says the answer comes on the next sync", async () => {
+  it("records one owed ask for her thread and says the answer comes from the link to the game", async () => {
     const receipt = await ask({ about: "Brew Glimmer" });
-    expect(receipt).toMatchObject({ ok: true, summary: "Asked the game what it remembers about Brew Glimmer. The answer comes on its next sync and wakes you." });
+    expect(receipt).toMatchObject({ ok: true, summary: "Asked the game what it remembers about Brew Glimmer. The answer comes from the link to the game and wakes you." });
     expect(askedRows()).toEqual([expect.objectContaining({ thread: THREAD, about: "Brew Glimmer", status: "owed", requested_at_ms: T0, handed_session: null })]);
   });
 
@@ -153,7 +153,7 @@ describe("the event that answers her", () => {
   it("lists what matched, newest first, with the day on each act and each person's count and last time", () => {
     expect(memoryEventText("Brew Glimmer", FACTS, stamp)).toBe([
       "What the game remembers about \"Brew Glimmer\" (2 matched, newest first):",
-      "- Day 3, 14:20, 45 min: brew glimmer (your act); gloop +30; you felt: zingy; with Mara Quill (the one it was for).",
+      "- Day 3, 14:20, 45 min: brew glimmer (your act); gloop need eased; you felt: zingy; with Mara Quill (the one it was for).",
       "- Day 2, 09:05, 5 min: fizz watch (the game, on its own).",
       "- Mara Quill: 12 acts together, last at stamp " + (T0 - 90_000) + ".",
     ].join("\n"));

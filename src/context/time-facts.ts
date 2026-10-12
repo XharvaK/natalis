@@ -7,7 +7,7 @@ import type { ContextSection } from "../contracts.js";
  * A scheduled wake. A repeating one shows its local clock and rhythm; atMs is its next occurrence. The id is the one
  * cancel_wake takes; it is shown after the time so the Lar can name the wake she wants gone.
  */
-export type WakeFact = { id?: string; atMs: number; why: string; repeat?: string; clock?: string };
+export type WakeFact = { id?: string; atMs: number; why: string; repeat?: string; clock?: string; scheduledIn?: string };
 
 export type TimeFactsInput = {
   nowMs: number;
@@ -48,7 +48,9 @@ export function timeFacts(input: TimeFactsInput): ContextSection {
       const why = wake.why.trim() === "" ? "" : `: ${wake.why.trim()}`;
       const rhythm = wake.repeat === undefined || wake.clock === undefined ? "" : `${wake.clock} ${wake.repeat}, next `;
       const id = wake.id === undefined ? "" : ` (id ${wake.id})`;
-      return `${rhythm}${stamp(formatter, wake.atMs)} (${when})${id}${why}`;
+      // Where it was set, in the place names the board uses; a daily rhythm wake is set by the rhythm (CORE3-8).
+      const origin = wake.scheduledIn === undefined ? "" : wake.scheduledIn === "self" ? ", set by your daily rhythm" : `, set in ${wake.scheduledIn}`;
+      return `${rhythm}${stamp(formatter, wake.atMs)} (${when})${id}${origin}${why}`;
     });
     lines.push(`Your next wakes: ${described.join("; ")}.`);
   }

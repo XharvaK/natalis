@@ -199,7 +199,7 @@ export type AttentionRow = {
 /** The refusal for a choice or a picture request that rests on a view from a helper session the game is no longer on. */
 export const STALE_VIEW_CODE = "view_from_earlier_session";
 export const STALE_VIEW_REASON =
-  "The game restarted since that view, and its new view has not arrived yet. Wait for the game's new view, then choose again.";
+  "That view is from an earlier connection to the game, and its new view has not arrived yet. Wait for the game's new view, then choose again.";
 
 export type Row = Record<string, unknown>;
 
@@ -700,6 +700,12 @@ export function recordLookAsk(db: DatabaseSync, attachment: string, thread: stri
  * The threads that asked for a look of this helper session, in the order they asked, within LOOK_ASK_KEEP_MS. They are
  * all forgotten here: a look view that comes for the session is the answer to them.
  */
+/** The looks asked and not yet answered since a time, from any thread: what the now board of the other threads shows. */
+export function looksAskedSince(db: DatabaseSync, sinceMs: number): Array<{ thread: string; atMs: number }> {
+  const rows = db.prepare("SELECT thread, asked_at_ms FROM look_asks WHERE asked_at_ms >= ? ORDER BY asked_at_ms DESC").all(sinceMs) as Row[];
+  return rows.map((row) => ({ thread: String(row.thread), atMs: Number(row.asked_at_ms) }));
+}
+
 export function takeLookAskers(db: DatabaseSync, attachment: string, nowMs: number): string[] {
   const rows = db.prepare("SELECT thread, asked_at_ms FROM look_asks WHERE attachment = ? ORDER BY rowid").all(attachment) as Row[];
   db.prepare("DELETE FROM look_asks WHERE attachment = ?").run(attachment);

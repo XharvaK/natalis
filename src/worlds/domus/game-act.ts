@@ -9,7 +9,7 @@ import { actRequestedMeanwhile, PLAN_MORE, requestAct, SLOT_HELD_REFUSAL } from 
 import { findOption, labelOf, optionsOf, refsOf } from "./options.js";
 import { findListed, listedSession } from "./lists.js";
 import { gameThreadNow, newestObservation, STALE_VIEW_CODE, STALE_VIEW_REASON } from "./store.js";
-import { PROBE_NEEDED, probeAtLeast, staleRef } from "./tool-context.js";
+import { probeAtLeast, staleRef } from "./tool-context.js";
 
 const REF = /^[A-Za-z0-9._-]{1,16}$/;
 const ARG_KEYS = new Set(["option", "then", "for_summoner", "knowingly", "answer", "expect", "expect_then", "words", "sim"]);
@@ -159,7 +159,8 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
     return refused("bad_args", "answer must hold rows (with refs and counts) and/or text (named fields), as the question allows.");
   }
   const claim = args.answer as AnswerClaim | undefined;
-  const words = args.words;
+  // SEAM3-5: the words are trimmed before they are kept; empty after the trim is refused.
+  const words = typeof args.words === "string" ? args.words.trim() : args.words;
   if (words !== undefined && !(typeof words === "string" && [...words].length >= 1 && [...words].length <= WORDS_MAX)) {
     return refused("bad_args", `words must be what you say to the person, 1 to ${WORDS_MAX} characters.`);
   }
@@ -195,7 +196,7 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
     }
     // A later step is released with no Sim, so one that opens a Sim's picker could not be done: it is refused now.
     if (found.act.needs_sim === true) {
-      return refused("sim_needed", `${ref} (in then) opens a picker for a Sim, and a plan step cannot name a Sim: do it in its own turn. Nothing was requested.`);
+      return refused("sim_needed", `${ref} (in then) opens a picker for a Sim, and a plan step cannot name a Sim, so nothing was requested.`);
     }
     then.push({ ref, found });
   }
@@ -211,8 +212,8 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
     if (!probeAtLeast(game.probeOf(attached))) {
       const named = game.probeOf(attached) !== undefined;
       return refused("probe_too_old", named
-        ? `Choosing a Sim needs the game's helper at probe ${PROBE_NEEDED} or later, and it is not. Nothing was requested.`
-        : "The game's helper has not said which probe it runs, so a Sim choice is not requested. Nothing was requested.");
+        ? "Choosing a Sim needs a newer game's side than the one the game runs, so nothing was requested."
+        : "The link to the game has not said what the game's side is, so a Sim choice is not requested. Nothing was requested.");
     }
     const found = findListed(game.db, listedSession(game.db, attached), "people", sim);
     if (!found) return staleRef(sim, "game_list people");

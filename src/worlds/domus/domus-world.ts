@@ -18,7 +18,7 @@ import { gameListTool, listCountLine, listDigests, storeList } from "./lists.js"
 import { verbTools } from "./verbs.js";
 import { type GameContext } from "./tool-context.js";
 import { isStopOn } from "../../entity/stop.js";
-import { expireDue, pendingCounts, syncActs, type ThreadNote, withdrawUndone, withholdForStop } from "./acts.js";
+import { expireDue, pendingCounts, recentActsBoard, syncActs, type ThreadNote, withdrawUndone, withholdForStop } from "./acts.js";
 import { choicesSignature, optionsOf, renderView, unchangedLookLine, viewBrief } from "./options.js";
 import {
   checkSnapshot, expireSnapshots, gameSnapshotTool, openSnapshots, SNAPSHOT_PICTURE_NAME, SNAPSHOT_STATUS, settleFailed,
@@ -26,7 +26,7 @@ import {
 } from "./snapshot.js";
 import {
   admitObservation, forgetInDomusFile, forgetText, HeartbeatBook, inTransaction, markSpanUndoneIn, newestObservation, openDomusDb,
-  pruneObservations, gameThreadNow, takeLook, takeLookAskers, writeAttention,
+  pruneObservations, gameThreadNow, LOOK_ASK_KEEP_MS, looksAskedSince, takeLook, takeLookAskers, writeAttention,
 } from "./store.js";
 import {
   BODY_LIMIT, canonicalJson, DOMUS_WORLD_ID, gameThreadOf, LISTS_BODY_LIMIT, MEMORY_BODY_LIMIT, MIN_TOKEN_BYTES, observationDigest, parseActSync,
@@ -141,15 +141,14 @@ export const GAME_VIEW = "domus";
 /**
  * An admitted view becomes one event on its game thread: outside text (the game's), with the choices and their refs.
  * It wakes her only when her attention says so (wake); the body block starts with her attention line. A copy for another
- * thread (onThread: the thread that asked for a look) carries no attention line and no "same choices" shorthand.
+ * thread (onThread: the thread that asked for a look) carries no attention line.
  */
 function observationEvent(
-  parsed: ParsedObservation, attachment: AttachmentNow, lastChoices: string | undefined, attention: { line?: string; wake: boolean },
+  parsed: ParsedObservation, attachment: AttachmentNow, attention: { line?: string; wake: boolean },
   onThread?: string, counts?: string,
 ): WorldEvent {
   const gameThread = gameThreadOf(parsed.fields.world);
   const thread = onThread ?? gameThread;
-  const alias = gameThread.slice(DOMUS_WORLD_ID.length + 1);
   const options = optionsOf(parsed.options ?? []);
   const data: Record<string, unknown> = {
     observationId: parsed.observationId,
@@ -167,7 +166,7 @@ function observationEvent(
     actor: "game",
     source: "outside",
     text: renderView({
-      world: alias, percepts: parsed.percepts, options, portrait: parsed.normalized.portrait, attachment, lastChoices, optionsCut: parsed.optionsCut,
+      percepts: parsed.percepts, options, portrait: parsed.normalized.portrait, attachment, optionsCut: parsed.optionsCut,
       choicesPending: parsed.choicesPending,
       attention: attention.line, day: parsed.normalized.day, counts,
     }),
@@ -402,14 +401,14 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       });
       const counts = listCountLine(requireDb(), parsed.fields.attachment);
       deliver(unchanged === undefined
-        ? observationEvent(parsed, attachmentAt(now), choicesShown.get(thread), attention, undefined, counts)
+        ? observationEvent(parsed, attachmentAt(now), attention, undefined, counts)
         : unchangedLookEvent(parsed, thread, unchanged, attention.wake));
       choicesShown.set(thread, choicesSignature(optionsOf(parsed.options ?? [])));
       // A look view answers the looks asked for this helper session, from any thread: each thread that asked hears it too.
       if (parsed.percepts.some((item) => item.kind === "look")) {
         for (const asker of takeLookAskers(requireDb(), parsed.fields.attachment, now)) {
           if (asker === thread) continue;
-          deliver(observationEvent(parsed, attachmentAt(now), undefined, { wake: true }, asker, counts));
+          deliver(observationEvent(parsed, attachmentAt(now), { wake: true }, asker, counts));
         }
       }
     }
@@ -475,7 +474,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       place: thread,
       thread,
       source: "body",
-      text: `The game went back to ${new Date(parsed.afterSourceTimeMs).toISOString()}. What happened there after that time did not happen: ${observations} observation(s) were undone.`,
+      text: `The game went back to ${new Date(parsed.afterSourceTimeMs).toISOString()}. What happened there after that time did not happen: ${observations} ${observations === 1 ? "observation was" : "observations were"} undone.`,
       data: { reason: parsed.reason, observations, afterSourceTimeMs: parsed.afterSourceTimeMs },
       atMs: now,
       wake: false,
@@ -738,7 +737,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     },
 
     about() {
-      return `The Sims 4 (Domus): your household's game, at domus:<world>, while your summoner's helper is attached. ${LIVING_IT}`;
+      return `The Sims 4 (Domus): your household's game, at a thread named domus: and a slot name, while your summoner's link to the game is attached. The link runs on your summoner's computer; the game's side runs inside the game. ${LIVING_IT}`;
     },
 
     now() {
@@ -755,6 +754,14 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       }
       if (pending.requested > 0) line += ` ${pending.requested} requested act(s) wait for the game.`;
       return line;
+    },
+
+    actsNow(at) {
+      if (!db) return [];
+      // The game acts the threads asked for, and the looks still waiting for the game: one line each, newest first (CORE3-3).
+      const looks = looksAskedSince(db, at - LOOK_ASK_KEEP_MS)
+        .map((item) => ({ thread: item.thread, atMs: item.atMs, text: "a fresh look, not answered yet." }));
+      return [...recentActsBoard(db, at), ...looks].sort((a, b) => b.atMs - a.atMs);
     },
 
     listeningAddress() {

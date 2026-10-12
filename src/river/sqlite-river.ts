@@ -455,8 +455,17 @@ function toStored(record: RowRecord): StoredRiverRow {
   if (record.place !== null) row.place = record.place;
   if (record.actor !== null) row.actor = record.actor;
   if (record.text !== null) row.text = record.text;
-  if (record.data_json !== null) row.data = JSON.parse(record.data_json) as Record<string, unknown>;
+  if (record.data_json !== null) row.data = parseData(record.data_json);
   return row;
+}
+
+/** A stored row's data; undefined when the stored text is not JSON, so one bad row does not fail every read that holds it (CORE3-15). */
+function parseData(text: string): Record<string, unknown> | undefined {
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
 }
 
 function requireString(value: unknown, name: string): asserts value is string {

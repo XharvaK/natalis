@@ -175,7 +175,7 @@ describe("observations", () => {
     await attach();
     await call("/domus/observation", viewBody({ portrait: { zone: { room_label: "Test kitchen" }, paused: true, mood: "Flirty" } }));
     expect(events).toHaveLength(1);
-    expect(events[0]?.text?.startsWith("Your body now:\nYour attention: every change.\nThe game is attached.\nThe game is paused.\nRoom: Test kitchen.\nMood: flirty.\n\nThe game (slot3) shows:\n")).toBe(true);
+    expect(events[0]?.text?.startsWith("Your body now:\nYour attention: every change.\nThe game is attached.\nThe game is paused.\nRoom: Test kitchen.\nMood: flirty.\n\nThe game shows:\n")).toBe(true);
   });
 
   it("gives the full view her You section, and an older view's brief none of it", async () => {
@@ -205,7 +205,7 @@ describe("observations", () => {
     expect(events).toHaveLength(1);
     const [event] = events;
     expect(event).toMatchObject({ world: "domus", place: "domus:slot3", thread: "domus:slot3", actor: "game", source: "outside", wake: true, atMs: T0 - 1000 });
-    expect(event?.text).toContain("The game (slot3) shows:");
+    expect(event?.text).toContain("The game shows:");
     expect(event?.text).toContain("- Pim Dorrow arrived.");
     expect(event?.text).toContain("- Test kettle (here, 2.0 m): a1 Boil water; a2 Tidy up");
     expect(event?.data).toMatchObject({ observationId: "helper-1.1", world: "slot3", options: VIEW });
@@ -216,7 +216,7 @@ describe("observations", () => {
     const day = { v: 1, from_minute: 0, to_minute: 1440, frames: [{ day: 3, acts: 1, slept: ["23:10:00.000 day:2 week:0"], woke: [], company: [], body_on_its_own: {} }], acts: [], also: {}, omitted: 0 };
     await call("/domus/observation", viewBody({ percepts: [{ kind: "sleep_onset", salience: 1, facts: {} }], day }));
     expect(events[0]?.text).toContain("Your body now:");
-    expect(events[0]?.text).toContain("\n\nThe game's record of your day (facts only):\n- Day 3: slept 23:10.\n\nThe game (slot3) shows:\n");
+    expect(events[0]?.text).toContain("\n\nThe game's record of your day (facts only):\n- Day 3: slept 23:10.\n\nThe game shows:\n");
     expect(events[0]?.wake).toBe(true);
     await call("/domus/observation", viewBody());
     expect(events[1]?.brief).toBe("- Pim Dorrow arrived.");
@@ -311,7 +311,7 @@ describe("acts: the Lar asks, the helper pulls, the game reports", () => {
     await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [{ act_id: actId, phase: "received", at_ms: T0 + 10 }] });
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ place: "discord:dm:owner", thread: "discord:dm:owner", source: "body", wake: false });
-    expect(events[0]?.text).toContain('Your act "Boil water (Test kettle)" (a1): your helper took it up');
+    expect(events[0]?.text).toContain('Your act "Boil water (Test kettle)" (a1): the link to the game took it up');
   });
 
   it("serves a requested act to its own helper in the wire's shape, then keeps the report as a note", async () => {
@@ -325,7 +325,7 @@ describe("acts: the Lar asks, the helper pulls, the game reports", () => {
     const actId = acts[0]?.act_id;
     expect(await call("/domus/acts/sync", { v: 1, helper_session: "helper-2", events: [] })).toMatchObject({ body: { acts: [] } });
     // Another session's sync holds the pulled act as unknown, as a guess (SESSION_ENDED): helper-1's report still settles it.
-    expect(events.map((event) => event.text)).toEqual([expect.stringContaining("how it ended is not known (SESSION_ENDED)")]);
+    expect(events.map((event) => event.text)).toEqual([expect.stringContaining("how it ended is not known")]);
     events = [];
     const reported = await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [
       { act_id: actId, phase: "received", at_ms: T0 + 10 },
@@ -333,7 +333,7 @@ describe("acts: the Lar asks, the helper pulls, the game reports", () => {
     expect(reported.body).toMatchObject({ applied: 1, acts: [] });
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ place: "domus:slot3", source: "body", wake: false });
-    expect(events[0]?.text).toContain('Your act "Boil water (Test kettle)" (a1): your helper took it up');
+    expect(events[0]?.text).toContain('Your act "Boil water (Test kettle)" (a1): the link to the game took it up');
   });
 
   it("wakes the thread for a refusal, and says the game is cut short when it is", async () => {
@@ -341,7 +341,7 @@ describe("acts: the Lar asks, the helper pulls, the game reports", () => {
     const actId = (receipt.data as { actId: string }).actId;
     await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [{ act_id: actId, phase: "rejected", at_ms: T0, detail: { code: "NOT_ATTACHED", by: "game" } }] });
     expect(events[0]).toMatchObject({ wake: true });
-    expect(events[0]?.text).toContain("the game refused it (NOT_ATTACHED)");
+    expect(events[0]?.text).toContain("the game refused it: the link to the game is not connected to the game");
   });
 
   it("wakes the thread when the game finishes an act, and the note says it finished", async () => {
@@ -580,7 +580,7 @@ describe("the world's surface", () => {
       "game_act", "game_snapshot", "game_attention", "game_look", "game_overlay_say", "game_memory", "game_list", "game_catalog",
       "game_go", "game_save", "plan_event", "game_buy", "game_place", "game_move", "game_sell",
     ]);
-    expect(world?.about?.()).toBe("The Sims 4 (Domus): your household's game, at domus:<world>, while your summoner's helper is attached. " + LIVING_IT);
+    expect(world?.about?.()).toBe("The Sims 4 (Domus): your household's game, at a thread named domus: and a slot name, while your summoner's link to the game is attached. The link runs on your summoner's computer; the game's side runs inside the game. " + LIVING_IT);
     expect(await world?.say("domus:slot3", "hello")).toMatchObject({ ok: false, refused: { code: "no_words" } });
   });
 
@@ -612,7 +612,7 @@ describe("the game's attachment, in the views and on the game thread", () => {
   it("starts a view with 'The game is attached.' while its helper is attached", async () => {
     await call("/domus/heartbeat", heartbeat(true, T0));
     await call("/domus/observation", viewBody());
-    expect(events[0]?.text?.startsWith("Your body now:\nYour attention: every change.\nThe game is attached.\n\nThe game (slot3) shows:\n")).toBe(true);
+    expect(events[0]?.text?.startsWith("Your body now:\nYour attention: every change.\nThe game is attached.\n\nThe game shows:\n")).toBe(true);
   });
 
   it("says the game is not attached, and when it was last seen, in a view that arrives after the helper went quiet", async () => {
@@ -647,14 +647,14 @@ describe("the game's attachment, in the views and on the game thread", () => {
 });
 
 describe("views of a whole lot: the choices, and what the game left out", () => {
-  it("says the choices are the same as in the last view when the next view on the thread offers the same ones", async () => {
+  it("lists the choices in full on the next view too, when they did not change", async () => {
     await attach();
     await call("/domus/observation", viewBody());
     await call("/domus/observation", viewBody());
     expect(events).toHaveLength(2);
     expect(events[0]?.text).toContain("Choices you can name with game_act, by ref:");
-    expect(events[1]?.text).toContain("Choices: the same as in the last view.");
-    expect(events[1]?.text).not.toContain("Choices you can name");
+    expect(events[1]?.text).toContain("Choices you can name with game_act, by ref:");
+    expect(events[1]?.text).not.toContain("the same as in the last view");
   });
 
   it("lists the choices in full again when the choices changed, and says what the game left out", async () => {
@@ -665,7 +665,7 @@ describe("views of a whole lot: the choices, and what the game left out", () => 
       options_cut: { objects: 2, rooms: ["Test garden"] },
     }));
     expect(events[1]?.text).toContain("- Test rug: a7 Sit");
-    expect(events[1]?.text?.endsWith("The game left out 2 more choice object(s) on the lot, in Test garden.")).toBe(true);
+    expect(events[1]?.text?.endsWith("2 more things on the lot are not listed, to keep this view short.")).toBe(true);
     expect(events[1]?.data).toMatchObject({ optionsCut: { objects: 2, rooms: ["Test garden"] } });
   });
 });
@@ -910,7 +910,7 @@ describe("game memory: she asks the game, the helper answers from its record", (
     expect(events).toHaveLength(before + 1);
     expect(events[before]).toMatchObject({ world: "domus", thread: "domus:slot3", actor: "game", source: "outside", wake: true });
     expect(events[before]?.text).toContain("What the game remembers about \"Brew Glimmer\" (1 matched, newest first):");
-    expect(events[before]?.text).toContain("- Day 3, 14:20, 45 min: brew glimmer (your act); gloop +30.");
+    expect(events[before]?.text).toContain("- Day 3, 14:20, 45 min: brew glimmer (your act); gloop need eased.");
     expect(events[before]?.text).toContain("- Mara Quill: 1 act together, last at ");
     expect(await answer(askId, { matched: 0, acts: [], people: [] })).toEqual({ status: 200, body: { status: "ok", applied: false } });
     expect(events).toHaveLength(before + 1);

@@ -318,20 +318,20 @@ function keepEvent(db: DatabaseSync, actId: string, phase: string, atMs: number,
 }
 
 /**
- * Plain words, in second person, for every code the game's side (the probe) and the helper send with an act: a refusal, an
- * unknown, a finished act or a noted one. The code stays beside its words wherever she reads it. A code with a detail after
- * a colon (E2_EXCEPTION:TypeError) takes the words of the part before the colon. A code not here is shown as the code only.
+ * Plain words, in second person, for every code the game's side and the link to the game send with an act: a refusal, an
+ * unknown, a finished act or a noted one. The code stays in the logs, never in her text. A code with a detail after a colon
+ * (E2_EXCEPTION:TypeError) takes the words of the part before the colon. A code not here has no words, and is left out.
  */
 export const CODE_WORDS: Readonly<Record<string, string>> = {
   // Refused by the game's side (the probe): before anything was done, or by the game's own test.
-  NOT_SAMPLING: "the probe is not reading the game right now, so nothing was done",
-  E2_UNAVAILABLE: "the probe's act code is not available in the game, so nothing was done",
+  NOT_SAMPLING: "the game's side is not reading the game right now, so nothing was done",
+  E2_UNAVAILABLE: "the game's side has no way to run that act, so nothing was done",
   BODY_UNAVAILABLE: "the game has no Sim it can use as your body right now",
   BODY_MISMATCH: "the game is on a different Sim than your body, so nothing was done",
   NO_OBJECT: "the game no longer has that thing",
   NOT_OFFERED: "the game no longer offers that act for that thing",
-  OBJECT_EXCLUDED: "the probe never acts on that thing",
-  EXCLUDED: "the game's own rules leave that act out for you",
+  OBJECT_EXCLUDED: "the game's side never acts on that thing",
+  EXCLUDED: "that act is left out of your choices",
   NOT_USER_DIRECTED: "that is an act the game runs for its own Sims, not one you can choose",
   SIM_NEEDED: "that act needs a Sim: name one with sim",
   SIM_NOT_CHOOSABLE: "the game would not let that Sim be chosen for that act",
@@ -342,7 +342,7 @@ export const CODE_WORDS: Readonly<Record<string, string>> = {
   BUILD_MODE_REFUSED: "the game refused it in build mode",
   GAME_REFUSED: "the game would not do it right now",
   PUSH_REFUSED: "the game refused to queue it",
-  PUSH_FAILED: "the probe could not put it into the game's queue",
+  PUSH_FAILED: "the game's side could not queue it",
   NO_DIALOG: "the game has no question open with that number",
   NOT_HELD: "that question is not one the game has held for you",
   NOT_HERS: "that is not yours to do: it belongs to someone else in the game",
@@ -350,7 +350,7 @@ export const CODE_WORDS: Readonly<Record<string, string>> = {
   IDENTITY_USER: "that is a question about your summoner, so it is theirs to answer",
   TEXT_NOT_HELD: "the game has not held a text box for you under that number",
   TEXT_INVALID: "the words do not fit the game's text box (its length or its characters)",
-  NO_LIMIT: "the game gives that text box no limit, so the probe will not fill it",
+  NO_LIMIT: "the game gives that text box no limit, so the game's side will not fill it",
   NO_ROW: "the game does not offer that row in that question",
   ROW_DISABLED: "that row is disabled in the game's question",
   ROW_COUNT: "the number of rows is outside what the game's question allows",
@@ -360,9 +360,9 @@ export const CODE_WORDS: Readonly<Record<string, string>> = {
   SAVE_FAILED: "the game could not save",
   SAVE_LOCKED: "the game's save lock is on, so it will not save now",
   SAVE_BUSY: "the game is already saving",
-  SAVE_TOO_SOON: "the game saved less than 15 minutes ago",
+  SAVE_TOO_SOON: "you saved less than 15 minutes ago",
   TRAVEL_PENDING: "a trip is already under way",
-  IN_RABBIT_HOLE: "your Sim is busy in a rabbit hole",
+  IN_RABBIT_HOLE: "you are busy somewhere the game does not show",
   SAME_ZONE: "you are already in that place",
   NO_ZONE: "that place is not on your places list",
   NOT_AN_EVENT: "that is not an event the game has listed for you",
@@ -372,12 +372,12 @@ export const CODE_WORDS: Readonly<Record<string, string>> = {
   NOT_HOME: "you are not on your home lot, so home edits wait",
   BUILD_MODE: "the game is in build mode, so home edits wait until it is off",
   NOT_PURCHASABLE: "the game does not sell that item",
-  PRICE_ABOVE: "the price is above the max_price you set",
+  PRICE_ABOVE: "the price is above the highest price you set",
   NO_SPOT: "there is no free spot for it there",
   NOT_FREE: "that spot is taken",
   PLACE_FAILED: "the game could not place it, so it was put back",
   NOT_IN_INVENTORY: "that thing is not in your inventory",
-  IN_INVENTORY: "that thing is in your inventory: place it, do not move it",
+  IN_INVENTORY: "that thing is in your inventory, so it cannot be moved.",
   MOVE_FAILED: "the game could not move it, so it stays where it was",
   IN_USE: "someone is using that thing right now",
   NOT_MOVABLE: "the game will not move that thing",
@@ -386,26 +386,27 @@ export const CODE_WORDS: Readonly<Record<string, string>> = {
   SELL_PENDING: "an earlier sale of that thing has not settled yet",
   SPOT_FAILED: "the game could not find a spot for it; the thing made for it was removed and nothing was charged",
   // Refused by the helper, before the game was asked.
-  NOT_ATTACHED: "the game is not attached to your helper, so nothing was done",
-  ARGS_INVALID: "your helper could not read what the act needs",
+  NOT_ATTACHED: "the link to the game is not connected to the game, so nothing was done",
+  ARGS_INVALID: "the link to the game could not read what the act needs",
   ANSWER_INVALID: "your answer could not be read",
   UNKNOWN_ROOM: "there is no room by that name",
-  PROBE_TOO_OLD: "the game's probe is too old for this act; it needs an update",
+  PROBE_TOO_OLD: "the game's side is too old for this act; it needs an update",
   REFUSED: "the game refused it and gave no reason",
   // Unknown: how far the game got is not known, or it is known in part.
   CHARGE_UNKNOWN: "the game could not read your money after the buy, so the thing was taken back out, and it is not known whether you paid",
   REMOVE_UNCONFIRMED: "the game did not confirm that the thing was taken back out, so it may still be there; nothing was refunded",
   SELL_UNCONFIRMED: "the thing was still there 30 seconds after the sale, so you were not paid",
+  FUNDS_UNREAD: "the event may or may not have been made, and your money could not be read",
   SAVE_UNCONFIRMED: "the game did not confirm the save in two minutes, so it may or may not have been saved",
   ROW_INVALID: "the game's report of it could not be read, so there is no result",
   LEFT_QUEUE: "the game took it out of its queue and did not say how it ended; what changed in your next view tells what it did",
-  SAMPLER_STOPPED: "the probe stopped reading the game while the act was waiting, so how it ended is not known",
+  SAMPLER_STOPPED: "the game's side stopped reading the game while the act was waiting, so how it ended is not known",
   TRAVEL_UNSEEN: "no change of place was seen within five minutes, so it is not known whether you arrived",
-  E2_EXCEPTION: "the probe hit an error while it ran the act, so how it ended is not known",
-  NO_PROBE_REPLY: "the probe did not answer your helper about it, so how it ended is not known",
-  GAME_DETACHED: "the game was detached from your helper for too long while it ran, so how it ended is not known",
-  NO_END_REPORTED: "the probe began it and no end was reported in time, so how it ended is not known",
-  SESSION_ENDED: "your helper's session ended while it was in flight, so how it ended is not known",
+  E2_EXCEPTION: "the game's side hit an error while it ran the act, so how it ended is not known",
+  NO_PROBE_REPLY: "the game's side did not answer the link to the game about it, so how it ended is not known",
+  GAME_DETACHED: "the game was detached from the link to the game for too long while it ran, so how it ended is not known",
+  NO_END_REPORTED: "the game's side began it and no end was reported in time, so how it ended is not known",
+  SESSION_ENDED: "the link to the game's session ended while it was in flight, so how it ended is not known",
   // Finished: what the game did, when it said nothing more.
   SAVED: "the game saved",
   ARRIVED: "you arrived",
@@ -426,39 +427,102 @@ export function wordsOfCode(code: unknown): string | undefined {
   return Object.hasOwn(CODE_WORDS, name) ? CODE_WORDS[name] : undefined;
 }
 
+/**
+ * The probe's own detail words, in plain words (item 15 of the R3 brief): the reasons it gives for a refusal, and the
+ * one-word details of a failed step. A detail not here is left out of her text (the logs keep it), so no bare word reaches her.
+ */
+export const DETAIL_WORDS: Readonly<Record<string, string>> = {
+  // The reasons an act is left out of her choices (EXCLUDED).
+  pie_picker: "a pie menu of choices, not one act",
+  picker: "a choice that needs an answer from you first",
+  deny_name: "a debug, cheat or test act",
+  social: "a social act with that thing",
+  auto_pick: "an act the game picks for its own Sims",
+  travel: "it can take you off the lot",
+  hidden: "the game hides that act",
+  // The one-word details of a failed step.
+  clock: "the game's clock could not be read",
+  "cost unread": "the price could not be read",
+  "funds unread": "the money could not be read",
+  create: "the game would not make it",
+  "guest list": "the guest list could not be made",
+  guests: "the guests could not be set",
+  "no situation type": "the game has no kind of event for that",
+  NOT_ACTIVE: "the game is not in a state to take it",
+  "value unreadable": "the game's value could not be read",
+  "timeline unreadable": "the game's timeline could not be read",
+  "lock unreadable": "the save lock could not be read",
+  "put back failed": "the thing could not be put back",
+  "not paid": "you were not paid",
+  "refund failed": "the refund failed",
+  "not released": "the thing was not released",
+  // The details the probe's newer steps give (the money, the sale and the confirm window).
+  "no event; the money is not known": "the game does not say whether any event was made, and the money is not known",
+  "the money did not fall": "the money did not go down",
+  "the object is still there; the payment may still come": "the thing is still there, and the payment may still come",
+  "paid after the confirm window": "the payment came after the game's confirm window",
+};
+
+/**
+ * The probe's details that are the outcome of a money step: the sentence stands alone, in place of the code's words (the
+ * code's words say what was not known, and the outcome says what happened).
+ */
+export const OUTCOME_WORDS: Readonly<Record<string, string>> = {
+  "charged, and refunded": "you were charged, and the money was refunded",
+  "the money could not be read after the removal; not refunded": "the money could not be read after the removal, so it was not refunded",
+  "charged; the refund failed": "you were charged, and the refund failed",
+};
+
+/** The outcome sentence of a money step's detail, when the detail is one (see OUTCOME_WORDS). */
+function outcomeOf(detail: unknown): string | undefined {
+  return typeof detail === "string" && Object.hasOwn(OUTCOME_WORDS, detail.trim()) ? OUTCOME_WORDS[detail.trim()] : undefined;
+}
+
+/** The detail words of a step, when the probe sent one she can read; a price or a count of seconds is said with its number. */
+function detailWords(detail: unknown): string | undefined {
+  if (typeof detail !== "string") return undefined;
+  const text = detail.trim();
+  if (Object.hasOwn(DETAIL_WORDS, text)) return DETAIL_WORDS[text];
+  const price = /^price (\d+)$/.exec(text);
+  if (price) return `the price is §${price[1]}`;
+  const seconds = /^(\d+) s$/.exec(text);
+  if (seconds) return `${seconds[1]} seconds are left`;
+  return undefined;
+}
+
 const REFUSED_BY: Readonly<Record<string, string>> = {
   game: "the game refused it",
   probe: "the game's side refused it",
-  helper: "your helper refused it",
+  helper: "the link to the game refused it",
   host: "the host refused it",
 };
 
 /**
- * The reason in words. The game's own words come first (the text or the reason the helper or the game gave, cut to 240
- * characters). Else the code's plain words, with the probe's detail after them in brackets (the price, the seconds). Else
- * the detail alone, the way it came.
+ * The reason in words. The game's own words come first (the text or the reason the link or the game gave, cut to 240
+ * characters). Else the code's plain words, with the probe's detail in its words after a colon. Else the detail's words
+ * alone. Nothing else: a detail with no words is left out.
  */
 function refusedText(detail: Record<string, unknown>): string | undefined {
   const own = typeof detail.text === "string" && detail.text.trim() !== "" ? detail.text.trim()
     : typeof detail.reason === "string" && detail.reason.trim() !== "" ? detail.reason.trim() : undefined;
   if (own !== undefined) return own.slice(0, 240);
-  const extra = typeof detail.detail === "string" && detail.detail.trim() !== "" ? detail.detail.trim().slice(0, 200) : undefined;
+  const outcome = outcomeOf(detail.detail);
+  if (outcome !== undefined) return outcome;
+  const extra = detailWords(detail.detail);
   const words = wordsOfCode(detail.code);
-  if (words !== undefined) return (extra === undefined ? words : `${words} (${extra})`).slice(0, 240);
+  if (words !== undefined) return (extra === undefined ? words : `${words}: ${extra}`).slice(0, 240);
   return extra;
 }
 
 function refusedSentence(detail: Record<string, unknown>): string {
-  const code = typeof detail.code === "string" && detail.code ? ` (${detail.code})` : "";
   const text = refusedText(detail);
   const who = typeof detail.by === "string" ? REFUSED_BY[detail.by] : undefined;
-  return `${who ?? "it was refused"}${code}${text === undefined ? "" : ` - ${text}`}`;
+  return `${who ?? "it was refused"}${text === undefined ? "" : `: ${text}`}`;
 }
 
 function phaseSentence(phase: DomusActPhase, detail: Record<string, unknown>, late: boolean): string {
-  const code = typeof detail.code === "string" && detail.code ? ` (${detail.code})` : "";
   switch (phase) {
-    case "received": return "your helper took it up and passed it on to the game";
+    case "received": return "the link to the game took it up and passed it on to the game";
     case "accepted": return "the game accepted it";
     case "pushed": return "the game put it in its queue";
     case "waiting": {
@@ -466,8 +530,8 @@ function phaseSentence(phase: DomusActPhase, detail: Record<string, unknown>, la
       return `a window is open on the game${window}, so the game keeps it out of your queue until the window closes`;
     }
     case "noted":
-      if (typeof detail.code === "string" && wordsOfCode(detail.code) !== undefined) return `${wordsOfCode(detail.code)}${code}`;
-      return `the game noted something about it${code}`;
+      if (typeof detail.code === "string" && wordsOfCode(detail.code) !== undefined) return wordsOfCode(detail.code)!;
+      return "the game noted something about it";
     case "finished": {
       if (detail.code === "ANSWER_SENT_OPEN") return wordsOfCode(detail.code) ?? "your answer was sent, but the game's question is still open";
       const ending = endingOf(detail.finishing_type, detail.started);
@@ -478,12 +542,15 @@ function phaseSentence(phase: DomusActPhase, detail: Record<string, unknown>, la
     }
     case "rejected": return refusedSentence(detail);
     case "unknown": {
-      // The game took the act out of its queue and never said how it ended: the words say only that, with no code beside them.
+      // The game took the act out of its queue and never said how it ended: the words say only that.
       if (detail.code === "LEFT_QUEUE") return wordsOfCode(detail.code) ?? "the game took it out of its queue and did not say how it ended";
-      const reason = detail.reason ? ` - ${String(detail.reason).slice(0, 200)}` : "";
+      const outcome = outcomeOf(detail.detail);
+      if (outcome !== undefined) return outcome;
+      const extra = detailWords(detail.detail);
+      const reason = detail.reason ? `: ${String(detail.reason).slice(0, 200)}` : extra === undefined ? "" : `: ${extra}`;
       const words = wordsOfCode(detail.code);
-      if (words !== undefined) return `${words}${code}${reason}`;
-      return `nothing says how it ended${code}${reason}`;
+      if (words !== undefined) return `${words}${reason}`;
+      return `nothing says how it ended${reason}`;
     }
     case "expired":
       if (detail.code === "STOPPED") return "it was withdrawn before the game picked it up, because your summoner's stop is on";
@@ -502,7 +569,10 @@ function verbSentence(phase: DomusActPhase, detail: Record<string, unknown>, lat
   const result = typeof detail.result === "string" ? detail.result.trim().replace(/[.!?]+$/, "") : "";
   if (result !== "") return result;
   // No words of the game's own: the finished code says what happened (the game saved, you arrived), else it just finished.
-  return wordsOfCode(detail.code) ?? (typeof detail.code === "string" && detail.code !== "" ? `it finished (${detail.code})` : "it finished");
+  // A detail the probe gives (a payment after the confirm window) is said after those words.
+  const base = wordsOfCode(detail.code) ?? "it finished";
+  const extra = detailWords(detail.detail);
+  return extra === undefined ? base : `${base}: ${extra}`;
 }
 
 function noteFor(act: Row, phase: DomusActPhase, detail: Record<string, unknown>, late: boolean): ThreadNote {
@@ -771,4 +841,40 @@ export function pendingCounts(db: DatabaseSync, nowMs: number): { requested: num
   const requested = Number((db.prepare("SELECT COUNT(*) AS n FROM acts WHERE state = 'requested' AND expires_at_ms > ?").get(nowMs) as Row).n);
   const planned = Number((db.prepare("SELECT COUNT(*) AS n FROM plan_steps WHERE state = 'planned'").get() as Row).n);
   return { requested, planned };
+}
+
+/** How far back the other threads' game acts show on the now board. */
+export const ACT_BOARD_MS = 30 * 60_000;
+
+/** A game act one thread asked for, as the other threads' now board says it: when it was asked, and its state in words. */
+export type ActBoardItem = { thread: string; atMs: number; text: string };
+
+/** The state of a requested act in words, for the now board: waiting, done, or refused with the reason in words. */
+function boardStateWords(state: string, rejected: Record<string, unknown> | undefined): string {
+  if (state === "finished") return "done";
+  if (state === "rejected") return `refused: ${(refusedText(rejected ?? {}) ?? "the game gave no reason").replace(/[.!?]+$/, "")}`;
+  if (state === "expired") return "refused: it expired before the game picked it up";
+  if (state === "unknown") return "how it ended is not known";
+  if (state === "stopped" || state === "undone" || state === "dropped") return "withdrawn";
+  return "waiting for the game";
+}
+
+/**
+ * The game acts requested in the last ACT_BOARD_MS, from every thread, newest first, each in one line of words: its label
+ * and its state. The reason of a refusal is read from the helper's rejected report, in words (no code). The board names
+ * the thread and leaves out the asking thread's own acts.
+ */
+export function recentActsBoard(db: DatabaseSync, nowMs: number): ActBoardItem[] {
+  const rows = db.prepare(`SELECT act_id, thread, label, state, requested_at_ms FROM acts
+    WHERE requested_at_ms >= ? ORDER BY requested_at_ms DESC LIMIT 40`).all(nowMs - ACT_BOARD_MS) as Row[];
+  return rows.map((row) => {
+    const rejected = String(row.state) === "rejected"
+      ? parseDetail((db.prepare("SELECT detail_json FROM act_events WHERE act_id = ? AND phase = 'rejected'").get(String(row.act_id)) as Row | undefined)?.detail_json)
+      : undefined;
+    return {
+      thread: String(row.thread),
+      atMs: Number(row.requested_at_ms),
+      text: `${String(row.label)}: ${boardStateWords(String(row.state), rejected)}.`,
+    };
+  });
 }

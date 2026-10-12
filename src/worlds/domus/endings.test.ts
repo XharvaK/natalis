@@ -16,7 +16,7 @@ describe("how a finished act ended", () => {
   });
 
   it("says an act that never began never began", () => {
-    expect(endingOf("INTERACTION_INCOMPATIBILITY", false).why).toBe("it never began: the game found no way to do it from where the Lar was");
+    expect(endingOf("INTERACTION_INCOMPATIBILITY", false).why).toBe("it never began: the game found no way to do it from where you were");
     expect(endingOf("DISPLACED", false).why).toBe("it never began: another action replaced it");
   });
 });

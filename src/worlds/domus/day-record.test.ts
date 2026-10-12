@@ -38,7 +38,7 @@ describe("the game's record of the day, as her full view shows it", () => {
     expect(lines).toEqual([
       "The game's record of your day (facts only):",
       "- Day 3: slept 23:10, woke 07:02; with Mara Quill, Pim Dorrow; your body on its own: eat fizz ×2, sim stand ×4.",
-      "- 14:20, 45 min: brew glimmer (your act); gloop +30, zing -10; you felt: zingy; reactions: flurbed; with Mara Quill (the one it was for), Pim Dorrow (reacted).",
+      "- 14:20, 45 min: brew glimmer (your act); gloop need eased, zing need grew; you felt: zingy; reactions: flurbed; with Mara Quill (the one it was for), Pim Dorrow (reacted).",
       "- 18:00, 5 min: fizz watch (the game, on its own).",
       "Also: quax dance ×3. (2 more not listed.)",
     ]);
@@ -58,7 +58,7 @@ describe("the game's record of the day, as her full view shows it", () => {
 
   it("skips a part it cannot read and keeps the rest of the line", () => {
     const lines = dayRecordLines({ acts: [{ at: "09:05:00.000 day:0 week:0", what: "Brew Glimmer", needs: { Gloop: "lots", Zing: 5 }, people: [{ who: "Mara Quill", role: "bystander" }] }] });
-    expect(lines[1]).toBe("- 09:05: brew glimmer; zing +5; with Mara Quill.");
+    expect(lines[1]).toBe("- 09:05: brew glimmer; zing need eased; with Mara Quill.");
   });
 
   it("caps the section at 4,000 characters and says how many lines the cap left out", () => {
@@ -88,5 +88,15 @@ describe("a person in the game's record, as a memory line", () => {
     const stamp = (ms: number) => String(ms);
     expect(personLine({ who: "Mara {0.SimFirstName} Quill", acts: 2, last_at_ms: 7 }, stamp)).toBe("Mara Quill: 2 acts together, last at 7.");
     expect(personLine({ who: "{0.SimFirstName}", acts: 2, last_at_ms: 7 }, stamp)).toBeUndefined();
+  });
+});
+
+describe("the needs the game's record names, as feelings (VIEW3-7)", () => {
+  it("says each moved need as its feeling, eased when it rose and grew when it fell, with no number after a need word", () => {
+    const lines = dayRecordLines({
+      acts: [{ at: "09:05:00.000 day:0 week:0", what: "Brew Glimmer", needs: { hunger: 20, fun: -5, bladder: 3, social: 1, hygiene: -2, energy: 4 } }],
+    });
+    expect(lines[1]).toBe("- 09:05: brew glimmer; hunger eased, boredom grew, the need for the toilet eased, loneliness eased, the need for a wash grew, tiredness eased.");
+    expect(lines.join("\n")).not.toMatch(/(hunger|boredom|toilet|loneliness|wash|tiredness)[^,.;\n]*\d/);
   });
 });
