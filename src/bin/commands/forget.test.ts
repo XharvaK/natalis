@@ -181,6 +181,7 @@ describe("natalis forget --query and the game store", () => {
     expect(out[0]).toMatch(
       /^Forgot 2 river row\(s\), 3 note line\(s\) in 2 note file\(s\), 0 text\(s\) in the state file, 1 line\(s\) in trash\/, \d+ notebook commit\(s\) rewritten, 0 file\(s\) in the home, and 0 picture\(s\) on the shelf, and 1 row\(s\) in the game's store\.$/,
     );
+    expect(out).toContain("The game's own lists may show the words again: they are the game's, not the Lar's.");
     const check = new DatabaseSync(join(dir, DOMUS_FOLDER, DOMUS_DB_FILE));
     try {
       expect(check.prepare("SELECT payload_json FROM observations").get()).toEqual({ payload_json: "{}" });
