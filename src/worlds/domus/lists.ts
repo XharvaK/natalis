@@ -210,7 +210,7 @@ function gameList(open: () => GameContext, args: Record<string, unknown>, _conte
   if (args.room !== undefined && !(kind === "things" && typeof args.room === "string" && args.room.trim() !== "" && args.room.length <= ROOM_MAX)) {
     return refused("bad_args", `room is one room's name (up to ${ROOM_MAX} characters), and goes with things only.`);
   }
-  const gate = gameGate(game, { probe: false });
+  const gate = gameGate(game, { probe: true });
   if (gate) return gate;
   const session = game.attachedSession(game.nowMs()) as string;
   const stored = readList(game.db, session, kind);

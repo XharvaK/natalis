@@ -74,7 +74,7 @@ function gameCatalog(open: () => GameContext, args: Record<string, unknown>, con
   if (args.placement !== undefined && !(typeof args.placement === "string" && PLACEMENTS.includes(args.placement))) {
     return refused("bad_args", "placement must be floor, wall or surface.");
   }
-  const gate = gameGate(game, { probe: false });
+  const gate = gameGate(game, { probe: true });
   if (gate) return gate;
   const nowMs = game.nowMs();
   if (openCatalogAsk(game.db, context.thread, nowMs) !== undefined) {

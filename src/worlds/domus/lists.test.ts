@@ -257,3 +257,18 @@ describe("forgetting words reaches the new tables", () => {
     expect(db.prepare("SELECT room FROM catalog_asks WHERE ask_id = 'ask-f'").get()).toEqual({ room: FORGOTTEN_LINE });
   });
 });
+
+describe("the game's lists and catalogue need the probe that answers them (NATALIS2-8)", () => {
+  it("game_list refuses a probe older than 2.40.0 with the same words the verbs use, and asks nothing", async () => {
+    const old = () => ({ ...game(), probeOf: () => "2.30.0" });
+    const receipt = await gameListTool(old).run({ what: "people" }, { thread: "domus:slot3", turnId: "t", nowMs: clock } as ToolContext);
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "probe_too_old" } });
+  });
+
+  it("game_catalog refuses a probe older than 2.40.0 before it asks the game", async () => {
+    const { gameCatalogTool } = await import("./catalog.js");
+    const old = () => ({ ...game(), probeOf: () => "2.30.0" });
+    const receipt = await gameCatalogTool(old).run({ words: "test lamp" }, { thread: "domus:slot3", turnId: "t", nowMs: clock } as ToolContext);
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "probe_too_old" } });
+  });
+});
