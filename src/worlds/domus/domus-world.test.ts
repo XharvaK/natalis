@@ -304,7 +304,7 @@ describe("acts: the Lar asks, the helper pulls, the game reports", () => {
     const actId = acts[0]?.act_id;
     expect(await call("/domus/acts/sync", { v: 1, helper_session: "helper-2", events: [] })).toMatchObject({ body: { acts: [] } });
     // Another session's sync holds the pulled act as unknown, as a guess (SESSION_ENDED): helper-1's report still settles it.
-    expect(events.map((event) => event.text)).toEqual([expect.stringContaining("nothing says how it ended (SESSION_ENDED)")]);
+    expect(events.map((event) => event.text)).toEqual([expect.stringContaining("how it ended is not known (SESSION_ENDED)")]);
     events = [];
     const reported = await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [
       { act_id: actId, phase: "received", at_ms: T0 + 10 },
