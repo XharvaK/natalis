@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dropTokens, plainName, textOrUndefined } from "./words.js";
+import { dropTokens, moneyWords, plainName, textOrUndefined } from "./words.js";
 
 describe("dropTokens: a game token the helper did not format never reaches her", () => {
   it("drops each {...} token with the spaces it leaves, and keeps the rest of the words", () => {
@@ -22,5 +22,14 @@ describe("plainName: a game name in plain words", () => {
   it("lowers the camel case and the separators of a tuning name", () => {
     expect(plainName("Role_PivotalMoment")).toBe("role pivotal moment");
     expect(plainName("<class 'situations.Role_BirthdayParty'>")).toBe("role birthday party");
+  });
+});
+
+describe("money in the game's words (VIEW3-23)", () => {
+  it("groups a whole amount by threes, and leaves anything else as it is", () => {
+    expect(moneyWords(1234)).toBe("1,234");
+    expect(moneyWords(1234567)).toBe("1,234,567");
+    expect(moneyWords(42)).toBe("42");
+    expect(moneyWords("1234")).toBe("1234");
   });
 });

@@ -46,6 +46,11 @@ export function withoutStop(text: string): string {
   return text.replace(/[.!?]+$/, "");
 }
 
+/** A whole amount of money with a comma between each group of three digits: 1234 is "1,234" (VIEW3-23). Anything else as it is. */
+export function moneyWords(value: unknown): string {
+  return typeof value === "number" && Number.isInteger(value) ? String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",") : String(value);
+}
+
 export function capitalised(text: string): string {
   return text.length === 0 ? text : `${text[0]!.toUpperCase()}${text.slice(1)}`;
 }
