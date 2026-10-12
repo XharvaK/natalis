@@ -73,7 +73,8 @@ sections, each optional:
 - `population`: the story-progression settings that touch a household with no lot (for P3).
 
 In 2.40.0, `off_lot`, `population`, the scheduling flag of `situations` and the career's `can_work_early` and
-`available_for_work` are not read yet (the reads ruling above).
+`available_for_work` are not read yet (the reads ruling above). The record's `unread` section names them, so the
+record says what it does not hold.
 
 The helper stores each discovery record as one JSON file in its data folder (`discovery/<telemetry session>.json`)
 and logs one line. It is evidence for the lead, not part of her view.
@@ -326,7 +327,7 @@ contains drops that list; the helper sends it again.
 - `discovery`;
 - lists `people`, `places`, `events` and the `lists_now` command;
 - `needs_sim` in the act menu and `act.sim_id` (the push with `picked_item_ids` and `included_override`, then the
-  tuned continuation, then `SIM_NOT_CHOOSABLE` with the step);
+  tuned continuation, then `SIM_NOT_CHOOSABLE` with the game's reason);
 - `go`, and `event`;
 - `until_min`, `waiting`, the phone event, calls held by the caller.
 
