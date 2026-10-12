@@ -116,7 +116,7 @@ describe("game_go", () => {
     probe = undefined;
     const receipt = await call("game_go", { place: "h1" });
     expect(receipt).toMatchObject({ ok: false, refused: { code: "probe_too_old" } });
-    expect(receipt.refused?.reason).toContain("has not said which probe it runs");
+    expect(receipt.refused?.reason).toContain("has not said what the game's side is");
     expect(actRows()).toEqual([]);
     probe = "2.40.0";
   });
