@@ -251,8 +251,11 @@ Domus database version 2:
 - `acts` gains `verb TEXT` and `args_json TEXT` (both nullable).
 - New tables:
   - `lists` (attachment, kind, digest, items_json, at_ms; primary key attachment and kind);
-  - `catalog_asks` (as `memory_asks`, plus `room`, `max_price`, `placement`);
-  - `catalog_seen` (attachment, ref, definition_id, name, price, at_ms; primary key attachment and ref).
+  - `catalog_asks` (as `memory_asks`, plus `room` (kept for old rows, no longer written), `max_price`, `placement`);
+  - `catalog_seen` (attachment, ref, definition_id, name, price, at_ms; primary key attachment and ref);
+  - `list_marks` (one row: the helper session her last `game_list` or catalogue answer named; her refs resolve only
+    while that session is attached).
+  - Forgetting a word a stored list holds deletes that list row; the helper sends the list again.
 - The migration adds each column and table only when missing, in one transaction, with a test from version 1.
 
 ### Tools
