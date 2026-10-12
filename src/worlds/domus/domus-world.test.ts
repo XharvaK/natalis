@@ -94,7 +94,7 @@ function viewBody(overrides: Record<string, unknown> = {}): Record<string, unkno
     source_time_ms: clock - 1000,
     expires_at_ms: clock + 30_000,
     lineage_class: "LIVE",
-    percepts: [{ kind: "sim_arrives", salience: 0.8, facts: { subject: "Pim Dorrow" } }],
+    percepts: [{ kind: "presence", salience: 0.8, facts: { bucket: "arrived", name: "Pim Dorrow" } }],
     options: VIEW,
     ...overrides,
   };
@@ -185,7 +185,7 @@ describe("observations", () => {
     const [event] = events;
     expect(event).toMatchObject({ world: "domus", place: "domus:slot3", thread: "domus:slot3", actor: "game", source: "outside", wake: true, atMs: T0 - 1000 });
     expect(event?.text).toContain("The game (slot3) shows:");
-    expect(event?.text).toContain("- sim arrives: subject Pim Dorrow");
+    expect(event?.text).toContain("- Pim Dorrow arrived.");
     expect(event?.text).toContain("- Test kettle (here, 2.0 m): a1 Boil water; a2 Tidy up");
     expect(event?.data).toMatchObject({ observationId: "helper-1.1", world: "slot3", options: VIEW });
   });
@@ -198,7 +198,7 @@ describe("observations", () => {
     expect(events[0]?.text).toContain("\n\nThe game's record of your day (facts only):\n- Day 3: slept 23:10.\n\nThe game (slot3) shows:\n");
     expect(events[0]?.wake).toBe(true);
     await call("/domus/observation", viewBody());
-    expect(events[1]?.brief).toBe("- sim arrives: subject Pim Dorrow");
+    expect(events[1]?.brief).toBe("- Pim Dorrow arrived.");
     expect(events[0]?.brief).toBe("- You fell asleep.\n- The game's record of your day came with this view.");
   });
 
@@ -206,7 +206,7 @@ describe("observations", () => {
     await attach();
     await call("/domus/observation", viewBody({ portrait: { zone: { room_label: "Test kitchen" } } }));
     const [event] = events;
-    expect(event).toMatchObject({ view: "domus", brief: "- sim arrives: subject Pim Dorrow" });
+    expect(event).toMatchObject({ view: "domus", brief: "- Pim Dorrow arrived." });
     expect(event?.brief).not.toContain("Your body now");
     expect(event?.brief).not.toContain("Choices");
     expect(event?.text).toContain("Your body now:");
@@ -683,7 +683,7 @@ describe("her attention: which views wake her, and the setting she keeps", () =>
     await call("/domus/observation", viewBody({ percepts: CALL }));
     expect(events.map((event) => event.wake)).toEqual([false, false, true]);
     expect(events[1]?.text).toContain("Your attention: when something calls you.");
-    expect(events[1]?.brief).toBe("- Hunger: fine.");
+    expect(events[1]?.brief).toBe("An earlier view.");
   });
 
   it("when quiet, wakes her for a question with a deadline and a window held for her, and for nothing else", async () => {
@@ -828,7 +828,7 @@ describe("a fresh look: she asks, the helper answers on its sync, and the answer
     events = [];
     await look("domus:slot3");
     await call("/domus/observation", viewBody({
-      percepts: [{ kind: "look", salience: 0, facts: { bucket: "asked" } }, { kind: "sim_arrives", salience: 0.8, facts: { subject: "Pim Dorrow" } }],
+      percepts: [{ kind: "look", salience: 0, facts: { bucket: "asked" } }, { kind: "presence", salience: 0.8, facts: { bucket: "arrived", name: "Pim Dorrow" } }],
     }));
     // The choices are the same as the last view's, so the whole view says so instead of listing them again; the look is named.
     expect(events[0]?.text).toContain("Your body now:");

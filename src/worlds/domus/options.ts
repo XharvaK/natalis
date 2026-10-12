@@ -5,9 +5,9 @@
 import type { Found, OptionObject, AnswerRules } from "./answers.js";
 import { answerRulesOf } from "./answers.js";
 import type { OptionsCut, Percept } from "./wire.js";
-import { type AttachmentNow, bodyLines, clockLine } from "./body.js";
+import { type AttachmentNow, bodyLines, clockLine, needFeeling, needGradeOfBand, needGradeOfValue } from "./body.js";
 import { DAY_BRIEF_LINE, dayRecordLines } from "./day-record.js";
-import { BAND_WORDS, capitalised, dropTokens, ORIGIN_WORDS, plainName, textOrUndefined } from "./words.js";
+import { capitalised, dropTokens, ORIGIN_WORDS, plainName, textOrUndefined } from "./words.js";
 
 /** The longest the rendered view may be, in characters. The rest is said as a count. */
 export const VIEW_TEXT_MAX = 20_000;
@@ -117,10 +117,13 @@ export function perceptSentence(percept: Percept): string | undefined {
       return undefined;
     }
     case "need": {
+      // N4: a need reaches her as its feeling, graded by its value when the game gives one, else by its band. A need that
+      // is not felt (ok) has no words, so the view does not show it.
       const subject = textOrUndefined(facts.subject);
-      const band = textOrUndefined(facts.band);
-      if (!subject || !band) return undefined;
-      return `${capitalised(plainName(subject))}: ${BAND_WORDS[band] ?? band}.`;
+      if (!subject) return undefined;
+      const value = typeof facts.value === "number" && Number.isFinite(facts.value) ? facts.value : undefined;
+      const grade = value !== undefined ? needGradeOfValue(value) : needGradeOfBand(textOrUndefined(facts.band));
+      return grade === undefined ? undefined : needFeeling(subject, grade);
     }
     case "moodlet": {
       const to = textOrUndefined(facts.to);
@@ -197,12 +200,13 @@ export function perceptSentence(percept: Percept): string | undefined {
   }
 }
 
-/** One percept's line in a view: its plain sentence, or the old "kind: facts" line for a kind it does not know. */
-export function perceptLine(percept: Percept): string {
+/**
+ * One percept's line in a view: its plain sentence. A percept with no words (a kind it does not know, or one missing
+ * what its sentence needs) has no line: its raw "kind: facts" text is not shown to her.
+ */
+export function perceptLine(percept: Percept): string | undefined {
   const sentence = perceptSentence(percept);
-  const label = percept.kind.replace(/_/g, " ");
-  const facts = factsText(percept.facts);
-  return sentence !== undefined ? `- ${sentence}` : `- ${label}${facts ? `: ${facts}` : ""}`;
+  return sentence === undefined ? undefined : `- ${sentence}`;
 }
 
 /**
@@ -211,17 +215,17 @@ export function perceptLine(percept: Percept): string {
  */
 export function viewBrief(percepts: readonly Percept[], dayRecord = false): string {
   if (percepts.length === 0 && !dayRecord) return "An earlier view.";
+  const all = percepts.map(perceptLine).filter((line): line is string => line !== undefined);
   const lines: string[] = [];
   let used = 0;
-  for (const percept of percepts) {
-    const line = perceptLine(percept);
+  for (const line of all) {
     if (used + line.length > BRIEF_MAX) break;
     lines.push(line);
     used += line.length + 1;
   }
-  if (lines.length < percepts.length) lines.push(`- (${percepts.length - lines.length} more not shown)`);
+  if (lines.length < all.length) lines.push(`- (${all.length - lines.length} more not shown)`);
   if (dayRecord) lines.push(DAY_BRIEF_LINE);
-  return lines.join("\n");
+  return lines.length === 0 ? "An earlier view." : lines.join("\n");
 }
 
 /**
@@ -248,16 +252,16 @@ export function renderView(input: {
     `The game (${input.world}) shows:`,
   ];
   const lines: string[] = [...head];
+  const all = input.percepts.map(perceptLine).filter((line): line is string => line !== undefined);
   let shown = 0;
   let used = head.reduce((sum, line) => sum + line.length + 1, 0);
-  for (const percept of input.percepts) {
-    const line = perceptLine(percept);
+  for (const line of all) {
     if (used + line.length > VIEW_TEXT_MAX) break;
     lines.push(line);
     used += line.length;
     shown++;
   }
-  if (shown < input.percepts.length) lines.push(`- (${input.percepts.length - shown} more not shown)`);
+  if (shown < all.length) lines.push(`- (${all.length - shown} more not shown)`);
   if (input.options.length === 0) {
     lines.push("", "The game offers no choices in this view.");
     return lines.join("\n");
