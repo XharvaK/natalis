@@ -164,14 +164,9 @@ export function requestAct(db: DatabaseSync, input: RequestInput): RequestResult
   });
 }
 
-/** The home edits one turn may make (buy, place, move, sell): each has its own receipt and is not held by the one-act rule. */
-export const HOME_EDITS_PER_TURN = 6;
-/** The verbs that are home edits (see HOME_EDITS_PER_TURN). */
-export const HOME_VERBS: readonly string[] = ["buy", "place", "move", "sell"];
 /** The verbs that hold the one-act slot of a turn, as a game act does: travel, saving and planning an event. */
 export const SLOT_VERBS: readonly string[] = ["go", "save", "event"];
 const SLOT_VERB_SQL = SLOT_VERBS.map((verb) => `'${verb}'`).join(", ");
-const HOME_VERB_SQL = HOME_VERBS.map((verb) => `'${verb}'`).join(", ");
 
 export type VerbInput = {
   thread: string;
@@ -192,24 +187,21 @@ export type VerbInput = {
 
 export type VerbResult =
   | { ok: true; actId: string; expiresAtMs: number }
-  | { ok: false; code: "one_act_per_turn" | "home_edits_full" };
+  | { ok: false; code: "one_act_per_turn" };
 
 /**
  * Keeps a home or travel verb as a requested act (W13). Travel, saving and planning an event hold the turn's one-act slot,
- * as a game act does, and replace what a plan still waited to do. A home edit does neither: it is counted, and a turn may
- * make HOME_EDITS_PER_TURN of them.
+ * as a game act does, and replace what a plan still waited to do. A home edit (buy, place, move, sell) does neither: it has
+ * no cap in a turn, and is bounded only by the game's own answers and the meanwhile hold.
  */
 export function requestVerb(db: DatabaseSync, input: VerbInput): VerbResult {
   return inTransaction(db, () => {
-    const holdsSlot = SLOT_VERBS.includes(input.verb);
-    if (holdsSlot) {
+    if (SLOT_VERBS.includes(input.verb)) {
       if (db.prepare(`SELECT 1 FROM acts WHERE turn_id = ? AND answer_json IS NULL AND (verb IS NULL OR verb IN (${SLOT_VERB_SQL})) LIMIT 1`)
         .get(input.turnId)) {
         return { ok: false as const, code: "one_act_per_turn" as const };
       }
       dropPlanned(db, { attachment: input.attachment, reason: "replaced", notify: false, nowMs: input.nowMs });
-    } else {
-      if (homeEditsIn(db, input.turnId) >= HOME_EDITS_PER_TURN) return { ok: false as const, code: "home_edits_full" as const };
     }
     const actId = randomUUID().replaceAll("-", "");
     insertAct(db, {
@@ -220,16 +212,6 @@ export function requestVerb(db: DatabaseSync, input: VerbInput): VerbResult {
     });
     return { ok: true as const, actId, expiresAtMs: input.nowMs + ACT_TTL_MS };
   });
-}
-
-/** The home edits a turn has made so far (refused ones are not kept, so these are the ones the game was asked for). */
-/**
- * The home edits of a turn that count: each request she made, except one the game or the helper refused (rejected) and one
- * that expired. A refused edit frees its slot.
- */
-export function homeEditsIn(db: DatabaseSync, turnId: string): number {
-  return Number((db.prepare(`SELECT COUNT(*) AS n FROM acts WHERE turn_id = ? AND verb IN (${HOME_VERB_SQL})
-    AND state NOT IN ('rejected', 'expired')`).get(turnId) as Row).n);
 }
 
 /**

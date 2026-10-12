@@ -1,12 +1,12 @@
 // The W13 verbs: the travel and home acts she asks the game for. game_go, game_save and plan_event hold the turn's one-act
-// slot, as a game act does; game_buy, game_place, game_move and game_sell are home edits (six a turn). Each tool checks its
+// slot, as a game act does; game_buy, game_place, game_move and game_sell are home edits (no cap in a turn). Each tool checks its
 // arguments against the lists and the newest view of the game that is attached now, then keeps the act as a requested verb.
 // The game does it, or refuses, later; the result comes back as notes on her thread. Nothing here chooses for her.
 
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import type { OptionObject } from "./answers.js";
-import { actRequestedMeanwhile, HOME_EDITS_PER_TURN, HOME_VERBS, homeEditsIn, lastSaveAt, requestVerb } from "./acts.js";
+import { actRequestedMeanwhile, lastSaveAt, requestVerb } from "./acts.js";
 import { seenItem } from "./catalog.js";
 import { findListed, listedSession, readList, REF_PATTERN } from "./lists.js";
 import { findOption, optionsOf } from "./options.js";
@@ -254,7 +254,7 @@ const VERBS: VerbDef[] = [
   },
   {
     tool: "game_place",
-    description: "Place an item from your inventory (a t ref) on your lot. A home edit: six a turn.",
+    description: "Place an item from your inventory (a t ref) on your lot. A home edit.",
     properties: { thing: { type: "string", description: "The t ref of an inventory item, from game_list things." }, place: { description: PLACE_TEXT, type: "object" } },
     required: ["thing", "place"],
     keys: ["thing", "place"],
@@ -274,7 +274,7 @@ const VERBS: VerbDef[] = [
   },
   {
     tool: "game_move",
-    description: "Move a thing on your lot (a t or a ref) to another place. A home edit: six a turn. A move that cuts off a route stays where you put it, and the result says which routes are cut.",
+    description: "Move a thing on your lot (a t or a ref) to another place. A home edit. A move that cuts off a route stays where you put it, and the result says which routes are cut.",
     properties: { thing: { type: "string", description: "A t ref from game_list things, or an a ref from the view." }, place: { description: PLACE_TEXT, type: "object" } },
     required: ["thing", "place"],
     keys: ["thing", "place"],
@@ -291,7 +291,7 @@ const VERBS: VerbDef[] = [
   },
   {
     tool: "game_sell",
-    description: "Sell a thing (a t or a ref) from your lot or your inventory. It is removed. A home edit: six a turn.",
+    description: "Sell a thing (a t or a ref) from your lot or your inventory. It is removed. A home edit.",
     properties: { thing: { type: "string", description: "A t ref from game_list things, or an a ref from the view." } },
     required: ["thing"],
     keys: ["thing"],
@@ -336,10 +336,6 @@ function runVerb(open: () => GameContext, def: VerbDef, args: Args, context: Too
   const attached = game.attachedSession(game.nowMs()) as string;
   const nowMs = game.nowMs();
   const view = viewOf(game.db, attached);
-  const isHome = HOME_VERBS.some((verb) => def.tool === `game_${verb}`);
-  if (isHome && homeEditsIn(game.db, context.turnId) >= HOME_EDITS_PER_TURN) {
-    return refused("home_edits_full", `You made ${HOME_EDITS_PER_TURN} home edits this turn already. The next turn can make more.`);
-  }
   const planned = def.plan({ db: game.db, listed: listedSession(game.db, attached), view, args, nowMs, ownerMs: game.ownerMs() });
   if (isReceipt(planned)) return planned;
   if (args.knowingly !== true) {
@@ -365,7 +361,6 @@ function runVerb(open: () => GameContext, def: VerbDef, args: Args, context: Too
     nowMs,
   });
   if (!kept.ok) {
-    if (kept.code === "home_edits_full") return refused(kept.code, `You made ${HOME_EDITS_PER_TURN} home edits this turn already. The next turn can make more.`);
     return refused(kept.code, "You already asked the game for one act in this turn. Ask for the next one in your next turn.");
   }
   return {

@@ -182,26 +182,23 @@ describe("plan_event", () => {
 describe("home edits", () => {
   const shelfPlace = { on: "t9" };
 
-  it("lets a turn make six home edits, not held by the one-act rule, and refuses the seventh", async () => {
+  it("has no cap on home edits in a turn: the seventh and the tenth are accepted, not held by the one-act rule", async () => {
     seedView([]);
     await call("game_go", { place: "h1" }, "t-home");
-    for (let index = 1; index <= 6; index++) {
-      expect(await call("game_buy", { item: `c${index}`, place: shelfPlace }, "t-home")).toMatchObject({ ok: true, data: { verb: "buy" } });
+    for (let index = 1; index <= 10; index++) {
+      // Eight catalogue items are seen (c1 to c8); the ninth and tenth buys reuse the first two.
+      const item = `c${((index - 1) % 8) + 1}`;
+      expect(await call("game_buy", { item, place: shelfPlace }, "t-home")).toMatchObject({ ok: true, data: { verb: "buy" } });
     }
-    expect(await call("game_buy", { item: "c7", place: shelfPlace }, "t-home")).toMatchObject({ ok: false, refused: { code: "home_edits_full" } });
+    expect(actRows().filter((row) => row.verb === "buy")).toHaveLength(10);
   });
 
-  it("does not count an edit the game or the helper refused, so a refused one frees its slot", async () => {
+  it("keeps the one-act slot of a turn for travel, and home edits still do not take it", async () => {
     seedView([]);
-    for (let index = 1; index <= 6; index++) {
-      expect(await call("game_buy", { item: `c${index}`, place: shelfPlace }, "t-refused")).toMatchObject({ ok: true });
-    }
-    expect(await call("game_buy", { item: "c7", place: shelfPlace }, "t-refused")).toMatchObject({ ok: false, refused: { code: "home_edits_full" } });
-    const pulled = syncActs(db, { attachment: HELPER, events: [], nowMs: clock });
-    const refusedAct = pulled.acts[0]?.act_id as string;
-    syncActs(db, { attachment: HELPER, nowMs: clock + 1000, events: [{ actId: refusedAct, phase: "rejected", atMs: clock, detail: { code: "NO_SPOT" } }] });
-    expect(await call("game_buy", { item: "c7", place: shelfPlace }, "t-refused")).toMatchObject({ ok: true });
-    expect(await call("game_buy", { item: "c8", place: shelfPlace }, "t-refused")).toMatchObject({ ok: false, refused: { code: "home_edits_full" } });
+    expect(await call("game_buy", { item: "c1", place: shelfPlace }, "t-slot")).toMatchObject({ ok: true });
+    expect(await call("game_buy", { item: "c2", place: shelfPlace }, "t-slot")).toMatchObject({ ok: true });
+    expect(await call("game_go", { place: "h1" }, "t-slot")).toMatchObject({ ok: true });
+    expect(await call("game_go", { place: "h1" }, "t-slot")).toMatchObject({ ok: false, refused: { code: "one_act_per_turn" } });
   });
 
   it("buys a catalogue item beside a thing, with its label in the game's words", async () => {
