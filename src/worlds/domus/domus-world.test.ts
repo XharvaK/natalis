@@ -927,14 +927,13 @@ describe("game memory: she asks the game, the helper answers from its record", (
     expect(events.at(-1)).toMatchObject({ text: "The game did not answer about \"Brew Glimmer\".", source: "body", wake: false });
   });
 
-  it("withdraws her open question when the summoner's stop is on, and hands over nothing while it is on", async () => {
+  it("keeps her open question and hands it over while the summoner's stop is on: the stop refuses acts only (Q-j)", async () => {
     await attach();
     await askMemory("Brew Glimmer");
     writeStop(dir, "test");
     const reply = await sync();
-    expect(reply.body.memory).toEqual([]);
-    expect(events.at(-1)).toMatchObject({ text: "Your question to the game about \"Brew Glimmer\" was withdrawn: your summoner's emergency stop is on.", wake: false });
-    expect(await askMemory("Pim")).toMatchObject({ ok: false, refused: { code: "stopped" } });
+    expect(reply.body.memory).toEqual([expect.objectContaining({ about: "Brew Glimmer" })]);
+    expect(events.some((event) => String(event.text).includes("was withdrawn: your summoner's emergency stop is on"))).toBe(false);
   });
 
   it("refuses a second question on the same thread while one is open", async () => {

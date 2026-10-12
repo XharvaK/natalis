@@ -25,7 +25,6 @@ function context(overrides: Partial<NonNullable<MemoryContext>> = {}): MemoryCon
   return {
     db,
     nowMs: () => clock,
-    stopped: () => stopped,
     attachedSession: () => (attached ? HELPER : undefined),
     lastAttachedMs: () => clock - 1000,
     ...overrides,
@@ -86,16 +85,17 @@ describe("game_memory: she asks the game what it remembers", () => {
     expect(askedRows()).toEqual([expect.objectContaining({ thread: "cli:summoner", about: "Mara", status: "owed" })]);
   });
 
-  it("is refused while the world is not running, while the summoner's stop is on, and while the game is not attached", async () => {
+  it("is refused while the world is not running and while the game is not attached, and is still asked while the summoner's stop is on (Q-j: a read, not an act)", async () => {
     expect(await ask({ about: "Mara" }, () => null)).toMatchObject({ ok: false, refused: { code: "not_running" } });
     stopped = true;
-    expect(await ask({ about: "Mara" })).toMatchObject({ ok: false, refused: { code: "stopped" } });
+    // The question asked while the stop is on is kept (a read); the detached ask below adds none.
+    expect(await ask({ about: "Mara" })).toMatchObject({ ok: true });
     stopped = false;
     attached = false;
     const detached = await ask({ about: "Mara" });
     expect(detached).toMatchObject({ ok: false, refused: { code: "not_attached" } });
     expect(detached.refused?.reason).toContain("It was last attached at");
-    expect(askedRows()).toHaveLength(0);
+    expect(askedRows()).toHaveLength(1);
   });
 
   it("keeps one open question per thread, and a question on another thread is not blocked by it", async () => {

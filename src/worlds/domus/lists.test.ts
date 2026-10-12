@@ -267,6 +267,15 @@ describe("forgetting words reaches the new tables", () => {
   });
 });
 
+describe("the summoner's stop refuses acts only: the lists and the catalogue are still read (Q-j)", () => {
+  it("game_list answers while the stop is on, from the stored list", async () => {
+    storeList(db, { attachment: HELPER, kind: "people", digest: DIGEST, items: [{ ref: "p1", id: "1", name: "Test Friend" }], nowMs: clock });
+    const stoppedGame = () => ({ ...game(), stopped: () => true });
+    const receipt = await gameListTool(stoppedGame).run({ what: "people" }, { thread: "domus:slot3", turnId: "t", nowMs: clock } as ToolContext);
+    expect(receipt).toMatchObject({ ok: true });
+  });
+});
+
 describe("the game's lists and catalogue need the probe that answers them (NATALIS2-8)", () => {
   it("game_list refuses a probe older than 2.40.0 with the same words the verbs use, and asks nothing", async () => {
     const old = () => ({ ...game(), probeOf: () => "2.30.0" });

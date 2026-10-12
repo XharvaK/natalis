@@ -312,3 +312,16 @@ describe("the tool schemas (NATALIS2-9)", () => {
     expect(start).not.toHaveProperty("oneOf");
   });
 });
+
+describe("the summoner's stop refuses the verbs (Q-j)", () => {
+  it("refuses game_go, a save and a home edit while the stop is on, and asks nothing", async () => {
+    seedView([]);
+    const stoppedGame = (): GameContext => ({ ...game(), stopped: () => true });
+    const run = (name: string, args: Record<string, unknown>) => verbTools(stoppedGame).find((item) => item.spec.name === name)!
+      .run(args, { thread: THREAD, turnId: "t-stop", nowMs: clock } as ToolContext);
+    expect(await run("game_go", { place: "h1" })).toMatchObject({ ok: false, refused: { code: "stopped" } });
+    expect(await run("game_save", {})).toMatchObject({ ok: false, refused: { code: "stopped" } });
+    expect(await run("game_buy", { item: "c1", place: { on: "t9" } })).toMatchObject({ ok: false, refused: { code: "stopped" } });
+    expect(actRows()).toEqual([]);
+  });
+});

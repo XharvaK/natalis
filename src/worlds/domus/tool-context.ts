@@ -42,12 +42,12 @@ export function probeAtLeast(version: string | undefined, needed: string = PROBE
 }
 
 /**
- * The refusal that keeps a game tool from acting: the emergency stop, a game that is not attached, or (for a tool that sends a
- * probe command) a probe older than PROBE_NEEDED. Undefined when the tool may go on; the attached session is then
- * attachedSession(now).
+ * The refusal that keeps a game tool from acting: the emergency stop (it refuses acts only; a read passes with reads: true), a
+ * game that is not attached, or (for a tool that sends a probe command) a probe older than PROBE_NEEDED. Undefined when the
+ * tool may go on; the attached session is then attachedSession(now).
  */
-export function gameGate(game: NonNullable<GameContext>, options: { probe: boolean }): Receipt | undefined {
-  if (game.stopped()) return refused("stopped", "The summoner's emergency stop is on, so the game is not asked.");
+export function gameGate(game: NonNullable<GameContext>, options: { probe: boolean; reads?: boolean }): Receipt | undefined {
+  if (!options.reads && game.stopped()) return refused("stopped", "The summoner's emergency stop is on, so the game is not asked.");
   const nowMs = game.nowMs();
   const session = game.attachedSession(nowMs);
   if (session === undefined) {
