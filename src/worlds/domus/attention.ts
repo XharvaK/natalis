@@ -71,6 +71,8 @@ export function wakesFor(mode: AttentionMode, view: ViewFacts): boolean {
   if (view.percepts.some((item) => item.kind === "look")) return true;
   if (view.percepts.some((item) => item.kind === "env" && item.facts["bucket"] === "asked")) return true;
   if (heldForHer(view.portrait)) return true;
+  // A notice on her phone or a call held for her is hers to answer in every mode, at work too (W13).
+  if (view.percepts.some((item) => item.kind === "phone" && (item.facts["what"] === "notice" || item.facts["what"] === "call"))) return true;
   const atWork = atWorkNow(view.portrait);
   if (!atWork && view.percepts.some(isDistress)) return true;
   if (view.workEnded && needInDistress(view.portrait)) return true;

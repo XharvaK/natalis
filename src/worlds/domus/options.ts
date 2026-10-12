@@ -106,10 +106,15 @@ export function perceptSentence(percept: Percept): string | undefined {
   const facts = percept.facts;
   switch (percept.kind) {
     case "phone": {
-      // W13: a text or a call, by the name of the one who sent it (the game's name, never a guess).
-      const from = textOrUndefined(facts.from);
-      if (!from) return undefined;
-      return `${from} ${facts.kind === "call" ? "is calling you" : "texted you"}.`;
+      // W13: a notice on her phone (about a phone act of hers, when the game names it), or a call held for her, by the
+      // name of the caller (the game's name, never a guess).
+      const what = textOrUndefined(facts.what);
+      if (what === "notice") {
+        const act = textOrUndefined(facts.act);
+        return `Your phone shows a new notification.${act ? ` It is about: ${act}.` : ""}`;
+      }
+      if (what === "call") return `${textOrUndefined(facts.from) ?? "Someone"} is calling you.`;
+      return undefined;
     }
     case "need": {
       const subject = textOrUndefined(facts.subject);

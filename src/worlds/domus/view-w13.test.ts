@@ -30,9 +30,11 @@ describe("a visitor and a message", () => {
   it("says a visitor is waiting at her door, and a text or a call by the name of the sender", () => {
     const body = bodyLines({ company: [{ id: "7", name: "Test Visitor", waiting: true, distance_m: 3, heard: false }] });
     expect(body.join("\n")).toContain("With you: Test Visitor (3 m away, waiting at your door).");
-    expect(perceptSentence(percept("phone", { kind: "text", from: "Test Friend" }))).toBe("Test Friend texted you.");
-    expect(perceptSentence(percept("phone", { kind: "call", from: "Test Friend" }))).toBe("Test Friend is calling you.");
-    expect(perceptSentence(percept("phone", { kind: "call" }))).toBeUndefined();
+    expect(perceptSentence(percept("phone", { what: "call", from: "Test Friend" }))).toBe("Test Friend is calling you.");
+    expect(perceptSentence(percept("phone", { what: "call" }))).toBe("Someone is calling you.");
+    expect(perceptSentence(percept("phone", { what: "notice" }))).toBe("Your phone shows a new notification.");
+    expect(perceptSentence(percept("phone", { what: "notice", act: "Call Test Friend" }))).toBe("Your phone shows a new notification. It is about: Call Test Friend.");
+    expect(perceptSentence(percept("phone", { kind: "text", from: "Test Friend" }))).toBeUndefined();
   });
 });
 
@@ -103,9 +105,14 @@ describe("quiet at work", () => {
     expect(watch.ended("thread-c", free)).toBe(true);
   });
 
-  it("wakes her in when_called for a text or a call, as for being addressed", () => {
-    const phone = [percept("phone", { kind: "text", from: "Test Friend" })];
-    expect(wakesFor("when_called", { percepts: phone, portrait: undefined, dayRecord: false, firstAfterAttach: false })).toBe(true);
-    expect(wakesFor("quiet", { percepts: phone, portrait: undefined, dayRecord: false, firstAfterAttach: false })).toBe(false);
+  it("wakes her in every mode, at work too, for a phone notice or a call", () => {
+    const view = (percepts: Percept[], portrait: unknown) => ({ percepts, portrait, dayRecord: false, firstAfterAttach: false, workEnded: false });
+    const notice = [percept("phone", { what: "notice" })];
+    const call = [percept("phone", { what: "call", from: "Test Friend" })];
+    for (const mode of ["when_called", "quiet"] as const) {
+      expect(wakesFor(mode, view(notice, portraitWith({ at_work: true })))).toBe(true);
+      expect(wakesFor(mode, view(call, portraitWith({ at_work: true })))).toBe(true);
+      expect(wakesFor(mode, view(call, undefined))).toBe(true);
+    }
   });
 });
