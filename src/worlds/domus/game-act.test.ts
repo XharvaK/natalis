@@ -34,7 +34,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "domus-tool-"));
   db = openDomusDb(dir);
   seq = 0;
-  open = { db, nowMs: () => T0, attachedSession: () => HELPER, lastAttachedMs: () => T0 };
+  open = { db, nowMs: () => T0, attachedSession: () => HELPER, lastAttachedMs: () => T0, probeOf: () => "2.40.0" };
   tool = gameActTool(() => open);
 });
 
@@ -192,6 +192,15 @@ describe("game_act: requests", () => {
     view(VIEW);
     const receipt = await run({ option: "a1", then: ["a9"] });
     expect(receipt).toMatchObject({ ok: false, refused: { code: "unknown_option" } });
+    expect(acts()).toEqual([]);
+  });
+
+  it("refuses a Sim choice when the helper has not named its probe, and says so", async () => {
+    view([...VIEW, { object: "Test phone", object_id: "obj-phone", acts: [{ ref: "a5", guid64: "311", text: "Call Test Friend", needs_sim: true }] }]);
+    open = { db, nowMs: () => T0, attachedSession: () => HELPER, lastAttachedMs: () => T0, probeOf: () => undefined };
+    const receipt = await run({ option: "a5", sim: "p1" });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "probe_too_old" } });
+    expect(receipt.refused?.reason).toContain("has not said which probe it runs");
     expect(acts()).toEqual([]);
   });
 

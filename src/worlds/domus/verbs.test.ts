@@ -111,6 +111,20 @@ describe("game_go", () => {
     expect(JSON.parse(String(row?.args_json))).toEqual({ args: { zone_id: "9001" }, record: { summonerLastMessageMs: OWNER } });
   });
 
+  it("says the helper has not named its probe when the version is unknown, and asks nothing", async () => {
+    seedView([]);
+    probe = undefined;
+    const receipt = await call("game_go", { place: "h1" });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "probe_too_old" } });
+    expect(receipt.refused?.reason).toContain("has not said which probe it runs");
+    expect(actRows()).toEqual([]);
+    probe = "2.40.0";
+  });
+
+  it("words the save floor as the last save the game did not refuse", () => {
+    expect(tool("game_save").spec.description).toContain("within 15 minutes of your last save that was not refused");
+  });
+
   it("refuses a probe older than 2.40.0, and a place that is not in the list", async () => {
     seedView([]);
     probe = "2.39.0";

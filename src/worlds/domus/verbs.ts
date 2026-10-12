@@ -165,7 +165,7 @@ const VERBS: VerbDef[] = [
   },
   {
     tool: "game_save",
-    description: "Save the game now. It is your one act for the turn. Refused within 15 minutes of your last save that the game took.",
+    description: "Save the game now. It is your one act for the turn. Refused within 15 minutes of your last save that was not refused.",
     properties: {},
     required: [],
     keys: [],

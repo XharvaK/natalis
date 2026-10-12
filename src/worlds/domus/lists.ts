@@ -36,6 +36,7 @@ export function storeList(db: DatabaseSync, input: { attachment: string; kind: L
   const before = input.nowMs - LISTS_KEEP_MS;
   db.prepare("DELETE FROM lists WHERE attachment != ? AND at_ms < ?").run(input.attachment, before);
   db.prepare("DELETE FROM catalog_seen WHERE attachment != ? AND at_ms < ?").run(input.attachment, before);
+  db.prepare("DELETE FROM catalog_asks WHERE status NOT IN ('owed', 'handed') AND requested_at_ms < ?").run(before);
 }
 
 /** The lists a helper session holds, by kind and digest: what the sync answer says, so the helper resends only what changed. */

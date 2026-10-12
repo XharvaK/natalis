@@ -57,6 +57,13 @@ describe("the lists the helper sends", () => {
     expect(readList(db, HELPER, "people")).toBeDefined();
   });
 
+  it("lets go of a settled catalogue ask a week after it was asked, and keeps one still open", () => {
+    db.prepare("INSERT INTO catalog_asks (ask_id, thread, about, status, requested_at_ms) VALUES ('old-ask', 'domus:slot3', 'Test Shelf', 'answered', ?)").run(clock);
+    db.prepare("INSERT INTO catalog_asks (ask_id, thread, about, status, requested_at_ms) VALUES ('open-ask', 'domus:slot3', 'Test Lamp', 'owed', ?)").run(clock);
+    storeList(db, { attachment: HELPER, kind: "people", digest: DIGEST, items: [], nowMs: clock + LISTS_KEEP_MS + 1 });
+    expect(db.prepare("SELECT ask_id FROM catalog_asks ORDER BY ask_id").all()).toEqual([{ ask_id: "open-ask" }]);
+  });
+
   it("keeps the newest list per session and kind, and reports its digest in the sync answer", () => {
     storeList(db, { attachment: HELPER, kind: "people", digest: DIGEST, items: [{ ref: "p1", id: "1", name: "Ana Example" }], nowMs: clock });
     storeList(db, { attachment: HELPER, kind: "people", digest: "b".repeat(64), items: [{ ref: "p2", id: "2", name: "Ben Example" }], nowMs: clock + 1 });
@@ -74,6 +81,8 @@ describe("the lists the helper sends", () => {
     expect(() => parseLists(body({ digest: "xyz" }))).toThrow();
     expect(() => parseLists(body({ items: [{ ref: "h1", id: "9001", name: "Test Park", kind: "castle" }] }))).toThrow();
     expect(() => parseLists(body({ items: [{ ref: "h1", id: "9001", name: "Test Park", kind: "venue", secret: 1 }] }))).toThrow();
+    // NATALIS-16: a ref repeated in one list is refused, since only the first of two items with it could ever be named.
+    expect(() => parseLists(body({ items: [{ ref: "h1", id: "9001", name: "Test Park", kind: "venue" }, { ref: "h1", id: "9002", name: "Test Flat", kind: "home" }] }))).toThrow();
     expect(() => parseLists(body({ items: Array.from({ length: 121 }, (_, i) => ({ ref: "h1", id: String(i), name: "x", kind: "venue" })) }))).toThrow();
   });
 });
@@ -238,5 +247,13 @@ describe("forgetting words reaches the new tables", () => {
     expect(listDigests(db, HELPER)).toEqual({});
     expect(forgetText(db, ["lamp shade"])).toBe(1);
     expect(db.prepare("SELECT name FROM catalog_seen WHERE ref = 'c1'").get()).toEqual({ name: FORGOTTEN_LINE });
+  });
+
+  it("erases the room a catalogue ask named, for asks written before the room was dropped", async () => {
+    const { forgetText } = await import("./store.js");
+    const { FORGOTTEN_LINE } = await import("../../notebook/forget.js");
+    db.prepare("INSERT INTO catalog_asks (ask_id, thread, about, status, requested_at_ms, room) VALUES ('ask-f', 'domus:slot3', 'Test Shelf', 'answered', ?, 'Test Kitchen')").run(clock);
+    expect(forgetText(db, ["test kitchen"])).toBe(1);
+    expect(db.prepare("SELECT room FROM catalog_asks WHERE ask_id = 'ask-f'").get()).toEqual({ room: FORGOTTEN_LINE });
   });
 });

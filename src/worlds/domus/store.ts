@@ -381,7 +381,7 @@ const FORGET_TABLES: ReadonlyArray<{ table: string; columns: readonly ForgetColu
   { table: "overlay_lines", columns: [{ name: "line", json: false, erased: FORGOTTEN_LINE }] },
   { table: "memory_asks", columns: [{ name: "about", json: false, erased: FORGOTTEN_LINE }] },
   { table: "lists", columns: [{ name: "items_json", json: true, erased: "[]" }], deleteRow: true },
-  { table: "catalog_asks", columns: [{ name: "about", json: false, erased: FORGOTTEN_LINE }] },
+  { table: "catalog_asks", columns: [{ name: "about", json: false, erased: FORGOTTEN_LINE }, { name: "room", json: false, erased: FORGOTTEN_LINE }] },
   { table: "catalog_seen", columns: [{ name: "name", json: false, erased: FORGOTTEN_LINE }] },
 ];
 

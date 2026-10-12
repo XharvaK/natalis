@@ -24,7 +24,7 @@ export const WORDS_MAX = 240;
 export type GameActContext = {
   db: DatabaseSync; nowMs: () => number; attachedSession: (nowMs: number) => string | undefined; lastAttachedMs: () => number | undefined;
   /** The probe version a helper session named (a Sim picker needs probe 2.40.0). */
-  probeOf?: (session: string) => string | undefined;
+  probeOf: (session: string) => string | undefined;
 } | null;
 
 function refused(code: string, reason: string, summary: string = reason): Receipt {
@@ -208,8 +208,11 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
   }
   let person: { id: string; name: string } | undefined;
   if (typeof sim === "string") {
-    if (game.probeOf && !probeAtLeast(game.probeOf(attached))) {
-      return refused("probe_too_old", `Choosing a Sim needs the game's helper at probe ${PROBE_NEEDED} or later, and it is not. Nothing was requested.`);
+    if (!probeAtLeast(game.probeOf(attached))) {
+      const named = game.probeOf(attached) !== undefined;
+      return refused("probe_too_old", named
+        ? `Choosing a Sim needs the game's helper at probe ${PROBE_NEEDED} or later, and it is not. Nothing was requested.`
+        : "The game's helper has not said which probe it runs, so a Sim choice is not requested. Nothing was requested.");
     }
     const found = findListed(game.db, listedSession(game.db, attached), "people", sim);
     if (!found) return staleRef(sim, "game_list people");

@@ -502,11 +502,14 @@ export function parseLists(body: unknown): ParsedLists {
   const listKind = kind as ListKind;
   const digest = textOf(body.digest, 64, 64, /^[0-9a-f]{64}$/);
   if (!Array.isArray(body.items) || body.items.length > LIST_ITEMS_MAX[listKind]) fail(400, "invalid_body");
+  const items = body.items.map((item) => listItem(listKind, item));
+  // Two items under one ref would leave the second unreachable, so a list that repeats a ref is refused.
+  if (new Set(items.map((item) => item.ref)).size !== items.length) fail(400, "invalid_body");
   return {
     helperSession: textOf(body.helper_session, 1, 64),
     kind: listKind,
     digest,
-    items: body.items.map((item) => listItem(listKind, item)),
+    items,
   };
 }
 

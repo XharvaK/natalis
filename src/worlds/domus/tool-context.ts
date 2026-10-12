@@ -56,6 +56,9 @@ export function gameGate(game: NonNullable<GameContext>, options: { probe: boole
     return refused("not_attached", `The game is not attached, so nothing was asked. ${when}`);
   }
   if (options.probe && !probeAtLeast(game.probeOf(session))) {
+    if (game.probeOf(session) === undefined) {
+      return refused("probe_too_old", "The game's helper has not said which probe it runs, so this is not asked. Nothing was asked.");
+    }
     return refused("probe_too_old", `The game's helper must run probe ${PROBE_NEEDED} or later for this, and it does not. Nothing was asked.`);
   }
   return undefined;
