@@ -56,9 +56,9 @@ describe("her body now", () => {
     expect(lines).toContain("Moodlets: Feeling flirty; tipsy.");
   });
 
-  it("says needs as feelings, the worst first, at most two, and never as a number or a level word", () => {
+  it("says every felt need, the worst first, and never as a number or a level word", () => {
     const lines = bodyLines(BUSY);
-    expect(lines).toContain("You're desperately lonely. You're getting tired.");
+    expect(lines).toContain("You're desperately lonely. You're getting tired. You'll need the toilet soon.");
     const text = lines.join("\n");
     expect(text).not.toContain("Needs:");
     expect(text).not.toMatch(/\b(very low|low|fine|full)\b/);
@@ -114,9 +114,9 @@ describe("her body now", () => {
     expect(bodyLines({}).join("\n")).not.toContain("Nothing is bothering you.");
   });
 
-  it("says two needs at most, worst first, and the less bad one stays out", () => {
+  it("says every felt need, worst first", () => {
     const lines = bodyLines({ needs: { hunger: { value: 30 }, energy: { value: 10 }, bladder: { value: 5 } } });
-    expect(lines).toContain("You're about to wet yourself. You're exhausted.");
+    expect(lines).toContain("You're about to wet yourself. You're exhausted. You're hungry.");
   });
 
   it("names who is with her, the sounds she hears, and who is talking to her", () => {

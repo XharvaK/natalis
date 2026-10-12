@@ -97,9 +97,6 @@ const OTHER_NEED_FEELINGS: readonly [string, string, string, string] = [
   "is about to give out.",
 ];
 
-/** How many needs the block feels at most; the worst come first. */
-const NEEDS_FELT_MAX = 2;
-
 /** The grade of a need by its value (0 to 100); undefined at 60 or more. */
 export function needGradeOfValue(value: number): NeedGrade | undefined {
   if (value >= 60) return undefined;
@@ -125,7 +122,7 @@ export function needFeeling(id: string, grade: NeedGrade): string {
 }
 
 /**
- * The needs as feelings: the worst needs below 60 first, at most two, each in its words. With none below 60, "Nothing is
+ * The needs as feelings: every need below 60, the worst first, each in its words. With none below 60, "Nothing is
  * bothering you." A need's value grades it; its band grades it when the value is not there.
  */
 function needsLine(needs: Record_ | undefined): string | undefined {
@@ -146,7 +143,7 @@ function needsLine(needs: Record_ | undefined): string | undefined {
   if (known === 0) return undefined;
   if (felt.length === 0) return "Nothing is bothering you.";
   felt.sort((a, b) => b.grade - a.grade || (a.value ?? 0) - (b.value ?? 0));
-  return felt.slice(0, NEEDS_FELT_MAX).map((item) => needFeeling(item.id, item.grade)).join(" ");
+  return felt.map((item) => needFeeling(item.id, item.grade)).join(" ");
 }
 
 /**

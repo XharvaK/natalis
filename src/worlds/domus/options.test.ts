@@ -389,7 +389,7 @@ describe("an option object's refusals, states and left-out acts (T3, T2)", () =>
   it("renders the states and the reasons as indented lines under the object, in that order", () => {
     const text = renderView({ world: "slot3", percepts: [], options: [KETTLE] });
     expect(text).toContain(
-      "- Test kettle: a1 Boil water\n  States: dirty, broken.\n  Boil water: refused: the water is off\n  Left out of your phone: Call Test Friend (it is not on your phone list).",
+      "- Test kettle: a1 Boil water\n  States: dirty, broken.\n  Boil water: refused: the water is off\n  Left out: Call Test Friend (it is not on your phone list).",
     );
   });
 
@@ -403,16 +403,19 @@ describe("an option object's refusals, states and left-out acts (T3, T2)", () =>
     expect(one).toContain("  1 more act the game does not offer here now.");
   });
 
-  it("groups her phone's left-out acts into one line by reason, with the plain reason in brackets", () => {
+  it("groups the left-out acts into one line by reason, naming a small group and counting a large one", () => {
     const text = renderView({
       world: "slot3",
       percepts: [],
       options: [{
         object: "Test phone", object_id: "obj-phone", near: true, acts: [{ ref: "a1", guid64: "1", text: "Call Mara" }],
-        left_out: ["8: left out: it takes you off the lot", "72: left out: a debug or cheat act", "9: left out: it takes you off the lot"],
+        left_out: [
+          "Ask on Date: left out: it takes you off the lot", "Test Cheat 1: left out: a debug or cheat act", "Hang Out: left out: it takes you off the lot",
+          ...[2, 3, 4, 5, 6].map((n) => `Test Cheat ${n}: left out: a debug or cheat act`),
+        ],
       }],
     });
-    expect(text).toContain("  Left out of your phone: 8, 9 (it takes you off the lot), 72 (a debug or cheat act).");
+    expect(text).toContain("  Left out: Ask on Date, Hang Out (it takes you off the lot); 6 acts (a debug or cheat act).");
   });
 
   it("adds the states, the refusals and the left-out acts to the choices, so a change lists them again", () => {

@@ -328,10 +328,12 @@ function isQueue(object: OptionObject): boolean {
 const NO_REASON = ": refused: no reason given";
 /** The helper's words for an act left out of the menu: "<act>: left out: <reason>". */
 const LEFT_OUT = /^(.*?): left out: (.*)$/;
+/** The most acts of one left-out reason the view names; more are said as a count. */
+const LEFT_OUT_NAMED_MAX = 5;
 
 /**
  * The refusals and left-out acts of one object, in plain words. A refusal with a reason stays word for word. The refusals
- * the game gave no reason for become one count line. The left-out acts of her phone become one line, grouped by reason.
+ * the game gave no reason for become one count line. The left-out acts become one line, grouped by reason.
  */
 function awayLines(refused: readonly string[], leftOut: readonly string[]): string[] {
   const groups = new Map<string, string[]>();
@@ -354,8 +356,9 @@ function awayLines(refused: readonly string[], leftOut: readonly string[]): stri
     lines.push(`${withoutReason} more ${withoutReason === 1 ? "act" : "acts"} the game does not offer here now.`);
   }
   if (groups.size) {
-    const parts = [...groups].map(([reason, acts]) => `${acts.join(", ")} (${reason})`);
-    lines.push(`Left out of your phone: ${parts.join(", ")}.`);
+    // A small group names its acts; a large one is said as a count, so a long list of cheat acts does not fill the view.
+    const parts = [...groups].map(([reason, acts]) => `${acts.length <= LEFT_OUT_NAMED_MAX ? acts.join(", ") : `${acts.length} acts`} (${reason})`);
+    lines.push(`Left out: ${parts.join("; ")}.`);
   }
   return lines;
 }
