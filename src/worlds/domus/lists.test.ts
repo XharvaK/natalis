@@ -224,7 +224,9 @@ describe("forgetting words reaches the new tables", () => {
     storeList(db, { attachment: HELPER, kind: "places", digest: DIGEST, nowMs: clock, items: [{ ref: "h1", id: "9001", name: "Test Park", kind: "venue" }] });
     db.prepare("INSERT INTO catalog_seen (attachment, ref, definition_id, name, price, at_ms) VALUES (?, 'c1', 'def-1', 'Test Lamp Shade', 80, ?)").run(HELPER, clock);
     expect(forgetText(db, ["test park"])).toBe(1);
-    expect(readList(db, HELPER, "places")?.items).toEqual([]);
+    // The list row goes, so the sync answer no longer holds its digest and the helper sends the game's list again.
+    expect(readList(db, HELPER, "places")).toBeUndefined();
+    expect(listDigests(db, HELPER)).toEqual({});
     expect(forgetText(db, ["lamp shade"])).toBe(1);
     expect(db.prepare("SELECT name FROM catalog_seen WHERE ref = 'c1'").get()).toEqual({ name: FORGOTTEN_LINE });
   });

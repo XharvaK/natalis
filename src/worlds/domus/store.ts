@@ -362,8 +362,11 @@ export function markSpanUndoneIn(db: DatabaseSync, span: UndoSpan, nowMs: number
 
 type ForgetColumn = { name: string; json: boolean; erased: string };
 
-/** Every table that keeps game or Lar text, its text columns, and what a forgotten cell holds instead. */
-const FORGET_TABLES: ReadonlyArray<{ table: string; columns: readonly ForgetColumn[] }> = [
+/**
+ * Every table that keeps game or Lar text, its text columns, and what a forgotten cell holds instead. A table with
+ * deleteRow loses the whole row: a list the game sent is sent again by the helper, so its digest must go with it.
+ */
+const FORGET_TABLES: ReadonlyArray<{ table: string; columns: readonly ForgetColumn[]; deleteRow?: true }> = [
   { table: "observations", columns: [{ name: "payload_json", json: true, erased: "{}" }] },
   {
     table: "acts",
@@ -377,7 +380,7 @@ const FORGET_TABLES: ReadonlyArray<{ table: string; columns: readonly ForgetColu
   { table: "undos", columns: [{ name: "reason", json: false, erased: FORGOTTEN_LINE }] },
   { table: "overlay_lines", columns: [{ name: "line", json: false, erased: FORGOTTEN_LINE }] },
   { table: "memory_asks", columns: [{ name: "about", json: false, erased: FORGOTTEN_LINE }] },
-  { table: "lists", columns: [{ name: "items_json", json: true, erased: "[]" }] },
+  { table: "lists", columns: [{ name: "items_json", json: true, erased: "[]" }], deleteRow: true },
   { table: "catalog_asks", columns: [{ name: "about", json: false, erased: FORGOTTEN_LINE }] },
   { table: "catalog_seen", columns: [{ name: "name", json: false, erased: FORGOTTEN_LINE }] },
 ];
@@ -451,8 +454,12 @@ export function forgetText(db: DatabaseSync, words: readonly string[]): number {
         if (live.length === 0) continue;
         const haystack = foldForget(live.map((column) => searchableCell(String(row[column.name]), column.json)).join("\n"));
         if (!wanted.every((word) => haystack.includes(word))) continue;
-        const sets = live.map((column) => `${column.name} = ?`).join(", ");
-        db.prepare(`UPDATE ${spec.table} SET ${sets} WHERE rowid = ?`).run(...live.map((column) => column.erased), row.rid as number);
+        if (spec.deleteRow) {
+          db.prepare(`DELETE FROM ${spec.table} WHERE rowid = ?`).run(row.rid as number);
+        } else {
+          const sets = live.map((column) => `${column.name} = ?`).join(", ");
+          db.prepare(`UPDATE ${spec.table} SET ${sets} WHERE rowid = ?`).run(...live.map((column) => column.erased), row.rid as number);
+        }
         withdrawForgotten(db, spec.table, row.rid as number, Date.now());
         erased += 1;
       }
