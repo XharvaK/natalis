@@ -457,12 +457,12 @@ describe("the owner's asks", () => {
 
     cli.send("Still there?");
     await entity.idle();
-    const system = systemTextOf(model.requests[1]);
-    expect(system).toContain("Open asks");
+    const user = userTextOf(model.requests[1]);
+    expect(user).toContain("Open asks");
     // Two messages wait in one place: two asks in the state, one line on the board.
     expect(readStateFile().asks).toHaveLength(2);
-    expect(system.match(/- cli:summoner, asked/g)).toHaveLength(1);
-    expect(system).toContain("(2 messages waiting)");
+    expect(user.match(/- cli:summoner, asked/g)).toHaveLength(1);
+    expect(user).toContain("(2 messages waiting)");
   });
 
   it("is cleared by let_go, which leaves a note in the river", async () => {
@@ -833,7 +833,7 @@ describe("what the Lar sends and what it is shown", () => {
     cli.send("Second.");
     await entity.idle();
 
-    const board = systemTextOf(model.requests[1]);
+    const board = userTextOf(model.requests[1]);
     expect(board).toContain("Tokens today: 1500000 in total, as the provider reported them (prompt 1000000, completion 500000).");
     expect(board).toContain("Cost today: 4.0000 at the prices in your model config.");
     expect(board).toContain("Cache hits today: 700 prompt token(s), as the provider reported them.");
@@ -852,7 +852,7 @@ describe("what the Lar sends and what it is shown", () => {
     cli.send("Still with me?");
     await entity.idle();
 
-    expect(systemTextOf(model.requests[2])).toContain("Your mood: quiet and curious.");
+    expect(userTextOf(model.requests[2])).toContain("Your mood: quiet and curious.");
     expect(readStateFile().mood).toBe("quiet and curious");
   });
 
@@ -871,10 +871,10 @@ describe("what the Lar sends and what it is shown", () => {
     room.push("fake:room", "A passer-by says hi.");
     await entity.idle();
 
-    const system = systemTextOf(model.requests[2]);
-    expect(system).toContain("- cli:summoner, ");
-    expect(system).toContain('last said: "Hello from the command line."');
-    expect(system).toContain("- fake: fake is open.");
+    const user = userTextOf(model.requests[2]);
+    expect(user).toContain("- cli:summoner, ");
+    expect(user).toContain('last said: "Hello from the command line."');
+    expect(user).toContain("- fake: fake is open.");
   });
 
   it("recalls an older row from another thread when the new words match it", async () => {
@@ -888,9 +888,9 @@ describe("what the Lar sends and what it is shown", () => {
     cli.send("Where is the lighthouse?");
     await entity.idle();
 
-    const system = systemTextOf(model.requests[1]);
-    expect(system).toContain("## recall");
-    expect(system).toContain("fake:room mara] The lighthouse at the point is my favourite place.");
+    const user = userTextOf(model.requests[1]);
+    expect(user).toContain("## recall");
+    expect(user).toContain("fake:room mara] The lighthouse at the point is my favourite place.");
   });
 
   it("lets a later turn recall an earlier receipt, and shows the start of what the tool returned", async () => {
@@ -908,10 +908,10 @@ describe("what the Lar sends and what it is shown", () => {
     cli.send("Where is the lighthouse?");
     await entity.idle();
 
-    const system = systemTextOf(model.requests[1]);
-    expect(system).toContain("## recall");
-    expect(system).toContain("Read places/lighthouse.md.");
-    expect(system).toContain("The lighthouse keeper lives at the point.");
+    const user = userTextOf(model.requests[1]);
+    expect(user).toContain("## recall");
+    expect(user).toContain("Read places/lighthouse.md.");
+    expect(user).toContain("The lighthouse keeper lives at the point.");
   });
 });
 
@@ -1055,7 +1055,7 @@ describe("the owner's privacy list", () => {
 
     const system = systemTextOf(model.requests[0]);
     expect(system).toContain("You are someone, not a service.");
-    expect(system).toContain("Body note: nature.md could not be read (the file could not be read), so the default nature is in use.");
+    expect(userTextOf(model.requests[0])).toContain("Body note: nature.md could not be read (the file could not be read), so the default nature is in use.");
   });
 
   it("treats a privacy file that is not JSON as damaged, and says so on the now board", async () => {
@@ -1068,7 +1068,7 @@ describe("the owner's privacy list", () => {
     await entity.idle();
 
     const system = systemTextOf(model.requests[0]);
-    expect(system).toContain("Body note: your summoner's privacy list cannot be read, so nothing leaves until it is fixed");
+    expect(userTextOf(model.requests[0])).toContain("Body note: your summoner's privacy list cannot be read, so nothing leaves until it is fixed");
     expect(system).toContain("No categories are on the list right now.");
   });
 
@@ -1412,7 +1412,7 @@ describe("place claims", () => {
     await entity.idle();
 
     expect(room.said).toEqual(["Hello from the owner's side.", "Hello back."]);
-    const board = systemTextOf(model.requests[2]);
+    const board = userTextOf(model.requests[2]);
     expect(board).toMatch(/- fake:room: thread cli:summoner spoke \d+ s ago: "Hello from the owner's side\."/);
     const shown = receiptsShownIn(model.requests[3]).find((item) => item["ok"] === true);
     expect(shown).toMatchObject({ data: { othersSpokeHere: { thread: "cli:summoner" } } });
@@ -1582,14 +1582,14 @@ describe("the owner's emergency stop", () => {
     writeFileSync(file, "Too much noise.\n", "utf8");
     cli.send("First.");
     await entity.idle();
-    expect(systemTextOf(model.requests[0])).toContain(
+    expect(userTextOf(model.requests[0])).toContain(
       "EMERGENCY STOP: your summoner has paused outward acts: Too much noise.",
     );
 
     unlinkSync(file);
     cli.send("Second.");
     await entity.idle();
-    expect(systemTextOf(model.requests[1])).not.toContain("EMERGENCY STOP");
+    expect(userTextOf(model.requests[1])).not.toContain("EMERGENCY STOP");
 
     const selfRows = allRows(entity).filter((row) => row.thread === "self" && row.kind === "event");
     expect(selfRows.map((row) => row.text)).toEqual([
@@ -1832,7 +1832,7 @@ describe("commitments the Lar proposes", () => {
 
     cli.send("Again.");
     await entity.idle();
-    const board = systemTextOf(model.requests[2]);
+    const board = userTextOf(model.requests[2]);
     expect(board).toContain("Commitments you proposed, waiting for your summoner:");
     expect(board).toContain(`- ${id}: Commitment 0`);
   });
@@ -1907,12 +1907,12 @@ describe("the summoner's commands", () => {
     room.push("fake:room", "Hello room.");
     await entity.idle();
     expect(model.requests).toHaveLength(1);
-    expect(systemTextOf(model.requests[0])).not.toContain("example.org");
+    expect(userTextOf(model.requests[0])).not.toContain("example.org");
 
     cli.send("Hello.");
     await entity.idle();
     expect(model.requests).toHaveLength(2);
-    expect(systemTextOf(model.requests[1])).toContain("example.org");
+    expect(userTextOf(model.requests[1])).toContain("example.org");
   });
 
   it("says how many older acts the board left out when more than twenty wait", async () => {
@@ -1925,10 +1925,10 @@ describe("the summoner's commands", () => {
     cli.send("Hello.");
     await entity.idle();
 
-    const system = systemTextOf(model.requests[0]);
-    expect(system).toContain("gate-22");
-    expect(system).not.toContain("gate-1,");
-    expect(system).toContain("- 2 older ones were left out.");
+    const user = userTextOf(model.requests[0]);
+    expect(user).toContain("gate-22");
+    expect(user).not.toContain("gate-1,");
+    expect(user).toContain("- 2 older ones were left out.");
   });
 
   it("writes the household line, and the Lar sees what the summoner did on its next turn, once", async () => {
@@ -1943,13 +1943,14 @@ describe("the summoner's commands", () => {
     cli.send("Hello.");
     await entity.idle();
     const first = systemTextOf(model.requests[0]);
-    expect(first).toContain("Your summoner did these since your last turn (body notes):");
-    expect(first).toContain("Your summoner added a line to your household note: Mara grows beans.");
+    const firstUser = userTextOf(model.requests[0]);
+    expect(firstUser).toContain("Your summoner did these since your last turn (body notes):");
+    expect(firstUser).toContain("Your summoner added a line to your household note: Mara grows beans.");
     expect(first).toContain("- Mara grows beans.");
 
     cli.send("Hello again.");
     await entity.idle();
-    expect(systemTextOf(model.requests[1])).not.toContain("Your summoner did these since your last turn");
+    expect(userTextOf(model.requests[1])).not.toContain("Your summoner did these since your last turn");
   });
 
   it("removes a household line by number, and says so in the answer", async () => {
@@ -2004,7 +2005,7 @@ describe("the summoner's commands", () => {
 
     expect(readStateJson().proposals).toEqual([]);
     expect(entity.notebook.read("self/constitution.md")).toBe(COMMITMENTS_STUB);
-    expect(systemTextOf(model.requests[2])).toContain(
+    expect(userTextOf(model.requests[2])).toContain(
       `Your summoner declined your proposed commitment ${id}: I keep my promises. Reason: Not yet.`,
     );
   });
@@ -2065,7 +2066,7 @@ describe("the daily turn limit", () => {
     cli.send("First.");
     await entity.idle();
     expect(model.requests).toHaveLength(1);
-    expect(systemTextOf(model.requests[0])).toContain("Turns today: 1 of 1.");
+    expect(userTextOf(model.requests[0])).toContain("Turns today: 1 of 1.");
 
     now += 60_000;
     cli.send("Second.");
@@ -2085,7 +2086,7 @@ describe("the daily turn limit", () => {
     expect(model.requests).toHaveLength(2);
     expect(userTextOf(model.requests[1])).toContain("Second.");
     expect(userTextOf(model.requests[1])).toContain("Fourth.");
-    expect(systemTextOf(model.requests[1])).toContain("Turns today: 1 of 1.");
+    expect(userTextOf(model.requests[1])).toContain("Turns today: 1 of 1.");
   });
 
   it("tells only the summoner's own places about the limit, never a room where a message waits", async () => {
@@ -2240,7 +2241,7 @@ describe("repeating wakes", () => {
     // The board is read at the start of each turn, so the rhythm shows on the next one.
     cli.send("Anything else today?");
     await entity.idle();
-    expect(systemTextOf(model.requests[2])).toContain("Next wakes: 09:00 daily (next 2026-10-12 09:00): look at the garden.");
+    expect(userTextOf(model.requests[2])).toContain("Next wakes: 09:00 daily (next 2026-10-12 09:00): look at the garden.");
   });
 
   it("ends a series when cancel_wake names its id", async () => {
@@ -2697,17 +2698,19 @@ describe("what a turn says it leaves out", () => {
   }
 
   it("says how many older rows of its thread the turn leaves out, before the rows it shows", async () => {
-    const user = await twoTurns(35, 3);
-    expect(user).toContain("Recent here:\n(6 older messages here are not shown; recall finds them.)\n[");
-    expect(user).toContain("Quiet line 7.");
-    expect(user).not.toContain("Quiet line 6.");
+    // 46 rows in the thread: the window starts on a page boundary, so the first ten are left out and 36 are shown.
+    const user = await twoTurns(45, 3);
+    expect(user).toContain("Recent here:\n(10 older messages here are not shown; recall finds them.)\n[");
+    expect(user).toContain("Quiet line 11.");
+    expect(user).not.toContain("Quiet line 10.");
     expect(user).not.toContain("Cellar");
     expect(user).toContain("Second.");
   });
 
-  it("says one older message in the singular", async () => {
+  it("leaves nothing out of a thread of thirty-one rows, since the window holds up to thirty-nine", async () => {
     const user = await twoTurns(30, 0);
-    expect(user).toContain("Recent here:\n(1 older message here is not shown; recall finds it.)\n[");
+    expect(user).not.toContain("not shown");
+    expect(user).toContain("Quiet line 1.");
   });
 
   it("says nothing about older rows when the turn shows them all", async () => {
@@ -2785,5 +2788,174 @@ describe("who is thinking", () => {
     await entity.idle();
     expect(systemTextOf(gameModel.requests[0])).toContain("You are thinking with fast at low effort.");
     expect(systemTextOf(main.requests[0])).toContain("You are thinking with scripted at high effort.");
+  });
+});
+
+describe("cache order: the slow sections first, then the rows that change", () => {
+  /** A world the test feeds one event at a time. Each event may wake the Lar. */
+  function feedWorld(id: string): { world: World; emit(event: WorldEvent): void } {
+    let emitter: ((event: WorldEvent) => void) | undefined;
+    return {
+      world: {
+        id,
+        async start(next) {
+          emitter = next;
+        },
+        async stop() {
+          emitter = undefined;
+        },
+        async say(): Promise<Receipt> {
+          return { ok: true, summary: "Delivered." };
+        },
+        tools: () => [],
+        now: () => `${id} is open.`,
+      },
+      emit(event) {
+        if (emitter === undefined) throw new Error("the feed world is not started");
+        emitter(event);
+      },
+    };
+  }
+
+  const HALL = "fake:hall";
+  const GAME = "fake:game";
+
+  /** The user message up to the blank line before New: the part that stays the same while a page lasts. */
+  function stableOf(user: string): string {
+    return user.slice(0, user.indexOf("\n\nNew:"));
+  }
+
+  /** The "[clock who] text" lines of the Recent block. */
+  function recentRowsOf(user: string): string[] {
+    return user
+      .slice(user.indexOf("Recent here:"), user.indexOf("\n\nNew:"))
+      .split("\n")
+      .filter((line) => line.startsWith("["));
+  }
+
+  /** The text of every row line in Recent, New and the current view blocks (not the now board or recall). */
+  function eventTextsOf(user: string): string[] {
+    return user
+      .slice(user.indexOf("Recent here:"), user.indexOf("## now"))
+      .split("\n")
+      .filter((line) => line.startsWith("["))
+      .map((line) => line.replace(/^\[[^\]]*\] /, ""));
+  }
+
+  /**
+   * One turn per batch: a batch's rows arrive together, its last row wakes the Lar, and the turn runs before the next batch.
+   * `overrides` replaces the text of a row, numbered from 1 across all batches.
+   */
+  async function runBatches(counts: number[], overrides: Record<number, string> = {}): Promise<{ users: string[]; systems: string[] }> {
+    const model = new ScriptedModel(counts.map(() => reply({ toolCalls: [call("end_turn")] })));
+    const hall = feedWorld("fake");
+    const { entity } = await open(model, {}, [hall.world]);
+    await entity.start();
+    let n = 0;
+    for (const count of counts) {
+      for (let i = 1; i <= count; i += 1) {
+        n += 1;
+        hall.emit({
+          world: "fake",
+          place: HALL,
+          actor: "mara",
+          source: "outside",
+          text: overrides[n] ?? `Hall line ${n}.`,
+          wake: i === count,
+        });
+      }
+      await entity.idle();
+    }
+    expect(model.requests).toHaveLength(counts.length);
+    return { users: model.requests.map(userTextOf), systems: model.requests.map(systemTextOf) };
+  }
+
+  it("holds the slow sections in the system text, and puts the new rows before the now board, time and recall", async () => {
+    const { users, systems } = await runBatches([40, 1], { 1: "The lighthouse keeper waves.", 41: "The lighthouse lamp is lit." });
+    const user = users[1] ?? "";
+    const system = systems[1] ?? "";
+
+    let last = -1;
+    for (const heading of ["## who you are", "## how you act", "## pictures", "## constitution", "## character", "## your life", "## privacy list", "## index"]) {
+      const at = system.indexOf(heading);
+      expect(at, heading).toBeGreaterThan(last);
+      last = at;
+    }
+    for (const heading of ["## now", "## time", "## recall"]) expect(system).not.toContain(heading);
+
+    expect(user.startsWith("Order of this message")).toBe(true);
+    expect(user.match(/come after the new rows/g)).toHaveLength(1);
+    const order = ["Recent here:", "New:", "## now", "## time", "## recall"].map((heading) => user.indexOf(heading));
+    order.forEach((at, i) => {
+      expect(at).toBeGreaterThan(-1);
+      if (i > 0) expect(at).toBeGreaterThan(order[i - 1] ?? -1);
+    });
+    expect(user.slice(user.indexOf("## recall"))).toContain("The lighthouse keeper waves.");
+  });
+
+  it("keeps the start of the prompt byte-stable across two turns in one page, when only new rows arrive", async () => {
+    const { users, systems } = await runBatches([10, 29, 2]);
+    expect(recentRowsOf(users[1] ?? "")).toHaveLength(10);
+    expect(recentRowsOf(users[2] ?? "")).toHaveLength(39);
+    expect(users[2]?.startsWith(stableOf(users[1] ?? ""))).toBe(true);
+    expect(systems[2]).toBe(systems[1]);
+  });
+
+  it("changes the start of the prompt at a page boundary, where the oldest shown row moves on by a page", async () => {
+    const { users, systems } = await runBatches([10, 29, 2, 1]);
+    expect(users[3]?.startsWith(stableOf(users[2] ?? ""))).toBe(false);
+    expect(recentRowsOf(users[3] ?? "")).toHaveLength(31);
+    expect(users[3]).toContain("Recent here:\n(10 older messages here are not shown; recall finds them.)\n[");
+    expect(systems[3]).toBe(systems[2]);
+  });
+
+  it("shows every view in Recent by its brief, and the newest full view of a key in its own block after New", async () => {
+    const game = feedWorld("fake");
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);
+    const { entity } = await open(model, {}, [game.world]);
+    await entity.start();
+    game.emit({ world: "fake", place: GAME, source: "outside", text: "Full text one.", view: "game", brief: "Brief one.", wake: false });
+    game.emit({ world: "fake", place: GAME, source: "outside", text: "Full text two.", view: "game", brief: "Brief two.", wake: false });
+    game.emit({ world: "fake", place: GAME, source: "outside", text: "A plain line." });
+    await entity.idle();
+    game.emit({ world: "fake", place: GAME, source: "outside", text: "A second plain line." });
+    await entity.idle();
+
+    const user = userTextOf(model.requests[1]);
+    const recent = user.slice(user.indexOf("Recent here:"), user.indexOf("\n\nNew:"));
+    expect(recent).toContain("Brief one.");
+    expect(recent).toContain("Brief two.");
+    expect(recent).not.toContain("Full text two.");
+
+    const at = user.indexOf("Current view (game):");
+    expect(at).toBeGreaterThan(user.indexOf("New:"));
+    expect(at).toBeLessThan(user.indexOf("## now"));
+    const block = user.slice(at, user.indexOf("## now"));
+    expect(block).toContain("Full text two.");
+    expect(block).not.toContain("Brief two.");
+    expect(user.split("Full text two.")).toHaveLength(2);
+  });
+
+  it("shows the same words as the old layout, the only addition being the brief of the newest view that now sits in its block", async () => {
+    const game = feedWorld("fake");
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);
+    const { entity } = await open(model, {}, [game.world]);
+    await entity.start();
+    game.emit({ world: "fake", place: GAME, source: "outside", text: "Full text one.", view: "game", brief: "Brief one.", wake: false });
+    game.emit({ world: "fake", place: GAME, source: "outside", text: "Full text two.", view: "game", brief: "Brief two.", wake: false });
+    game.emit({ world: "fake", place: GAME, source: "outside", text: "A plain line." });
+    await entity.idle();
+    game.emit({ world: "fake", place: GAME, source: "outside", text: "A second plain line." });
+    await entity.idle();
+
+    // The old layout showed the newest view of the key in full inside Recent: that is "Full text two." here.
+    const oldLayout = ["A plain line.", "A second plain line.", "Brief one.", "Full text two."];
+    expect(eventTextsOf(userTextOf(model.requests[1])).sort()).toEqual([...oldLayout, "Brief two."].sort());
+  });
+
+  it("gives a plain thread the same rows as before while it holds up to thirty", async () => {
+    const { users } = await runBatches([12, 18]);
+    expect(eventTextsOf(users[1] ?? "").sort()).toEqual(Array.from({ length: 30 }, (_, i) => `Hall line ${i + 1}.`).sort());
+    expect(users[1]).not.toContain("not shown");
   });
 });

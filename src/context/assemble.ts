@@ -71,9 +71,7 @@ export function assembleSystem(
   };
 
   const noteFor = (dropped: number[]): string =>
-    dropped.length === 0
-      ? ""
-      : `(Not shown this turn for space: ${dropped.map((i) => sections[i]?.name ?? "").join(", ")}.)`;
+    dropped.length === 0 ? "" : droppedNote(dropped.map((i) => sections[i]?.name ?? ""));
 
   // The trailing note takes room too. Re-pack with room reserved for it until the note fits.
   let reserve = 0;
@@ -92,6 +90,11 @@ export function assembleSystem(
     dropped: packed.dropped.map((i) => sections[i]?.name ?? ""),
     usedTokens: Math.ceil(text.length / charsPerToken),
   };
+}
+
+/** The one trailing line that names the optional sections a turn did not show. */
+export function droppedNote(names: string[]): string {
+  return `(Not shown this turn for space: ${names.join(", ")}.)`;
 }
 
 function joinedLength(total: number, count: number, rendered: string): number {

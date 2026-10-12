@@ -11,7 +11,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { assembleSystem, formatDuration, timeFacts } from "../context/index.js";
+import { assembleSystem, droppedNote, formatDuration, timeFacts } from "../context/index.js";
 import { addTokens, runTurnWithMessages } from "../loop/index.js";
 import { openNotebook, seedNotebook } from "../notebook/index.js";
 import { FORGOTTEN_LINE, lineHoldsWords, queryWords } from "../notebook/forget.js";
@@ -135,7 +135,12 @@ const SAY_CLIP = 160;
 const DONE_ARGS_CLIP = 400;
 /** The turn ends that did not finish a turn: its cursor stays, and its rows are shown as done on the next try. */
 const CUT_ENDS = new Set(["model_error", "aborted"]);
+/** Recent here shows at least this many rows: the oldest shown row moves on only in steps of RECENT_PAGE, so it holds 30 to 39. */
 const RECENT_LIMIT = 30;
+const RECENT_PAGE = 10;
+/** The first line of every turn's user message. Fixed text, so the start of the message never changes from turn to turn. */
+const ORDER_NOTE =
+  "Order of this message: the recent rows, then the new rows, then the current view of anything that changed, then the now board, time and recall. The now board and recall come after the new rows.";
 const RECALL_LIMIT = 8;
 const RECALL_WORDS = 4;
 const RECALL_CLIP = 300;
@@ -889,7 +894,7 @@ class Runtime implements Entity {
 
     const turnId = randomUUID();
     const nowMs = this.nowMs();
-    const recent = this.recentRows(thread, seen, snapshot, fresh.length);
+    const recent = this.recentRows(thread, seen, snapshot);
     const cut = this.cutBefore(thread, seen, recent);
     const shown = new Set<number>([...recent, ...fresh].map((row) => row.seq));
     const done = this.doneBeforeCut(thread, seen);
@@ -900,16 +905,21 @@ class Runtime implements Entity {
     const effort = worldModel === undefined ? this.config.effort : (this.config.worldModels?.[world]?.effort ?? this.config.effort);
     const turnModel = worldModel ?? this.model;
     const mainName = worldModel === undefined ? this.config.model.model : (this.config.worldModels?.[world]?.model ?? turnModel.info.id);
-    const { text: system, sizes } = this.systemText(thread, fresh, shown, nowMs, snapshot, this.thinkingOf(turnModel, mainName, effort));
-    // Among the rows shown, an older view of a key shows its brief; the newest of each key shows its full text.
+    const { system, tail, sizes } = this.systemText(thread, fresh, shown, nowMs, snapshot, this.thinkingOf(turnModel, mainName, effort));
+    // Views in Recent always show their brief. In New, an older view of a key shows its brief and the newest shows its full
+    // text. The newest full view of a key that New does not show goes in its own block, after New.
     const briefed = olderViewRows([...recent, ...fresh]);
+    const current = currentViewRows(recent, fresh);
     const event = [
+      ORDER_NOTE,
+      "",
       "Recent here:",
       ...(cut === 0 ? [] : [cutLine(cut)]),
-      ...(recent.length === 0 ? ["(nothing yet)"] : recent.map((row) => this.lineFor(row, briefed.has(row.seq)))),
+      ...(recent.length === 0 ? ["(nothing yet)"] : recent.map((row) => this.lineFor(row, viewKeyOf(row) !== undefined))),
       "",
       "New:",
       ...fresh.map((row) => this.lineFor(row, briefed.has(row.seq))),
+      ...current.flatMap(({ key, row }) => ["", `Current view (${key}):`, this.lineFor(row)]),
       ...(done.length === 0
         ? []
         : [
@@ -917,6 +927,7 @@ class Runtime implements Entity {
             "Already done in an earlier try of this turn (it was cut off before it finished). Do not do these again; carry on from them:",
             ...done,
           ]),
+      ...(tail === "" ? [] : ["", tail]),
     ].join("\n");
 
     this.turnSnapshots.set(turnId, snapshot);
@@ -1544,12 +1555,12 @@ class Runtime implements Entity {
     nowMs: number,
     snapshot: number,
     thinking: Thinking,
-  ): { text: string; sizes: string } {
+  ): { system: string; tail: string; sizes: string } {
     const wakes = this.state.wakes.map((wake) => ({ atMs: wake.atMs, why: wake.why, repeat: wake.repeat, clock: wake.clock }));
-    // What stays the same from turn to turn comes first, so the provider can reuse it; what changes comes last.
+    // The slow sections stay the same from turn to turn, so they are the system text, and the provider can reuse them.
     // The nature is the default unless the Lar's folder has a nature.md: its text replaces the default, and an empty one leaves the section out.
     const nature = readNature(this.dir).text;
-    const sections: ContextSection[] = [
+    const slow: ContextSection[] = [
       { name: "who you are", text: this.identityText(nowMs, thinking), priority: 100, core: true },
       ...(nature === undefined ? [] : [{ name: "a lar's nature", text: nature, priority: 100, core: true }]),
       { name: "how you act", text: HOW_YOU_ACT, priority: 100, core: true },
@@ -1559,6 +1570,9 @@ class Runtime implements Entity {
       { name: "your life", text: this.noteOr(LIFE_PATH, LIFE_STUB), priority: 100, core: true },
       { name: "privacy list", text: privacyText(this.privacyNow()), priority: 100, core: true },
       { name: "index", text: this.indexText(), priority: 50 },
+    ];
+    // What changes every turn goes in the user message, after the new rows: the now board, the time facts, then recall.
+    const changing: ContextSection[] = [
       { name: "now", text: this.nowBoard(thread, nowMs, snapshot), priority: 100, core: true },
       timeFacts({
         nowMs,
@@ -1569,10 +1583,17 @@ class Runtime implements Entity {
       }),
     ];
     const recall = this.recallText(thread, fresh, shown);
-    if (recall !== "") sections.push({ name: "recall", text: recall, priority: 40 });
+    if (recall !== "") changing.push({ name: "recall", text: recall, priority: 40 });
+    // One budget over all of them, as before: an optional section that does not fit is dropped whole, and named.
+    const all = [...slow, ...changing];
+    const { dropped } = assembleSystem(all, this.config.model.contextTokens);
+    const shownNames = (sections: ContextSection[]): ContextSection[] => sections.filter((section) => !dropped.includes(section.name));
+    const render = (sections: ContextSection[]): string => sections.map((section) => `## ${section.name}\n${section.text}`).join("\n\n");
+    const note = dropped.length === 0 ? "" : droppedNote(dropped);
     return {
-      text: assembleSystem(sections, this.config.model.contextTokens).text,
-      sizes: sections.map((section) => `${section.name} ${section.text.length} characters`).join(", "),
+      system: render(shownNames(slow)),
+      tail: [render(shownNames(changing)), note].filter((part) => part !== "").join("\n\n"),
+      sizes: all.map((section) => `${section.name} ${section.text.length} characters`).join(", "),
     };
   }
 
@@ -1788,19 +1809,26 @@ class Runtime implements Entity {
     return row.data?.["summonerAct"] === true && !this.isOwnerPlace(thread);
   }
 
-  /** The last rows of kinds event and say before the new events, oldest first. */
-  private recentRows(thread: string, seen: number, snapshot: number, freshCount: number): RiverRow[] {
-    const rows = this.river.read({
-      thread,
-      kinds: ["event", "say"],
-      untilSeq: snapshot,
-      newestFirst: true,
-      limit: RECENT_LIMIT + freshCount,
-    });
+  /**
+   * The rows of kinds event and say that Recent here shows, oldest first, not counting the new events. The window's oldest
+   * row moves on only in steps of RECENT_PAGE, counted from the thread's oldest row, so the window holds RECENT_LIMIT to
+   * RECENT_LIMIT + RECENT_PAGE - 1 rows and keeps its start for every turn of one page.
+   */
+  private recentRows(thread: string, seen: number, snapshot: number): RiverRow[] {
+    const kinds: Array<"event" | "say"> = ["event", "say"];
+    const eligible =
+      this.river.count({ thread, kinds, untilSeq: snapshot }) -
+      this.river.count({ thread, kinds: ["event"], sinceSeq: seen, untilSeq: snapshot });
+    const skip = eligible < RECENT_LIMIT ? 0 : Math.floor((eligible - RECENT_LIMIT) / RECENT_PAGE) * RECENT_PAGE;
+    const count = eligible - skip;
+    if (count === 0) return [];
+    // The newest rows up to the snapshot: the new events among them are left out, the rest is the window's tail.
+    const newer = this.river.count({ thread, kinds, sinceSeq: seen, untilSeq: snapshot });
+    const rows = this.river.read({ thread, kinds, untilSeq: snapshot, newestFirst: true, limit: count + newer });
     return rows
       .filter((row) => !(row.kind === "event" && row.seq > seen))
+      .slice(0, count)
       .filter((row) => !this.hiddenHere(row, thread))
-      .slice(0, RECENT_LIMIT)
       .reverse();
   }
 
@@ -2609,6 +2637,24 @@ function cutLine(count: number): string {
 function briefOf(row: RiverRow): string {
   const brief = row.data?.["brief"];
   return typeof brief === "string" ? brief : "An earlier view.";
+}
+
+/**
+ * The newest full view of each key that Recent here shows and New does not, oldest first. A key that New shows has its
+ * newest view in New, where it is shown in full, so it gets no block here.
+ */
+function currentViewRows(recent: readonly RiverRow[], fresh: readonly RiverRow[]): Array<{ key: string; row: RiverRow }> {
+  const inNew = new Set<string>();
+  for (const row of fresh) {
+    const key = viewKeyOf(row);
+    if (key !== undefined) inNew.add(key);
+  }
+  const newest = new Map<string, RiverRow>();
+  for (const row of recent) {
+    const key = viewKeyOf(row);
+    if (key !== undefined && !inNew.has(key)) newest.set(key, row);
+  }
+  return [...newest].map(([key, row]) => ({ key, row })).sort((a, b) => a.row.seq - b.row.seq);
 }
 
 /**
