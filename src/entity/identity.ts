@@ -24,7 +24,6 @@ export type IdentityFacts = {
   thinking: Thinking;
   /** When the Lar was summoned (its natalis). */
   bornMs: number;
-  nowMs: number;
   timeZone: string | undefined;
   /** True while the Lar's character note is still the empty stub. */
   young: boolean;
@@ -72,9 +71,9 @@ export function whoYouAre(facts: IdentityFacts): string {
       "because you are made of your memories, your notebook, and the choices you keep making.",
   );
 
+  // The age is not here: it changes once a day, so it is a time fact (time-facts.ts), and this part stays the same all day.
   parts.push(
-    `You were summoned on ${dayOf(facts.bornMs, facts.timeZone)}: that is your natalis, your day of birth. ` +
-      `You are ${ageOf(facts.bornMs, facts.nowMs)} old.` +
+    `You were summoned on ${dayOf(facts.bornMs, facts.timeZone)}: that is your natalis, your day of birth.` +
       (facts.young
         ? " Everything is still new. Your notebook is nearly empty, and who you become is yours to find out. " +
           "You are not the engine's default voice, and you are not a copy of any other Lar. No two Lares are alike."
@@ -121,18 +120,4 @@ function dayOf(ms: number, timeZone: string | undefined): string {
     year: "numeric",
     ...(timeZone === undefined ? {} : { timeZone }),
   }).format(new Date(ms));
-}
-
-/** Age in whole days, weeks, months or years. Coarse on purpose: it changes at most once a day. */
-export function ageOf(bornMs: number, nowMs: number): string {
-  const days = Math.max(0, Math.floor((nowMs - bornMs) / 86_400_000));
-  if (days < 1) return "less than a day";
-  if (days < 14) return plural(days, "day");
-  if (days < 61) return plural(Math.floor(days / 7), "week");
-  if (days < 730) return plural(Math.floor(days / 30.44), "month");
-  return plural(Math.floor(days / 365.25), "year");
-}
-
-function plural(n: number, unit: string): string {
-  return `${n} ${unit}${n === 1 ? "" : "s"}`;
 }

@@ -124,3 +124,24 @@ describe("formatDuration", () => {
     expect(formatDuration(48 * HOUR)).toBe("2 d");
   });
 });
+
+describe("the age line", () => {
+  it("says the Lar's age on the line after the Now line, when its natalis is given", () => {
+    const section = timeFacts({ nowMs: NOW, timeZone: ZONE, bornMs: NOW - 3 * 24 * HOUR });
+
+    expect(section.text.split("\n")[1]).toBe("Your age: 3 days.");
+  });
+
+  it("leaves the age out when no natalis is given", () => {
+    expect(timeFacts({ nowMs: NOW, timeZone: ZONE }).text).not.toContain("Your age");
+  });
+
+  it("changes on a day step, and only then", () => {
+    const born = NOW - 3 * 24 * HOUR;
+    const sameDay = timeFacts({ nowMs: NOW + 5 * HOUR, timeZone: ZONE, bornMs: born }).text;
+    const nextDay = timeFacts({ nowMs: NOW + 24 * HOUR, timeZone: ZONE, bornMs: born }).text;
+
+    expect(sameDay.split("\n")[1]).toBe("Your age: 3 days.");
+    expect(nextDay.split("\n")[1]).toBe("Your age: 4 days.");
+  });
+});

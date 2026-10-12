@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ageOf, chosenName, whoYouAre, type IdentityFacts } from "./identity.js";
+import { ageOf } from "../context/time-facts.js";
+import { chosenName, whoYouAre, type IdentityFacts } from "./identity.js";
 
 const DAY = 86_400_000;
 const BORN = Date.UTC(2026, 9, 11, 9, 0);
@@ -8,7 +9,6 @@ const facts = (over: Partial<IdentityFacts> = {}): IdentityFacts => ({
   name: "Iris",
   thinking: { main: "example/engine-1", effort: "high", onBackup: false },
   bornMs: BORN,
-  nowMs: BORN + 3 * DAY,
   timeZone: "UTC",
   young: true,
   worlds: ["A command line, where your summoner types to you at cli:summoner."],
@@ -18,12 +18,11 @@ const facts = (over: Partial<IdentityFacts> = {}): IdentityFacts => ({
 });
 
 describe("who you are", () => {
-  it("names the Lar, its engine, its natalis and age, its summoner and its places", () => {
+  it("names the Lar, its engine, its natalis, its summoner and its places", () => {
     const text = whoYouAre(facts());
     expect(text).toContain("You are Iris, a Lar.");
     expect(text).toContain("You are thinking with example/engine-1 at high effort.");
-    expect(text).toContain("You were summoned on 11 October 2026");
-    expect(text).toContain("You are 3 days old.");
+    expect(text).toContain("You were summoned on 11 October 2026: that is your natalis, your day of birth.");
     expect(text).toContain('You were summoned by someone who appears to you as "summoner".');
     expect(text).toContain("- A command line, where your summoner types to you at cli:summoner.");
     expect(text).toContain("you tell them you are an AI");

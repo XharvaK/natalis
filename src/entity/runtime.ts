@@ -11,12 +11,13 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { assembleSystem, droppedNote, formatDuration, timeFacts } from "../context/index.js";
+import { assembleSystem, droppedNote, formatDuration, layoutRequest, timeFacts, type LayoutPart } from "../context/index.js";
 import { addTokens, runTurnWithMessages } from "../loop/index.js";
 import { openNotebook, seedNotebook } from "../notebook/index.js";
 import { FORGOTTEN_LINE, lineHoldsWords, queryWords } from "../notebook/forget.js";
 import { ModelError, type ModelErrorKind } from "../contracts.js";
 import { openRiver } from "../river/index.js";
+import { createWitness, withWitness, type CacheWitness } from "../model/witness.js";
 import { openLedger, type Ledger, type LedgerRow, type ThreadKind } from "../river/ledger.js";
 import { checkRiver } from "../river/integrity.js";
 import { createSecretScanner, guardModel, guardNotebook, guardRiver, KNOWN_VALUE_KIND } from "../secrets/index.js";
@@ -27,6 +28,7 @@ import type {
   ContextSection,
   ModelPort,
   Notebook,
+  PromptPartClass,
   Receipt,
   River,
   RiverRow,
@@ -83,7 +85,8 @@ export const WELCOME_FILE = "welcome.md";
 
 export const HOW_YOU_ACT =
   "You act only through your tools. To talk somewhere, call say with that place. " +
-  "Silence is fine: when there is nothing to do now, call end_turn. " +
+  "Silence is fine: when there is nothing to do now, call end_turn. You may call it in the same reply as your last acts; " +
+  "if any of them is refused or held, the turn stays open so you can see why. " +
   "You can wake yourself at any time, for any reason, once or on a daily or weekly rhythm. " +
   "If you want something about your body changed (a tool, a limit, a sentence in your instructions, a world), write it under proposals/ in your notebook. " +
   "Your summoner's side reads that folder every week, and your summoner tells you what was decided. " +
@@ -138,9 +141,11 @@ const CUT_ENDS = new Set(["model_error", "aborted"]);
 /** Recent here shows at least this many rows: the oldest shown row moves on only in steps of RECENT_PAGE, so it holds 30 to 39. */
 const RECENT_LIMIT = 30;
 const RECENT_PAGE = 10;
-/** The first line of every turn's user message. Fixed text, so the start of the message never changes from turn to turn. */
+/** Fixed text in the system text: the order each turn's user message comes in. The same every turn, so the start of the prompt never changes. */
 const ORDER_NOTE =
-  "Order of this message: the recent rows, then the new rows, then the current view of anything that changed, then the now board, time and recall. The now board and recall come after the new rows.";
+  "Each turn's message lists, in order: the recent rows, the new rows, the current view of anything that changed, then the now board, time and recall. The now board and recall come after the new rows.";
+/** A section of the prompt, and the class that says how often it changes. Every section must declare one. */
+type Section = ContextSection & { cls: PromptPartClass };
 const RECALL_LIMIT = 8;
 const RECALL_WORDS = 4;
 const RECALL_CLIP = 300;
@@ -551,6 +556,8 @@ class Runtime implements Entity {
   private readonly larRiver: River;
   /** One row per turn, beside the river's rows (no words). */
   private readonly ledger: Ledger;
+  /** The cache witness: one row per model call (counts and hashes only), shared by every thread. */
+  private readonly witness: CacheWitness;
   /** Failed turns in a row, over every thread. A turn that gets an answer clears it. */
   private failedRun = 0;
   private readonly ceiling: Ceiling;
@@ -616,6 +623,7 @@ class Runtime implements Entity {
     this.ceiling = init.config.ceiling ?? DEFAULT_CEILING;
     this.river = init.river;
     this.ledger = openLedger(join(init.dir, RIVER_LEDGER_FILE));
+    this.witness = createWitness({ write: (row) => this.ledger.appendCall(row), now: () => this.nowMs() });
     this.larRiver = this.riverForLar(init.river);
     this.notebook = init.notebook;
     this.clockFormat = new Intl.DateTimeFormat("en-GB", {
@@ -905,39 +913,64 @@ class Runtime implements Entity {
     const effort = worldModel === undefined ? this.config.effort : (this.config.worldModels?.[world]?.effort ?? this.config.effort);
     const turnModel = worldModel ?? this.model;
     const mainName = worldModel === undefined ? this.config.model.model : (this.config.worldModels?.[world]?.model ?? turnModel.info.id);
-    const { system, tail, sizes } = this.systemText(thread, fresh, shown, nowMs, snapshot, this.thinkingOf(turnModel, mainName, effort));
+    const { system: systemParts, tail, sizes } = this.systemText(thread, fresh, shown, nowMs, snapshot, this.thinkingOf(turnModel, mainName, effort));
     // Views in Recent always show their brief. In New, an older view of a key shows its brief and the newest shows its full
     // text. The newest full view of a key that New does not show goes in its own block, after New.
     const briefed = olderViewRows([...recent, ...fresh]);
     const current = currentViewRows(recent, fresh);
-    const event = [
-      ORDER_NOTE,
-      "",
-      "Recent here:",
-      ...(cut === 0 ? [] : [cutLine(cut)]),
-      ...(recent.length === 0 ? ["(nothing yet)"] : recent.map((row) => this.lineFor(row, viewKeyOf(row) !== undefined))),
-      "",
-      "New:",
-      ...fresh.map((row) => this.lineFor(row, briefed.has(row.seq))),
-      ...current.flatMap(({ key, row }) => ["", `Current view (${key}):`, this.lineFor(row)]),
-      ...(done.length === 0
-        ? []
-        : [
-            "",
-            "Already done in an earlier try of this turn (it was cut off before it finished). Do not do these again; carry on from them:",
-            ...done,
-          ]),
-      ...(tail === "" ? [] : ["", tail]),
-    ].join("\n");
+    const recentLines = (rows: readonly RiverRow[]): string[] =>
+      rows.map((row) => this.lineFor(row, viewKeyOf(row) !== undefined));
+    // Recent here holds still for a page: its first RECENT_LIMIT rows are one part (class page), and the rows since the
+    // page start are another (class turn). Without a full page, the whole block is turn.
+    const pageRows = recent.length >= RECENT_LIMIT ? recent.slice(0, RECENT_LIMIT) : [];
+    const sinceRows = recent.slice(pageRows.length);
+    const user: LayoutPart[] = [];
+    if (pageRows.length > 0) {
+      user.push({
+        name: "recent here",
+        cls: "page",
+        text: ["Recent here:", ...(cut === 0 ? [] : [cutLine(cut)]), ...recentLines(pageRows)].join("\n"),
+      });
+      if (sinceRows.length > 0) {
+        user.push({ name: "recent here, since the page start", cls: "turn", sep: "\n", text: recentLines(sinceRows).join("\n") });
+      }
+    } else {
+      user.push({
+        name: "recent here",
+        cls: "turn",
+        text: ["Recent here:", ...(cut === 0 ? [] : [cutLine(cut)]), ...(recent.length === 0 ? ["(nothing yet)"] : recentLines(sinceRows))].join("\n"),
+      });
+    }
+    user.push({ name: "new", cls: "turn", text: ["New:", ...fresh.map((row) => this.lineFor(row, briefed.has(row.seq)))].join("\n") });
+    for (const { key, row } of current) {
+      user.push({ name: `current view (${key})`, cls: "turn", text: [`Current view (${key}):`, this.lineFor(row)].join("\n") });
+    }
+    if (done.length > 0) {
+      user.push({
+        name: "already done",
+        cls: "turn",
+        text: [
+          "Already done in an earlier try of this turn (it was cut off before it finished). Do not do these again; carry on from them:",
+          ...done,
+        ].join("\n"),
+      });
+    }
+    user.push(...tail);
+    // Every part is redacted on its own, and the layout is built from the redacted parts, so each part's offsets stay true.
+    const laid = layoutRequest([...systemParts, ...user].map((part) => ({ ...part, text: this.scanner.redact(part.text) })));
+    if (laid.outOfOrder.length > 0) noteOutOfOrder(laid.outOfOrder);
+    const event = laid.user;
 
     this.turnSnapshots.set(turnId, snapshot);
     this.turnStarts.set(turnId, nowMs);
     const { result } = await runTurnWithMessages({
-      model: turnModel,
+      model: withWitness(turnModel, this.witness, this.threadKind(thread), { cacheMarks: this.config.model.cacheMarks === true }),
       tools: this.tools,
-      system: this.scanner.redact(system),
+      system: laid.system,
+      systemLayout: laid.systemLayout,
       history: [],
-      event: this.scanner.redact(event),
+      event,
+      eventLayout: laid.userLayout,
       thread,
       river: this.larRiver,
       notebook: this.notebook,
@@ -1555,44 +1588,56 @@ class Runtime implements Entity {
     nowMs: number,
     snapshot: number,
     thinking: Thinking,
-  ): { system: string; tail: string; sizes: string } {
+  ): { system: LayoutPart[]; tail: LayoutPart[]; sizes: string } {
     const wakes = this.state.wakes.map((wake) => ({ atMs: wake.atMs, why: wake.why, repeat: wake.repeat, clock: wake.clock }));
     // The slow sections stay the same from turn to turn, so they are the system text, and the provider can reuse them.
     // The nature is the default unless the Lar's folder has a nature.md: its text replaces the default, and an empty one leaves the section out.
     const nature = readNature(this.dir).text;
-    const slow: ContextSection[] = [
-      { name: "who you are", text: this.identityText(nowMs, thinking), priority: 100, core: true },
-      ...(nature === undefined ? [] : [{ name: "a lar's nature", text: nature, priority: 100, core: true }]),
-      { name: "how you act", text: HOW_YOU_ACT, priority: 100, core: true },
-      { name: "pictures", text: pictureAbility(this.config.model.vision === true), priority: 100, core: true },
-      { name: "constitution", text: this.constitutionText(), priority: 100, core: true },
-      { name: "character", text: this.noteOr("self/character.md", CHARACTER_STUB), priority: 100, core: true },
-      { name: "your life", text: this.noteOr(LIFE_PATH, LIFE_STUB), priority: 100, core: true },
-      { name: "privacy list", text: privacyText(this.privacyNow()), priority: 100, core: true },
-      { name: "index", text: this.indexText(), priority: 50 },
+    const slow: Section[] = [
+      { name: "who you are", text: this.identityText(nowMs, thinking), priority: 100, core: true, cls: "fixed" },
+      { name: "how you act", text: HOW_YOU_ACT, priority: 100, core: true, cls: "fixed" },
+      { name: "pictures", text: pictureAbility(this.config.model.vision === true), priority: 100, core: true, cls: "fixed" },
+      ...(nature === undefined ? [] : [{ name: "a lar's nature", text: nature, priority: 100, core: true, cls: "notes" as const }]),
+      { name: "constitution", text: this.constitutionText(), priority: 100, core: true, cls: "notes" },
+      { name: "character", text: this.noteOr("self/character.md", CHARACTER_STUB), priority: 100, core: true, cls: "notes" },
+      { name: "your life", text: this.noteOr(LIFE_PATH, LIFE_STUB), priority: 100, core: true, cls: "notes" },
+      { name: "privacy list", text: privacyText(this.privacyNow()), priority: 100, core: true, cls: "notes" },
+      { name: "index", text: this.indexText(), priority: 50, cls: "notes" },
     ];
     // What changes every turn goes in the user message, after the new rows: the now board, the time facts, then recall.
-    const changing: ContextSection[] = [
-      { name: "now", text: this.nowBoard(thread, nowMs, snapshot), priority: 100, core: true },
-      timeFacts({
-        nowMs,
-        ...(this.config.timeZone === undefined ? {} : { timeZone: this.config.timeZone }),
-        ...(this.threadState(thread).lastTurnMs === undefined ? {} : { lastTurnHereMs: this.threadState(thread).lastTurnMs }),
-        ...(this.state.lastOwnerMs === undefined ? {} : { lastOwnerMessageMs: this.state.lastOwnerMs }),
-        nextWakes: wakes,
-      }),
+    const changing: Section[] = [
+      { name: "now", text: this.nowBoard(thread, nowMs, snapshot), priority: 100, core: true, cls: "turn" },
+      {
+        ...timeFacts({
+          nowMs,
+          ...(this.config.timeZone === undefined ? {} : { timeZone: this.config.timeZone }),
+          ...(this.threadState(thread).lastTurnMs === undefined ? {} : { lastTurnHereMs: this.threadState(thread).lastTurnMs }),
+          ...(this.state.lastOwnerMs === undefined ? {} : { lastOwnerMessageMs: this.state.lastOwnerMs }),
+          nextWakes: wakes,
+          bornMs: this.state.bornMs ?? nowMs,
+        }),
+        cls: "turn",
+      },
     ];
     const recall = this.recallText(thread, fresh, shown);
-    if (recall !== "") changing.push({ name: "recall", text: recall, priority: 40 });
+    if (recall !== "") changing.push({ name: "recall", text: recall, priority: 40, cls: "turn" });
     // One budget over all of them, as before: an optional section that does not fit is dropped whole, and named.
-    const all = [...slow, ...changing];
+    const all: Section[] = [...slow, ...changing];
     const { dropped } = assembleSystem(all, this.config.model.contextTokens);
-    const shownNames = (sections: ContextSection[]): ContextSection[] => sections.filter((section) => !dropped.includes(section.name));
-    const render = (sections: ContextSection[]): string => sections.map((section) => `## ${section.name}\n${section.text}`).join("\n\n");
-    const note = dropped.length === 0 ? "" : droppedNote(dropped);
+    const shownNames = (sections: Section[]): Section[] => sections.filter((section) => !dropped.includes(section.name));
+    const part = (section: Section): LayoutPart => ({ name: section.name, cls: section.cls, text: `## ${section.name}\n${section.text}` });
+    const shownSlow = shownNames(slow);
+    // The order note is fixed text, after the fixed sections and before the notes. It is not budgeted: it is always shown.
+    const system: LayoutPart[] = [
+      ...shownSlow.filter((section) => section.cls === "fixed").map(part),
+      { name: "order of the message", cls: "fixed", text: ORDER_NOTE },
+      ...shownSlow.filter((section) => section.cls === "notes").map(part),
+    ];
+    const tail: LayoutPart[] = shownNames(changing).map(part);
+    if (dropped.length > 0) tail.push({ name: "dropped note", cls: "turn", text: droppedNote(dropped) });
     return {
-      system: render(shownNames(slow)),
-      tail: [render(shownNames(changing)), note].filter((part) => part !== "").join("\n\n"),
+      system,
+      tail,
       sizes: all.map((section) => `${section.name} ${section.text.length} characters`).join(", "),
     };
   }
@@ -1603,7 +1648,6 @@ class Runtime implements Entity {
       name: this.config.name ?? chosenName(this.notebook.read(NAME_NOTE)),
       thinking,
       bornMs: this.state.bornMs ?? nowMs,
-      nowMs,
       timeZone: this.config.timeZone,
       young: character === null || character.trim() === "" || character.trim() === CHARACTER_STUB.trim(),
       worlds: this.worlds.map((world) => world.about?.() ?? world.id),
@@ -2808,6 +2852,14 @@ export function forgetInStateFile(statePath: string, query: string): number {
  */
 function isOversized(message: string): boolean {
   return /rejected the request/i.test(message) && /context|too (large|long|many)|maximum .*tokens/i.test(message);
+}
+
+/** The first time in a process a prompt part is declared out of class order, the service log says so. The part is moved into place. */
+let outOfOrderNoted = false;
+function noteOutOfOrder(names: string[]): void {
+  if (outOfOrderNoted) return;
+  outOfOrderNoted = true;
+  console.error(`[natalis] Prompt parts were declared out of class order and moved into place: ${names.join(", ")}.`);
 }
 
 function messageOf(err: unknown): string {

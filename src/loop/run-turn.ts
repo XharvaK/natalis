@@ -14,6 +14,7 @@ import {
   type ModelRequest,
   type ModelResponse,
   type Notebook,
+  type PromptLayoutEntry,
   type Receipt,
   type River,
   type RiverRowInput,
@@ -35,7 +36,8 @@ const RECEIPT_KEPT_BYTES = 2048;
 export const endTurnSpec: ToolSpec = {
   name: END_TURN,
   description:
-    "End this turn. Call it when you have nothing more to do now. You may leave a short note for yourself.",
+    "End this turn. Call it when you have nothing more to do now. You may call it in the same reply as your last acts. " +
+    "If any of them is refused or held, the turn stays open so you can see why. You may leave a short note for yourself.",
   parameters: {
     type: "object",
     properties: {
@@ -59,12 +61,25 @@ const endTurnTool: Tool = {
   },
 };
 
+/** end_turn's receipt when an earlier call in its reply was refused or held: the turn stays open and the loop goes on. */
+function reopenedReceipt(): Receipt {
+  return {
+    ok: false,
+    summary: "The turn stays open.",
+    refused: { code: "reopened", reason: "An earlier call in this reply was refused or held: see its receipt." },
+  };
+}
+
 export type RunTurnInput = {
   model: ModelPort;
   tools: Tool[];
   system: string;
+  /** The named parts of `system`, when the caller built it from parts. Read by the witness and the cache marks; the text is unchanged. */
+  systemLayout?: PromptLayoutEntry[];
   history: ChatMessage[];
   event: string;
+  /** The named parts of `event`, when the caller built it from parts. Read by the witness and the cache marks; the text is unchanged. */
+  eventLayout?: PromptLayoutEntry[];
   thread: string;
   river: River;
   notebook: Notebook;
@@ -84,7 +99,8 @@ export async function runTurn(input: RunTurnInput): Promise<TurnResult> {
 
 /** Runs one turn and also returns the full message list the model saw and produced. */
 export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnOutput> {
-  const { model, system, history, event, thread, river, notebook, ceiling, nowMs, turnId, signal, effort } = input;
+  const { model, system, systemLayout, history, event, eventLayout, thread, river, notebook, ceiling, nowMs, turnId, signal, effort } =
+    input;
 
   const ownTools = new Map<string, Tool>();
   for (const tool of input.tools) {
@@ -96,9 +112,9 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
   const specs: ToolSpec[] = [...input.tools.map((tool) => tool.spec), endTurnSpec];
 
   const messages: ChatMessage[] = [
-    { role: "system", content: system },
+    { role: "system", content: system, ...(systemLayout === undefined ? {} : { layout: systemLayout }) },
     ...history,
-    { role: "user", content: event },
+    { role: "user", content: event, ...(eventLayout === undefined ? {} : { layout: eventLayout }) },
   ];
   const thoughts: string[] = [];
   /** Pictures a tool handed over for the model to see on its next call. Shown once, then gone. */
@@ -144,11 +160,12 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
     }
   };
 
-  const runCall = async (call: ToolCall): Promise<Receipt> => {
+  // `held` is a receipt the loop writes without running the call (end_turn reopened by an earlier refusal).
+  const runCall = async (call: ToolCall, held?: Receipt): Promise<Receipt> => {
     toolCalls += 1;
     write({ kind: "tool_call", source: "self", text: call.name, data: { args: call.arguments, turnId, callId: call.id } });
     // Pictures never go into the record or the tool message: only the model sees them, on the next call.
-    const { images, ...receipt } = await execute(call);
+    const { images, ...receipt } = held ?? (await execute(call));
     if (images !== undefined) pictures.push(...images);
     write({
       kind: "receipt",
@@ -263,20 +280,36 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
         break;
       }
 
-      // Calls run in order. After end_turn, the rest of this reply still runs; the ceiling still applies.
-      for (const call of calls) {
+      // Calls run in order, except end_turn: it rides with the last acts, so it runs after every other call of this reply.
+      // If any other call was refused, held or not run, the turn stays open and end_turn's receipt says so. The ceiling
+      // still applies to every call.
+      const others = calls.filter((call) => call.name !== END_TURN);
+      const endings = calls.filter((call) => call.name === END_TURN);
+      let earlierRefused = false;
+      for (const call of [...others, ...endings]) {
         if (signal?.aborted) {
           endedBy ??= "aborted";
           skip(call, "The turn was aborted before this call.");
+          earlierRefused = true;
           continue;
         }
         if (toolCalls >= ceiling.maxToolCalls) {
           endedBy ??= "ceiling";
           skip(call, "The turn reached its tool-call limit before this call.");
+          earlierRefused = true;
+          continue;
+        }
+        if (call.name !== END_TURN) {
+          const receipt = await runCall(call);
+          if (!receipt.ok) earlierRefused = true;
+          continue;
+        }
+        if (earlierRefused) {
+          await runCall(call, reopenedReceipt());
           continue;
         }
         const receipt = await runCall(call);
-        if (call.name === END_TURN && receipt.ok) endedBy ??= "end_turn";
+        if (receipt.ok) endedBy ??= "end_turn";
       }
     }
   } catch (err) {

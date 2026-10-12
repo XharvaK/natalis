@@ -352,7 +352,7 @@ describe("runTurn: refused and broken calls", () => {
 });
 
 describe("runTurn: running several calls in one reply", () => {
-  it("runs the rest of a reply after end_turn", async () => {
+  it("runs end_turn after the other calls of its reply, even when it is listed first", async () => {
     const { input } = await setup({
       steps: [
         reply({
@@ -366,7 +366,7 @@ describe("runTurn: running several calls in one reply", () => {
     expect(result.endedBy).toBe("end_turn");
     expect(result.modelCalls).toBe(1);
     expect(result.toolCalls).toBe(2);
-    expect(result.receipts.map((r) => r.tool)).toEqual([END_TURN, "read_note"]);
+    expect(result.receipts.map((r) => r.tool)).toEqual(["read_note", END_TURN]);
   });
 });
 
@@ -597,5 +597,120 @@ describe("runTurn: a backup model answered", () => {
     const { input, river } = await setup({ steps: [reply({ toolCalls: [call("end_turn")] })] });
     await runTurn(input);
     expect(rowsOf(river).some((r) => r.data?.["kind"] === "backup_model")).toBe(false);
+  });
+});
+
+describe("runTurn: end_turn rides with the last acts", () => {
+  it("runs end_turn after the other calls, and writes its tool message last", async () => {
+    const { input } = await setup({
+      steps: [
+        reply({ toolCalls: [call(END_TURN, {}, "c1"), call("read_note", { path: "people/mara.md" }, "c2")] }),
+      ],
+    });
+
+    const { result, messages } = await runTurnWithMessages(input);
+
+    expect(result.endedBy).toBe("end_turn");
+    expect(result.modelCalls).toBe(1);
+    expect(toolMessages(messages).map((m) => m.toolCallId)).toEqual(["c2", "c1"]);
+    expect(toolMessages(messages).at(-1)?.content).toContain('"ok":true');
+  });
+
+  it("reopens the turn when an earlier call was refused, says why in end_turn's receipt, and lets the next reply end it", async () => {
+    const { input, model, river } = await setup({
+      steps: [
+        reply({ toolCalls: [call("no_such_tool", {}, "c1"), call(END_TURN, {}, "c2")] }),
+        reply({ toolCalls: [call(END_TURN, {}, "c3")] }),
+      ],
+    });
+
+    const result = await runTurn(input);
+
+    expect(result.endedBy).toBe("end_turn");
+    expect(result.modelCalls).toBe(2);
+    expect(result.receipts.map((r) => r.tool)).toEqual(["no_such_tool", END_TURN, END_TURN]);
+    expect(result.receipts[1]?.receipt).toEqual({
+      ok: false,
+      summary: "The turn stays open.",
+      refused: { code: "reopened", reason: "An earlier call in this reply was refused or held: see its receipt." },
+    });
+    // The next model call sees every receipt, the reopened one included.
+    expect(model.requests[1]?.messages.some((m) => m.role === "tool" && m.content.includes('"code":"reopened"'))).toBe(true);
+    const receipts = river.read({ thread: THREAD, kinds: ["receipt"] });
+    expect(receipts.some((row) => row.data?.["refused"] && JSON.stringify(row.data["refused"]).includes("reopened"))).toBe(true);
+  });
+
+  it("reopens the turn when an earlier call failed inside its tool", async () => {
+    const { input } = await setup({
+      tools: [...notebookTools(), boomTool],
+      steps: [
+        reply({ toolCalls: [call("boom", {}, "c1"), call(END_TURN, {}, "c2")] }),
+        reply({ toolCalls: [call(END_TURN, {}, "c3")] }),
+      ],
+    });
+
+    const result = await runTurn(input);
+
+    expect(result.endedBy).toBe("end_turn");
+    expect(result.receipts.map((r) => r.receipt.ok)).toEqual([false, false, true]);
+    expect(result.receipts[1]?.receipt.refused?.code).toBe("reopened");
+  });
+
+  it("keeps the ceiling: a reopened turn that reaches its model-call limit ends there", async () => {
+    const { input } = await setup({
+      ceiling: { maxModelCalls: 1, maxToolCalls: 20 },
+      steps: [reply({ toolCalls: [call("no_such_tool", {}, "c1"), call(END_TURN, {}, "c2")] })],
+    });
+
+    const result = await runTurn(input);
+
+    expect(result.endedBy).toBe("ceiling");
+    expect(result.modelCalls).toBe(1);
+    expect(result.receipts.at(-1)?.receipt.refused?.code).toBe("reopened");
+  });
+
+  it("still ends a turn on a plain reply with no tool call", async () => {
+    const { input } = await setup({ steps: [reply({ content: "Just a word." })] });
+
+    const result = await runTurn(input);
+
+    expect(result.endedBy).toBe("no_tool_call");
+    expect(result.toolCalls).toBe(0);
+  });
+});
+
+describe("runTurnWithMessages: the layout of the system text and the event", () => {
+  it("carries each message's layout on the message, and leaves the text as it was given", async () => {
+    const system = "## who\nA test.\n\n## nature\nA voice.";
+    const event = "Recent here:\nrow\n\nNew:\nnew row";
+    const systemLayout = [
+      { name: "who", cls: "fixed" as const, end: 9 },
+      { name: "nature", cls: "notes" as const, end: system.length },
+    ];
+    const eventLayout = [
+      { name: "recent", cls: "page" as const, end: 17 },
+      { name: "new", cls: "turn" as const, end: event.length },
+    ];
+    const { input } = await setup({
+      system,
+      event,
+      systemLayout,
+      eventLayout,
+      steps: [reply({ toolCalls: [call(END_TURN, {}, "c1")] })],
+    });
+
+    const { messages } = await runTurnWithMessages(input);
+
+    expect(messages[0]).toEqual({ role: "system", content: system, layout: systemLayout });
+    expect(messages[1]).toEqual({ role: "user", content: event, layout: eventLayout });
+  });
+
+  it("sends a message without a layout with no layout key at all", async () => {
+    const { input } = await setup({ steps: [reply({ toolCalls: [call(END_TURN, {}, "c1")] })] });
+
+    const { messages } = await runTurnWithMessages(input);
+
+    expect(messages[0]).toEqual({ role: "system", content: "You are Iris, a test entity." });
+    expect("layout" in (messages[0] ?? {})).toBe(false);
   });
 });

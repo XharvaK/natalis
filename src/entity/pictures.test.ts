@@ -230,12 +230,12 @@ describe("say with attach", () => {
     await entity.start();
     send("First.");
     await entity.idle();
-    expect(String(model.requests[0]?.messages[0]?.content)).toContain("Your shelf of pictures: none kept.");
+    expect(String(model.requests[0]?.messages[1]?.content)).toContain("Your shelf of pictures: none kept.");
 
     fake.body().keepPicture({ bytes: png(), name: "a.png", from: FROM });
     send("Second.");
     await entity.idle();
-    const later = String(model.requests[1]?.messages[0]?.content);
+    const later = String(model.requests[1]?.messages[1]?.content);
     expect(later).toContain("Your shelf of pictures: 1 kept, 1 KB.");
   });
 });

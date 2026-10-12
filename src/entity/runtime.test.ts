@@ -29,7 +29,8 @@ import { ScriptedModel, call, reply, type ScriptStep } from "../testing/scripted
 import { createCliWorld, type CliWorld } from "../worlds/cli.js";
 import type { EntityConfig } from "./config.js";
 import { SUMMONER_PREFIX } from "./summoner.js";
-import { readLedger } from "../river/ledger.js";
+import { readCallLedger, readLedger } from "../river/ledger.js";
+import { changedBeyond, CLASS_RANK, partsOfMessage, type MessagePart } from "../context/layout.js";
 import { forgetInStateFile, openEntity, STATE_FILE, type Entity, type OpenEntityOptions } from "./runtime.js";
 import { COMMITMENTS_STUB, HOUSEHOLD_PATH, OLD_COMMITMENTS_STUB } from "./commitments.js";
 import { isStopOn } from "./stop.js";
@@ -766,8 +767,10 @@ describe("what the Lar sends and what it is shown", () => {
   });
 
   it("refuses a self-wake of less than a minute, says why, and keeps no wake", async () => {
+    // The refused wake reopens the turn: end_turn's receipt says so, and the next reply sees it and ends the turn.
     const model = new ScriptedModel([
       reply({ toolCalls: [call("schedule_wake", { in_minutes: 0.5, why: "soon" }), call("end_turn")] }),
+      reply({ toolCalls: [call("end_turn")] }),
     ]);
     const { entity, cli } = await open(model);
     await entity.start();
@@ -1012,7 +1015,7 @@ describe("the owner's privacy list", () => {
     expect(system).not.toContain("Lantern Yard");
   });
 
-  it("shows a Lar's nature after who it is and before how it acts", async () => {
+  it("shows a Lar's nature after the fixed parts and before the constitution", async () => {
     const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
     const { entity, cli } = await open(model);
     await entity.start();
@@ -1021,8 +1024,9 @@ describe("the owner's privacy list", () => {
 
     const system = systemTextOf(model.requests[0]);
     const nature = system.indexOf("## a lar's nature");
-    expect(nature).toBeGreaterThan(system.indexOf("## who you are"));
-    expect(nature).toBeLessThan(system.indexOf("## how you act"));
+    expect(nature).toBeGreaterThan(system.indexOf("## pictures"));
+    expect(nature).toBeGreaterThan(system.indexOf("Each turn's message lists, in order:"));
+    expect(nature).toBeLessThan(system.indexOf("## constitution"));
     expect(system).toContain("You are someone, not a service.");
   });
 
@@ -2883,8 +2887,9 @@ describe("cache order: the slow sections first, then the rows that change", () =
     }
     for (const heading of ["## now", "## time", "## recall"]) expect(system).not.toContain(heading);
 
-    expect(user.startsWith("Order of this message")).toBe(true);
-    expect(user.match(/come after the new rows/g)).toHaveLength(1);
+    // The order note is fixed text, so it sits in the system text, once.
+    expect(system.match(/come after the new rows/g)).toHaveLength(1);
+    expect(user.startsWith("Recent here:")).toBe(true);
     const order = ["Recent here:", "New:", "## now", "## time", "## recall"].map((heading) => user.indexOf(heading));
     order.forEach((at, i) => {
       expect(at).toBeGreaterThan(-1);
@@ -2958,4 +2963,90 @@ describe("cache order: the slow sections first, then the rows that change", () =
     expect(eventTextsOf(users[1] ?? "").sort()).toEqual(Array.from({ length: 30 }, (_, i) => `Hall line ${i + 1}.`).sort());
     expect(users[1]).not.toContain("not shown");
   });
+
+  it("writes one call row per model call, with counts and names and no words", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    cli.send("A sentence the witness must never keep.");
+    await entity.idle();
+
+    const rows = readCallLedger(join(dir, "river.db"), 0);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ threadKind: "summoner", turnCall: 1, marks: 0 });
+    expect(rows[0]?.promptChars).toBeGreaterThan(0);
+    expect(rows[0]?.partSizes["who you are"]).toBeGreaterThan(0);
+    expect(JSON.stringify(rows)).not.toContain("never keep");
+  });
+
+  it("gives the system text and the user message named parts, with the classes in order", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const hall = feedWorld("fake");
+    const { entity } = await open(model, {}, [hall.world]);
+    await entity.start();
+    hall.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: "Hello.", wake: true });
+    await entity.idle();
+
+    const messages = model.requests[0]?.messages ?? [];
+    const system = messages[0];
+    const user = messages.at(-1);
+    expect(system?.role === "system" && system.layout?.map((entry) => entry.name)).toContain("who you are");
+    expect(user?.role === "user" && user.layout?.map((entry) => entry.name)).toContain("new");
+    for (const message of [system, user]) {
+      const ranks = (message?.role === "system" || message?.role === "user" ? message.layout ?? [] : []).map((entry) => CLASS_RANK[entry.cls]);
+      expect(ranks.length, message?.role).toBeGreaterThan(0);
+      expect(ranks, message?.role).toEqual([...ranks].sort((a, b) => a - b));
+    }
+  });
+
+  // The class honesty test (cache-layer.md, L1): each kind of change renders two requests, and every part of a class slower
+  // than the change must be byte-identical between them. A part that changes faster than its class fails and is named.
+  it("keeps every part of a slower class byte-identical across each kind of change", async () => {
+    const DAY = 86_400_000;
+    let now = Date.UTC(2026, 9, 11, 9, 0);
+    const hall = feedWorld("fake");
+    const model = new ScriptedModel(Array.from({ length: 7 }, () => reply({ toolCalls: [call("end_turn")] })));
+    const { entity } = await open(model, { nowMs: () => now }, [hall.world]);
+    await entity.start();
+    let n = 0;
+    const batch = async (count: number): Promise<void> => {
+      for (let i = 1; i <= count; i += 1) {
+        n += 1;
+        hall.emit({ world: "fake", place: HALL, actor: "mara", source: "outside", text: `Honesty line ${n}.`, wake: i === count });
+      }
+      await entity.idle();
+    };
+    await batch(50); // turn 0: no recent rows yet
+    await batch(1); // turn 1: a page of recent rows starts at row 10 (the window holds 40 rows)
+    await batch(1); // turn 2: only new rows, inside the page
+    now += DAY;
+    await batch(1); // turn 3: the clock steps a day
+    await setLife(entity, "I moved to a new town and the harbour is quiet now.");
+    await batch(1); // turn 4: a note write
+    await batch(7); // turn 5: a batch of new rows
+    await batch(1); // turn 6: the page moves on by ten rows
+
+    const parts = (index: number): MessagePart[] => partsOfRequest(model.requests[index]);
+    expect(parts(1).some((part) => part.cls === "page")).toBe(true);
+    const steps: Array<{ label: string; before: number; after: number; change: "turn" | "notes" | "page" }> = [
+      { label: "new rows inside one page", before: 1, after: 2, change: "turn" },
+      { label: "a clock step of a day", before: 2, after: 3, change: "turn" },
+      { label: "a note write", before: 3, after: 4, change: "notes" },
+      { label: "a batch of new rows", before: 4, after: 5, change: "turn" },
+      { label: "a page step", before: 5, after: 6, change: "page" },
+    ];
+    for (const step of steps) {
+      expect(changedBeyond(parts(step.before), parts(step.after), step.change), step.label).toEqual([]);
+    }
+    // The checker can fail: a fixed part that changes on a turn is named.
+    const broken = parts(1).map((part) => (part.cls === "fixed" ? { ...part, text: `${part.text} changed` } : part));
+    expect(changedBeyond(parts(1), broken, "turn")).toContain("who you are");
+  });
 });
+
+/** The parts of one request, system then user, as the honesty check reads them. */
+function partsOfRequest(request: ModelRequest | undefined): MessagePart[] {
+  return (request?.messages ?? []).flatMap((message) =>
+    (message.role === "system" || (message.role === "user" && message.layout !== undefined)) ? partsOfMessage(message) : [],
+  );
+}

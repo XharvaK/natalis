@@ -13,6 +13,8 @@ export type TimeFactsInput = {
   lastTurnHereMs?: number;
   lastOwnerMessageMs?: number;
   nextWakes?: WakeFact[];
+  /** When the Lar was summoned. Given, the section says its age. */
+  bornMs?: number;
 };
 
 export function timeFacts(input: TimeFactsInput): ContextSection {
@@ -22,6 +24,7 @@ export function timeFacts(input: TimeFactsInput): ContextSection {
 
   const lines: string[] = [];
   lines.push(`Now: ${stamp(formatter, now)} (${zone}).`);
+  if (input.bornMs !== undefined) lines.push(`Your age: ${ageOf(input.bornMs, now)}.`);
   lines.push(
     input.lastTurnHereMs === undefined
       ? "You have no earlier turn here."
@@ -59,6 +62,20 @@ export function formatDuration(ms: number): string {
   if (days > 0) return hours > 0 ? `${days} d ${hours} h` : `${days} d`;
   if (hours > 0) return mins > 0 ? `${hours} h ${mins} min` : `${hours} h`;
   return `${mins} min`;
+}
+
+/** Age in whole days, weeks, months or years. Coarse on purpose: it changes at most once a day. */
+export function ageOf(bornMs: number, nowMs: number): string {
+  const days = Math.max(0, Math.floor((nowMs - bornMs) / 86_400_000));
+  if (days < 1) return "less than a day";
+  if (days < 14) return plural(days, "day");
+  if (days < 61) return plural(Math.floor(days / 7), "week");
+  if (days < 730) return plural(Math.floor(days / 30.44), "month");
+  return plural(Math.floor(days / 365.25), "year");
+}
+
+function plural(n: number, unit: string): string {
+  return `${n} ${unit}${n === 1 ? "" : "s"}`;
 }
 
 function hostZone(): string {
