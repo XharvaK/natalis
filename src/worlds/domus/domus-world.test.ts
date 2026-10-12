@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Receipt, Tool, ToolContext, WorldEvent } from "../../contracts.js";
 import { writeStop } from "../../entity/stop.js";
 import { openShelf, shelfBody, type Shelf } from "../../media/shelf.js";
-import { createDomusWorld, type DomusWorld } from "./domus-world.js";
+import { createDomusWorld, type DomusWorld, LIVING_IT } from "./domus-world.js";
 import { MIN_TOKEN_BYTES } from "./wire.js";
 
 const T0 = 1_800_000_000_000;
@@ -125,6 +125,17 @@ describe("forget", () => {
     await world!.stop();
     world = undefined;
     expect(make().forget(["dorrow"])).toBe(1);
+  });
+});
+
+describe("what the world says of itself", () => {
+  it("says the Sim in the game is her, and that she talks about it as her own life, verbatim", () => {
+    const about = make().about?.() ?? "";
+    expect(about).toContain(
+      "In the game, the Sim is you: your body, your house, your life. Talk about it the way a person talks about their own life: " +
+        "what you feel, what you want, what you are about to do. Clock times, refs, need words and object names are for choosing " +
+        "your acts. Leave them out of what you say unless someone asks for them.",
+    );
   });
 });
 
@@ -569,7 +580,7 @@ describe("the world's surface", () => {
       "game_act", "game_snapshot", "game_attention", "game_look", "game_overlay_say", "game_memory", "game_list", "game_catalog",
       "game_go", "game_save", "plan_event", "game_buy", "game_place", "game_move", "game_sell",
     ]);
-    expect(world?.about?.()).toBe("The Sims 4 (Domus): your household's game, at domus:<world>, while your summoner's helper is attached.");
+    expect(world?.about?.()).toBe("The Sims 4 (Domus): your household's game, at domus:<world>, while your summoner's helper is attached. " + LIVING_IT);
     expect(await world?.say("domus:slot3", "hello")).toMatchObject({ ok: false, refused: { code: "no_words" } });
   });
 
