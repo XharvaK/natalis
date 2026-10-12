@@ -186,6 +186,10 @@ Natalis deploys first and accepts every new key and route before any helper send
 **Verb acts.**
 - `SyncAct` gains `verb` (one of `go`, `save`, `event`, `buy`, `place`, `move`, `sell`) and `args` (the probe
   command's args without `act_id`). A verb act carries no `guid64`, and its `object_id` is its target id or `"0"`.
+- A `place` arrives from Natalis as `{rel, target_id, facing?}` (on, beside, instead) or `{rel, room, facing?}` (wall,
+  in), where `room` is the room's name as the view named it. The helper maps the name to the probe's `room_id` with
+  its own room labels. A name that maps to no room, or to more than one, is not sent: it is rejected `UNKNOWN_ROOM`,
+  `by: helper`.
 - An act with `sim_id` (D4.1) carries it as `sim_id` beside `object_id` and `guid64`.
 - The helper gates each verb on the probe: `PROBE_NEEDS` for every verb, and for `sim_id`, is 2.40.0.
 - A sync event of a verb act may carry `detail.result`: the helper's words for the probe's result facts, at most 400
