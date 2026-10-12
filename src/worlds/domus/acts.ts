@@ -209,9 +209,7 @@ export function requestVerb(db: DatabaseSync, input: VerbInput): VerbResult {
       }
       dropPlanned(db, { attachment: input.attachment, reason: "replaced", notify: false, nowMs: input.nowMs });
     } else {
-      const edits = Number((db.prepare(`SELECT COUNT(*) AS n FROM acts WHERE turn_id = ? AND verb IN (${HOME_VERB_SQL})`)
-        .get(input.turnId) as Row).n);
-      if (edits >= HOME_EDITS_PER_TURN) return { ok: false as const, code: "home_edits_full" as const };
+      if (homeEditsIn(db, input.turnId) >= HOME_EDITS_PER_TURN) return { ok: false as const, code: "home_edits_full" as const };
     }
     const actId = randomUUID().replaceAll("-", "");
     insertAct(db, {
@@ -225,8 +223,13 @@ export function requestVerb(db: DatabaseSync, input: VerbInput): VerbResult {
 }
 
 /** The home edits a turn has made so far (refused ones are not kept, so these are the ones the game was asked for). */
+/**
+ * The home edits of a turn that count: each request she made, except one the game or the helper refused (rejected) and one
+ * that expired. A refused edit frees its slot.
+ */
 export function homeEditsIn(db: DatabaseSync, turnId: string): number {
-  return Number((db.prepare(`SELECT COUNT(*) AS n FROM acts WHERE turn_id = ? AND verb IN (${HOME_VERB_SQL})`).get(turnId) as Row).n);
+  return Number((db.prepare(`SELECT COUNT(*) AS n FROM acts WHERE turn_id = ? AND verb IN (${HOME_VERB_SQL})
+    AND state NOT IN ('rejected', 'expired')`).get(turnId) as Row).n);
 }
 
 /**

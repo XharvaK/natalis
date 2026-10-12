@@ -177,6 +177,19 @@ describe("home edits", () => {
     expect(await call("game_buy", { item: "c7", place: shelfPlace }, "t-home")).toMatchObject({ ok: false, refused: { code: "home_edits_full" } });
   });
 
+  it("does not count an edit the game or the helper refused, so a refused one frees its slot", async () => {
+    seedView([]);
+    for (let index = 1; index <= 6; index++) {
+      expect(await call("game_buy", { item: `c${index}`, place: shelfPlace }, "t-refused")).toMatchObject({ ok: true });
+    }
+    expect(await call("game_buy", { item: "c7", place: shelfPlace }, "t-refused")).toMatchObject({ ok: false, refused: { code: "home_edits_full" } });
+    const pulled = syncActs(db, { attachment: HELPER, events: [], nowMs: clock });
+    const refusedAct = pulled.acts[0]?.act_id as string;
+    syncActs(db, { attachment: HELPER, nowMs: clock + 1000, events: [{ actId: refusedAct, phase: "rejected", atMs: clock, detail: { code: "NO_SPOT" } }] });
+    expect(await call("game_buy", { item: "c7", place: shelfPlace }, "t-refused")).toMatchObject({ ok: true });
+    expect(await call("game_buy", { item: "c8", place: shelfPlace }, "t-refused")).toMatchObject({ ok: false, refused: { code: "home_edits_full" } });
+  });
+
   it("buys a catalogue item beside a thing, with its label in the game's words", async () => {
     seedView([]);
     const receipt = await call("game_buy", { item: "c2", place: { beside: "t9" }, max_price: 200 });
