@@ -104,4 +104,13 @@ describe("checking an answer", () => {
     expect(answerFor(restricted, { text: { name: "Ilse-May" } })).toMatchObject({ refused: { code: "text_restricted" } });
     expect(answerFor(restricted, { text: { name: "Ilse May" } })).toMatchObject({ stored: true });
   });
+
+  it("takes a row whose guid carries a variant as the game's own id, opaque, and refuses a guid of another shape", () => {
+    const found = question();
+    const withVariant: Found = { object: { ...found.object, acts: [{ ref: "a1", guid64: "501v2", text: "Red" }, found.object.acts[2]!] }, act: found.object.acts[2]! };
+    const claim = { rows: [{ option: "a1" }], text: { title: "Test" } };
+    expect(answerFor(withVariant, claim)).toMatchObject({ stored: true, json: expect.stringContaining('"option_id":"501v2"') });
+    const odd: Found = { object: { ...found.object, acts: [{ ref: "a1", guid64: "red", text: "Red" }, found.object.acts[2]!] }, act: found.object.acts[2]! };
+    expect(answerFor(odd, claim)).toMatchObject({ refused: { code: "not_a_row" } });
+  });
 });

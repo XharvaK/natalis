@@ -2,7 +2,7 @@
 // Checked against the answer_rules the game's question carried in the newest view. Anything wrong is refused
 // with a plain sentence; nothing is trimmed, guessed or substituted. Ported from the old listener's acts.
 
-import { isRecord } from "./wire.js";
+import { GUID64_PATTERN, isRecord } from "./wire.js";
 
 /** Answer bounds: rows and fields per answer, the count per row, the length of one typed value (characters). */
 export const ANSWER_ROWS = 16;
@@ -35,6 +35,8 @@ export type OptionObject = {
   room?: string;
   /** True for an object near her (the helper's own reckoning). */
   near?: boolean;
+  /** True for a Sim (a person): the only kind of option her words to them go with (S1). */
+  person?: boolean;
 };
 export type Found = { object: OptionObject; act: OptionAct };
 /** The answer as it is kept and sent to the helper: rows by the game's own option ids, counts resolved, text as typed. */
@@ -161,7 +163,7 @@ export function answerFor(found: Found, answer: AnswerClaim): AnswerResult {
     if (!target || typeof target.guid64 !== "string" || typeof target.text !== "string") {
       return refuse("row_not_in_question", `${row.option} is not a row of this question.`);
     }
-    if (!/^[0-9]+$/.test(target.guid64)) return refuse("not_a_row", `${row.option} is not a row the game can take.`);
+    if (!GUID64_PATTERN.test(target.guid64)) return refuse("not_a_row", `${row.option} is not a row the game can take.`);
     if (picked.has(target.ref)) return refuse("row_repeated", `${row.option} is named more than once.`);
     picked.add(target.ref);
     if (row.count !== undefined) {

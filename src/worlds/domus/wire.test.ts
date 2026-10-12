@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  BODY_LIMIT, canonicalJson, gameThreadOf, isActPhase, MAX_SKEW_MS, MAX_WINDOW_MS, MIN_TOKEN_BYTES, observationDigest,
+  BODY_LIMIT, canonicalJson, GUID64_PATTERN, gameThreadOf, isActPhase, MAX_SKEW_MS, MAX_WINDOW_MS, MIN_TOKEN_BYTES, observationDigest,
   MEMORY_BODY_LIMIT, parseActSync, parseFeed, parseHeartbeat, parseMemory, parseObservation, parseSnapshot, parseUndo, tokenProblem, WireError,
 } from "./wire.js";
 
@@ -173,10 +173,34 @@ describe("acts sync and snapshot (v1)", () => {
     expect(refusal(() => parseActSync(many)).code).toBe("invalid_body");
   });
 
-  it("knows the seven phases and no others", () => {
-    for (const phase of ["received", "accepted", "rejected", "pushed", "finished", "unknown", "expired"]) expect(isActPhase(phase)).toBe(true);
+  it("knows the nine phases, the two not final ones (waiting, noted) among them, and no others", () => {
+    for (const phase of ["received", "accepted", "rejected", "pushed", "waiting", "noted", "finished", "unknown", "expired"]) {
+      expect(isActPhase(phase)).toBe(true);
+    }
     expect(isActPhase("requested")).toBe(false);
     expect(isActPhase(undefined)).toBe(false);
+  });
+
+  it("takes a waiting or noted event as it is sent, with its code and window in the detail", () => {
+    const parsed = parseActSync({
+      v: 1, helper_session: "h1",
+      events: [
+        { act_id: "a1", phase: "waiting", at_ms: NOW, detail: { code: "WINDOW_OPEN", window: "dialog 42" } },
+        { act_id: "a1", phase: "noted", at_ms: NOW, detail: { code: "SCREEN_WITHHELD" } },
+      ],
+    });
+    expect(parsed.events.map((event) => event.phase)).toEqual(["waiting", "noted"]);
+    expect(parsed.events[0]?.detail).toEqual({ code: "WINDOW_OPEN", window: "dialog 42" });
+  });
+
+  it("accepts a plain guid64 and one with a variant, and refuses any other shape", () => {
+    expect(GUID64_PATTERN.test("1234567890")).toBe(true);
+    expect(GUID64_PATTERN.test("1234567890v2")).toBe(true);
+    expect(GUID64_PATTERN.test("1234v123")).toBe(true);
+    expect(GUID64_PATTERN.test("1234v1234")).toBe(false);
+    expect(GUID64_PATTERN.test("ok")).toBe(false);
+    expect(GUID64_PATTERN.test("12v")).toBe(false);
+    expect(GUID64_PATTERN.test("")).toBe(false);
   });
 
   it("accepts exactly one of a picture or a failure, and checks the failure's word", () => {
