@@ -175,7 +175,7 @@ describe("observations", () => {
     await attach();
     await call("/domus/observation", viewBody({ portrait: { zone: { room_label: "Test kitchen" }, paused: true, mood: "Flirty" } }));
     expect(events).toHaveLength(1);
-    expect(events[0]?.text?.startsWith("Your body now:\nYour attention: every change.\nThe game is attached.\nThe game is paused.\nRoom: Test kitchen.\nMood: flirty.\n\nThe game (slot3) shows:\n")).toBe(true);
+    expect(events[0]?.text?.startsWith("Your body now:\nYour attention: every change.\nThe game is attached.\nThe game is paused.\nRoom: Test kitchen.\nMood: flirty.\n\nThe game shows:\n")).toBe(true);
   });
 
   it("gives the full view her You section, and an older view's brief none of it", async () => {
@@ -205,7 +205,7 @@ describe("observations", () => {
     expect(events).toHaveLength(1);
     const [event] = events;
     expect(event).toMatchObject({ world: "domus", place: "domus:slot3", thread: "domus:slot3", actor: "game", source: "outside", wake: true, atMs: T0 - 1000 });
-    expect(event?.text).toContain("The game (slot3) shows:");
+    expect(event?.text).toContain("The game shows:");
     expect(event?.text).toContain("- Pim Dorrow arrived.");
     expect(event?.text).toContain("- Test kettle (here, 2.0 m): a1 Boil water; a2 Tidy up");
     expect(event?.data).toMatchObject({ observationId: "helper-1.1", world: "slot3", options: VIEW });
@@ -216,7 +216,7 @@ describe("observations", () => {
     const day = { v: 1, from_minute: 0, to_minute: 1440, frames: [{ day: 3, acts: 1, slept: ["23:10:00.000 day:2 week:0"], woke: [], company: [], body_on_its_own: {} }], acts: [], also: {}, omitted: 0 };
     await call("/domus/observation", viewBody({ percepts: [{ kind: "sleep_onset", salience: 1, facts: {} }], day }));
     expect(events[0]?.text).toContain("Your body now:");
-    expect(events[0]?.text).toContain("\n\nThe game's record of your day (facts only):\n- Day 3: slept 23:10.\n\nThe game (slot3) shows:\n");
+    expect(events[0]?.text).toContain("\n\nThe game's record of your day (facts only):\n- Day 3: slept 23:10.\n\nThe game shows:\n");
     expect(events[0]?.wake).toBe(true);
     await call("/domus/observation", viewBody());
     expect(events[1]?.brief).toBe("- Pim Dorrow arrived.");
@@ -612,7 +612,7 @@ describe("the game's attachment, in the views and on the game thread", () => {
   it("starts a view with 'The game is attached.' while its helper is attached", async () => {
     await call("/domus/heartbeat", heartbeat(true, T0));
     await call("/domus/observation", viewBody());
-    expect(events[0]?.text?.startsWith("Your body now:\nYour attention: every change.\nThe game is attached.\n\nThe game (slot3) shows:\n")).toBe(true);
+    expect(events[0]?.text?.startsWith("Your body now:\nYour attention: every change.\nThe game is attached.\n\nThe game shows:\n")).toBe(true);
   });
 
   it("says the game is not attached, and when it was last seen, in a view that arrives after the helper went quiet", async () => {
@@ -647,14 +647,14 @@ describe("the game's attachment, in the views and on the game thread", () => {
 });
 
 describe("views of a whole lot: the choices, and what the game left out", () => {
-  it("says the choices are the same as in the last view when the next view on the thread offers the same ones", async () => {
+  it("lists the choices in full on the next view too, when they did not change", async () => {
     await attach();
     await call("/domus/observation", viewBody());
     await call("/domus/observation", viewBody());
     expect(events).toHaveLength(2);
     expect(events[0]?.text).toContain("Choices you can name with game_act, by ref:");
-    expect(events[1]?.text).toContain("Choices: the same as in the last view.");
-    expect(events[1]?.text).not.toContain("Choices you can name");
+    expect(events[1]?.text).toContain("Choices you can name with game_act, by ref:");
+    expect(events[1]?.text).not.toContain("the same as in the last view");
   });
 
   it("lists the choices in full again when the choices changed, and says what the game left out", async () => {
@@ -665,7 +665,7 @@ describe("views of a whole lot: the choices, and what the game left out", () => 
       options_cut: { objects: 2, rooms: ["Test garden"] },
     }));
     expect(events[1]?.text).toContain("- Test rug: a7 Sit");
-    expect(events[1]?.text?.endsWith("The game left out 2 more choice object(s) on the lot, in Test garden.")).toBe(true);
+    expect(events[1]?.text?.endsWith("2 more things on the lot are not listed, to keep this view short.")).toBe(true);
     expect(events[1]?.data).toMatchObject({ optionsCut: { objects: 2, rooms: ["Test garden"] } });
   });
 });

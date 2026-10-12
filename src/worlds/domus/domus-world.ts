@@ -141,15 +141,14 @@ export const GAME_VIEW = "domus";
 /**
  * An admitted view becomes one event on its game thread: outside text (the game's), with the choices and their refs.
  * It wakes her only when her attention says so (wake); the body block starts with her attention line. A copy for another
- * thread (onThread: the thread that asked for a look) carries no attention line and no "same choices" shorthand.
+ * thread (onThread: the thread that asked for a look) carries no attention line.
  */
 function observationEvent(
-  parsed: ParsedObservation, attachment: AttachmentNow, lastChoices: string | undefined, attention: { line?: string; wake: boolean },
+  parsed: ParsedObservation, attachment: AttachmentNow, attention: { line?: string; wake: boolean },
   onThread?: string, counts?: string,
 ): WorldEvent {
   const gameThread = gameThreadOf(parsed.fields.world);
   const thread = onThread ?? gameThread;
-  const alias = gameThread.slice(DOMUS_WORLD_ID.length + 1);
   const options = optionsOf(parsed.options ?? []);
   const data: Record<string, unknown> = {
     observationId: parsed.observationId,
@@ -167,7 +166,7 @@ function observationEvent(
     actor: "game",
     source: "outside",
     text: renderView({
-      world: alias, percepts: parsed.percepts, options, portrait: parsed.normalized.portrait, attachment, lastChoices, optionsCut: parsed.optionsCut,
+      percepts: parsed.percepts, options, portrait: parsed.normalized.portrait, attachment, optionsCut: parsed.optionsCut,
       choicesPending: parsed.choicesPending,
       attention: attention.line, day: parsed.normalized.day, counts,
     }),
@@ -402,14 +401,14 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       });
       const counts = listCountLine(requireDb(), parsed.fields.attachment);
       deliver(unchanged === undefined
-        ? observationEvent(parsed, attachmentAt(now), choicesShown.get(thread), attention, undefined, counts)
+        ? observationEvent(parsed, attachmentAt(now), attention, undefined, counts)
         : unchangedLookEvent(parsed, thread, unchanged, attention.wake));
       choicesShown.set(thread, choicesSignature(optionsOf(parsed.options ?? [])));
       // A look view answers the looks asked for this helper session, from any thread: each thread that asked hears it too.
       if (parsed.percepts.some((item) => item.kind === "look")) {
         for (const asker of takeLookAskers(requireDb(), parsed.fields.attachment, now)) {
           if (asker === thread) continue;
-          deliver(observationEvent(parsed, attachmentAt(now), undefined, { wake: true }, asker, counts));
+          deliver(observationEvent(parsed, attachmentAt(now), { wake: true }, asker, counts));
         }
       }
     }

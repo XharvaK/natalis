@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bodyLines } from "./body.js";
+import { bodyLines, needFeeling } from "./body.js";
 import { renderView, viewBrief } from "./options.js";
 
 const BUSY = {
@@ -29,7 +29,7 @@ const BUSY = {
   ],
   addressed_by: [{ by: "101", interaction: "<class 'sims4.tuning.instances.social_chat'>" }, { by: "999", interaction: "greet" }],
   asked: [
-    { dialog_id: "d1", title: "Pick a recipe", text: "Choose one.", choices: [], answers_itself: false, held: true, whose: "hers" },
+    { dialog_id: "d1", title: "Pick a recipe", text: "Choose one.", choices: [], answers_itself: false, held: true, whose: "yours" },
     { dialog_id: "d2", title: "Planner", text: null, answers_itself: false, held: false, whose: "the User's" },
   ],
   windows: [{ event: "window_opened", code: "held", ago_min: 3 }],
@@ -96,10 +96,10 @@ describe("her body now", () => {
   });
 
   it("says any other need as '<need> is ...' by grade", () => {
-    expect(feltBy("comfort", 50)).toContain("Comfort is getting low.");
-    expect(feltBy("comfort", 30)).toContain("Comfort is low.");
-    expect(feltBy("comfort", 10)).toContain("Comfort is very low.");
-    expect(feltBy("comfort", 2)).toContain("Comfort is about to give out.");
+    expect(feltBy("comfort", 50)).toContain("Comfort is starting to bother you.");
+    expect(feltBy("comfort", 30)).toContain("Comfort is bothering you.");
+    expect(feltBy("comfort", 10)).toContain("Comfort is bothering you badly.");
+    expect(feltBy("comfort", 2)).toContain("Comfort is about to overwhelm you.");
   });
 
   it("grades a need by its band when its value is null: distress is urgent, low a need, ok nothing", () => {
@@ -138,12 +138,12 @@ describe("her body now", () => {
     expect(lines).toContain("Build mode is on.");
     expect(lines).toContain("A fire is burning on the lot.");
     expect(lines).toContain("Your summoner is playing another Sim of the household, so your acts are refused for now.");
-    expect(lines).toContain("The company list missed someone in this sample.");
+    expect(lines).toContain("The list of people with you may be missing someone.");
     expect(lines).toContain("More Sims are nearby than the list shows.");
     expect(lines).toContain("This is your home.");
     expect(lines).toContain("Household here: Test Parent.");
     expect(lines).toContain("2 more of the household is out of sight.");
-    expect(lines).toContain("Recent windows: window opened (held), 3 min ago.");
+    expect(lines).toContain("Recent pop-ups: window opened, 3 min ago.");
     expect(lines).toContain("Near you: fridge (spoiled).");
     expect(lines).toContain("Situations: guest.");
     expect(bodyLines({})).toEqual([]);
@@ -167,9 +167,9 @@ describe("the view starts with her body", () => {
       percepts: [{ kind: "gap", salience: 1, facts: {} }],
       options: [],
     });
-    expect(withBody.startsWith("Your body now:\nThe game is paused.\nRoom: Test kitchen.\n\nThe game (slot3) shows:\n")).toBe(true);
+    expect(withBody.startsWith("Your body now:\nThe game is paused.\nRoom: Test kitchen.\n\nThe game shows:\n")).toBe(true);
     const without = renderView({ world: "slot3", percepts: [{ kind: "gap", salience: 1, facts: {} }], options: [] });
-    expect(without.startsWith("The game (slot3) shows:")).toBe(true);
+    expect(without.startsWith("The game shows:")).toBe(true);
   });
 });
 
@@ -191,7 +191,7 @@ describe("her attention, the first line of the block", () => {
       options: [],
       attention: "Your attention: when something calls you.",
     });
-    expect(text.startsWith("Your body now:\nYour attention: when something calls you.\nThe game is paused.\n\nThe game (slot3) shows:\n")).toBe(true);
+    expect(text.startsWith("Your body now:\nYour attention: when something calls you.\nThe game is paused.\n\nThe game shows:\n")).toBe(true);
   });
 });
 
@@ -215,7 +215,7 @@ describe("the You section of her body, in the full view", () => {
       "You are Cheerful, Loyal.",
       "Skills: Cooking 3, Piano 5.",
       "Money: §1,234.",
-      "Job: Head Chef (Chef), level 3; at work now.",
+      "Job: Head Chef, level 3; at work now.",
       "Wants: Learn to cook (2/3, until 18:00) [Practise at the stove]; Feel loved (locked).",
       "Fears: Being alone.",
       "Age: young adult.",
@@ -230,9 +230,9 @@ describe("the You section of her body, in the full view", () => {
     ]);
   });
 
-  it("says a job with no title by its job, with no empty brackets, and says so when she is not at work", () => {
-    expect(bodyLines({ self: { jobs: [{ job: "Chef", title: null, level: 3, at_work: true }] } })).toEqual(["Job: Chef, level 3; at work now."]);
-    expect(bodyLines({ self: { jobs: [{ job: "Chef", title: "Head Chef", level: 3, at_work: false }] } })).toEqual(["Job: Head Chef (Chef), level 3."]);
+  it("says a job with no title as a job, and says so when she is not at work", () => {
+    expect(bodyLines({ self: { jobs: [{ job: "Chef", title: null, level: 3, at_work: true }] } })).toEqual(["Job: a job, level 3; at work now."]);
+    expect(bodyLines({ self: { jobs: [{ job: "Chef", title: "Head Chef", level: 3, at_work: false }] } })).toEqual(["Job: Head Chef, level 3."]);
   });
 
   it("says No job. for an empty list of jobs, and nothing when the jobs are absent", () => {
@@ -385,16 +385,16 @@ describe("the situations she is in, in plain words, and game tokens kept out of 
     });
     expect(lines.join("\n")).not.toMatch(/[{}]/);
     expect(lines).toContain("Mood: happy.");
-    expect(lines).toContain("Recent windows: tasks, 2 min ago.");
+    expect(lines).toContain("Recent pop-ups: tasks, 2 min ago.");
   });
 });
 
 describe("W12: the time a held window has left, and her role and relationship with the people she sees", () => {
   it("says how long a held window has left before the User is handed it (A9), and says nothing when the game sent no time", () => {
-    expect(bodyLines({ asked: [{ whose: "hers", held: true, title: "Pick", hold_left_s: 42 }] })).toContain("Open for you: Pick (held for you, 42 s left).");
-    expect(bodyLines({ asked: [{ whose: "hers", held: true, title: "Pick", hold_left_s: 130 }] })).toContain("Open for you: Pick (held for you, 3 min left).");
-    expect(bodyLines({ asked: [{ whose: "hers", held: true, title: "Pick" }] })).toContain("Open for you: Pick (held for you).");
-    expect(bodyLines({ asked: [{ whose: "hers", held: false, title: "Pick", hold_left_s: 42 }] })).toContain("Open for you: Pick (not held for you).");
+    expect(bodyLines({ asked: [{ whose: "yours", held: true, title: "Pick", hold_left_s: 42 }] })).toContain("Open for you: Pick (held for you, 42 s left).");
+    expect(bodyLines({ asked: [{ whose: "yours", held: true, title: "Pick", hold_left_s: 130 }] })).toContain("Open for you: Pick (held for you, 3 min left).");
+    expect(bodyLines({ asked: [{ whose: "yours", held: true, title: "Pick" }] })).toContain("Open for you: Pick (held for you).");
+    expect(bodyLines({ asked: [{ whose: "yours", held: false, title: "Pick", hold_left_s: 42 }] })).toContain("Open for you: Pick (not held for you).");
   });
 
   it("names her role with a Sim she can see, and what the game holds between them (E2)", () => {
@@ -412,5 +412,22 @@ describe("W12: the time a held window has left, and her role and relationship wi
 
   it("says nothing extra for a Sim with no role and no relationship, as before", () => {
     expect(bodyLines({ company: [{ id: "1", name: "Ilse May", distance_m: 3, doing: "gardening" }] })).toContain("With you: Ilse May (3 m away, gardening).");
+  });
+});
+
+describe("the body block after the third audit: windows, names and needs", () => {
+  it("reads a window the helper marks as hers with whose \"yours\", in the helper's shape", () => {
+    // The helper's own dialog shape (observation.py): whose is "yours" for her windows and "the User's" for the others (R4).
+    const helperShaped = { dialog_id: "d9", title: "Pick a recipe", text: "Choose one.", choices: [], answers_itself: true, held: true, hold_left_s: 42, whose: "yours" };
+    expect(bodyLines({ asked: [helperShaped] })).toContain("Open for you: Pick a recipe (held for you, 42 s left). Choose one. It answers itself.");
+  });
+
+  it("names a near thing in the game's capitals, and says a need the table does not name without its prefix", () => {
+    expect(bodyLines({ near_conditions: [{ object: "Test Stove", states: [] }] })).toContain("Near you: Test Stove.");
+    expect(needFeeling("Motive_Zing", 1)).toBe("Zing is starting to bother you.");
+  });
+
+  it("says a pop-up with its name and its age, and no window code", () => {
+    expect(bodyLines({ windows: [{ event: "dialog_shown", code: "ev 1", ago_min: 2 }] })).toContain("Recent pop-ups: dialog shown, 2 min ago.");
   });
 });

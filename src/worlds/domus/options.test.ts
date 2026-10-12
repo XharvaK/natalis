@@ -42,10 +42,10 @@ describe("rendering a view", () => {
       percepts: [{ kind: "presence", salience: 0.9, facts: { bucket: "arrived", name: "Pim Dorrow", count: 2 } }],
       options: TABLE,
     });
-    expect(text).toContain("The game (slot3) shows:");
+    expect(text).toContain("The game shows:");
     expect(text).toContain("Choices you can name with game_act, by ref:");
     expect(text).toContain("- Test kettle (here, 2.0 m): a1 Boil water; a2 Tidy up [a screen only you can use]");
-    expect(text).toContain("- Test bench [no way to get there from here]: a3 Sit down");
+    expect(text).toContain("Other rooms:\n  No way to get there from here.\n- Test bench: a3 Sit down");
   });
 
   it("says each percept kind in plain words, with the game's own names humanised and no numbers for needs or rooms", () => {
@@ -80,9 +80,9 @@ describe("rendering a view", () => {
     expect(text).not.toContain("Fun");
     expect(text).toContain("- You're about to fall asleep where you stand.");
     expect(text).toContain("- Mood: flirty now (was sad).");
-    expect(text).toContain("- Started: mirror gussy up (your act).");
-    expect(text).toContain("- Ended: sim stand (the game). Result code finished, detail ok.");
-    expect(text).toContain("- Started: y (the game, on its own).");
+    expect(text).toContain("- Mirror gussy up started (your act).");
+    expect(text).toContain("- Sim stand ended (the game).");
+    expect(text).toContain("- Y started (the game, on its own).");
     expect(text).toContain("- Mara Quill arrived, 49 m away, sim stand (guest).");
     expect(text).toContain("- Tobin Ash left.");
     expect(text).toContain("- You moved rooms.");
@@ -142,7 +142,7 @@ describe("rendering the choices of a whole lot", () => {
     expect(text).toContain("Test attic:\n- Test lamp: a3 All lights on");
     expect(text).toContain("Other rooms:\n- Test door: a4 Open");
     expect(text.indexOf("Test hall:")).toBeLessThan(text.indexOf("Test attic:"));
-    expect(text.endsWith("The game left out 3 more choice object(s) on the lot, in Test garden.")).toBe(true);
+    expect(text.endsWith("3 more things on the lot are not listed, to keep this view short.")).toBe(true);
   });
 
   it("says the game's choices are still coming, instead of a choices block, until its first whole menu", () => {
@@ -159,7 +159,7 @@ describe("rendering the choices of a whole lot", () => {
     const queue: OptionObject = { object: "What you are doing", object_id: "queue:her", where: "your queue", acts: [{ ref: "a5", guid64: "5", text: "Sit down" }] };
     const text = renderView({ world: "slot3", percepts: [], options: [LOT[0]!, queue, LOT[1]!] });
     const near = text.indexOf("- Test fridge");
-    const doing = text.indexOf("What you are doing now:\n- What you are doing (your queue): a5 Sit down");
+    const doing = text.indexOf("What you are doing now:\n- a5 Sit down");
     const elsewhere = text.indexOf("Elsewhere on the lot:");
     expect(near).toBeGreaterThan(-1);
     expect(near).toBeLessThan(doing);
@@ -173,23 +173,17 @@ describe("rendering the choices of a whole lot", () => {
     expect(renderView({ world: "slot3", percepts: [], options: [LOT[0]!] })).not.toContain("Elsewhere on the lot:");
   });
 
-  it("says the rooms it left out as not named when the game named none", () => {
+  it("says how many things the game left out, when it named no rooms", () => {
     const text = renderView({ world: "slot3", percepts: [], options: LOT, optionsCut: { objects: 2, rooms: [] } });
-    expect(text).toContain("The game left out 2 more choice object(s) on the lot, in rooms it did not name.");
+    expect(text).toContain("2 more things on the lot are not listed, to keep this view short.");
   });
 
-  it("gives the choices in full only when they differ from the last view on the thread, ignoring distances", () => {
-    const sig = choicesSignature(LOT);
+  it("lists the choices in full on every view, ignoring distances, and says what the game left out", () => {
     const moved = LOT.map((object) => ({ ...object, where: object.where ? "9 m" : object.where }));
-    const same = renderView({ world: "slot3", percepts: [], options: moved, lastChoices: sig, optionsCut: { objects: 1, rooms: ["Test garden"] } });
-    expect(same).toContain("Choices: the same as in the last view.");
-    expect(same).not.toContain("Test mailbox");
-    expect(same.endsWith("The game left out 1 more choice object(s) on the lot, in Test garden.")).toBe(true);
-    const grown = renderView({
-      world: "slot3", percepts: [], options: [...LOT, { object: "Test rug", object_id: "o5", acts: [{ ref: "a5", guid64: "5", text: "Sit" }] }], lastChoices: sig,
-    });
-    expect(grown).toContain("Test rug");
-    expect(grown).not.toContain("the same as in the last view");
+    const text = renderView({ world: "slot3", percepts: [], options: moved, optionsCut: { objects: 1, rooms: ["Test garden"] } });
+    expect(text).toContain("Test mailbox");
+    expect(text).not.toContain("the same as in the last view");
+    expect(text.endsWith("1 more thing on the lot is not listed, to keep this view short.")).toBe(true);
     expect(renderView({ world: "slot3", percepts: [], options: LOT })).toContain("Test mailbox");
   });
 
@@ -289,7 +283,7 @@ describe("the game's notices and her own changes, as plain sentences", () => {
   it("says a need change as the feeling it is, and an ok need not at all", () => {
     const need = (facts: Record<string, unknown>) => perceptLine({ kind: "need", salience: 0.5, facts });
     expect(need({ subject: "Bladder", band: "low" })).toBe("- You need the toilet.");
-    expect(need({ subject: "Comfort", band: "distress" })).toBe("- Comfort is very low.");
+    expect(need({ subject: "Comfort", band: "distress" })).toBe("- Comfort is bothering you badly.");
     expect(need({ subject: "hunger", value: 12 })).toBe("- You're starving.");
     expect(need({ subject: "hunger", band: "ok" })).toBeUndefined();
     expect(need({ band: "low" })).toBeUndefined();
@@ -354,7 +348,7 @@ describe("the game's record of the day in a view", () => {
     const text = renderView({
       world: "slot3", percepts: [{ kind: "sleep_onset", salience: 1, facts: {} }], options: [], portrait: { mood: "Zesty" }, day: DAY,
     });
-    expect(text).toBe(`Your body now:\nMood: zesty.\n\n${SECTION}\n\nThe game (slot3) shows:\n- You fell asleep.\n\nThe game offers no choices in this view.`);
+    expect(text).toBe(`Your body now:\nMood: zesty.\n\n${SECTION}\n\nThe game shows:\n- You fell asleep.\n\nThe game offers no choices in this view.`);
   });
 
   it("is not shown when the view carries no record, so the view reads as before", () => {
@@ -368,13 +362,13 @@ describe("the game's record of the day in a view", () => {
     expect(viewBrief([])).toBe("An earlier view.");
   });
 
-  it("says a change to your life line, and the room you moved to, in the second person", () => {
+  it("says a change to the save, and the room you moved to, in the second person", () => {
     const text = viewBrief([
       { kind: "env", salience: 0, facts: { from_room: "Test Hall" } },
       { kind: "lineage", salience: 0, facts: { bucket: "Test Bucket", reason: "Test reason" } },
     ]);
     expect(text).toContain("- You moved rooms.");
-    expect(text).toContain("Your life line changed (");
+    expect(text).toContain("- The game's save changed.");
     expect(text).not.toMatch(/\b(She|she|Her|her)\b/);
   });
 });
@@ -389,7 +383,7 @@ describe("an option object's refusals, states and left-out acts (T3, T2)", () =>
   it("renders the states and the reasons as indented lines under the object, in that order", () => {
     const text = renderView({ world: "slot3", percepts: [], options: [KETTLE] });
     expect(text).toContain(
-      "- Test kettle: a1 Boil water\n  States: dirty, broken.\n  Boil water: refused: the water is off\n  Left out: Call Test Friend (it is not on your phone list).",
+      "- Test kettle: a1 Boil water\n  States: dirty, broken.\n  Boil water: refused: the water is off\n  Left out of your phone: Call Test Friend (it is not on your phone list).",
     );
   });
 
@@ -415,7 +409,7 @@ describe("an option object's refusals, states and left-out acts (T3, T2)", () =>
         ],
       }],
     });
-    expect(text).toContain("  Left out: Ask on Date, Hang Out (it takes you off the lot); 6 acts (a debug or cheat act).");
+    expect(text).toContain("  Left out of your phone: Ask on Date, Hang Out (it takes you off the lot); 6 acts (a debug or cheat act).");
   });
 
   it("adds the states, the refusals and the left-out acts to the choices, so a change lists them again", () => {
@@ -423,8 +417,73 @@ describe("an option object's refusals, states and left-out acts (T3, T2)", () =>
     expect(choicesSignature([{ ...KETTLE, refused: ["Boil water: refused: the water is cold"] }])).not.toBe(sig);
     expect(choicesSignature([{ ...KETTLE, states: ["dirty"] }])).not.toBe(sig);
     expect(choicesSignature([{ ...KETTLE, left_out: [] }])).not.toBe(sig);
-    const again = renderView({ world: "slot3", percepts: [], options: [{ ...KETTLE, refused: ["Boil water: refused: the water is cold"] }], lastChoices: sig });
+    const again = renderView({ world: "slot3", percepts: [], options: [{ ...KETTLE, refused: ["Boil water: refused: the water is cold"] }] });
     expect(again).toContain("the water is cold");
     expect(again).not.toContain("the same as in the last view");
+  });
+});
+
+describe("the view after the third audit: plain sentences, the whole cap, the choices", () => {
+  const NEAR: OptionObject = { object: "Test kettle", object_id: "obj-kettle", where: "here, 1.0 m", near: true, acts: [{ ref: "a1", guid64: "1", text: "Boil water" }] };
+
+  it("says an interaction in one plain sentence, with no code or detail word", () => {
+    expect(perceptSentence({ kind: "interaction", salience: 1, facts: { bucket: "idle" } })).toBe("You are idle.");
+    expect(perceptSentence({
+      kind: "interaction", salience: 1, facts: { bucket: "act_rejected", affordance_text: "<class 'x.y.Test_Stove'>", code: "3", detail: "clock" },
+    })).toBe("The game refused test stove.");
+    expect(perceptSentence({ kind: "interaction", salience: 1, facts: { bucket: "act_unknown", code: "17" } })).toBe("It is not known what became of an act.");
+    expect(perceptSentence({ kind: "interaction", salience: 1, facts: { bucket: "started", origin: "her_choice" } })).toBe("Your act started.");
+    expect(perceptSentence({ kind: "interaction", salience: 1, facts: { bucket: "ended", origin: "game" } })).toBe("An act ended (the game).");
+    expect(perceptSentence({ kind: "interaction", salience: 1, facts: { bucket: "act_never_started", affordance_text: "<class 'x.y.Test_Sit'>" } }))
+      .toBe("Test sit never started.");
+  });
+
+  it("says a life-line record in one plain sentence, and says nothing for a save that continues her life", () => {
+    expect(perceptSentence({ kind: "lineage", salience: 1, facts: { bucket: "BODY_GONE", reason: "DEAD", death_type: "DROWNED" } }))
+      .toBe("You died in the game. The game gives the cause as drowned.");
+    expect(perceptSentence({ kind: "lineage", salience: 1, facts: { bucket: "BODY_GONE", reason: "GHOST" } }))
+      .toBe("You died in the game, and you are a ghost now.");
+    expect(perceptSentence({ kind: "lineage", salience: 1, facts: { bucket: "CONTINUES_LAST_SAVE" } })).toBeUndefined();
+    expect(perceptSentence({ kind: "lineage", salience: 1, facts: { bucket: "READ_FAILURE:KeyError" } })).toBe("The link to the game could not read the save.");
+  });
+
+  it("reads a need value sent as a string of digits as its number", () => {
+    expect(perceptSentence({ kind: "need", salience: 1, facts: { subject: "hunger", value: "15" } })).toBe("You're starving.");
+    expect(perceptSentence({ kind: "need", salience: 1, facts: { subject: "hunger", value: 15 } })).toBe("You're starving.");
+  });
+
+  it("adds the helper's count of acts past its line cap to that reason's count", () => {
+    const text = renderView({
+      world: "slot3", percepts: [], options: [{
+        ...NEAR, left_out: ["Test Cheat 1: left out: a debug, cheat or test act", "61 more acts: left out: a debug, cheat or test act"],
+      }],
+    });
+    expect(text).toContain("Left out of your phone: 62 acts (a debug, cheat or test act).");
+  });
+
+  it("says the game's choices are still coming, after the choices, when some are listed", () => {
+    const text = renderView({ world: "slot3", percepts: [], options: [NEAR], choicesPending: true });
+    expect(text.endsWith("More of the game's choices are still coming; these are the ones near you.")).toBe(true);
+    expect(renderView({ world: "slot3", percepts: [], options: [NEAR] })).not.toContain("still coming");
+  });
+
+  it("does not say a percept the body block already says", () => {
+    const text = renderView({
+      world: "slot3", percepts: [{ kind: "need", salience: 1, facts: { subject: "hunger", value: 15 } }], options: [],
+      portrait: { needs: { hunger: { value: 15 } } },
+    });
+    expect(text.split("You're starving.").length - 1).toBe(1);
+  });
+
+  it("keeps the whole view within its size, counting the choices, and cuts the farthest objects first", () => {
+    const far: OptionObject[] = Array.from({ length: 400 }, (_, index) => ({
+      object: `Test thing ${index}`, object_id: `o${index}`, room: "Test hall", where: `elsewhere, ${index}.0 m`,
+      acts: [{ ref: `a${index + 2}`, guid64: `${index + 2}`, text: `Look at it closely, from the far side of the room, ${"and again".repeat(6)}` }],
+    }));
+    const text = renderView({ world: "slot3", percepts: [], options: [NEAR, ...far] });
+    expect(text.length).toBeLessThanOrEqual(VIEW_TEXT_MAX);
+    expect(text).toContain("- Test thing 0 (0.0 m): a2 Look at it closely");
+    expect(text).not.toContain("Test thing 399");
+    expect(text).toMatch(/\d+ more things on the lot are not listed, to keep this view short\./);
   });
 });

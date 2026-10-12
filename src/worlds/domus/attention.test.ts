@@ -45,7 +45,7 @@ function view(percepts: Percept[], overrides: { portrait?: unknown; dayRecord?: 
   };
 }
 
-const HELD = { asked: [{ title: "Pick a recipe", whose: "hers", held: true }] };
+const HELD = { asked: [{ title: "Pick a recipe", whose: "yours", held: true }] };
 const NOT_HELD = { asked: [{ title: "Pick a recipe", whose: "the User's", held: false }] };
 
 describe("the work watch is kept per game thread in domus.sqlite (NATALIS2-7, C6 F-3)", () => {
