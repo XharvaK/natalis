@@ -301,7 +301,7 @@ function objectLines(object: OptionObject): string[] {
   const noWay = typeof object.noWay === "string" ? ` [${object.noWay}]` : "";
   const acts = object.acts
     .filter((act) => act && typeof act === "object" && typeof act.ref === "string" && typeof act.text === "string")
-    .map((act) => `${act.ref} ${dropTokens(act.text)}${typeof act.opens === "string" ? ` [${act.opens}]` : ""}`)
+    .map((act) => `${act.ref} ${dropTokens(act.text)}${act.needs_sim === true ? " (needs a Sim: name one with sim)" : ""}${typeof act.opens === "string" ? ` [${act.opens}]` : ""}`)
     .join("; ");
   const lines = [`- ${dropTokens(object.object)}${where}${noWay}: ${acts}`];
   const rules = answerRulesOf(object);

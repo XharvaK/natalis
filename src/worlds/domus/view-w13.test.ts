@@ -36,6 +36,20 @@ describe("a visitor and a message", () => {
   });
 });
 
+describe("an act that needs a Sim", () => {
+  it("is marked in the view, so she knows to name a Sim before she asks", () => {
+    const view = renderView({
+      world: "slot3", percepts: [], portrait: {}, options: [
+        { object: "Test Phone", object_id: "88", acts: [{ ref: "a2", guid64: "902", text: "Call Test Friend", needs_sim: true }] },
+        { object: "Test Bed", object_id: "77", acts: [{ ref: "a1", guid64: "901", text: "Sleep" }] },
+      ],
+    });
+    expect(view).toContain("a2 Call Test Friend (needs a Sim: name one with sim)");
+    expect(view).toContain("- Test Bed: a1 Sleep");
+    expect(view).not.toContain("a1 Sleep (needs");
+  });
+});
+
 describe("quiet at work", () => {
   const distress = [percept("need", { subject: "Test Need", band: "distress" })];
 
