@@ -6,8 +6,16 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
 export const DOMUS_WORLD_ID = "domus";
-/** The phases the helper reports for an act. Only the listener itself adds "expired" to a requested act. */
-export type DomusActPhase = "received" | "accepted" | "rejected" | "pushed" | "finished" | "unknown" | "expired";
+/**
+ * The phases the helper reports for an act. Only the listener itself adds "expired" to a requested act. "waiting" (a window
+ * is open, so the game keeps the act out of her queue) and "noted" (a screen she cannot use was cancelled) are not final.
+ */
+export type DomusActPhase = "received" | "accepted" | "rejected" | "pushed" | "waiting" | "noted" | "finished" | "unknown" | "expired";
+/**
+ * A game act's guid as the view carries it: digits, and for a choice inside a pie-menu act "v" and its variant number
+ * (guid64 "123v2"). Natalis keeps it as it is; only the helper reads the variant.
+ */
+export const GUID64_PATTERN = /^[0-9]{1,20}(v[0-9]{1,3})?$/;
 /** The wire's version. Every body carries v: 1 and nothing else is accepted. */
 export const WIRE_VERSION = 1;
 /** Every route but the snapshot route reads at most this many bytes of JSON. */
@@ -127,10 +135,14 @@ export type ParsedObservation = {
 
 export type OptionsCut = { objects: number; rooms: string[] };
 
-/** An option object's optional fields: a room (a name, up to ROOM_MAX characters) and near (a flag). Anything else is refused. */
+/**
+ * An option object's optional fields: a room (a name, up to ROOM_MAX characters), near and person (flags). The rest is
+ * passed on as sent.
+ */
 function optionObject(item: Record<string, unknown>): Record<string, unknown> {
   if (item.room !== undefined) textOf(item.room, 1, ROOM_MAX);
   if (item.near !== undefined && typeof item.near !== "boolean") fail(400, "invalid_body");
+  if (item.person !== undefined && typeof item.person !== "boolean") fail(400, "invalid_body");
   return item;
 }
 
@@ -269,7 +281,9 @@ export function parseFeed(body: unknown): { helperSession: string } {
 
 const SYNC_KEYS = new Set(["v", "helper_session", "events"]);
 const SYNC_EVENT_KEYS = new Set(["act_id", "phase", "at_ms", "detail"]);
-const PHASES: ReadonlySet<string> = new Set(["received", "accepted", "rejected", "pushed", "finished", "unknown", "expired"]);
+const PHASES: ReadonlySet<string> = new Set([
+  "received", "accepted", "rejected", "pushed", "waiting", "noted", "finished", "unknown", "expired",
+]);
 
 export function isActPhase(value: unknown): value is DomusActPhase {
   return typeof value === "string" && PHASES.has(value);

@@ -15,7 +15,7 @@ import { gameOverlaySayTool, type OverlayContext, overlayItems } from "./overlay
 import { expireMemory, gameMemoryTool, handMemory, type MemoryContext, settleMemory, withdrawMemory } from "./memory.js";
 import { isStopOn } from "../../entity/stop.js";
 import { expireDue, pendingCounts, syncActs, type ThreadNote, withdrawUndone, withholdForStop } from "./acts.js";
-import { choicesSignature, optionsOf, renderView, viewBrief } from "./options.js";
+import { choicesSignature, optionsOf, renderView, unchangedLookLine, viewBrief } from "./options.js";
 import {
   checkSnapshot, expireSnapshots, gameSnapshotTool, openSnapshots, SNAPSHOT_PICTURE_NAME, SNAPSHOT_STATUS, settleFailed,
   settleTaken, type SnapshotContext, withdrawSnapshots,
@@ -162,6 +162,15 @@ function observationEvent(
     wake: attention.wake,
     view: GAME_VIEW,
     brief: viewBrief(parsed.percepts, hasDayRecord(parsed.normalized.day)),
+  };
+}
+
+/** A look that changed nothing (see unchangedLookLine): one line on her thread, from the body. A look wakes her, so it does too. */
+function unchangedLookEvent(parsed: ParsedObservation, thread: string, text: string, wake: boolean): WorldEvent {
+  return {
+    world: DOMUS_WORLD_ID, place: thread, thread, source: "body", text,
+    data: { observationId: parsed.observationId, world: parsed.fields.world, seq: parsed.fields.seq, unchangedLook: true },
+    atMs: parsed.fields.sourceTimeMs, wake,
   };
 }
 
@@ -354,7 +363,15 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       lastWorld = parsed.fields.world;
       const thread = gameThreadOf(parsed.fields.world);
       const attention = attendView(thread, parsed, now);
-      deliver(observationEvent(parsed, attachmentAt(now), choicesShown.get(thread), attention));
+      // A look that changed nothing answers in one line, not the whole view again (D2). The view is kept all the same.
+      const unchanged = unchangedLookLine({
+        percepts: parsed.percepts, options: parsed.options === undefined ? undefined : optionsOf(parsed.options),
+        lastChoices: choicesShown.get(thread),
+        portrait: parsed.normalized.portrait, hasDay: parsed.normalized.day !== undefined,
+      });
+      deliver(unchanged === undefined
+        ? observationEvent(parsed, attachmentAt(now), choicesShown.get(thread), attention)
+        : unchangedLookEvent(parsed, thread, unchanged, attention.wake));
       choicesShown.set(thread, choicesSignature(optionsOf(parsed.options ?? [])));
       // A look view answers the looks asked for this helper session, from any thread: each thread that asked hears it too.
       if (parsed.percepts.some((item) => item.kind === "look")) {

@@ -338,3 +338,57 @@ describe("game_act: one errand, one hand", () => {
     expect(String(tool.spec.description)).toContain("knowingly");
   });
 });
+
+describe("game_act: her answers and her words (W12: A8, S1)", () => {
+  /** An invented Sim she can see, and an invented question the game holds open. */
+  const SIM: OptionObject = { object: "Test neighbour", object_id: "sim-7", person: true, acts: [{ ref: "a5", guid64: "511", text: "Greet" }] };
+  const QUESTION: OptionObject = {
+    object: "The game asks: a test question", object_id: "dialog:q1", acts: [{ ref: "a8", guid64: "ok", text: "OK" }],
+    answer_rules: { text: [{ name: "title", label: "Title", min_length: 1, max_length: 10, numeric: false, min_value: null, max_value: null, profanity_checked: false }] },
+  };
+
+  function atMs(ms: number): void {
+    open = { db, nowMs: () => ms, attachedSession: () => HELPER, lastAttachedMs: () => T0 };
+  }
+
+  it("keeps her words with an act on a person, and says them in the receipt", async () => {
+    view([...VIEW, SIM]);
+    const receipt = await run({ option: "a5", words: "Hello there" });
+    expect(receipt).toMatchObject({ ok: true, data: { words: "Hello there" } });
+    expect(receipt.summary).toContain('You said: "Hello there".');
+    expect(db.prepare("SELECT words FROM acts").all()).toEqual([{ words: "Hello there" }]);
+  });
+
+  it("refuses words on an act that is not on a person, and requests nothing", async () => {
+    view(VIEW);
+    const receipt = await run({ option: "a1", words: "Hello" });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "not_a_person" } });
+    expect(acts()).toEqual([]);
+  });
+
+  it("refuses words that are empty or longer than 240 characters as bad_args, and requests nothing", async () => {
+    view([...VIEW, SIM]);
+    expect(await run({ option: "a5", words: "" })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await run({ option: "a5", words: "x".repeat(241) })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await run({ option: "a5", words: "x".repeat(240) })).toMatchObject({ ok: true });
+    expect(acts()).toHaveLength(1);
+  });
+
+  it("lets an answer to a question through while another of her threads asked for an act a moment ago (A8)", async () => {
+    view([...VIEW, QUESTION]);
+    expect((await run({ option: "a1" }, "discord:dm:owner")).ok).toBe(true);
+    atMs(T0 + 6000);
+    const receipt = await run({ option: "a8", answer: { text: { title: "Test" } } });
+    expect(receipt).toMatchObject({ ok: true });
+    expect(acts()).toHaveLength(2);
+  });
+
+  it("takes one answer per question per turn, and refuses a second with answer_repeated", async () => {
+    view([...VIEW, QUESTION]);
+    expect((await run({ option: "a8", answer: { text: { title: "Test" } } }, THREAD, "same-turn")).ok).toBe(true);
+    expect(await run({ option: "a8", answer: { text: { title: "Test" } } }, THREAD, "same-turn")).toMatchObject({
+      ok: false, refused: { code: "answer_repeated" },
+    });
+    expect(acts()).toHaveLength(1);
+  });
+});

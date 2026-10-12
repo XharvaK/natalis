@@ -10,8 +10,10 @@ import { findOption, labelOf, optionsOf, refsOf } from "./options.js";
 import { gameThreadNow, newestObservation, STALE_VIEW_CODE, STALE_VIEW_REASON } from "./store.js";
 
 const REF = /^[A-Za-z0-9._-]{1,16}$/;
-const ARG_KEYS = new Set(["option", "then", "for_summoner", "knowingly", "answer", "expect", "expect_then"]);
+const ARG_KEYS = new Set(["option", "then", "for_summoner", "knowingly", "answer", "expect", "expect_then", "words"]);
 const EXPECT_MAX = 200;
+/** Her words to a Sim: 1 to this many characters. */
+export const WORDS_MAX = 240;
 
 /**
  * What the tool needs from the world: the open database, the world's clock, the helper session that is attached now
@@ -82,6 +84,11 @@ export function gameActTool(open: () => GameActContext): Tool {
             type: "boolean",
             description: "True only to request an act that another of your threads asked for in the last 60 seconds, after a refusal that says so.",
           },
+          words: {
+            type: "string",
+            maxLength: WORDS_MAX,
+            description: "Optional, only for an act on a person: what you say to them. It is shown to you and kept with the act; the game decides what happens between the Sims.",
+          },
           answer: {
             type: "object",
             description: "Your answer to a game question: rows (option is a row ref, count optional) and/or text (field name to the words you type).",
@@ -144,6 +151,10 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
     return refused("bad_args", "answer must hold rows (with refs and counts) and/or text (named fields), as the question allows.");
   }
   const claim = args.answer as AnswerClaim | undefined;
+  const words = args.words;
+  if (words !== undefined && !(typeof words === "string" && [...words].length >= 1 && [...words].length <= WORDS_MAX)) {
+    return refused("bad_args", `words must be what you say to the person, 1 to ${WORDS_MAX} characters.`);
+  }
 
   const nowMs = game.nowMs();
   const gameThread = gameThreadNow(game.db, attached);
@@ -172,6 +183,9 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
     }
     then.push({ ref, found });
   }
+  if (typeof words === "string" && first.object.person !== true) {
+    return refused("not_a_person", `Words go only with an act on a person, and ${option} is not one in the newest view. Nothing was requested.`);
+  }
   let label = labelOf(first);
   let answer: { json: string } | undefined;
   if (claim !== undefined) {
@@ -181,8 +195,9 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
     label = result.label;
   }
   // One errand, one hand: a request from another of her threads within the last minute is held, so two threads do not
-  // order the same act twice. The receipt says what was asked and when; knowingly: true asks anyway.
-  if (args.knowingly !== true) {
+  // order the same act twice. The receipt says what was asked and when; knowingly: true asks anyway. An answer to a game
+  // question is a reply, not an errand, so it is not held (A8).
+  if (args.knowingly !== true && claim === undefined) {
     const other = actRequestedMeanwhile(game.db, { thread: context.thread, nowMs });
     if (other) {
       const seconds = Math.max(0, Math.round((nowMs - other.requestedAtMs) / 1000));
@@ -202,18 +217,23 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
     label,
     forSummoner: args.for_summoner === true,
     ...(answer ? { answer } : {}),
+    ...(typeof words === "string" ? { words } : {}),
     then,
     nowMs,
   });
   if (!requested.ok) {
+    if (requested.code === "answer_repeated") {
+      return refused(requested.code, "You already answered this question in this turn. Answer it again in your next turn, if it is still open.");
+    }
     return refused(requested.code, "You already asked the game for one act in this turn. Ask for the next one in your next turn.");
   }
   const planText = requested.steps.length
     ? ` Then, each after the one before completes: ${requested.steps.map((step) => `${step.ref} (${step.label})`).join("; ")}.`
     : "";
+  const saidText = typeof words === "string" ? ` You said: "${words}".` : "";
   return {
     ok: true,
-    summary: `Requested: ${label} (${option}). The game has not done it yet; what it does comes back here as notes.${planText}`,
+    summary: `Requested: ${label} (${option}).${saidText} The game has not done it yet; what it does comes back here as notes.${planText}`,
     data: {
       actId: requested.actId,
       option,
@@ -221,6 +241,7 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
       expiresAtMs: requested.expiresAtMs,
       forSummoner: args.for_summoner === true,
       then: requested.steps.map((step) => step.ref),
+      ...(typeof words === "string" ? { words } : {}),
     },
   };
 }

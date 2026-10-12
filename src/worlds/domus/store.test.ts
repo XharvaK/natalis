@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DatabaseSync } from "node:sqlite";
+import { DatabaseSync as DatabaseSyncCtor, type DatabaseSync } from "node:sqlite";
 import { FORGOTTEN_LINE } from "../../notebook/forget.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -224,5 +224,66 @@ describe("forgetText: the game's own words", () => {
     db = undefined;
     expect(forgetInDomusFile(dir, ["lantern", "yard"])).toBe(5);
     expect(forgetInDomusFile(dir, ["lantern", "yard"])).toBe(0);
+  });
+});
+
+describe("schema migration (version 1: acts.words, acts.pulled_at_ms)", () => {
+  /** The acts table as version 0 wrote it, with one act in it, and no user_version set. */
+  function writeVersionZeroStore(): void {
+    // Every table as it is, then acts rebuilt with the version 0 columns (no words, no pulled_at_ms) and one act in it.
+    db = openDomusDb(dir);
+    db.exec(`ALTER TABLE acts RENAME TO acts_current;
+      CREATE TABLE acts (
+        act_id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, thread TEXT NOT NULL, attachment TEXT NOT NULL, observation_id TEXT,
+        option_ref TEXT NOT NULL, object_id TEXT NOT NULL, guid64 TEXT NOT NULL, label TEXT NOT NULL, state TEXT NOT NULL,
+        requested_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
+        for_summoner INTEGER NOT NULL, answer_json TEXT);
+      INSERT INTO acts (act_id, turn_id, thread, attachment, observation_id, option_ref, object_id, guid64, label, state,
+        requested_at_ms, expires_at_ms, updated_at_ms, for_summoner, answer_json)
+        VALUES ('act1', 'turn-1', 'domus:slot3', 'helper-1', NULL, 'a1', 'obj-1', '111', 'Boil water (Kettle)',
+        'requested', ${NOW}, ${NOW + 90_000}, ${NOW}, 0, NULL);
+      DROP TABLE acts_current;
+      PRAGMA user_version = 0;`);
+    db.close();
+    db = undefined;
+  }
+
+  function columnsOf(handle: DatabaseSync): string[] {
+    return (handle.prepare("PRAGMA table_info(acts)").all() as Row[]).map((column) => String(column.name));
+  }
+
+  it("adds the two columns to a store from before version 1, keeps its rows, and sets the version", () => {
+    writeVersionZeroStore();
+    db = openDomusDb(dir);
+    expect(columnsOf(db)).toEqual(expect.arrayContaining(["words", "pulled_at_ms"]));
+    const kept = db.prepare("SELECT label, words, pulled_at_ms FROM acts WHERE act_id = 'act1'").get() as Row;
+    expect(kept).toEqual({ label: "Boil water (Kettle)", words: null, pulled_at_ms: null });
+    expect((db.prepare("PRAGMA user_version").get() as Row).user_version).toBe(1);
+  });
+
+  it("changes nothing when the store is already at version 1, and opening it again is safe", () => {
+    db = openDomusDb(dir);
+    db.close();
+    db = openDomusDb(dir);
+    expect(columnsOf(db).filter((name) => name === "words")).toHaveLength(1);
+    expect((db.prepare("PRAGMA user_version").get() as Row).user_version).toBe(1);
+  });
+
+  it("forgets the words the Lar said in a store from before version 1, without opening it through the world", () => {
+    writeVersionZeroStore();
+    expect(forgetInDomusFile(dir, ["kettle"])).toBe(1);
+    db = openDomusDb(dir);
+    expect((db.prepare("SELECT label FROM acts WHERE act_id = 'act1'").get() as Row).label).toBe(FORGOTTEN_LINE);
+  });
+
+  it("refuses a store written by a later version, and does not touch it", () => {
+    db = openDomusDb(dir);
+    db.exec("PRAGMA user_version = 9");
+    db.close();
+    db = undefined;
+    expect(() => openDomusDb(dir)).toThrow(/schema version 9/);
+    const raw = new DatabaseSyncCtor(join(dir, "domus", DOMUS_DB_FILE));
+    expect((raw.prepare("PRAGMA user_version").get() as Row).user_version).toBe(9);
+    raw.close();
   });
 });

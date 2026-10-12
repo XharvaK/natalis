@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { OptionObject } from "./answers.js";
-import { BRIEF_MAX, choicesSignature, findOption, labelOf, optionsOf, perceptLine, perceptSentence, refsOf, renderView, VIEW_TEXT_MAX, viewBrief } from "./options.js";
+import {
+  BRIEF_MAX, choicesSignature, findOption, labelOf, optionsOf, perceptLine, perceptSentence, refsOf, renderView, unchangedLookLine,
+  VIEW_TEXT_MAX, viewBrief,
+} from "./options.js";
 
 const TABLE: OptionObject[] = [
   { object: "Test kettle", object_id: "obj-kettle", where: "here, 2.0 m", acts: [
@@ -169,6 +172,44 @@ describe("rendering the choices of a whole lot", () => {
     expect(choicesSignature([])).toBe("");
   });
 
+  it("counts a move to another room, or into or out of near, as a change of choices (C7)", () => {
+    const sig = choicesSignature(LOT);
+    expect(choicesSignature(LOT.map((object) => ({ ...object, room: "Test kitchen" })))).not.toBe(sig);
+    expect(choicesSignature(LOT.map((object) => ({ ...object, near: true })))).not.toBe(sig);
+    const kitchen = LOT.map((object) => ({ ...object, room: "Test kitchen" }));
+    expect(choicesSignature(kitchen)).not.toBe(choicesSignature(LOT.map((object) => ({ ...object, room: "Test hall" }))));
+  });
+});
+
+describe("a look that changed nothing (D2)", () => {
+  const CLOCK = { time: { weekday: "Monday", hour: 14, minute: 5 }, paused: false, clock_speed: "normal" };
+  const LOOK = [{ kind: "look", salience: 1, facts: {} }];
+  const OPTIONS: OptionObject[] = [{ object: "Test kettle", object_id: "obj-kettle", acts: [{ ref: "a1", guid64: "111", text: "Boil water" }] }];
+  const SAME = choicesSignature(OPTIONS);
+
+  it("answers a look that is only the look, with the same choices, in one line with the game's clock", () => {
+    expect(unchangedLookLine({ percepts: LOOK, options: OPTIONS, lastChoices: SAME, portrait: CLOCK, hasDay: false }))
+      .toBe("Your look: no change in the game since your last view, and the choices are the same. Game time: Monday 14:05, running (clock speed normal).");
+  });
+
+  it("says no clock when the portrait has none", () => {
+    expect(unchangedLookLine({ percepts: LOOK, options: OPTIONS, lastChoices: SAME, portrait: undefined, hasDay: false }))
+      .toBe("Your look: no change in the game since your last view, and the choices are the same.");
+  });
+
+  it("is not one line when anything else changed: another percept, other choices, a day record, or no earlier view to compare", () => {
+    const other = [...LOOK, { kind: "need", salience: 0.5, facts: { subject: "social", band: "low" } }];
+    expect(unchangedLookLine({ percepts: other, options: OPTIONS, lastChoices: SAME, portrait: CLOCK, hasDay: false })).toBeUndefined();
+    const moved = [{ ...OPTIONS[0]!, room: "Test hall" }];
+    expect(unchangedLookLine({ percepts: LOOK, options: moved, lastChoices: SAME, portrait: CLOCK, hasDay: false })).toBeUndefined();
+    expect(unchangedLookLine({ percepts: LOOK, options: OPTIONS, lastChoices: SAME, portrait: CLOCK, hasDay: true })).toBeUndefined();
+    expect(unchangedLookLine({ percepts: LOOK, options: OPTIONS, lastChoices: undefined, portrait: CLOCK, hasDay: false })).toBeUndefined();
+    expect(unchangedLookLine({ percepts: LOOK, options: undefined, lastChoices: SAME, portrait: CLOCK, hasDay: false })).toBeUndefined();
+    expect(unchangedLookLine({ percepts: [], options: OPTIONS, lastChoices: SAME, portrait: CLOCK, hasDay: false })).toBeUndefined();
+  });
+});
+
+describe("the view's size", () => {
   it("names the view's size as twenty thousand characters", () => {
     expect(VIEW_TEXT_MAX).toBe(20_000);
   });

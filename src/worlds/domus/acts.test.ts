@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { findOption, type OptionObject } from "./options.js";
 import type { Found } from "./answers.js";
 import {
-  ACT_TTL_MS, expireDue, nextState, pendingCounts, PLAN_STEP_MAX_MS, requestAct, syncActs, type RequestResult, type SyncAct,
+  ACT_TTL_MS, actRequestedMeanwhile, expireDue, nextState, pendingCounts, PLAN_STEP_MAX_MS, requestAct, syncActs, type RequestResult, type SyncAct,
 } from "./acts.js";
 import { openDomusDb } from "./store.js";
 import type { DomusActPhase, SyncEvent } from "./wire.js";
@@ -141,7 +141,7 @@ describe("requested acts", () => {
 
   it("wakes the thread for rejected, unknown and expired, and not for the rest", () => {
     const actId = okId(ask(T0, "a1"));
-    const rejected = sync(T0 + 1, [ev(actId, "rejected", T0 + 1, { code: "NOT_ATTACHED" })]).notes[0];
+    const rejected = sync(T0 + 1, [ev(actId, "rejected", T0 + 1, { code: "NOT_ATTACHED", by: "game" })]).notes[0];
     expect(rejected).toMatchObject({ wake: true });
     expect(rejected?.text).toContain("the game refused it (NOT_ATTACHED)");
     const other = okId(ask(T0, "a2"));
@@ -262,7 +262,7 @@ describe("plans", () => {
     const actId = okId(ask(T0, "a1"));
     const result = sync(T0 + 1, [ev(actId, "unknown", T0 + 1, { code: "LEFT_QUEUE" })]);
     expect(result.notes[0]).toMatchObject({ thread: THREAD, wake: true });
-    expect(result.notes[0]?.text).toBe('Your act "Boil water (Test kettle)" (a1): it never waited in her queue: the game took it at once or dropped it, and did not say how it ended. A phone act often runs this way; what changed in your next view tells.');
+    expect(result.notes[0]?.text).toBe('Your act "Boil water (Test kettle)" (a1): the game took it out of its queue and did not say how it ended; what changed in your next view tells what it did.');
   });
 
   it("keeps the wording, with the code and the reason, for any other unknown", () => {
@@ -278,9 +278,18 @@ describe("plans", () => {
     expect(sync(T0 + 2).planned).toBe(0);
   });
 
-  it("lets a plan go whole when its next step would only be released after five minutes, and says so", () => {
+  it("ages a plan's next step from the end of the act before it, so a long first act does not let the rest go (B7)", () => {
     const first = okId(ask(T0, "a1", { then: ["a3"] }));
     const late = sync(T0 + PLAN_STEP_MAX_MS + 1, [completed(first, T0 + PLAN_STEP_MAX_MS + 1)]);
+    expect(late.acts.map((act) => act.guid64)).toEqual(["211"]);
+    expect(late.planned).toBe(0);
+    expect(late.notes.some((note) => note.text.includes("it was more than five minutes old"))).toBe(false);
+  });
+
+  it("lets a plan go whole when the act before its next step has been unresolved for more than five minutes", () => {
+    const first = okId(ask(T0, "a1", { then: ["a3"] }));
+    sync(T0 + 1, [ev(first, "unknown", T0 + 1, { code: "NO_PROBE_REPLY" })]);
+    const late = sync(T0 + 1 + PLAN_STEP_MAX_MS + 1);
     expect(late.acts).toEqual([]);
     expect(late.planned).toBe(0);
     expect(late.notes).toContainEqual(expect.objectContaining({ text: expect.stringContaining("it was more than five minutes old") }));
@@ -329,5 +338,157 @@ describe("the answer the helper gets", () => {
     });
     const id = okId(result);
     expect(sync(T0 + 1).acts).toEqual([expect.objectContaining({ act_id: id, answer: { rows: [{ option_id: "555", count: 2 }], text: { title: "Ilse" } } })]);
+  });
+});
+
+describe("W12: her words, the game's refusals, windows, pulls and a session's end", () => {
+  /** A question with a text field and an ok button, for answers (a dialog the game holds open). */
+  const QUESTION: Found = {
+    object: {
+      object: "The game asks: a test question", object_id: "dialog:q1",
+      acts: [{ ref: "a9", guid64: "ok", text: "OK" }],
+      answer_rules: { text: [{ name: "title", label: "Title", min_length: 1, max_length: 10, numeric: false, min_value: null, max_value: null, profanity_checked: false }] },
+    },
+    act: { ref: "a9", guid64: "ok", text: "OK" },
+  };
+
+  function requestWith(now: number, option: string, extra: { words?: string; turnId?: string; answer?: { json: string }; found?: Found } = {}): RequestResult {
+    turn += 1;
+    const hit = extra.found ?? found(option);
+    return requestAct(db, {
+      thread: THREAD, turnId: extra.turnId ?? `turn-${turn}`, attachment: HELPER, observationId: "helper-1.1", found: hit,
+      label: `${hit.act.text} (${hit.object.object})`, forSummoner: false, then: [], nowMs: now,
+      ...(extra.words !== undefined ? { words: extra.words } : {}),
+      ...(extra.answer !== undefined ? { answer: extra.answer } : {}),
+    });
+  }
+
+  it("keeps her words with the act, hands them to the helper, and shows them on the act's line (S1)", () => {
+    const id = okId(requestWith(T0, "a3", { words: "Good morning" }));
+    const pulled = sync(T0 + 1).acts.find((act) => act.act_id === id);
+    expect(pulled?.words).toBe("Good morning");
+    const done = sync(T0 + 2, [completed(id, T0 + 2)]).notes[0];
+    expect(done?.text).toBe('Your act "Sit down (Test bench)" (a3): it finished. You said: "Good morning".');
+  });
+
+  it("gives no words to an act that had none", () => {
+    const id = okId(requestWith(T0, "a3"));
+    expect(sync(T0 + 1).acts.find((act) => act.act_id === id)).not.toHaveProperty("words");
+  });
+
+  it("words the refusal by who refused it, with the game's own sentence, cut to 240 characters", () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ code: "NOT_ATTACHED", by: "game", text: "The game would not let her sit." }, "the game refused it (NOT_ATTACHED) - The game would not let her sit."],
+      [{ code: "VARIANT_GONE", by: "probe" }, "the game's side refused it (VARIANT_GONE)"],
+      [{ code: "BAD_ARGS", by: "helper", text: "helper text" }, "your helper refused it (BAD_ARGS) - helper text"],
+      [{ code: "STOP", by: "host" }, "the host refused it (STOP)"],
+      [{ code: "UNSAID" }, "it was refused (UNSAID)"],
+    ];
+    for (const [detail, words] of cases) {
+      const id = okId(requestWith(T0, "a1"));
+      const note = sync(T0 + 1, [ev(id, "rejected", T0 + 1, detail)]).notes[0];
+      expect(note?.text).toContain(words);
+      expect(note?.wake).toBe(true);
+    }
+    const long = okId(requestWith(T0, "a1"));
+    const text = sync(T0 + 1, [ev(long, "rejected", T0 + 1, { code: "X", by: "game", text: "z".repeat(400) })]).notes[0]?.text ?? "";
+    expect(text.endsWith(` - ${"z".repeat(240)}.`)).toBe(true);
+  });
+
+  it("holds a waiting act (not final) until the window closes, then finishes it, and says what the window is", () => {
+    const id = okId(requestWith(T0, "a1"));
+    sync(T0 + 1, [ev(id, "pushed", T0 + 1)]);
+    const waiting = sync(T0 + 2, [ev(id, "waiting", T0 + 2, { code: "WINDOW_OPEN", window: "dialog 42" })]).notes[0];
+    expect(waiting).toMatchObject({ wake: false });
+    expect(waiting?.text).toBe('Your act "Boil water (Test kettle)" (a1): a window is open on the game (dialog 42), so the game keeps it out of your queue until the window closes.');
+    expect(db.prepare("SELECT state FROM acts WHERE act_id = ?").get(id)).toEqual({ state: "waiting" });
+    const done = sync(T0 + 3, [completed(id, T0 + 3)]).notes[0];
+    expect(done).toMatchObject({ wake: true });
+    expect(db.prepare("SELECT state FROM acts WHERE act_id = ?").get(id)).toEqual({ state: "finished" });
+  });
+
+  it("keeps a plan's next step waiting while the act before it is waiting, not dropping it", () => {
+    const first = okId(ask(T0, "a1", { then: ["a3"] }));
+    sync(T0 + 1, [ev(first, "waiting", T0 + 1, { code: "WINDOW_OPEN" })]);
+    expect(sync(T0 + 2).planned).toBe(1);
+    sync(T0 + 3, [completed(first, T0 + 3)]);
+    expect(sync(T0 + 4).acts.map((act) => act.guid64)).toEqual(["211"]);
+  });
+
+  it("words a withheld screen as a noted, not final event, and the act can still be pushed and finish", () => {
+    const id = okId(requestWith(T0, "a1"));
+    const noted = sync(T0 + 1, [ev(id, "noted", T0 + 1, { code: "SCREEN_WITHHELD" })]).notes[0];
+    expect(noted).toMatchObject({ wake: false });
+    expect(noted?.text).toBe('Your act "Boil water (Test kettle)" (a1): the game opened a screen you cannot use, so it was cancelled.');
+    expect(db.prepare("SELECT state FROM acts WHERE act_id = ?").get(id)).toEqual({ state: "noted" });
+    sync(T0 + 2, [ev(id, "pushed", T0 + 2)]);
+    expect(db.prepare("SELECT state FROM acts WHERE act_id = ?").get(id)).toEqual({ state: "pushed" });
+    sync(T0 + 3, [completed(id, T0 + 3)]);
+    expect(db.prepare("SELECT state FROM acts WHERE act_id = ?").get(id)).toEqual({ state: "finished" });
+  });
+
+  it("says an answer sent while its question is still open is not yet answered", () => {
+    const id = okId(requestWith(T0, "a1"));
+    const note = sync(T0 + 1, [ev(id, "finished", T0 + 1, { code: "ANSWER_SENT_OPEN", finishing_type: "ANSWERED", started: true })]).notes[0];
+    expect(note?.text).toBe('Your act "Boil water (Test kettle)" (a1): your answer was sent, but the game\'s question is still open.');
+  });
+
+  it("takes a late report for an act that a session's end made unknown, so it finishes (B5)", () => {
+    const id = okId(requestWith(T0, "a1"));
+    sync(T0 + 1, [ev(id, "pushed", T0 + 1)]);
+    sync(T0 + 2, [], "helper-2");
+    expect(db.prepare("SELECT state FROM acts WHERE act_id = ?").get(id)).toEqual({ state: "unknown" });
+    const late = sync(T0 + 3, [completed(id, T0 + 3)], "helper-2").notes;
+    expect(late).toContainEqual(expect.objectContaining({ text: expect.stringContaining("it finished") }));
+    expect(db.prepare("SELECT state FROM acts WHERE act_id = ?").get(id)).toEqual({ state: "finished" });
+  });
+
+  it("keeps a final unknown final: the game took the act, then said it lost it, and a later finish does not undo that (B6)", () => {
+    const id = okId(requestWith(T0, "a1"));
+    sync(T0 + 1, [ev(id, "pushed", T0 + 1), ev(id, "unknown", T0 + 2, { code: "LEFT_QUEUE" })]);
+    sync(T0 + 3, [completed(id, T0 + 3)]);
+    expect(db.prepare("SELECT state FROM acts WHERE act_id = ?").get(id)).toEqual({ state: "unknown" });
+  });
+
+  it("settles an unknown written before the game ever pushed the act (B6), so a later finish counts", () => {
+    const id = okId(requestWith(T0, "a1"));
+    sync(T0 + 1, [ev(id, "unknown", T0 + 1, { code: "TIMED_OUT" })]);
+    sync(T0 + 2, [completed(id, T0 + 2)]);
+    expect(db.prepare("SELECT state FROM acts WHERE act_id = ?").get(id)).toEqual({ state: "finished" });
+  });
+
+  it("does not expire an act the helper has pulled before its report: its time runs from the pull (B8)", () => {
+    const id = okId(requestWith(T0, "a3"));
+    expect(sync(T0 + 1).acts.map((act) => act.act_id)).toEqual([id]);
+    const still = sync(T0 + ACT_TTL_MS).notes;
+    expect(still.some((note) => note.text.includes("expired"))).toBe(false);
+    expect(db.prepare("SELECT state FROM acts WHERE act_id = ?").get(id)).toEqual({ state: "requested" });
+    const received = sync(T0 + ACT_TTL_MS + 500, [ev(id, "received", T0 + ACT_TTL_MS + 500)]).notes[0];
+    expect(received?.text).not.toContain("came after");
+  });
+
+  it("still expires an act nobody pulled at its time", () => {
+    const id = okId(requestWith(T0, "a3"));
+    const notes = sync(T0 + ACT_TTL_MS).notes;
+    expect(notes).toContainEqual(expect.objectContaining({ text: expect.stringContaining("it expired before the game picked it up") }));
+    expect(db.prepare("SELECT state FROM acts WHERE act_id = ?").get(id)).toEqual({ state: "expired" });
+  });
+
+  it("holds another thread for a live request only: a refused request holds nobody (B11)", () => {
+    const refusedId = okId(requestWith(T0, "a1"));
+    sync(T0 + 1, [ev(refusedId, "rejected", T0 + 1, { by: "game" })]);
+    expect(actRequestedMeanwhile(db, { thread: "domus:other", nowMs: T0 + 2 })).toBeUndefined();
+    okId(requestWith(T0 + 3, "a2"));
+    expect(actRequestedMeanwhile(db, { thread: "domus:other", nowMs: T0 + 4 })).toMatchObject({ thread: THREAD, label: expect.stringContaining("Tidy up") });
+    expect(actRequestedMeanwhile(db, { thread: THREAD, nowMs: T0 + 4 })).toBeUndefined();
+  });
+
+  it("lets an answer through the one-act rule, one answer per question per turn, and a second act after an answer", () => {
+    const answer = { json: '{"rows":[]}' };
+    const turnId = "turn-answers";
+    expect(requestWith(T0, "a9", { turnId, found: QUESTION, answer }).ok).toBe(true);
+    expect(requestWith(T0 + 1, "a9", { turnId, found: QUESTION, answer })).toEqual({ ok: false, code: "answer_repeated" });
+    expect(requestWith(T0 + 2, "a1", { turnId }).ok).toBe(true);
+    expect(requestWith(T0 + 3, "a2", { turnId })).toEqual({ ok: false, code: "one_act_per_turn" });
   });
 });

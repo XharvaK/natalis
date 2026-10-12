@@ -164,13 +164,45 @@ export const STALE_VIEW_REASON =
 
 export type Row = Record<string, unknown>;
 
-/** Opens (or creates) the Domus database in the Lar's domus folder. */
+/**
+ * The schema version this code reads and writes (PRAGMA user_version). Version 1 adds two nullable columns to acts: words
+ * (what the Lar said to the Sim the act targets) and pulled_at_ms (when the helper first took the act).
+ */
+export const DOMUS_SCHEMA_VERSION = 1;
+const ACT_COLUMNS_V1: ReadonlyArray<readonly [name: string, type: string]> = [["words", "TEXT"], ["pulled_at_ms", "INTEGER"]];
+
+/**
+ * Brings an open Domus database to DOMUS_SCHEMA_VERSION. Each column is added only when it is missing, in one transaction
+ * that also sets the version. A database from a later version is refused, not read.
+ */
+export function migrateDomusDb(db: DatabaseSync): void {
+  const version = Number((db.prepare("PRAGMA user_version").get() as Row).user_version);
+  if (version > DOMUS_SCHEMA_VERSION) {
+    throw new Error(`The Domus database has schema version ${version}; this code reads version ${DOMUS_SCHEMA_VERSION}.`);
+  }
+  if (version === DOMUS_SCHEMA_VERSION) return;
+  const present = new Set((db.prepare("PRAGMA table_info(acts)").all() as Row[]).map((column) => String(column.name)));
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const [name, type] of ACT_COLUMNS_V1) {
+      if (!present.has(name)) db.exec(`ALTER TABLE acts ADD COLUMN ${name} ${type}`);
+    }
+    db.exec(`PRAGMA user_version = ${DOMUS_SCHEMA_VERSION}`);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+/** Opens (or creates) the Domus database in the Lar's domus folder, at the current schema version. */
 export function openDomusDb(dir: string): DatabaseSync {
   const folder = join(dir, DOMUS_FOLDER);
   mkdirSync(folder, { recursive: true });
   const db = new DatabaseSync(join(folder, DOMUS_DB_FILE));
   try {
     db.exec(SCHEMA);
+    migrateDomusDb(db);
   } catch (error) {
     db.close();
     throw error;
@@ -296,7 +328,13 @@ type ForgetColumn = { name: string; json: boolean; erased: string };
 /** Every table that keeps game or Lar text, its text columns, and what a forgotten cell holds instead. */
 const FORGET_TABLES: ReadonlyArray<{ table: string; columns: readonly ForgetColumn[] }> = [
   { table: "observations", columns: [{ name: "payload_json", json: true, erased: "{}" }] },
-  { table: "acts", columns: [{ name: "label", json: false, erased: FORGOTTEN_LINE }, { name: "answer_json", json: true, erased: "{}" }] },
+  {
+    table: "acts",
+    columns: [
+      { name: "label", json: false, erased: FORGOTTEN_LINE }, { name: "answer_json", json: true, erased: "{}" },
+      { name: "words", json: false, erased: FORGOTTEN_LINE },
+    ],
+  },
   { table: "act_events", columns: [{ name: "detail_json", json: true, erased: "{}" }] },
   { table: "plan_steps", columns: [{ name: "label", json: false, erased: FORGOTTEN_LINE }] },
   { table: "undos", columns: [{ name: "reason", json: false, erased: FORGOTTEN_LINE }] },
@@ -391,6 +429,7 @@ export function forgetInDomusFile(dir: string, words: readonly string[]): number
   const db = new DatabaseSync(path);
   try {
     db.exec("PRAGMA busy_timeout = 5000");
+    migrateDomusDb(db);
     return forgetText(db, words);
   } finally {
     db.close();
