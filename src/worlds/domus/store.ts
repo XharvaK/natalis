@@ -209,8 +209,9 @@ const ACT_COLUMNS_V1: ReadonlyArray<readonly [name: string, type: string]> = [["
 const ACT_COLUMNS_V2: ReadonlyArray<readonly [name: string, type: string]> = [["verb", "TEXT"], ["args_json", "TEXT"]];
 
 /**
- * Brings an open Domus database to DOMUS_SCHEMA_VERSION. Each column is added only when it is missing, in one transaction
- * that also sets the version. A database from a later version is refused, not read.
+ * Brings an open Domus database to DOMUS_SCHEMA_VERSION. The schema's tables are created when missing (a store from before
+ * a table was added lacks it), each column is added only when it is missing, and all of it is one transaction that also sets
+ * the version. A database from a later version is refused, not read. Forgetting runs this too, so the tables come first.
  */
 export function migrateDomusDb(db: DatabaseSync): void {
   const version = Number((db.prepare("PRAGMA user_version").get() as Row).user_version);
@@ -221,6 +222,7 @@ export function migrateDomusDb(db: DatabaseSync): void {
   const present = new Set((db.prepare("PRAGMA table_info(acts)").all() as Row[]).map((column) => String(column.name)));
   db.exec("BEGIN IMMEDIATE");
   try {
+    db.exec(SCHEMA);
     for (const [name, type] of [...ACT_COLUMNS_V1, ...ACT_COLUMNS_V2]) {
       if (!present.has(name)) db.exec(`ALTER TABLE acts ADD COLUMN ${name} ${type}`);
     }
