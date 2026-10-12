@@ -24,6 +24,8 @@ export type ViewFacts = {
   portrait: unknown;
   /** Whether the view carries the day's record (a sleep onset). */
   dayRecord: boolean;
+  /** Whether her job was at work in the game thread's last view and is not now (see createWorkWatch). */
+  workEnded: boolean;
   /** Whether the view is the first from the helper session the game is attached under now. */
   firstAfterAttach: boolean;
 };
@@ -46,20 +48,33 @@ function heldForHer(portrait: unknown): boolean {
   return Array.isArray(asked) && asked.some((item) => asRecord(item)?.held === true);
 }
 
+function isDistress(item: Percept): boolean {
+  return item.kind === "need" && item.facts["band"] === "distress";
+}
+
+/** Whether any need in the portrait is in distress now. */
+function needInDistress(portrait: unknown): boolean {
+  const needs = asRecord(asRecord(portrait)?.needs);
+  return needs !== undefined && Object.values(needs).some((entry) => asRecord(entry)?.band === "distress");
+}
+
 /**
  * Whether a view wakes her in this mode. A question put to her, a look she asked for, and a need that has just gone into
  * distress always wake her, in every mode (the body's alarm, as a held window is: she may still do nothing, D1).
  * Otherwise every_change wakes her on every view, quiet on none, and when_called on a call (someone addressed her,
  * someone arrived or is on the lot, the day's record, the first view after the game attached).
+ *
+ * At work the game looks after her needs in the rabbit hole, so a distress does not wake her at work in any mode: a view
+ * whose only changes are distress needs stays quiet. When work ends with a need still in distress, she wakes once.
  */
 export function wakesFor(mode: AttentionMode, view: ViewFacts): boolean {
   if (view.percepts.some((item) => item.kind === "look")) return true;
   if (view.percepts.some((item) => item.kind === "env" && item.facts["bucket"] === "asked")) return true;
   if (heldForHer(view.portrait)) return true;
-  // The helper sends a need's percept when its band changes, so this one is the change into distress (D1). At work the
-  // game looks after her needs in the rabbit hole, so a distress does not wake her then (W13: quiet at work).
-  if (!atWorkNow(view.portrait) && view.percepts.some((item) => item.kind === "need" && item.facts["band"] === "distress")) return true;
-  if (mode === "every_change") return true;
+  const atWork = atWorkNow(view.portrait);
+  if (!atWork && view.percepts.some(isDistress)) return true;
+  if (view.workEnded && needInDistress(view.portrait)) return true;
+  if (mode === "every_change") return !(atWork && view.percepts.length > 0 && view.percepts.every(isDistress));
   if (mode === "quiet") return false;
   if (view.firstAfterAttach || view.dayRecord) return true;
   return view.percepts.some((item) =>
@@ -73,6 +88,24 @@ export function wakesFor(mode: AttentionMode, view: ViewFacts): boolean {
 function atWorkNow(portrait: unknown): boolean {
   const jobs = asRecord(asRecord(portrait)?.self)?.jobs;
   return Array.isArray(jobs) && jobs.some((job) => asRecord(job)?.at_work === true);
+}
+
+/**
+ * Whether her job was at work in each game thread's last view, so a work end is seen once. In memory: a restart forgets
+ * it, and the first view after a restart cannot show a work end. A view that reads no job leaves the thread as it was.
+ */
+export function createWorkWatch(): { ended(thread: string, portrait: unknown): boolean } {
+  const atWorkBefore = new Map<string, boolean>();
+  return {
+    ended(thread, portrait) {
+      const jobs = asRecord(asRecord(portrait)?.self)?.jobs;
+      if (!Array.isArray(jobs)) return false;
+      const now = atWorkNow(portrait);
+      const before = atWorkBefore.get(thread);
+      atWorkBefore.set(thread, now);
+      return before === true && !now;
+    },
+  };
 }
 
 function localParts(ms: number, timeZone: string | undefined): Record<string, string> {

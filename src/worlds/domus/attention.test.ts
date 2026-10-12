@@ -40,6 +40,7 @@ function view(percepts: Percept[], overrides: { portrait?: unknown; dayRecord?: 
     percepts,
     portrait: overrides.portrait ?? NO_PORTRAIT,
     dayRecord: overrides.dayRecord ?? false,
+    workEnded: false,
     firstAfterAttach: overrides.firstAfterAttach ?? false,
   };
 }

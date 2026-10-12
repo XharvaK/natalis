@@ -7,7 +7,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { DatabaseSync } from "node:sqlite";
 import type { World, WorldBody, WorldEvent } from "../../contracts.js";
 import type { AttachmentNow } from "./body.js";
-import { attentionLine, type AttentionContext, currentAttention, gameAttentionTool, reviewAttention, wakesFor } from "./attention.js";
+import { attentionLine, type AttentionContext, createWorkWatch, currentAttention, gameAttentionTool, reviewAttention, wakesFor } from "./attention.js";
 import { gameActTool, type GameActContext } from "./game-act.js";
 import { hasDayRecord, localStamp } from "./day-record.js";
 import { gameLookTool, type LookContext } from "./look.js";
@@ -337,6 +337,9 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     return { db: current, nowMs, timeZone: options.timeZone, attachedSession: (at: number) => heartbeats.attachedSession(at) };
   };
 
+  /** Whether her job was at work in each game thread's last view (in memory; see createWorkWatch). */
+  const workWatch = createWorkWatch();
+
   /**
    * Her attention for an admitted view: whether it wakes her, and the line her body block starts with. The thread
    * keeps the view's helper session and the time it last woke her, so the first view after attach is known.
@@ -348,6 +351,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       percepts: parsed.percepts,
       portrait: parsed.normalized.portrait,
       dayRecord: parsed.normalized.day !== undefined,
+      workEnded: workWatch.ended(thread, parsed.normalized.portrait),
       firstAfterAttach: row.viewedSession !== parsed.fields.attachment,
     });
     writeAttention(current, { ...row, viewedSession: parsed.fields.attachment, lastWakeMs: wake ? now : row.lastWakeMs });

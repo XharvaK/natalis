@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { bodyLines } from "./body.js";
-import { wakesFor } from "./attention.js";
+import { createWorkWatch, wakesFor } from "./attention.js";
 import { perceptSentence, renderView } from "./options.js";
 import type { Percept } from "./wire.js";
 
@@ -43,6 +43,50 @@ describe("quiet at work", () => {
     expect(wakesFor("when_called", { percepts: distress, portrait: portraitWith({ at_work: true }), dayRecord: false, firstAfterAttach: false })).toBe(false);
     expect(wakesFor("when_called", { percepts: distress, portrait: portraitWith({ at_work: false }), dayRecord: false, firstAfterAttach: false })).toBe(true);
     expect(wakesFor("when_called", { percepts: distress, portrait: undefined, dayRecord: false, firstAfterAttach: false })).toBe(true);
+  });
+
+  it("holds a distress at work in every mode, not only when_called and quiet", () => {
+    const atWork = portraitWith({ at_work: true });
+    const view = (percepts: Percept[], portrait: unknown, workEnded = false) =>
+      ({ percepts, portrait, dayRecord: false, firstAfterAttach: false, workEnded });
+    expect(wakesFor("every_change", view(distress, atWork))).toBe(false);
+    expect(wakesFor("every_change", view(distress, portraitWith({ at_work: false })))).toBe(true);
+    expect(wakesFor("every_change", view(distress, undefined))).toBe(true);
+    expect(wakesFor("quiet", view(distress, atWork))).toBe(false);
+    // A view with some other change still wakes her in every_change: the distress is not the only reason.
+    const other = [percept("need", { subject: "Test Need", band: "ok" })];
+    expect(wakesFor("every_change", view([...distress, ...other], atWork))).toBe(true);
+    expect(wakesFor("every_change", view(other, atWork))).toBe(true);
+    expect(wakesFor("every_change", view([], atWork))).toBe(true);
+  });
+
+  it("wakes her once when work ends with a need still in distress, in every mode", () => {
+    const needsDistress = { needs: { Test_Need: { band: "distress" } } };
+    const needsOk = { needs: { Test_Need: { band: "ok" } } };
+    const ended = (mode: "every_change" | "when_called" | "quiet", portrait: unknown, percepts: Percept[] = []) =>
+      wakesFor(mode, { percepts, portrait: { ...(portrait as object), self: { jobs: [{ at_work: false }] } }, dayRecord: false, firstAfterAttach: false, workEnded: true });
+    for (const mode of ["when_called", "quiet"] as const) {
+      expect(ended(mode, needsDistress)).toBe(true);
+      expect(ended(mode, needsOk)).toBe(false);
+    }
+    // every_change wakes on every view anyway, so the work end adds nothing there; the distress still wakes her.
+    expect(ended("every_change", needsDistress)).toBe(true);
+    expect(ended("every_change", needsOk)).toBe(true);
+  });
+
+  it("tells a work end apart from a shift that has not ended, once per game thread", () => {
+    const watch = createWorkWatch();
+    const shift = portraitWith({ at_work: true });
+    const free = portraitWith({ at_work: false });
+    expect(watch.ended("thread-a", shift)).toBe(false);
+    expect(watch.ended("thread-a", shift)).toBe(false);
+    expect(watch.ended("thread-a", free)).toBe(true);
+    expect(watch.ended("thread-a", free)).toBe(false);
+    expect(watch.ended("thread-b", free)).toBe(false);
+    // A view with no job read leaves the state as it was.
+    expect(watch.ended("thread-c", shift)).toBe(false);
+    expect(watch.ended("thread-c", undefined)).toBe(false);
+    expect(watch.ended("thread-c", free)).toBe(true);
   });
 
   it("wakes her in when_called for a text or a call, as for being addressed", () => {
