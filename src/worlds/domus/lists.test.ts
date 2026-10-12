@@ -203,10 +203,12 @@ describe("the catalogue ask", () => {
 });
 
 describe("the sync and wire limits for the new keys", () => {
-  it("takes a verb result up to its limit, and refuses a longer one", () => {
+  it("takes a verb result up to its limit, cuts a longer one, and refuses a result that is not words", () => {
     const event = (result: string) => ({ v: 1, helper_session: HELPER, events: [{ act_id: "a1", phase: "finished", at_ms: 1, detail: { result } }] });
     expect(parseActSync(event("x".repeat(RESULT_MAX))).events[0]?.detail).toEqual({ result: "x".repeat(RESULT_MAX) });
-    expect(() => parseActSync(event("x".repeat(RESULT_MAX + 1)))).toThrow();
+    // A longer report is cut, not refused: one long report must not refuse every event in the body.
+    expect(parseActSync(event("x".repeat(RESULT_MAX + 1))).events[0]?.detail).toEqual({ result: "x".repeat(RESULT_MAX) });
+    expect(() => parseActSync({ v: 1, helper_session: HELPER, events: [{ act_id: "a1", phase: "finished", at_ms: 1, detail: { result: 5 } }] })).toThrow();
   });
 
   it("checks a catalogue answer: at most twelve items, a price as a whole number", () => {

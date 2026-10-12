@@ -281,6 +281,12 @@ export function parseFeed(body: unknown): { helperSession: string } {
 
 /** A verb act's result, in the helper's words: at most this many characters. */
 export const RESULT_MAX = 400;
+
+/** A result longer than RESULT_MAX is cut to it (not a half surrogate pair at the end); any other detail is kept as it is. */
+function cutResult(detail: unknown): unknown {
+  if (!isRecord(detail) || typeof detail.result !== "string" || detail.result.length <= RESULT_MAX) return detail;
+  return { ...detail, result: detail.result.slice(0, RESULT_MAX).replace(/[\uD800-\uDBFF]$/, "") };
+}
 const SYNC_KEYS = new Set(["v", "helper_session", "events"]);
 const SYNC_EVENT_KEYS = new Set(["act_id", "phase", "at_ms", "detail"]);
 const PHASES: ReadonlySet<string> = new Set([
@@ -302,14 +308,13 @@ export function parseActSync(body: unknown): { helperSession: string; events: Sy
     if (!isRecord(item)) fail(400, "invalid_body");
     for (const key of Object.keys(item)) if (!SYNC_EVENT_KEYS.has(key)) fail(400, "invalid_body");
     if (!isActPhase(item.phase)) fail(400, "invalid_body");
-    // A verb act's report may carry the game's facts in words (detail.result, at most RESULT_MAX characters).
-    if ("detail" in item && isRecord(item.detail) && "result" in item.detail
-      && (typeof item.detail.result !== "string" || item.detail.result.length > RESULT_MAX)) fail(400, "invalid_body");
+    // A verb act's report may carry the game's facts in words (detail.result); a longer one is cut, not refused.
+    if ("detail" in item && isRecord(item.detail) && "result" in item.detail && typeof item.detail.result !== "string") fail(400, "invalid_body");
     return {
       actId: textOf(item.act_id, 1, 64, /^[A-Za-z0-9]+$/),
       phase: item.phase,
       atMs: safeInt(item.at_ms),
-      ...("detail" in item ? { detail: jsonObject(item.detail, 1024) } : {}),
+      ...("detail" in item ? { detail: jsonObject(cutResult(item.detail), 1024) } : {}),
     };
   });
   return { helperSession: textOf(body.helper_session, 1, 64), events };
