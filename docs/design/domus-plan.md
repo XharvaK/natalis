@@ -29,6 +29,21 @@ picture. The summoner's hands are needed only for what is theirs (her identity, 
 **Cost** is a body constraint, handled mechanically (coalescing, sending only what changed), never by the body
 deciding what is important.
 
+## North star (the summoner, 2026-10-12)
+
+Domus is a map of the game that a Lar uses to move through it freely. It maps the game's mechanics and translates her
+intent into the game's own calls; she plays, and learns from what the game answers. A new stage starts from one
+question: what part of the game can she not yet see or reach?
+
+- A verb exists only where the game has no menu her hands can use (build and buy, travel, saving, screens she cannot
+  see). Everything the game offers as an act stays the game's act.
+- A refusal comes from the game, with the game's own reason in words. The host does not decide first.
+- Every refusal or check falls in one of four kinds: the game said no; a reference to nothing (plumbing); a rule the
+  summoner set (no cheats, travel is her word to keep); or the host judging her play. The fourth kind is a cage: it
+  goes to the summoner as a question and is removed unless they keep it on purpose. Cost rules are mechanical
+  (quiet at work exists because a shift at speed 3 takes under 30 real seconds), and are named as cost.
+- What she learns is hers: her notebook, her memory and the world's facts she looks up. The host writes no lessons.
+
 ## The source, checked against that
 
 | Part | Verdict |
@@ -88,6 +103,23 @@ home (object edits are approved, with a cap; never destroy).
 **D10. Domus for any agent.** On hold: polish before product.
 
 ## Order
+
+### Where the stages stand (2026-10-12)
+
+| Stage | State |
+|---|---|
+| D1, D2, D3, D6 | Built and deployed (N8, W9 to W12). |
+| D7 | Built: the day record and `game_memory` (W9). Under the north star it is the map's index. |
+| D4, D5, D9 | Built in W13 (phone, visitors, events, travel, work, buy/place/move/sell/save); not yet live. |
+| D4/D5 reads | Venues, event scheduling, off-lot facts, career early/available: wait for the live discovery record. |
+| D8 | Co-play (W13-P3): waits for the live discovery record. |
+| D9 next | Upkeep and repairs; her creations (hang, keep, sell, gift); wardrobe (a screen she cannot use, so a question); house design (walls, floors, paint). Not moving house. |
+| D10 | On hold. |
+
+After every live session the lead lists what she tried to reach and could not (refusals, a screen with no other way,
+her own words). That list, read against the north star, is where the next stage comes from.
+
+### Original order
 
 D1, then D2 (attention changes how every later stage feels to her, and it removes the last Host judgment in Domus),
 then D3 and D4 together (both are her reaching beyond her room), then D6, D5, D7, D8, D9. Each stage is designed in
