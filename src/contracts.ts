@@ -16,9 +16,29 @@ export type ToolCall = {
 /** A picture the model sees: sent as an image part with its message. Bytes are base64, never a file path. */
 export type ImagePart = { type: "image"; mime: string; dataBase64: string };
 
+/**
+ * How often a part of a prompt changes: `fixed` when Natalis or the model changes, `notes` when a note the Lar or its
+ * summoner keeps changes, `page` when Recent here moves on by a page, `turn` on every turn. Slower classes come first.
+ */
+export type PromptPartClass = "fixed" | "notes" | "page" | "turn";
+
+/** One named part of a message's text, and the character offset where it ends in the message's content. */
+export type PromptLayoutEntry = { name: string; cls: PromptPartClass; end: number };
+
 export type ChatMessage =
-  | { role: "system"; content: string }
-  | { role: "user"; content: string; images?: ImagePart[] }
+  | {
+      role: "system";
+      content: string;
+      /** The named parts of content, in order. Absent on a message built without parts. */
+      layout?: PromptLayoutEntry[];
+    }
+  | {
+      role: "user";
+      content: string;
+      images?: ImagePart[];
+      /** The named parts of content, in order. Absent on a message built without parts. */
+      layout?: PromptLayoutEntry[];
+    }
   | {
       role: "assistant";
       content: string | null;

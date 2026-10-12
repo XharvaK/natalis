@@ -80,7 +80,8 @@ function toEmulatedMessages(
   let described = instructions === null;
   for (const message of messages) {
     if (message.role === "system" && !described && instructions !== null) {
-      out.push({ role: "system", content: `${message.content}\n\n${instructions}` });
+      // The instructions go at the end, so the parts of the message keep their offsets.
+      out.push({ ...message, content: `${message.content}\n\n${instructions}` });
       described = true;
     } else {
       out.push(convertMessage(message));

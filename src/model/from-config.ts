@@ -17,6 +17,8 @@ export type ModelConfig = {
   timeoutMs?: number;
   /** True when the model can see pictures. Only then is the look tool offered to the Lar. Never assumed. */
   vision?: boolean;
+  /** Send provider cache marks on the parts of a prompt that stay the same (see cache-marks.ts). Default false. */
+  cacheMarks?: boolean;
   /**
    * A backup for when the main model cannot answer (rate limited, out of credit, unavailable, unreachable or no reply in
    * time). It uses the same baseUrl, key, context size, timeout and tool setting as the main model.
@@ -38,6 +40,8 @@ export type FallbackModelConfig = {
   effortParam?: "reasoning_effort" | null;
   /** True when the backup can see pictures. Otherwise it gets the request without them, and a plain line in their place. */
   vision?: boolean;
+  /** Cache marks for the backup. Left out, the main model's setting is used. */
+  cacheMarks?: boolean;
   /** The backup's effort, in the same values as the entity's effort. Left out, the request's own effort is used. */
   effort?: NonNullable<ModelRequest["effort"]>;
   /** The backup's context window in tokens. Left out, it is the main model's. A request too big for it is not sent to it. */
@@ -66,6 +70,7 @@ export function modelFromConfig(
     nativeTools: config.nativeTools,
     effortParam: config.effortParam,
     timeoutMs: config.timeoutMs,
+    cacheMarks: config.cacheMarks,
   };
   const primary = withEmulated(createOpenAICompatiblePort(connection), config);
   if (config.fallback === undefined) return primary;
@@ -75,6 +80,7 @@ export function modelFromConfig(
       model: config.fallback.model,
       effortParam: config.fallback.effortParam ?? config.effortParam,
       contextTokens: config.fallback.contextTokens ?? config.contextTokens,
+      cacheMarks: config.fallback.cacheMarks ?? config.cacheMarks,
     }),
     config,
   );

@@ -222,3 +222,25 @@ describe("the routing of a world's own model", () => {
     expect(ports["game"]?.routing?.()).toEqual({ onBackup: false, backup: config.model, backupEffort: "high" });
   });
 });
+
+describe("cacheMarks in the model block", () => {
+  const system = { role: "system" as const, content: "## who\nA Lar.", layout: [{ name: "who", cls: "fixed" as const, end: 12 }] };
+  const turn: ModelRequest = { messages: [system, { role: "user", content: "hi" }] };
+
+  it("is off by default: the system text goes out as a plain string", async () => {
+    const sent = stubFetch();
+    await modelFromConfig(config, { [KEY_VAR]: KEY }).complete(turn);
+
+    expect(sent[0]?.body.messages).toEqual([{ role: "system", content: "## who\nA Lar." }, { role: "user", content: "hi" }]);
+  });
+
+  it("passes the switch to the main model's port, so the system text goes out as marked parts", async () => {
+    const sent = stubFetch();
+    await modelFromConfig({ ...config, cacheMarks: true }, { [KEY_VAR]: KEY }).complete(turn);
+
+    expect(sent[0]?.body.messages[0]).toEqual({
+      role: "system",
+      content: [{ type: "text", text: "## who\nA Lar.", cache_control: { type: "ephemeral" } }],
+    });
+  });
+});

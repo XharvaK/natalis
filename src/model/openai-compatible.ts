@@ -4,6 +4,7 @@
 
 import { randomBytes } from "node:crypto";
 import { ModelError } from "../contracts.js";
+import { markedTextParts, markPlan } from "./cache-marks.js";
 import type {
   ChatMessage,
   FinishReason,
@@ -35,6 +36,11 @@ export type OpenAICompatibleOptions = {
   sleep?: (ms: number) => Promise<void>;
   /** Prefix for tool-call ids the service did not send. Default "call". */
   idPrefix?: string;
+  /**
+   * Send provider cache marks (cache_control on the parts cache-marks.ts names). Off by default: the wire text is then the
+   * plain string it has always been.
+   */
+  cacheMarks?: boolean;
 };
 
 type ModelErrorKind = ConstructorParameters<typeof ModelError>[1];
@@ -63,6 +69,7 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
   const maxAttempts = Math.max(1, Math.floor(options.maxAttempts ?? DEFAULT_ATTEMPTS));
   const sleep = options.sleep ?? defaultSleep;
   const idPrefix = options.idPrefix ?? "call";
+  const cacheMarks = options.cacheMarks === true;
   const info: ModelInfo = {
     id: `openai-compatible:${options.model}`,
     contextTokens: options.contextTokens,
@@ -129,7 +136,7 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
   return {
     info,
     async complete(request: ModelRequest, signal?: AbortSignal): Promise<ModelResponse> {
-      const body = JSON.stringify(buildBody({ model: options.model, nativeTools, effortParam }, request));
+      const body = JSON.stringify(buildBody({ model: options.model, nativeTools, effortParam, cacheMarks }, request));
       for (let attempt = 1; ; attempt++) {
         if (signal?.aborted) throw new ModelError("request aborted by caller", "aborted", attempt);
         const started = Date.now();
@@ -168,12 +175,14 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
 // Request side
 
 function buildBody(
-  options: { model: string; nativeTools: boolean; effortParam: "reasoning_effort" | null },
+  options: { model: string; nativeTools: boolean; effortParam: "reasoning_effort" | null; cacheMarks: boolean },
   request: ModelRequest,
 ): Record<string, unknown> {
+  // With marks on, each message carries its marks; with them off, no message does and the wire text is the plain string.
+  const plan = options.cacheMarks ? markPlan(request.messages) : undefined;
   const body: Record<string, unknown> = {
     model: options.model,
-    messages: request.messages.map(toWireMessage),
+    messages: request.messages.map((message, index) => toWireMessage(message, plan?.[index])),
   };
   if (options.nativeTools && request.tools && request.tools.length > 0) {
     body.tools = request.tools.map(toWireTool);
@@ -186,16 +195,28 @@ function buildBody(
   return body;
 }
 
-function toWireMessage(message: ChatMessage): Record<string, unknown> {
+/**
+ * One message on the wire. `marks` is the message's cache marks (see cache-marks.ts), or undefined when marks are off. With
+ * marks on, system and user text goes as text parts; a marked assistant or tool message does too; any other message is unchanged.
+ */
+function toWireMessage(message: ChatMessage, marks: readonly number[] | undefined): Record<string, unknown> {
   switch (message.role) {
     case "system":
-      return { role: "system", content: message.content };
+      return { role: "system", content: marks === undefined ? message.content : textContent(message.content, marks) };
     case "user": {
-      if (!message.images || message.images.length === 0) return { role: "user", content: message.content };
+      if (!message.images || message.images.length === 0) {
+        return { role: "user", content: marks === undefined ? message.content : textContent(message.content, marks) };
+      }
+      const text: Array<Record<string, unknown>> =
+        marks === undefined
+          ? [{ type: "text", text: message.content }]
+          : message.content === ""
+            ? []
+            : markedTextParts(message.content, marks);
       return {
         role: "user",
         content: [
-          { type: "text", text: message.content },
+          ...text,
           ...message.images.map((picture) => ({
             type: "image_url",
             image_url: { url: `data:${picture.mime};base64,${picture.dataBase64}` },
@@ -207,7 +228,7 @@ function toWireMessage(message: ChatMessage): Record<string, unknown> {
       const calls = message.toolCalls ?? [];
       const wire: Record<string, unknown> = {
         role: "assistant",
-        content: message.content ?? (calls.length > 0 ? null : ""),
+        content: markedContent(message.content ?? (calls.length > 0 ? null : ""), marks),
       };
       // Reasoning a provider asked to get back (for example reasoning_details) rides along unchanged.
       if (message.providerState) Object.assign(wire, message.providerState);
@@ -221,8 +242,19 @@ function toWireMessage(message: ChatMessage): Record<string, unknown> {
       return wire;
     }
     case "tool":
-      return { role: "tool", tool_call_id: message.toolCallId, content: message.content };
+      return { role: "tool", tool_call_id: message.toolCallId, content: markedContent(message.content, marks) };
   }
+}
+
+/** Text that is sent as parts when marks are on (system and user text always are); empty text stays a plain string. */
+function textContent(text: string, marks: readonly number[]): string | Array<Record<string, unknown>> {
+  return text === "" ? "" : markedTextParts(text, marks);
+}
+
+/** A message's content with its marks: parts when it has a mark, otherwise the content as it is. */
+function markedContent(content: string | null, marks: readonly number[] | undefined): string | null | Array<Record<string, unknown>> {
+  if (marks === undefined || marks.length === 0 || content === null || content === "") return content;
+  return markedTextParts(content, marks);
 }
 
 function toWireTool(tool: ToolSpec): Record<string, unknown> {

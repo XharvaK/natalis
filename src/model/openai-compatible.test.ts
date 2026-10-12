@@ -498,3 +498,80 @@ describe("final errors", () => {
     }
   });
 });
+
+describe("cache marks", () => {
+  const WHO = "## who\nA Lar.";
+  const SYSTEM = `${WHO}\n\n## nature\nA voice.`;
+  const RECENT = "Recent here:\nrow one";
+  const USER = `${RECENT}\n\nNew:\nrow two`;
+  const layoutedSystem = { role: "system" as const, content: SYSTEM, layout: [
+    { name: "who", cls: "fixed" as const, end: WHO.length },
+    { name: "nature", cls: "notes" as const, end: SYSTEM.length },
+  ] };
+  const layoutedUser = { role: "user" as const, content: USER, layout: [
+    { name: "recent", cls: "page" as const, end: RECENT.length },
+    { name: "new", cls: "turn" as const, end: USER.length },
+  ] };
+  const marked = (text: string) => ({ type: "text", text, cache_control: { type: "ephemeral" } });
+
+  it("sends the same wire body as before when cache marks are off, layouts or not", async () => {
+    const withLayout = harness([chat({ role: "assistant", content: "ok" })]);
+    const withoutLayout = harness([chat({ role: "assistant", content: "ok" })]);
+
+    await withLayout.port.complete(asks([layoutedSystem, layoutedUser]));
+    await withoutLayout.port.complete(
+      asks([{ role: "system", content: SYSTEM }, { role: "user", content: USER }]),
+    );
+
+    expect(withLayout.calls[0]?.body).toEqual(withoutLayout.calls[0]?.body);
+    expect(withLayout.calls[0]?.body.messages[0].content).toBe(SYSTEM);
+    expect(withLayout.calls[0]?.body.messages[1].content).toBe(USER);
+  });
+
+  it("sends the system and user text as text parts, with a mark at the end of the page, the system and the last message", async () => {
+    const { port, calls } = harness([chat({ role: "assistant", content: "ok" })], { cacheMarks: true });
+
+    await port.complete(asks([layoutedSystem, layoutedUser]));
+
+    const [system, user] = calls[0]?.body.messages ?? [];
+    expect(system.content).toEqual([marked(SYSTEM)]);
+    expect(user.content).toEqual([marked(RECENT), marked("\n\nNew:\nrow two")]);
+  });
+
+  it("keeps the pictures after the text parts when marks are on", async () => {
+    const { port, calls } = harness([chat({ role: "assistant", content: "ok" })], { cacheMarks: true });
+    const images = [{ type: "image" as const, mime: "image/png", dataBase64: "AAAA" }];
+
+    await port.complete(asks([layoutedSystem, { ...layoutedUser, images }]));
+
+    const user = calls[0]?.body.messages[1];
+    expect(user.content.at(-1)).toEqual({ type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } });
+    expect(user.content.slice(0, -1)).toEqual([marked(RECENT), marked("\n\nNew:\nrow two")]);
+  });
+
+  it("moves the last-message mark to the tool message that ends a tool loop, and leaves an unmarked assistant message as text", async () => {
+    const { port, calls } = harness([chat({ role: "assistant", content: "ok" })], { cacheMarks: true });
+    const messages: ModelRequest["messages"] = [
+      layoutedSystem,
+      layoutedUser,
+      { role: "assistant", content: "Reading.", toolCalls: [{ id: "c1", name: "read_note", arguments: "{}" }] },
+      { role: "tool", toolCallId: "c1", content: "{\"ok\":true}" },
+    ];
+
+    await port.complete(asks(messages));
+
+    const wire = calls[0]?.body.messages;
+    expect(wire[2].content).toBe("Reading.");
+    expect(wire[3].content).toEqual([marked("{\"ok\":true}")]);
+    expect(JSON.stringify(wire).match(/cache_control/g)).toHaveLength(3);
+  });
+
+  it("sends no mark on a request built without layouts, beyond the last message", async () => {
+    const { port, calls } = harness([chat({ role: "assistant", content: "ok" })], { cacheMarks: true });
+
+    await port.complete(asks([{ role: "system", content: SYSTEM }, { role: "user", content: USER }]));
+
+    expect(calls[0]?.body.messages[0].content).toEqual([{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }]);
+    expect(calls[0]?.body.messages[1].content).toEqual([marked(USER)]);
+  });
+});

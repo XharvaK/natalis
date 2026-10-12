@@ -254,3 +254,19 @@ describe("rhythm", () => {
     expect(() => parseEntityConfig({ ...MINIMAL, rhythm: ["09:00", "09:00"] })).toThrow("rhythm lists 09:00 more than once.");
   });
 });
+
+describe("model.cacheMarks", () => {
+  const model = { baseUrl: ["http://", ["127", "0", "0", "1"].join("."), ":9/v1"].join(""), model: "main", contextTokens: 32_000 };
+
+  it("is off unless the model block says true, on the main model and on its backup, and says so plainly when it is not true or false", () => {
+    expect(parseEntityConfig({ model, summoner: { alias: "owner" } }).model.cacheMarks).toBeUndefined();
+    expect(parseEntityConfig({ model: { ...model, cacheMarks: true }, summoner: { alias: "owner" } }).model.cacheMarks).toBe(true);
+    expect(
+      parseEntityConfig({ model: { ...model, fallback: { model: "backup", cacheMarks: true } }, summoner: { alias: "owner" } })
+        .model.fallback,
+    ).toEqual({ model: "backup", cacheMarks: true });
+    expect(() => parseEntityConfig({ model: { ...model, cacheMarks: "yes" }, summoner: { alias: "owner" } })).toThrow(
+      "model.cacheMarks must be true or false.",
+    );
+  });
+});

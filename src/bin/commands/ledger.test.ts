@@ -73,4 +73,31 @@ describe("natalis ledger", () => {
     expect(err.join("\n")).toContain("Usage: natalis ledger");
     expect(out).toEqual([]);
   });
+
+  it("with --cache, summarises the call ledger per kind of thread: hits, expected hits, forgets, breaks and part sizes", async () => {
+    const calls = openLedger(join(dir, "river.db"));
+    const base = { atMs: Date.now(), threadKind: "summoner" as const, turnCall: 1, model: "openai-compatible:test-model", marks: 3 };
+    calls.appendCall({ ...base, promptChars: 1000, stableChars: 800, promptTokens: 250, cacheHitTokens: 200, breakPart: "new", breakClass: "turn", partSizes: { who: 200, new: 800 } });
+    calls.appendCall({ ...base, promptChars: 1000, stableChars: 900, promptTokens: 100, cacheHitTokens: 10, partSizes: { who: 300, new: 700 } });
+    calls.appendCall({ ...base, threadKind: "game", promptChars: 100, stableChars: 100, promptTokens: 10, cacheHitTokens: 10, partSizes: { who: 100 } });
+    calls.close();
+
+    const code = await ledgerCommand([dir, "--cache", "--days", "7"], (line) => out.push(line), (line) => err.push(line));
+
+    expect(code).toBe(0);
+    expect(out[0]).toBe("Cache, last 7 day(s): 3 model call(s).");
+    expect(out).toContain("game: 1 call(s). Cache hit 100%, expected 100% (from 1 measured call(s)). Provider forgot 0. Marks sent 3.");
+    expect(out).toContain("summoner: 2 call(s). Cache hit 60%, expected 83% (from 2 measured call(s)). Provider forgot 1. Marks sent 6.");
+    expect(out).toContain("  Parts that broke the cache, by count: new 1.");
+    expect(out).toContain("  Mean characters per part: new 750, who 250.");
+    expect(out.join("\n")).not.toMatch(/secret|hello/i);
+    expect(err).toEqual([]);
+  });
+
+  it("with --cache and no calls in the window, says so", async () => {
+    const code = await ledgerCommand([dir, "--cache"], (line) => out.push(line), (line) => err.push(line));
+
+    expect(code).toBe(0);
+    expect(out).toEqual(["Cache, last 1 day(s): 0 model call(s).", "No model calls are recorded in this window."]);
+  });
 });

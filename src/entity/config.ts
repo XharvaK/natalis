@@ -162,7 +162,7 @@ export function parseModel(value: unknown): ModelConfig {
   const block = objectOf(value, "model");
   onlyKeys(
     block,
-    ["baseUrl", "model", "apiKeyEnv", "contextTokens", "nativeTools", "effortParam", "timeoutMs", "vision", "fallback", "price"],
+    ["baseUrl", "model", "apiKeyEnv", "contextTokens", "nativeTools", "effortParam", "timeoutMs", "vision", "cacheMarks", "fallback", "price"],
     "model",
   );
 
@@ -193,6 +193,7 @@ export function parseModel(value: unknown): ModelConfig {
   if (block["effortParam"] !== undefined) model.effortParam = effortParamOf(block["effortParam"], "model.effortParam");
   if (block["timeoutMs"] !== undefined) model.timeoutMs = positiveInt(block["timeoutMs"], "model.timeoutMs");
   if (block["vision"] !== undefined) model.vision = flagOf(block["vision"], "model.vision");
+  if (block["cacheMarks"] !== undefined) model.cacheMarks = flagOf(block["cacheMarks"], "model.cacheMarks");
   if (block["fallback"] !== undefined) model.fallback = parseFallback(block["fallback"]);
   if (block["price"] !== undefined) model.price = priceOf(block["price"], "model.price");
   return model;
@@ -201,13 +202,14 @@ export function parseModel(value: unknown): ModelConfig {
 /** The backup model block: the same service, key and timeout as the main model, so only its own settings are given. */
 function parseFallback(value: unknown): FallbackModelConfig {
   const block = objectOf(value, "model.fallback");
-  onlyKeys(block, ["model", "effortParam", "vision", "effort", "contextTokens", "price"], "model.fallback");
+  onlyKeys(block, ["model", "effortParam", "vision", "cacheMarks", "effort", "contextTokens", "price"], "model.fallback");
   const fallback: FallbackModelConfig = { model: textOf(block["model"], "model.fallback.model") };
   if (block["price"] !== undefined) fallback.price = priceOf(block["price"], "model.fallback.price");
   if (block["effortParam"] !== undefined) {
     fallback.effortParam = effortParamOf(block["effortParam"], "model.fallback.effortParam");
   }
   if (block["vision"] !== undefined) fallback.vision = flagOf(block["vision"], "model.fallback.vision");
+  if (block["cacheMarks"] !== undefined) fallback.cacheMarks = flagOf(block["cacheMarks"], "model.fallback.cacheMarks");
   if (block["effort"] !== undefined) {
     if (!isEffort(block["effort"])) throw new Error(`model.fallback.effort must be one of ${EFFORTS.join(", ")}.`);
     fallback.effort = block["effort"];

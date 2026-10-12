@@ -3,7 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openRiver } from "./sqlite-river.js";
-import { openLedger, readLedger, summarizeLedger, type LedgerRow } from "./ledger.js";
+import {
+  openLedger,
+  readCallLedger,
+  readLedger,
+  summarizeCallLedger,
+  summarizeLedger,
+  type CallRow,
+  type LedgerRow,
+} from "./ledger.js";
 
 // Every name here is invented.
 let root: string;
@@ -76,5 +84,80 @@ describe("the ledger", () => {
       tokens: { prompt: 100, completion: 20, total: 120, reportedFor: 1 },
       cacheHitTokens: { total: 50, reportedFor: 1 },
     });
+  });
+});
+
+function call(overrides: Partial<CallRow> = {}): CallRow {
+  return {
+    atMs: NOW,
+    threadKind: "summoner",
+    turnCall: 1,
+    model: "openai-compatible:test-model",
+    promptChars: 1000,
+    stableChars: 800,
+    marks: 3,
+    partSizes: { who: 200, recent: 600, new: 200 },
+    ...overrides,
+  };
+}
+
+describe("the call ledger", () => {
+  it("keeps one row per model call, in the river's own file, and reads it back as it was written", () => {
+    const ledger = openLedger(riverPath);
+    ledger.appendCall(call({ breakPart: "new", breakClass: "turn", idleMs: 5_000, promptTokens: 250, cacheHitTokens: 200, cacheMissTokens: 50 }));
+    ledger.close();
+
+    expect(readCallLedger(riverPath, NOW - DAY)).toEqual([
+      call({ breakPart: "new", breakClass: "turn", idleMs: 5_000, promptTokens: 250, cacheHitTokens: 200, cacheMissTokens: 50 }),
+    ]);
+    expect(readCallLedger(riverPath, NOW + DAY)).toEqual([]);
+  });
+
+  it("reads nothing from a river that has no call ledger table yet", () => {
+    expect(readCallLedger(riverPath, 0)).toEqual([]);
+  });
+
+  it("summarizes per kind of thread: the hit ratio, the ratio the stable runs would give, the breaks, and the mean part sizes", () => {
+    const ledger = openLedger(riverPath);
+    // Measured: 1000 prompt chars, 800 stable, 250 prompt tokens, 200 hits. The stable share is 0.8, so 200 were expected.
+    ledger.appendCall(call({ promptTokens: 250, cacheHitTokens: 200, breakPart: "new", breakClass: "turn" }));
+    // A provider that forgot: the stable run is 90% of the prompt but only 10 of 100 tokens hit.
+    ledger.appendCall(call({ promptChars: 1000, stableChars: 900, promptTokens: 100, cacheHitTokens: 10, breakPart: "who", breakClass: "fixed", partSizes: { who: 300, recent: 600, new: 100 } }));
+    ledger.appendCall(call({ threadKind: "game", promptTokens: 50, cacheHitTokens: 50 }));
+    ledger.close();
+
+    const summary = summarizeCallLedger(readCallLedger(riverPath, NOW - DAY));
+    const summoner = summary["summoner"];
+    expect(summoner?.calls).toBe(2);
+    expect(summoner?.measured).toBe(2);
+    expect(summoner?.promptTokens).toBe(350);
+    expect(summoner?.cacheHitTokens).toBe(210);
+    expect(summoner?.hitRatio).toBeCloseTo(210 / 350);
+    // Expected: 250 * 0.8 + 100 * 0.9 = 290, over 350 prompt tokens.
+    expect(summoner?.expectedRatio).toBeCloseTo(290 / 350);
+    expect(summoner?.providerForgot).toBe(1);
+    expect(summoner?.breaks).toEqual({ new: 1, who: 1 });
+    expect(summoner?.partSizes["who"]).toEqual({ calls: 2, meanChars: 250 });
+    expect(summoner?.marks).toBe(6);
+    expect(summary["game"]?.hitRatio).toBe(1);
+  });
+
+  it("does not count a call as forgotten when its stable run is under 80% of the prompt", () => {
+    const ledger = openLedger(riverPath);
+    ledger.appendCall(call({ promptChars: 1000, stableChars: 700, promptTokens: 100, cacheHitTokens: 0 }));
+    ledger.close();
+
+    expect(summarizeCallLedger(readCallLedger(riverPath, NOW - DAY))["summoner"]?.providerForgot).toBe(0);
+  });
+
+  it("reports no ratio for calls that did not report their tokens", () => {
+    const ledger = openLedger(riverPath);
+    ledger.appendCall(call());
+    ledger.close();
+
+    const summoner = summarizeCallLedger(readCallLedger(riverPath, NOW - DAY))["summoner"];
+    expect(summoner?.calls).toBe(1);
+    expect(summoner?.hitRatio).toBeUndefined();
+    expect(summoner?.expectedRatio).toBeUndefined();
   });
 });
