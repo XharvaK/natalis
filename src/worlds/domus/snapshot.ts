@@ -174,7 +174,7 @@ export function gameSnapshotTool(open: () => SnapshotContext): Tool {
       // Q-j (the User, 2026-10-12): the summoner's stop refuses acts, not reads; this one only reads the game.
       safeWhenStopped: true,
       description:
-        "Ask for one picture of the game as it looks now. The game takes it on its next sync, within ten minutes, and it is kept on your shelf as a picture id. Only one request is open at a time for this game. Nothing is sent anywhere by this: a picture comes to your shelf for you to look at, keep or send.",
+        "Ask for one picture of the game as it looks now. The game takes it at the link to the game's next check-in, within ten minutes, and it is kept on your shelf as a picture id. Only one request is open at a time for this game. Nothing is sent anywhere by this: a picture comes to your shelf for you to look at, or to send with say (attach).",
       parameters: { type: "object", properties: {} },
     },
     async run(_args: Record<string, unknown>, context: ToolContext): Promise<Receipt> {

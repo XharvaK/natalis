@@ -63,9 +63,9 @@ afterEach(() => {
 });
 
 describe("game_memory: she asks the game what it remembers", () => {
-  it("records one owed ask for her thread and says the answer comes on the next sync", async () => {
+  it("records one owed ask for her thread and says the answer comes from the link to the game", async () => {
     const receipt = await ask({ about: "Brew Glimmer" });
-    expect(receipt).toMatchObject({ ok: true, summary: "Asked the game what it remembers about Brew Glimmer. The answer comes on its next sync and wakes you." });
+    expect(receipt).toMatchObject({ ok: true, summary: "Asked the game what it remembers about Brew Glimmer. The answer comes from the link to the game and wakes you." });
     expect(askedRows()).toEqual([expect.objectContaining({ thread: THREAD, about: "Brew Glimmer", status: "owed", requested_at_ms: T0, handed_session: null })]);
   });
 

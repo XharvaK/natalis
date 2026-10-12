@@ -114,7 +114,7 @@ describe("game_act: a view from an earlier helper session", () => {
     open = { db, nowMs: () => T0, attachedSession: () => "helper-2", lastAttachedMs: () => T0 };
     const receipt = await run({ option: "a1" });
     expect(receipt).toMatchObject({ ok: false, refused: { code: "view_from_earlier_session" } });
-    expect(receipt.refused?.reason).toContain("The game restarted since that view, and its new view has not arrived yet.");
+    expect(receipt.refused?.reason).toContain("That view is from an earlier connection to the game, and its new view has not arrived yet.");
     expect(acts()).toEqual([]);
   });
 
@@ -207,7 +207,7 @@ describe("game_act: requests", () => {
     open = { db, nowMs: () => T0, attachedSession: () => HELPER, lastAttachedMs: () => T0, probeOf: () => undefined };
     const receipt = await run({ option: "a5", sim: "p1" });
     expect(receipt).toMatchObject({ ok: false, refused: { code: "probe_too_old" } });
-    expect(receipt.refused?.reason).toContain("has not said which probe it runs");
+    expect(receipt.refused?.reason).toContain("has not said what the game's side is");
     expect(acts()).toEqual([]);
   });
 

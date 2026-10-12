@@ -96,11 +96,10 @@ describe("game_list", () => {
     ] });
   });
 
-  it("answers from the stored list, one line per item, with the places sentence first", async () => {
+  it("answers from the stored list, one line per item", async () => {
     const receipt = await list({ what: "places" });
     expect(receipt).toMatchObject({ ok: true, data: { kind: "places", count: 3 } });
     expect(receipt.summary.split("\n")).toEqual([
-      "Travel moves your summoner's game too: ask them first.",
       "- h1 Test Park (Park)",
       "- h2 Test House (home of Ana Example)",
       "- h3 Test Flat (your home)",

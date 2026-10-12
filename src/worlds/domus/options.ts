@@ -63,10 +63,10 @@ export function labelOf(found: Found): string {
 function describeRules(rules: AnswerRules): string {
   const parts: string[] = [];
   if (rules.select) {
-    parts.push(`pick ${rules.select.min} to ${rules.select.max === 0 ? "any number of" : rules.select.max} row(s)`);
+    parts.push(`pick ${rules.select.min} to ${rules.select.max === 0 ? "any number of" : rules.select.max} ${rules.select.max === 1 ? "row" : "rows"}`);
   }
   if (rules.counts) {
-    parts.push(`up to ${rules.counts.max_in_row} of one row, at most ${rules.counts.max_rows} row(s)`);
+    parts.push(`up to ${rules.counts.max_in_row} of one row, at most ${rules.counts.max_rows} ${rules.counts.max_rows === 1 ? "row" : "rows"}`);
   }
   for (const field of rules.text ?? []) {
     const bounds = field.max_length === null ? `at least ${field.min_length}` : `${field.min_length} to ${field.max_length}`;

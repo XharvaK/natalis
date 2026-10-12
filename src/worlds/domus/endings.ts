@@ -9,7 +9,7 @@ const CUT_SHORT: Readonly<Record<string, string>> = {
   PRIORITY: "something more urgent took its place",
   USER_CANCEL: "it was cancelled (by you or at the controls)",
   FAILED_TESTS: "the game decided it could not happen now",
-  TRANSITION_FAILURE: "the Lar could not get there or into position",
+  TRANSITION_FAILURE: "you could not get there or into position",
   OBJECT_CHANGED: "the object changed",
   RESET: "the game stopped it",
   KILLED: "the game stopped it",
@@ -24,7 +24,7 @@ const EARLY = "the game ended it early";
 // The helper says whether the game ever began a pushed act. One it ended before it began is read from the
 // game's own queue code: a queued act whose way there the game cannot find is ended as incompatible first.
 const NEVER_BEGAN: Readonly<Record<string, string>> = {
-  INTERACTION_INCOMPATIBILITY: "it never began: the game found no way to do it from where the Lar was",
+  INTERACTION_INCOMPATIBILITY: "it never began: the game found no way to do it from where you were",
 };
 
 export type Ending = { ended: "completed" | "cut_short" | "asked" | "answered"; why?: string };

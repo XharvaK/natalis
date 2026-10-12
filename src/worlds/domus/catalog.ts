@@ -43,7 +43,7 @@ export function gameCatalogTool(open: () => GameContext): Tool {
       safeWhenStopped: true,
       description:
         "Ask the game's catalogue what it sells for some words: furniture and decor you can buy. The answer comes on its next " +
-        "sync, within two minutes, as up to twelve items, each with a c ref for game_buy, its price and its placement. Nothing is bought.",
+        "the link to the game brings it within two minutes, as up to twelve items, each with a catalogue ref for game_buy, its price and its placement. Nothing is bought.",
       parameters: {
         type: "object",
         properties: {
@@ -90,7 +90,7 @@ function gameCatalog(open: () => GameContext, args: Record<string, unknown>, con
       typeof args.max_price === "number" ? args.max_price : null, typeof args.placement === "string" ? args.placement : null);
   return {
     ok: true,
-    summary: `Asked the game's catalogue for ${words}. The answer comes on its next sync and wakes you.`,
+    summary: `Asked the game's catalogue for ${words}. The answer comes from the link to the game and wakes you.`,
     data: { askId, expiresAtMs: nowMs + CATALOG_TTL_MS },
   };
 }
@@ -143,7 +143,7 @@ export function settleCatalog(
   };
 }
 
-/** The answer in plain words: each item with its c ref, name, price and placement, and her money when it is known. */
+/** The answer in plain words: each item with its catalogue ref, name, price and placement, and her money when it is known. */
 export function catalogText(words: string, matched: number, items: CatalogItem[], funds: number | undefined): string {
   const lines = items.map((item) => {
     const placement = typeof item.placement === "string" ? `, ${item.placement}` : "";

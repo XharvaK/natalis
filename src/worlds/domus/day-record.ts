@@ -132,7 +132,7 @@ function frameText(frame: Rec): string | undefined {
     alone.length ? `your body on its own: ${alone.join(", ")}` : undefined,
   ].filter(defined);
   const acts = whole(frame.acts) ?? 0;
-  return parts.length ? `Day ${day}: ${parts.join("; ")}.` : `Day ${day}: ${acts} act(s).`;
+  return parts.length ? `Day ${day}: ${parts.join("; ")}.` : `Day ${day}: ${acts} ${acts === 1 ? "act" : "acts"}.`;
 }
 
 /** Name ×count for each name in a table of counts; a name or count that is not readable is left out. */

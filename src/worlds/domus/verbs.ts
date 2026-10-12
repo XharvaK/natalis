@@ -23,7 +23,7 @@ const KNOWINGLY = {
   type: "boolean",
   description: "True only to ask anyway, after a refusal that says another of your threads asked the game within the last 60 seconds.",
 } as const;
-const PLACE_TEXT = "Where: exactly one of on, beside or instead (a t or a ref), or wall or in (a room's name as the view names it); facing, optionally, a t or a ref, or \"room\".";
+const PLACE_TEXT = "Where: exactly one of on, beside or instead (a thing or a choice ref), or wall or in (a room's name as the view names it); facing, optionally, a thing or a choice ref, or \"room\".";
 
 /** The relations a place may name: one of them, with a thing (on, beside, instead) or a room (wall, in). */
 const RELATIONS: readonly string[] = ["on", "beside", "instead", "wall", "in"];
@@ -58,11 +58,11 @@ function viewOf(db: DatabaseSync, attached: string): View | undefined {
   return { observationId: newest.observationId, options: optionsOf(newest.payload.options) };
 }
 
-const NO_VIEW = "The newest view of the game does not show this choice, so an a ref cannot be used now. Name a thing by its t ref, or wait for the game's view.";
+const NO_VIEW = "The newest view of the game does not show this choice, so you cannot name it now. Name a thing by its thing ref, or wait for the game's view.";
 
-/** A thing by its ref: a t ref (from the things list) or an a ref (the choice's object in the newest view). */
+/** A thing by its ref: a thing ref (from the things list) or a choice ref (the choice's object in the newest view). */
 function thingOf(db: DatabaseSync, listed: string | undefined, view: View | undefined, ref: string): Thing | Receipt {
-  if (!REF_PATTERN.test(ref)) return refused("bad_args", `${ref} is not a ref: use a t ref from game_list things, or an a ref from the view.`);
+  if (!REF_PATTERN.test(ref)) return refused("bad_args", `${ref} is not a ref: use a thing ref from game_list things, or a choice ref from the view.`);
   if (ref.startsWith("t")) {
     const item = findListed(db, listed, "things", ref);
     return item ? { id: String(item.id), name: String(item.name) } : staleRef(ref, "game_list things");
@@ -72,7 +72,7 @@ function thingOf(db: DatabaseSync, listed: string | undefined, view: View | unde
     const found = findOption(view.options, ref);
     return found ? { id: found.object.object_id, name: found.object.object } : refused("unknown_option", `${ref} is not a choice in the newest view of this game.`);
   }
-  return refused("bad_args", `${ref} is not a thing: use a t ref from game_list things, or an a ref from the view.`);
+  return refused("bad_args", `${ref} is not a thing: use a thing ref from game_list things, or a choice ref from the view.`);
 }
 
 /** The rooms she can name: the rooms of the newest view and of the things list, as the words they have (exact, ignoring case). */
@@ -152,8 +152,8 @@ type VerbDef = {
 const VERBS: VerbDef[] = [
   {
     tool: "game_go",
-    description: "Travel to a place from game_list places (an h ref). Travel moves your summoner's game too. Ask them on Discord first, and go only after their yes. It takes the turn's one act slot.",
-    properties: { place: { type: "string", description: "The h ref of the place, from game_list places." } },
+    description: "Travel to a place from game_list places (a place ref). Travel moves the game on your summoner's screen too. It takes the turn's one act slot.",
+    properties: { place: { type: "string", description: "The place ref of the place, from game_list places." } },
     required: ["place"],
     keys: ["place"],
     plan({ db, listed, args, ownerMs }) {
@@ -231,9 +231,9 @@ const VERBS: VerbDef[] = [
   },
   {
     tool: "game_buy",
-    description: "Buy a c item from your latest game_catalog answer and place it. A home edit: six a turn. A purchase that cuts off a route stays where you put it, and the result says which routes are cut.",
+    description: "Buy a catalogue item from your latest game_catalog answer and place it. A home edit. A purchase that cuts off a route stays where you put it, and the result says which routes are cut.",
     properties: {
-      item: { type: "string", description: "The c ref of the item, from the catalogue answer." },
+      item: { type: "string", description: "The catalogue ref of the item, from the catalogue answer." },
       place: { description: PLACE_TEXT, type: "object" },
       max_price: { type: "integer", minimum: 0, description: "Optional: the most it may cost; the purchase is refused above it." },
     },
@@ -258,13 +258,13 @@ const VERBS: VerbDef[] = [
   },
   {
     tool: "game_place",
-    description: "Place an item from your inventory (a t ref) on your lot. A home edit.",
-    properties: { thing: { type: "string", description: "The t ref of an inventory item, from game_list things." }, place: { description: PLACE_TEXT, type: "object" } },
+    description: "Place an item from your inventory (a thing ref) on your lot. A home edit.",
+    properties: { thing: { type: "string", description: "The thing ref of an inventory item, from game_list things." }, place: { description: PLACE_TEXT, type: "object" } },
     required: ["thing", "place"],
     keys: ["thing", "place"],
     plan({ db, listed, view, args }) {
       const ref = args.thing;
-      if (typeof ref !== "string" || !REF_PATTERN.test(ref) || !ref.startsWith("t")) return refused("bad_args", "thing must be a t ref of an inventory item.");
+      if (typeof ref !== "string" || !REF_PATTERN.test(ref) || !ref.startsWith("t")) return refused("bad_args", "thing must be a thing ref of an inventory item.");
       const item = findListed(db, listed, "things", ref);
       if (!item) return staleRef(ref, "game_list things");
       if (item.where !== "inventory") return refused("not_in_inventory", `${ref} is not in your inventory, so it is not placed. It is ${String(item.where)}.`);
@@ -278,8 +278,8 @@ const VERBS: VerbDef[] = [
   },
   {
     tool: "game_move",
-    description: "Move a thing on your lot (a t or a ref) to another place. A home edit. A move that cuts off a route stays where you put it, and the result says which routes are cut.",
-    properties: { thing: { type: "string", description: "A t ref from game_list things, or an a ref from the view." }, place: { description: PLACE_TEXT, type: "object" } },
+    description: "Move a thing on your lot (a thing or a choice ref) to another place. A home edit. A move that cuts off a route stays where you put it, and the result says which routes are cut.",
+    properties: { thing: { type: "string", description: "A thing ref from game_list things, or a choice ref from the view." }, place: { description: PLACE_TEXT, type: "object" } },
     required: ["thing", "place"],
     keys: ["thing", "place"],
     plan({ db, listed, view, args }) {
@@ -295,8 +295,8 @@ const VERBS: VerbDef[] = [
   },
   {
     tool: "game_sell",
-    description: "Sell a thing (a t or a ref) from your lot or your inventory. It is removed. A home edit.",
-    properties: { thing: { type: "string", description: "A t ref from game_list things, or an a ref from the view." } },
+    description: "Sell a thing (a thing or a choice ref) from your lot or your inventory. It is removed. A home edit.",
+    properties: { thing: { type: "string", description: "A thing ref from game_list things, or a choice ref from the view." } },
     required: ["thing"],
     keys: ["thing"],
     plan({ db, listed, view, args }) {

@@ -112,7 +112,7 @@ describe("rendering a view", () => {
         answer_rules: { select: { min: 1, max: 1 }, text: [{ name: "title", label: "Title", min_length: 1, max_length: 10, numeric: false, min_value: null, max_value: null, profanity_checked: false }] },
       }],
     });
-    expect(asked).toContain('Answer rules: pick 1 to 1 row(s); type "title" (Title), 1 to 10 characters.');
+    expect(asked).toContain('Answer rules: pick 1 to 1 row; type "title" (Title), 1 to 10 characters.');
   });
 
   it("keeps the view within its size, and says how many percepts it left out", () => {

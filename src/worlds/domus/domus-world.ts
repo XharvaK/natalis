@@ -474,7 +474,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       place: thread,
       thread,
       source: "body",
-      text: `The game went back to ${new Date(parsed.afterSourceTimeMs).toISOString()}. What happened there after that time did not happen: ${observations} observation(s) were undone.`,
+      text: `The game went back to ${new Date(parsed.afterSourceTimeMs).toISOString()}. What happened there after that time did not happen: ${observations} ${observations === 1 ? "observation was" : "observations were"} undone.`,
       data: { reason: parsed.reason, observations, afterSourceTimeMs: parsed.afterSourceTimeMs },
       atMs: now,
       wake: false,
@@ -737,7 +737,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     },
 
     about() {
-      return `The Sims 4 (Domus): your household's game, at domus:<world>, while your summoner's helper is attached. ${LIVING_IT}`;
+      return `The Sims 4 (Domus): your household's game, at a thread named domus: and a slot name, while your summoner's link to the game is attached. The link runs on your summoner's computer; the game's side runs inside the game. ${LIVING_IT}`;
     },
 
     now() {

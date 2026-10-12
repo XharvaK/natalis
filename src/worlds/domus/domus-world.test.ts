@@ -311,7 +311,7 @@ describe("acts: the Lar asks, the helper pulls, the game reports", () => {
     await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [{ act_id: actId, phase: "received", at_ms: T0 + 10 }] });
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ place: "discord:dm:owner", thread: "discord:dm:owner", source: "body", wake: false });
-    expect(events[0]?.text).toContain('Your act "Boil water (Test kettle)" (a1): your helper took it up');
+    expect(events[0]?.text).toContain('Your act "Boil water (Test kettle)" (a1): the link to the game took it up');
   });
 
   it("serves a requested act to its own helper in the wire's shape, then keeps the report as a note", async () => {
@@ -325,7 +325,7 @@ describe("acts: the Lar asks, the helper pulls, the game reports", () => {
     const actId = acts[0]?.act_id;
     expect(await call("/domus/acts/sync", { v: 1, helper_session: "helper-2", events: [] })).toMatchObject({ body: { acts: [] } });
     // Another session's sync holds the pulled act as unknown, as a guess (SESSION_ENDED): helper-1's report still settles it.
-    expect(events.map((event) => event.text)).toEqual([expect.stringContaining("how it ended is not known (SESSION_ENDED)")]);
+    expect(events.map((event) => event.text)).toEqual([expect.stringContaining("how it ended is not known")]);
     events = [];
     const reported = await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [
       { act_id: actId, phase: "received", at_ms: T0 + 10 },
@@ -333,7 +333,7 @@ describe("acts: the Lar asks, the helper pulls, the game reports", () => {
     expect(reported.body).toMatchObject({ applied: 1, acts: [] });
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ place: "domus:slot3", source: "body", wake: false });
-    expect(events[0]?.text).toContain('Your act "Boil water (Test kettle)" (a1): your helper took it up');
+    expect(events[0]?.text).toContain('Your act "Boil water (Test kettle)" (a1): the link to the game took it up');
   });
 
   it("wakes the thread for a refusal, and says the game is cut short when it is", async () => {
@@ -341,7 +341,7 @@ describe("acts: the Lar asks, the helper pulls, the game reports", () => {
     const actId = (receipt.data as { actId: string }).actId;
     await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [{ act_id: actId, phase: "rejected", at_ms: T0, detail: { code: "NOT_ATTACHED", by: "game" } }] });
     expect(events[0]).toMatchObject({ wake: true });
-    expect(events[0]?.text).toContain("the game refused it (NOT_ATTACHED)");
+    expect(events[0]?.text).toContain("the game refused it: the link to the game is not connected to the game");
   });
 
   it("wakes the thread when the game finishes an act, and the note says it finished", async () => {
@@ -580,7 +580,7 @@ describe("the world's surface", () => {
       "game_act", "game_snapshot", "game_attention", "game_look", "game_overlay_say", "game_memory", "game_list", "game_catalog",
       "game_go", "game_save", "plan_event", "game_buy", "game_place", "game_move", "game_sell",
     ]);
-    expect(world?.about?.()).toBe("The Sims 4 (Domus): your household's game, at domus:<world>, while your summoner's helper is attached. " + LIVING_IT);
+    expect(world?.about?.()).toBe("The Sims 4 (Domus): your household's game, at a thread named domus: and a slot name, while your summoner's link to the game is attached. The link runs on your summoner's computer; the game's side runs inside the game. " + LIVING_IT);
     expect(await world?.say("domus:slot3", "hello")).toMatchObject({ ok: false, refused: { code: "no_words" } });
   });
 
@@ -910,7 +910,7 @@ describe("game memory: she asks the game, the helper answers from its record", (
     expect(events).toHaveLength(before + 1);
     expect(events[before]).toMatchObject({ world: "domus", thread: "domus:slot3", actor: "game", source: "outside", wake: true });
     expect(events[before]?.text).toContain("What the game remembers about \"Brew Glimmer\" (1 matched, newest first):");
-    expect(events[before]?.text).toContain("- Day 3, 14:20, 45 min: brew glimmer (your act); gloop +30.");
+    expect(events[before]?.text).toContain("- Day 3, 14:20, 45 min: brew glimmer (your act); gloop need eased.");
     expect(events[before]?.text).toContain("- Mara Quill: 1 act together, last at ");
     expect(await answer(askId, { matched: 0, acts: [], people: [] })).toEqual({ status: 200, body: { status: "ok", applied: false } });
     expect(events).toHaveLength(before + 1);

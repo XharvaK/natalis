@@ -80,7 +80,7 @@ describe("the game_attention description says what each mode wakes for (NATALIS2
     expect(text).toContain("When work ends with a need still in distress you wake once, in every mode.");
     expect(text).toContain("at work, a view whose only changes are needs in distress stays quiet");
     expect(text).toContain("when_called: otherwise a change wakes you only when something calls you");
-    expect(text).toContain("quiet: otherwise nothing wakes you until until");
+    expect(text).toContain("quiet: otherwise nothing wakes you until, then");
   });
 });
 

@@ -199,7 +199,7 @@ export type AttentionRow = {
 /** The refusal for a choice or a picture request that rests on a view from a helper session the game is no longer on. */
 export const STALE_VIEW_CODE = "view_from_earlier_session";
 export const STALE_VIEW_REASON =
-  "The game restarted since that view, and its new view has not arrived yet. Wait for the game's new view, then choose again.";
+  "That view is from an earlier connection to the game, and its new view has not arrived yet. Wait for the game's new view, then choose again.";
 
 export type Row = Record<string, unknown>;
 
