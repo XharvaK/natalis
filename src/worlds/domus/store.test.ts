@@ -268,7 +268,7 @@ describe("schema migration (version 1 adds acts.words and acts.pulled_at_ms; ver
     expect(columnsOf(db)).toEqual(expect.arrayContaining(["words", "pulled_at_ms"]));
     const kept = db.prepare("SELECT label, words, pulled_at_ms FROM acts WHERE act_id = 'act1'").get() as Row;
     expect(kept).toEqual({ label: "Boil water (Kettle)", words: null, pulled_at_ms: null });
-    expect((db.prepare("PRAGMA user_version").get() as Row).user_version).toBe(2);
+    expect((db.prepare("PRAGMA user_version").get() as Row).user_version).toBe(3);
   });
 
   it("changes nothing when the store is already at version 1 or later, and opening it again is safe", () => {
@@ -276,7 +276,7 @@ describe("schema migration (version 1 adds acts.words and acts.pulled_at_ms; ver
     db.close();
     db = openDomusDb(dir);
     expect(columnsOf(db).filter((name) => name === "words")).toHaveLength(1);
-    expect((db.prepare("PRAGMA user_version").get() as Row).user_version).toBe(2);
+    expect((db.prepare("PRAGMA user_version").get() as Row).user_version).toBe(3);
   });
 
   it("forgets the words the Lar said in a store from before version 1, without opening it through the world", () => {

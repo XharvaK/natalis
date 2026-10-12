@@ -39,15 +39,15 @@ function writeVersionOne(): void {
   old.close();
 }
 
-describe("the Domus schema, version 2", () => {
-  it("is version 2 in code", () => {
-    expect(DOMUS_SCHEMA_VERSION).toBe(2);
+describe("the Domus schema, version 3", () => {
+  it("is version 3 in code", () => {
+    expect(DOMUS_SCHEMA_VERSION).toBe(3);
   });
 
   it("migrates a version 1 database: adds the act columns and the new tables, keeps the rows", () => {
     writeVersionOne();
     db = openDomusDb(dir);
-    expect(Number((db.prepare("PRAGMA user_version").get() as Row).user_version)).toBe(2);
+    expect(Number((db.prepare("PRAGMA user_version").get() as Row).user_version)).toBe(3);
     const columns = (db.prepare("PRAGMA table_info(acts)").all() as Row[]).map((column) => String(column.name));
     expect(columns).toEqual(expect.arrayContaining(["verb", "args_json", "words", "pulled_at_ms"]));
     const kept = db.prepare("SELECT label, words FROM acts WHERE act_id = 'a1'").get() as Row;
@@ -67,7 +67,7 @@ describe("the Domus schema, version 2", () => {
     db = openDomusDb(dir);
     // The row matched the word, so its text is forgotten; the row itself is kept.
     expect((db.prepare("SELECT label, words FROM acts WHERE act_id = 'a1'").get() as Row)).toEqual({ label: FORGOTTEN_LINE, words: FORGOTTEN_LINE });
-    expect(Number((db.prepare("PRAGMA user_version").get() as Row).user_version)).toBe(2);
+    expect(Number((db.prepare("PRAGMA user_version").get() as Row).user_version)).toBe(3);
     const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Row[]).map((row) => String(row.name));
     expect(tables).toEqual(expect.arrayContaining(["lists", "catalog_asks", "catalog_seen"]));
   });
@@ -76,14 +76,14 @@ describe("the Domus schema, version 2", () => {
     writeVersionOne();
     openDomusDb(dir).close();
     db = openDomusDb(dir);
-    expect(Number((db.prepare("PRAGMA user_version").get() as Row).user_version)).toBe(2);
+    expect(Number((db.prepare("PRAGMA user_version").get() as Row).user_version)).toBe(3);
   });
 
   it("refuses a database from a later version", () => {
     mkdirSync(join(dir, DOMUS_FOLDER), { recursive: true });
     const later = new DatabaseSync(join(dir, DOMUS_FOLDER, DOMUS_DB_FILE));
-    later.exec("PRAGMA user_version = 3");
+    later.exec("PRAGMA user_version = 4");
     later.close();
-    expect(() => openDomusDb(dir)).toThrow(/schema version 3/);
+    expect(() => openDomusDb(dir)).toThrow(/schema version 4/);
   });
 });

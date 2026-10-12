@@ -5,7 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import {
-  attentionLine, currentAttention, gameAttentionTool, LOOK_MAX, LOOK_MIN, reviewAttention, UNTIL_MAX_MS, wakesFor,
+  attentionLine, currentAttention, gameAttentionTool, LOOK_MAX, LOOK_MIN, reviewAttention, UNTIL_MAX_MS, wakesFor, workEnded,
 } from "./attention.js";
 import { admitObservation, lastLookHanded, lookOwed, openDomusDb, readAttention, takeLook, writeAttention, type AttentionRow } from "./store.js";
 import type { Percept } from "./wire.js";
@@ -47,6 +47,30 @@ function view(percepts: Percept[], overrides: { portrait?: unknown; dayRecord?: 
 
 const HELD = { asked: [{ title: "Pick a recipe", whose: "hers", held: true }] };
 const NOT_HELD = { asked: [{ title: "Pick a recipe", whose: "the User's", held: false }] };
+
+describe("the work watch is kept per game thread in domus.sqlite (NATALIS2-7, C6 F-3)", () => {
+  const job = (atWork: boolean) => ({ self: { jobs: [{ title: "Test Clerk", at_work: atWork }] } });
+
+  it("tells a work end apart from a shift that has not ended, once per game thread", () => {
+    expect(workEnded(db, "thread-a", job(true))).toBe(false);
+    expect(workEnded(db, "thread-a", job(true))).toBe(false);
+    expect(workEnded(db, "thread-a", job(false))).toBe(true);
+    expect(workEnded(db, "thread-a", job(false))).toBe(false);
+    expect(workEnded(db, "thread-b", job(false))).toBe(false);
+    // A view with no job read leaves the thread as it was.
+    expect(workEnded(db, "thread-c", job(true))).toBe(false);
+    expect(workEnded(db, "thread-c", undefined)).toBe(false);
+    expect(workEnded(db, "thread-c", job(false))).toBe(true);
+  });
+
+  it("still gives the one work end after a restart: the at-work flag is in the store", () => {
+    expect(workEnded(db, THREAD, job(true))).toBe(false);
+    db.close();
+    db = openDomusDb(dir);
+    expect(workEnded(db, THREAD, job(false))).toBe(true);
+    expect(workEnded(db, THREAD, job(false))).toBe(false);
+  });
+});
 
 describe("the game_attention description says what each mode wakes for (NATALIS2-5)", () => {
   it("names what wakes her in every mode, and what each mode adds to it", () => {

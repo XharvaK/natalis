@@ -6,7 +6,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import { parseAtIso } from "../../entity/wake-schedule.js";
-import { gameThreadNow, oweLook, readAttention, writeAttention, type AttentionMode, type AttentionRow, lastLookHanded, lookOwed } from "./store.js";
+import { gameThreadNow, lastLookHanded, lookOwed, oweLook, readAtWork, readAttention, writeAtWork, writeAttention, type AttentionMode, type AttentionRow } from "./store.js";
 import type { Percept } from "./wire.js";
 
 export const LOOK_MIN = 5;
@@ -24,7 +24,7 @@ export type ViewFacts = {
   portrait: unknown;
   /** Whether the view carries the day's record (a sleep onset). */
   dayRecord: boolean;
-  /** Whether her job was at work in the game thread's last view and is not now (see createWorkWatch). */
+  /** Whether her job was at work in the game thread's last view and is not now (see workEnded). */
   workEnded: boolean;
   /** Whether the view is the first from the helper session the game is attached under now. */
   firstAfterAttach: boolean;
@@ -92,21 +92,16 @@ function atWorkNow(portrait: unknown): boolean {
 }
 
 /**
- * Whether her job was at work in each game thread's last view, so a work end is seen once. In memory: a restart forgets
- * it, and the first view after a restart cannot show a work end. A view that reads no job leaves the thread as it was.
+ * Whether her job was at work in the game thread's last view and is not now, so a work end is seen once. The state is kept
+ * per thread in domus.sqlite (work_watch), so a restart keeps it. A view that reads no job leaves the thread as it was.
  */
-export function createWorkWatch(): { ended(thread: string, portrait: unknown): boolean } {
-  const atWorkBefore = new Map<string, boolean>();
-  return {
-    ended(thread, portrait) {
-      const jobs = asRecord(asRecord(portrait)?.self)?.jobs;
-      if (!Array.isArray(jobs)) return false;
-      const now = atWorkNow(portrait);
-      const before = atWorkBefore.get(thread);
-      atWorkBefore.set(thread, now);
-      return before === true && !now;
-    },
-  };
+export function workEnded(db: DatabaseSync, thread: string, portrait: unknown): boolean {
+  const jobs = asRecord(asRecord(portrait)?.self)?.jobs;
+  if (!Array.isArray(jobs)) return false;
+  const now = atWorkNow(portrait);
+  const before = readAtWork(db, thread);
+  writeAtWork(db, thread, now);
+  return before === true && !now;
 }
 
 function localParts(ms: number, timeZone: string | undefined): Record<string, string> {

@@ -174,6 +174,10 @@ CREATE TABLE IF NOT EXISTS catalog_seen (
   at_ms INTEGER NOT NULL,
   PRIMARY KEY (attachment, ref)
 );
+CREATE TABLE IF NOT EXISTS work_watch (
+  thread TEXT PRIMARY KEY,
+  at_work INTEGER NOT NULL
+);
 `;
 
 /** How the game's changes reach the Lar's turns. A quiet mode reverts to resumeMode when quietUntilMs passes. */
@@ -202,9 +206,10 @@ export type Row = Record<string, unknown>;
  * The schema version this code reads and writes (PRAGMA user_version). Version 1 adds two nullable columns to acts: words
  * (what the Lar said to the Sim the act targets) and pulled_at_ms (when the helper first took the act). Version 2 adds
  * acts.verb and acts.args_json (the home and travel verbs, and a Sim an act names), and the tables lists, catalog_asks and
- * catalog_seen (the game's lists on demand, and the catalogue asks).
+ * catalog_seen (the game's lists on demand, and the catalogue asks). Version 3 adds the table work_watch (whether her job was
+ * at work in each game thread's last view, so a restart keeps the one work-end wake).
  */
-export const DOMUS_SCHEMA_VERSION = 2;
+export const DOMUS_SCHEMA_VERSION = 3;
 const ACT_COLUMNS_V1: ReadonlyArray<readonly [name: string, type: string]> = [["words", "TEXT"], ["pulled_at_ms", "INTEGER"]];
 const ACT_COLUMNS_V2: ReadonlyArray<readonly [name: string, type: string]> = [["verb", "TEXT"], ["args_json", "TEXT"]];
 
@@ -600,6 +605,20 @@ function load(path: string): Record<string, HeartbeatRecord> {
     throw new Error(`The Domus state file (${DOMUS_FOLDER}/${DOMUS_STATE_FILE}) has an unknown version; not starting.`);
   }
   return sessions as Record<string, HeartbeatRecord>;
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Her work watch: whether her job was at work in each game thread's last view (see workEnded in attention.ts).
+
+/** Whether her job was at work in a game thread's last view, or undefined before one was read. */
+export function readAtWork(db: DatabaseSync, thread: string): boolean | undefined {
+  const row = db.prepare("SELECT at_work FROM work_watch WHERE thread = ?").get(thread) as Row | undefined;
+  return row === undefined ? undefined : Number(row.at_work) === 1;
+}
+
+export function writeAtWork(db: DatabaseSync, thread: string, atWork: boolean): void {
+  db.prepare(`INSERT INTO work_watch (thread, at_work) VALUES (?, ?)
+    ON CONFLICT (thread) DO UPDATE SET at_work = excluded.at_work`).run(thread, atWork ? 1 : 0);
 }
 
 // ---------------------------------------------------------------------------------------------------

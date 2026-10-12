@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { bodyLines } from "./body.js";
-import { createWorkWatch, wakesFor } from "./attention.js";
+import { wakesFor } from "./attention.js";
 import { perceptSentence, renderView } from "./options.js";
 import type { Percept } from "./wire.js";
 
@@ -88,21 +88,6 @@ describe("quiet at work", () => {
     // every_change wakes on every view anyway, so the work end adds nothing there; the distress still wakes her.
     expect(ended("every_change", needsDistress)).toBe(true);
     expect(ended("every_change", needsOk)).toBe(true);
-  });
-
-  it("tells a work end apart from a shift that has not ended, once per game thread", () => {
-    const watch = createWorkWatch();
-    const shift = portraitWith({ at_work: true });
-    const free = portraitWith({ at_work: false });
-    expect(watch.ended("thread-a", shift)).toBe(false);
-    expect(watch.ended("thread-a", shift)).toBe(false);
-    expect(watch.ended("thread-a", free)).toBe(true);
-    expect(watch.ended("thread-a", free)).toBe(false);
-    expect(watch.ended("thread-b", free)).toBe(false);
-    // A view with no job read leaves the state as it was.
-    expect(watch.ended("thread-c", shift)).toBe(false);
-    expect(watch.ended("thread-c", undefined)).toBe(false);
-    expect(watch.ended("thread-c", free)).toBe(true);
   });
 
   it("wakes her in every mode, at work too, for a phone notice or a call", () => {
