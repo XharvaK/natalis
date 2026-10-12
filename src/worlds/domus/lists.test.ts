@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ToolContext } from "../../contracts.js";
-import { catalogText, expireCatalog, gameCatalogTool, handCatalog, openCatalogAsk, settleCatalog, withdrawCatalog, CATALOG_TTL_MS } from "./catalog.js";
+import { catalogText, expireCatalog, gameCatalogTool, handCatalog, openCatalogAsk, settleCatalog, CATALOG_TTL_MS } from "./catalog.js";
 import { verbTools } from "./verbs.js";
 import { findListed, gameListTool, listCountLine, listDigests, LISTS_KEEP_MS, readList, storeList } from "./lists.js";
 import { openDomusDb } from "./store.js";
@@ -212,14 +212,12 @@ describe("the catalogue ask", () => {
     expect(handCatalog(db, { helperSession: HELPER, nowMs: clock })).toEqual([{ ask_id: expect.any(String), words: TEXT }]);
   });
 
-  it("expires after two minutes and withdraws on the stop", async () => {
+  it("expires after two minutes", async () => {
     await ask(TEXT);
     clock += CATALOG_TTL_MS + 1000;
     expect(openCatalogAsk(db, "domus:slot3", clock)).toBeUndefined();
     expect(expireCatalog(db, clock)).toEqual([expect.objectContaining({ thread: "domus:slot3", wake: false })]);
     expect(await ask("Test Lamp")).toMatchObject({ ok: true });
-    expect(withdrawCatalog(db, clock)).toEqual([expect.objectContaining({ wake: false })]);
-    expect(handCatalog(db, { helperSession: HELPER, nowMs: clock })).toEqual([]);
   });
 
   it("says that nothing matched in one line", () => {

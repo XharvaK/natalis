@@ -39,6 +39,8 @@ export function gameCatalogTool(open: () => GameContext): Tool {
   return {
     spec: {
       name: "game_catalog",
+      // Q-j (the User, 2026-10-12): the summoner's stop refuses acts, not reads; this one only reads the game.
+      safeWhenStopped: true,
       description:
         "Ask the game's catalogue what it sells for some words: furniture and decor you can buy. The answer comes on its next " +
         "sync, within two minutes, as up to twelve items, each with a c ref for game_buy, its price and its placement. Nothing is bought.",
@@ -168,17 +170,4 @@ export function expireCatalog(db: DatabaseSync, nowMs: number): ThreadNote[] {
   }));
 }
 
-/** While the summoner's stop is on, open catalogue questions are withdrawn: none is handed over. The asking thread is told, without a wake. */
-export function withdrawCatalog(db: DatabaseSync, nowMs: number): ThreadNote[] {
-  const open = db.prepare("SELECT ask_id, thread, about FROM catalog_asks WHERE status IN ('owed', 'handed') ORDER BY requested_at_ms, rowid")
-    .all() as Row[];
-  if (open.length === 0) return [];
-  db.prepare("UPDATE catalog_asks SET status = 'withdrawn', settled_at_ms = ? WHERE status IN ('owed', 'handed')").run(nowMs);
-  return open.map((row) => ({
-    thread: String(row.thread),
-    text: `Your question to the game's catalogue about "${String(row.about)}" was withdrawn: your summoner's emergency stop is on.`,
-    data: { askId: String(row.ask_id), status: "withdrawn" },
-    wake: false,
-  }));
-}
 

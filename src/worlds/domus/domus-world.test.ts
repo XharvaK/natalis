@@ -538,14 +538,17 @@ describe("game pictures: the Lar asks, the helper takes, the shelf keeps", () =>
     expect(await askForPicture()).toMatchObject({ ok: true });
   });
 
-  it("withdraws a waiting request when the summoner's stop goes on, and tells the Lar without a wake", async () => {
+  it("hands a waiting picture to the game while the summoner's stop is on: a picture is a read (Q-j)", async () => {
     await attach();
     await askForPicture();
     writeStop(dir, "test");
-    expect(await pendingSnapshotId()).toBe("");
-    expect(events.map((event) => [event.text, event.wake])).toEqual([
-      ["Your picture request was withdrawn: your summoner's emergency stop is on.", false],
-    ]);
+    expect(await pendingSnapshotId()).not.toBe("");
+    expect(events).toEqual([]);
+  });
+
+  it("marks the game's read tools, and only those, as safe while the stop is on (Q-j)", () => {
+    const safe = (world?.tools() ?? []).filter((item) => item.spec.safeWhenStopped === true).map((item) => item.spec.name).sort();
+    expect(safe).toEqual(["game_catalog", "game_list", "game_look", "game_memory", "game_snapshot"]);
   });
 });
 
@@ -556,7 +559,6 @@ describe("the world's surface", () => {
       "game_act", "game_snapshot", "game_attention", "game_look", "game_overlay_say", "game_memory", "game_list", "game_catalog",
       "game_go", "game_save", "plan_event", "game_buy", "game_place", "game_move", "game_sell",
     ]);
-    expect(world?.tools().map((item) => item.spec.safeWhenStopped)).toEqual(Array(15).fill(undefined));
     expect(world?.about?.()).toBe("The Sims 4 (Domus): your household's game, at domus:<world>, while your summoner's helper is attached.");
     expect(await world?.say("domus:slot3", "hello")).toMatchObject({ ok: false, refused: { code: "no_words" } });
   });

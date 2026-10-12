@@ -7,7 +7,7 @@ import type { Receipt, ToolContext } from "../../contracts.js";
 import { forgetText, openDomusDb } from "./store.js";
 import {
   ABOUT_MAX, expireMemory, gameMemoryTool, handMemory, MEMORY_TTL_MS, type MemoryContext, memoryEventText, type MemoryFacts,
-  settleMemory, withdrawMemory,
+  settleMemory,
 } from "./memory.js";
 
 const T0 = 1_800_000_000_000;
@@ -171,18 +171,6 @@ describe("the event that answers her", () => {
     expect(askedRows()[0]?.status).toBe("expired");
   });
 
-  it("withdraws the open asks, owed or handed, with a note and no wake, when the summoner's stop is on", async () => {
-    await ask({ about: "Brew Glimmer" });
-    handMemory(db, { helperSession: HELPER, nowMs: clock });
-    await ask({ about: "Pim" }, undefined, "domus:slot4");
-    const notes = withdrawMemory(db, clock + 1);
-    expect(notes.map((note) => [note.thread, note.text, note.wake])).toEqual([
-      [THREAD, "Your question to the game about \"Brew Glimmer\" was withdrawn: your summoner's emergency stop is on.", false],
-      ["domus:slot4", "Your question to the game about \"Pim\" was withdrawn: your summoner's emergency stop is on.", false],
-    ]);
-    expect(askedRows().map((row) => row.status)).toEqual(["withdrawn", "withdrawn"]);
-    expect(withdrawMemory(db, clock + 2)).toEqual([]);
-  });
 });
 
 describe("forgetting the words of a question", () => {

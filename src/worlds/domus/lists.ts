@@ -188,6 +188,8 @@ export function gameListTool(open: () => GameContext): Tool {
   return {
     spec: {
       name: "game_list",
+      // Q-j (the User, 2026-10-12): the summoner's stop refuses acts, not reads; this one only reads the game.
+      safeWhenStopped: true,
       description:
         "List what the game knows, with the refs to use in other tools: the people you know (p), the places you can go (h), " +
         "your things (t) or the kinds of event you can plan (e). It changes nothing in the game.",

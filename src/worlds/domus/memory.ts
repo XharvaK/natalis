@@ -43,6 +43,8 @@ export function gameMemoryTool(open: () => MemoryContext): Tool {
   return {
     spec: {
       name: "game_memory",
+      // Q-j (the User, 2026-10-12): the summoner's stop refuses acts, not reads; this one only reads the game.
+      safeWhenStopped: true,
       description:
         "Ask the game what it remembers about one act, one person or one object, in your own words. The game's record is " +
         "searched on its next sync, and the answer comes to you within two minutes as the facts it recorded (when, how long, " +
@@ -157,16 +159,3 @@ export function expireMemory(db: DatabaseSync, nowMs: number): ThreadNote[] {
   }));
 }
 
-/** While the summoner's stop is on, open questions are withdrawn: none is handed over. The asking thread is told, without a wake. */
-export function withdrawMemory(db: DatabaseSync, nowMs: number): ThreadNote[] {
-  const open = db.prepare("SELECT ask_id, thread, about FROM memory_asks WHERE status IN ('owed', 'handed') ORDER BY requested_at_ms, rowid")
-    .all() as Row[];
-  if (open.length === 0) return [];
-  db.prepare("UPDATE memory_asks SET status = 'withdrawn', settled_at_ms = ? WHERE status IN ('owed', 'handed')").run(nowMs);
-  return open.map((row) => ({
-    thread: String(row.thread),
-    text: `Your question to the game about "${String(row.about)}" was withdrawn: your summoner's emergency stop is on.`,
-    data: { askId: String(row.ask_id), status: "withdrawn" },
-    wake: false,
-  }));
-}

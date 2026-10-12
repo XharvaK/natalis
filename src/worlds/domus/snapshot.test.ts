@@ -15,7 +15,6 @@ import {
   settleTaken,
   SNAPSHOT_PICTURE_MAX,
   SNAPSHOT_TTL_MS,
-  withdrawSnapshots,
 } from "./snapshot.js";
 
 const T0 = 1_800_000_000_000;
@@ -74,15 +73,6 @@ describe("requests", () => {
     expect(expireSnapshots(db, T0 + SNAPSHOT_TTL_MS + 1)).toEqual([]);
   });
 
-  it("withdraws every waiting request when the stop goes on, once, with a note that does not wake", () => {
-    askAt(T0);
-    const notes = withdrawSnapshots(db, T0 + 1);
-    expect(notes).toEqual([
-      expect.objectContaining({ thread: THREAD, wake: false, text: "Your picture request was withdrawn: your summoner's emergency stop is on.", data: expect.objectContaining({ status: "withdrawn" }) }),
-    ]);
-    expect(withdrawSnapshots(db, T0 + 2)).toEqual([]);
-    expect(openSnapshots(db, { helperSession: HELPER, nowMs: T0 + 2 })).toEqual([]);
-  });
 });
 
 describe("the helper's answer", () => {

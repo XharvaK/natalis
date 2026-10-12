@@ -12,8 +12,8 @@ import { gameActTool, type GameActContext } from "./game-act.js";
 import { hasDayRecord, localStamp } from "./day-record.js";
 import { gameLookTool, type LookContext } from "./look.js";
 import { gameOverlaySayTool, type OverlayContext, overlayItems } from "./overlay.js";
-import { expireMemory, gameMemoryTool, handMemory, type MemoryContext, settleMemory, withdrawMemory } from "./memory.js";
-import { expireCatalog, gameCatalogTool, handCatalog, settleCatalog, withdrawCatalog } from "./catalog.js";
+import { expireMemory, gameMemoryTool, handMemory, type MemoryContext, settleMemory } from "./memory.js";
+import { expireCatalog, gameCatalogTool, handCatalog, settleCatalog } from "./catalog.js";
 import { gameListTool, listCountLine, listDigests, storeList } from "./lists.js";
 import { verbTools } from "./verbs.js";
 import { type GameContext } from "./tool-context.js";
@@ -22,7 +22,7 @@ import { expireDue, pendingCounts, syncActs, type ThreadNote, withdrawUndone, wi
 import { choicesSignature, optionsOf, renderView, unchangedLookLine, viewBrief } from "./options.js";
 import {
   checkSnapshot, expireSnapshots, gameSnapshotTool, openSnapshots, SNAPSHOT_PICTURE_NAME, SNAPSHOT_STATUS, settleFailed,
-  settleTaken, type SnapshotContext, withdrawSnapshots,
+  settleTaken, type SnapshotContext,
 } from "./snapshot.js";
 import {
   admitObservation, forgetInDomusFile, forgetText, HeartbeatBook, inTransaction, markSpanUndoneIn, newestObservation, openDomusDb,
@@ -427,19 +427,19 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
     // The summoner's stop reaches the game too: what was requested before it is withdrawn, not handed over.
     const stopped = isStopOn(options.dir);
     const withheld = stopped ? withholdForStop(requireDb(), now) : [];
-    const pictures = stopped ? withdrawSnapshots(requireDb(), now) : expireSnapshots(requireDb(), now);
-    // The stop refuses acts only: the questions and catalogue asks to the game are reads, so they stay open and are handed over.
+    const pictures = expireSnapshots(requireDb(), now);
+    // The stop refuses acts only (Q-j): pictures, looks, questions and catalogue asks are reads, so they stay open and are handed over.
     const questions = expireMemory(requireDb(), now);
     const catalogAsks = expireCatalog(requireDb(), now);
     const result = syncActs(requireDb(), { attachment: parsed.helperSession, events: parsed.events, nowMs: now });
-    const snapshots = stopped ? [] : openSnapshots(requireDb(), { helperSession: parsed.helperSession, nowMs: now });
+    const snapshots = openSnapshots(requireDb(), { helperSession: parsed.helperSession, nowMs: now });
     // The questions owed are handed to this helper, which answers them on its own time (POST /domus/memory).
     const memory = handMemory(requireDb(), { helperSession: parsed.helperSession, nowMs: now });
     // W13: the catalogue asks owed (once each), and the digests of the lists she holds, so the helper resends what changed.
     const catalog = handCatalog(requireDb(), { helperSession: parsed.helperSession, nowMs: now });
     const lists = listDigests(requireDb(), parsed.helperSession);
     reviewAttention(requireDb(), now, requireBook().attachedSession(now));
-    const look = stopped ? false : takeLook(requireDb(), parsed.helperSession, now);
+    const look = takeLook(requireDb(), parsed.helperSession, now);
     for (const note of withheld) deliver(noteEvent(note, now));
     for (const note of pictures) deliver(noteEvent(note, now));
     for (const note of questions) deliver(noteEvent(note, now));
@@ -643,7 +643,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       checkAttachment(now);
       if (isStopOn(options.dir)) for (const note of withholdForStop(db, now)) deliver(noteEvent(note, now));
       for (const note of expireDue(db, now)) deliver(noteEvent(note, now));
-      for (const note of isStopOn(options.dir) ? withdrawSnapshots(db, now) : expireSnapshots(db, now)) deliver(noteEvent(note, now));
+      for (const note of expireSnapshots(db, now)) deliver(noteEvent(note, now));
       for (const note of expireMemory(db, now)) deliver(noteEvent(note, now));
       for (const note of expireCatalog(db, now)) deliver(noteEvent(note, now));
       reviewAttention(db, now, book?.attachedSession(now));
