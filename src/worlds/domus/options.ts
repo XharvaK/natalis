@@ -300,7 +300,7 @@ function isNear(object: OptionObject): boolean {
   return object.near === true || (typeof object.where === "string" && object.where.startsWith("here"));
 }
 
-/** One object's line, and its answer rules when it is a question. */
+/** One object's line, its states, the game's reasons and the acts left out under it, and its answer rules when it is a question. */
 function objectLines(object: OptionObject): string[] {
   const where = object.where ? ` (${object.where})` : "";
   const noWay = typeof object.noWay === "string" ? ` [${object.noWay}]` : "";
@@ -309,14 +309,17 @@ function objectLines(object: OptionObject): string[] {
     .map((act) => `${act.ref} ${dropTokens(act.text)}${act.needs_sim === true ? " (needs a Sim: name one with sim)" : ""}${typeof act.opens === "string" ? ` [${act.opens}]` : ""}`)
     .join("; ");
   const lines = [`- ${dropTokens(object.object)}${where}${noWay}: ${acts}`];
+  if (object.states?.length) lines.push(`  States: ${object.states.map((state) => dropTokens(state)).join(", ")}.`);
+  for (const line of [...(object.refused ?? []), ...(object.left_out ?? [])]) lines.push(`  ${dropTokens(line)}`);
   const rules = answerRulesOf(object);
   if (rules) lines.push(`  Answer rules: ${describeRules(rules)}.`);
   return lines;
 }
 
 /**
- * The choices as a set of (ref, words, no-way, opens, room, near), ignoring distances; "" when there are none. A move from
- * one room to another, or into or out of near, is a change of choices (C7).
+ * The choices as a set of (ref, words, no-way, opens, room, near, states, refusals, left-out acts), ignoring distances; "" when
+ * there are none. A move from one room to another, or into or out of near, is a change of choices (C7). So is a change of a
+ * state, a refusal or a left-out act: the choices are listed again then (T3).
  */
 export function choicesSignature(options: readonly OptionObject[]): string {
   const rows = new Set<string>();
@@ -326,7 +329,8 @@ export function choicesSignature(options: readonly OptionObject[]): string {
         const noWay = typeof object.noWay === "string" ? object.noWay : null;
         const opens = typeof act.opens === "string" ? act.opens : null;
         const room = typeof object.room === "string" ? object.room : null;
-        rows.add(JSON.stringify([act.ref, act.text, noWay, opens, room, isNear(object)]));
+        const words = [object.states ?? null, object.refused ?? null, object.left_out ?? null];
+        rows.add(JSON.stringify([act.ref, act.text, noWay, opens, room, isNear(object), ...words]));
       }
     }
   }

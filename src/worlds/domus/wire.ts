@@ -31,6 +31,12 @@ export const OPTIONS_MAX = 160;
 export const OPTIONS_BYTES = 32 * 1024;
 /** A room's name, and how many rooms an options_cut may name. */
 export const ROOM_MAX = 64;
+/** An option object's own lines, in characters: a refusal (the helper cuts it at 240), a left-out act (at most 160); states (at most four, 40 each). */
+const REFUSED_LINE_MAX = 240;
+const LEFT_OUT_LINE_MAX = 160;
+const LEFT_OUT_MAX = 12;
+const STATE_MAX = 40;
+const OPTION_STATES_MAX = 4;
 const CUT_ROOMS_MAX = 64;
 /** The helper's token must be at least this many bytes. */
 export const MIN_TOKEN_BYTES = 32;
@@ -143,7 +149,18 @@ function optionObject(item: Record<string, unknown>): Record<string, unknown> {
   if (item.room !== undefined) textOf(item.room, 1, ROOM_MAX);
   if (item.near !== undefined && typeof item.near !== "boolean") fail(400, "invalid_body");
   if (item.person !== undefined && typeof item.person !== "boolean") fail(400, "invalid_body");
+  // The game's words for an option object: its refusals (the helper caps them), its states (at most four) and the phone
+  // acts it left out (at most twelve). Each is a list of text; a wrong shape is refused.
+  if (item.refused !== undefined) textListOf(item.refused, Infinity, REFUSED_LINE_MAX);
+  if (item.states !== undefined) textListOf(item.states, OPTION_STATES_MAX, STATE_MAX);
+  if (item.left_out !== undefined) textListOf(item.left_out, LEFT_OUT_MAX, LEFT_OUT_LINE_MAX);
   return item;
+}
+
+/** A list of text: at most max items, each from 1 to size characters. Anything else is a wrong shape (400). */
+function textListOf(value: unknown, max: number, size: number): string[] {
+  if (!Array.isArray(value) || value.length > max) fail(400, "invalid_body");
+  return value.map((text) => textOf(text, 1, size));
 }
 
 /** options_cut: a whole count of the objects left out, and the rooms they are in (names, at most CUT_ROOMS_MAX). */

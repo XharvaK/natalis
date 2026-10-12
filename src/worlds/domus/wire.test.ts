@@ -287,3 +287,38 @@ describe("the memory answer (v1)", () => {
     expect(MEMORY_BODY_LIMIT).toBe(16 * 1024);
   });
 });
+
+describe("option objects: refused, states and left_out (T2, T3)", () => {
+  const option = (extra: Record<string, unknown>) => ({ object: "Test Kettle", object_id: "obj-1", acts: [{ ref: "a1", guid64: "1", text: "Boil water" }], ...extra });
+
+  it("keeps the strings of refused, states and left_out as the helper sent them", () => {
+    const parsed = parseObservation(view({
+      options: [option({ refused: ["Boil water: refused: the sink is full"], states: ["dirty"], left_out: ["Call Test Friend: left out: not on your list"] })],
+    }), NOW);
+    expect(parsed.options?.[0]).toMatchObject({
+      refused: ["Boil water: refused: the sink is full"], states: ["dirty"], left_out: ["Call Test Friend: left out: not on your list"],
+    });
+  });
+
+  it("refuses a wrong shape of each as invalid_body", () => {
+    const wrong: Array<Record<string, unknown>> = [
+      { refused: "Boil water: refused: no" }, { refused: [1] }, { refused: [""] }, { refused: ["x".repeat(241)] },
+      { states: ["a", "b", "c", "d", "e"] }, { states: [""] }, { states: ["x".repeat(41)] }, { states: "dirty" },
+      { left_out: Array.from({ length: 13 }, (_, index) => `Act ${index}: left out: x`) }, { left_out: [""] },
+      { left_out: ["x".repeat(161)] }, { left_out: "Call: left out: no" },
+    ];
+    for (const extra of wrong) {
+      expect(refusal(() => parseObservation(view({ options: [option(extra)] }), NOW)), JSON.stringify(extra)).toEqual({ status: 400, code: "invalid_body" });
+    }
+  });
+
+  it("takes the limits exactly: four states, twelve left out, 240 refused and 160 left out characters", () => {
+    const parsed = parseObservation(view({
+      options: [option({
+        refused: ["x".repeat(240)], states: ["a", "b", "c", "d"], left_out: Array.from({ length: 12 }, (_, index) => `Act ${index}: left out: ${"y".repeat(100)}`),
+      })],
+    }), NOW);
+    expect(parsed.options?.[0]?.states).toHaveLength(4);
+    expect(parsed.options?.[0]?.left_out).toHaveLength(12);
+  });
+});
