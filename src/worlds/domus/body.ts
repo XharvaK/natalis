@@ -35,7 +35,8 @@ function metres(value: unknown): number | undefined {
   return Number.isFinite(number) && number >= 0 ? Math.round(number) : undefined;
 }
 
-function clockLine(portrait: Record_): string | undefined {
+/** The game's clock and whether it runs, in words; undefined when the portrait has neither. */
+export function clockLine(portrait: Record_): string | undefined {
   const time = record(portrait.time);
   const clock = time && typeof time.weekday === "string" && Number.isInteger(time.hour) && Number.isInteger(time.minute)
     && (time.hour as number) >= 0 && (time.hour as number) <= 23 && (time.minute as number) >= 0 && (time.minute as number) <= 59
@@ -78,6 +79,28 @@ function needsLine(needs: Record_ | undefined): string | undefined {
   return items.length ? `Needs: ${items.join(", ")}.` : undefined;
 }
 
+/**
+ * What the game holds between her and this Sim, in plain words: whether she knows them, the labels the game gives the
+ * pair, and the friendship track (a word, or the track's name and value). Nothing is said for what the game did not send.
+ */
+function relationWords(relationship: unknown): string[] {
+  const r = record(relationship);
+  if (!r) return [];
+  const known = r.known ?? r.met;
+  const labels = Array.isArray(r.labels) ? r.labels.map(wordOf).filter((item): item is string => item !== undefined) : [];
+  const track = wordOf(r.track);
+  const tracks = record(r.tracks);
+  const trackValues = tracks === undefined ? [] : Object.entries(tracks)
+    .map(([name, value]) => (wordOf(name) === undefined || typeof value !== "number" ? undefined : `${plainName(name)} ${value}`))
+    .filter((item): item is string => item !== undefined);
+  return [
+    ...(known === true ? ["known to you"] : known === false ? ["not met yet"] : []),
+    ...labels,
+    ...(track === undefined ? [] : [track]),
+    ...trackValues,
+  ];
+}
+
 /** The people she can see (named) and the sounds she hears without seeing anyone. */
 function companyLines(company: Record_[]): string[] {
   const seen = company.filter((item) => item.heard !== true && textOrUndefined(item.name) !== undefined);
@@ -87,12 +110,15 @@ function companyLines(company: Record_[]): string[] {
     const name = textOrUndefined(item.name) ?? "someone";
     const away = metres(item.distance_m);
     const said = textOrUndefined(item.said);
+    // W12 (E2): her role with them (a neighbour, a courier) and what the game holds between them, after the rest.
+    const role = wordOf(item.role);
+    const extra = [role, ...relationWords(item.relationship)].filter((part): part is string => part !== undefined);
     if (said !== undefined) {
       // SS4-v3: what this Sim is saying or doing, in the helper's sentence, in brackets after the name (no dashes: she copies them).
-      return `${name} (${away === undefined ? "" : `${away} m away: `}${withoutStop(said)})`;
+      return `${name} (${away === undefined ? "" : `${away} m away: `}${withoutStop(said)}${extra.length ? `; ${extra.join(", ")}` : ""})`;
     }
     const doing = textOrUndefined(item.doing);
-    const details = [away === undefined ? undefined : `${away} m away`, doing === undefined ? undefined : plainName(doing)]
+    const details = [away === undefined ? undefined : `${away} m away`, doing === undefined ? undefined : plainName(doing), ...extra]
       .filter((part): part is string => part !== undefined);
     return `${name}${details.length ? ` (${details.join(", ")})` : ""}`;
   });
@@ -123,6 +149,13 @@ function talkingLines(addressedBy: Record_[], company: Record_[]): string[] {
   });
 }
 
+/** The time a held window has left before the User is handed it, in words: seconds under a minute, else whole minutes (A9). */
+function holdLeftWords(value: unknown): string {
+  const seconds = wholeOf(value);
+  if (seconds === undefined || seconds < 0) return "";
+  return seconds < 60 ? `, ${seconds} s left` : `, ${Math.ceil(seconds / 60)} min left`;
+}
+
 function windowLines(asked: Record_[]): string[] {
   return asked.map((item) => {
     const title = textOrUndefined(item.title) ?? "a window";
@@ -130,7 +163,7 @@ function windowLines(asked: Record_[]): string[] {
     const tail = text === undefined ? "" : ` ${clip(text, WINDOW_TEXT_MAX)}`;
     if (item.whose === "the User's") return `Open on your summoner's screen: ${title}.`;
     if (item.whose === "hers") {
-      const held = item.held === true ? "held for you" : "not held for you";
+      const held = item.held === true ? `held for you${holdLeftWords(item.hold_left_s)}` : "not held for you";
       const answers = item.answers_itself === true ? " It answers itself." : "";
       return `Open for you: ${title} (${held}).${tail}${answers}`;
     }
