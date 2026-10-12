@@ -193,6 +193,10 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
       const changed = refChanged(ref, found, expected, " (in then)");
       if (changed) return changed;
     }
+    // A later step is released with no Sim, so one that opens a Sim's picker could not be done: it is refused now.
+    if (found.act.needs_sim === true) {
+      return refused("sim_needed", `${ref} (in then) opens a picker for a Sim, and a plan step cannot name a Sim: do it in its own turn. Nothing was requested.`);
+    }
     then.push({ ref, found });
   }
   const picker = first.act.needs_sim === true;

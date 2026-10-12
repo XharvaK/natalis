@@ -195,6 +195,14 @@ describe("game_act: requests", () => {
     expect(acts()).toEqual([]);
   });
 
+  it("refuses a later step that needs a Sim, since a plan cannot carry one, and requests nothing", async () => {
+    view([...VIEW, { object: "Test phone", object_id: "obj-phone", acts: [{ ref: "a5", guid64: "311", text: "Call Test Friend", needs_sim: true }] }]);
+    const receipt = await run({ option: "a1", then: ["a5"] });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "sim_needed" } });
+    expect(receipt.refused?.reason).toContain("a plan step cannot name a Sim");
+    expect(acts()).toEqual([]);
+  });
+
   it("allows at most two steps after the first", async () => {
     view(VIEW);
     expect(await run({ option: "a1", then: ["a2", "a3", "a4"] })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
