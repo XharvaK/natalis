@@ -324,9 +324,11 @@ const REFUSED_BY: Readonly<Record<string, string>> = {
 };
 
 /** The game's own sentence for a refusal (or the reason key's words), cleaned by the helper and cut here to 240 characters. */
+/** The reason in words: the text or the reason the helper or the game gave, else the probe's detail (the step, the price, the wait). */
 function refusedText(detail: Record<string, unknown>): string | undefined {
   const text = typeof detail.text === "string" && detail.text.trim() !== "" ? detail.text.trim()
-    : typeof detail.reason === "string" && detail.reason.trim() !== "" ? detail.reason.trim() : undefined;
+    : typeof detail.reason === "string" && detail.reason.trim() !== "" ? detail.reason.trim()
+      : typeof detail.detail === "string" && detail.detail.trim() !== "" ? detail.detail.trim().slice(0, 200) : undefined;
   return text === undefined ? undefined : text.slice(0, 240);
 }
 

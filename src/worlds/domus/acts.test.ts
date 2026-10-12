@@ -383,6 +383,7 @@ describe("W12: her words, the game's refusals, windows, pulls and a session's en
       [{ code: "BAD_ARGS", by: "helper", text: "helper text" }, "your helper refused it (BAD_ARGS) - helper text"],
       [{ code: "STOP", by: "host" }, "the host refused it (STOP)"],
       [{ code: "UNSAID" }, "it was refused (UNSAID)"],
+      [{ code: "SIM_NOT_CHOOSABLE", by: "probe", detail: "step 2 of the picker" }, "the game's side refused it (SIM_NOT_CHOOSABLE) - step 2 of the picker"],
     ];
     for (const [detail, words] of cases) {
       const id = okId(requestWith(T0, "a1"));
