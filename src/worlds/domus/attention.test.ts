@@ -48,6 +48,17 @@ function view(percepts: Percept[], overrides: { portrait?: unknown; dayRecord?: 
 const HELD = { asked: [{ title: "Pick a recipe", whose: "hers", held: true }] };
 const NOT_HELD = { asked: [{ title: "Pick a recipe", whose: "the User's", held: false }] };
 
+describe("the game_attention description says what each mode wakes for (NATALIS2-5)", () => {
+  it("names what wakes her in every mode, and what each mode adds to it", () => {
+    const text = gameAttentionTool(() => null).spec.description;
+    expect(text).toContain("Always, in every mode: a question the game holds open for you, a call or a notice on your phone, and a look you asked for.");
+    expect(text).toContain("A need that goes into distress wakes you when you are not at work");
+    expect(text).toContain("at work, a view whose only changes are needs in distress stays quiet");
+    expect(text).toContain("when_called: otherwise a change wakes you only when something calls you");
+    expect(text).toContain("quiet: otherwise nothing wakes you until until");
+  });
+});
+
 describe("which views wake her, by her mode", () => {
   it("wakes her on every view in every change mode", () => {
     expect(wakesFor("every_change", view(PLAIN))).toBe(true);

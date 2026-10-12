@@ -184,14 +184,18 @@ function refused(code: string, reason: string): Receipt {
 }
 
 const SET_UP =
-  "Set how the game reaches you. every_change: every change in the game wakes you (the default). " +
-  "when_called: a change wakes you only when something calls you: a question put to you, someone speaking to you, someone " +
-  "arriving on the lot, the day's record at sleep, the first view after the game attached, or a look you asked for. " +
-  "quiet: nothing wakes you until until, then the mode goes back to what it was. until is a date and time, such as " +
-  "2026-10-12T14:30, in your own zone unless it has an offset, at most 24 hours ahead; it goes with quiet only. " +
-  "A question with a deadline always reaches you, in every mode. Changes still reach the game's thread, and you see them by " +
-  "their brief in your next turn. look_every_minutes (5 to 240, or 0 for off) asks the game for a fresh view while it is " +
-  "attached and nothing has woken you for that long.";
+  "Set how the game reaches you. Always, in every mode: a question the game holds open for you, a call or a notice on your " +
+  "phone, and a look you asked for. A need that goes into distress wakes you when you are not at work, and when work ends " +
+  "with a need still in distress you wake once. " +
+  "every_change (the default): every other change in the game wakes you too; at work, a view whose only changes are needs " +
+  "in distress stays quiet. " +
+  "when_called: otherwise a change wakes you only when something calls you: someone speaking to you, someone arriving on the " +
+  "lot or being on it, the day's record at sleep, or the first view after the game attached. " +
+  "quiet: otherwise nothing wakes you until until, then the mode goes back to what it was. " +
+  "until is a date and time, such as 2026-10-12T14:30, in your own zone unless it has an offset, at most 24 hours ahead; " +
+  "it goes with quiet only. " +
+  "Changes still reach the game's thread, and you see them by their brief in your next turn. look_every_minutes (5 to 240, " +
+  "or 0 for off) asks the game for a fresh view while it is attached and nothing has woken you for that long.";
 
 export function gameAttentionTool(open: () => AttentionContext): Tool {
   return {
