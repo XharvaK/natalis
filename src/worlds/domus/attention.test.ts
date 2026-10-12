@@ -54,6 +54,11 @@ describe("which views wake her, by her mode", () => {
     expect(wakesFor("every_change", view([percept("presence", { bucket: "left" })]))).toBe(true);
   });
 
+  it("when called, a phone change that is neither a notice nor a call does not wake her (NATALIS2-12)", () => {
+    expect(wakesFor("when_called", view([percept("phone", { what: "message" })]))).toBe(false);
+    expect(wakesFor("when_called", view([percept("phone", { what: "notice" })]))).toBe(true);
+  });
+
   it("when called, wakes her for a call and not for an ordinary change", () => {
     expect(wakesFor("when_called", view(PLAIN))).toBe(false);
     expect(wakesFor("when_called", view([percept("social", { bucket: "addressed" })]))).toBe(true);

@@ -82,7 +82,6 @@ export function wakesFor(mode: AttentionMode, view: ViewFacts): boolean {
   return view.percepts.some((item) =>
     (item.kind === "social" && item.facts["bucket"] === "addressed")
     || (item.kind === "presence" && (item.facts["bucket"] === "arrived" || item.facts["bucket"] === "on_lot"))
-    || item.kind === "phone"
     || item.kind === "sleep_onset");
 }
 
