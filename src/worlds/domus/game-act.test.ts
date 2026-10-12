@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 /** Admits a view of the test thread with the given options (an invented view). */
-function view(options: OptionObject[] | undefined, sourceTimeMs = T0 - 1000): string {
+function view(options: OptionObject[] | undefined, sourceTimeMs = T0 - 1000, attachment = HELPER): string {
   seq += 1;
   const observationId = `helper-1.${seq}`;
   admitObservation(db, {
@@ -54,7 +54,7 @@ function view(options: OptionObject[] | undefined, sourceTimeMs = T0 - 1000): st
     world: "slot3",
     branch: "branch-1",
     session: "telemetry-1",
-    attachment: HELPER,
+    attachment,
     body: "sim-9",
     snapshot: "7",
     seq,
@@ -116,6 +116,19 @@ describe("game_act: a view from an earlier helper session", () => {
     expect(receipt).toMatchObject({ ok: false, refused: { code: "view_from_earlier_session" } });
     expect(receipt.refused?.reason).toContain("That view is from an earlier connection to the game, and its new view has not arrived yet.");
     expect(acts()).toEqual([]);
+  });
+
+  it("requests the choice from a view of a later game under the same helper (its attachment adds the game's number)", async () => {
+    // Live 2026-10-12: the helper's views read "<session>:1" after a new game began under it, while its heartbeat names the
+    // session alone; every choice was refused as from an earlier connection.
+    view(VIEW, T0 - 1000, `${HELPER}:1`);
+    expect(await run({ option: "a1" })).toMatchObject({ ok: true });
+    expect(acts()).toEqual([expect.objectContaining({ attachment: HELPER })]);
+  });
+
+  it("still refuses a view of another helper session that only shares a prefix", async () => {
+    view(VIEW, T0 - 1000, `${HELPER}x:1`);
+    expect(await run({ option: "a1" })).toMatchObject({ ok: false, refused: { code: "view_from_earlier_session" } });
   });
 
   it("requests the choice when the attached session is the one that sent the view", async () => {

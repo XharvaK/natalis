@@ -25,7 +25,7 @@ import {
   settleTaken, type SnapshotContext,
 } from "./snapshot.js";
 import {
-  admitObservation, forgetInDomusFile, forgetText, HeartbeatBook, inTransaction, markSpanUndoneIn, newestObservation, openDomusDb,
+  admitObservation, attachmentSession, forgetInDomusFile, forgetText, HeartbeatBook, inTransaction, markSpanUndoneIn, newestObservation, openDomusDb,
   pruneObservations, gameThreadNow, LOOK_ASK_KEEP_MS, looksAskedSince, takeLook, takeLookAskers, writeAttention,
 } from "./store.js";
 import {
@@ -399,14 +399,14 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
         lastChoices: choicesShown.get(thread),
         portrait: parsed.normalized.portrait, hasDay: parsed.normalized.day !== undefined,
       });
-      const counts = listCountLine(requireDb(), parsed.fields.attachment);
+      const counts = listCountLine(requireDb(), attachmentSession(parsed.fields.attachment));
       deliver(unchanged === undefined
         ? observationEvent(parsed, attachmentAt(now), attention, undefined, counts)
         : unchangedLookEvent(parsed, thread, unchanged, attention.wake));
       choicesShown.set(thread, choicesSignature(optionsOf(parsed.options ?? [])));
       // A look view answers the looks asked for this helper session, from any thread: each thread that asked hears it too.
       if (parsed.percepts.some((item) => item.kind === "look")) {
-        for (const asker of takeLookAskers(requireDb(), parsed.fields.attachment, now)) {
+        for (const asker of takeLookAskers(requireDb(), attachmentSession(parsed.fields.attachment), now)) {
           if (asker === thread) continue;
           deliver(observationEvent(parsed, attachmentAt(now), { wake: true }, asker, counts));
         }

@@ -8,7 +8,7 @@ import { answerFor, isAnswerClaim, type AnswerClaim, type Found } from "./answer
 import { actRequestedMeanwhile, PLAN_MORE, requestAct, SLOT_HELD_REFUSAL } from "./acts.js";
 import { findOption, labelOf, optionsOf, refsOf } from "./options.js";
 import { findListed, listedSession } from "./lists.js";
-import { gameThreadNow, newestObservation, STALE_VIEW_CODE, STALE_VIEW_REASON } from "./store.js";
+import { gameThreadNow, isAttachedView, newestObservation, STALE_VIEW_CODE, STALE_VIEW_REASON } from "./store.js";
 import { probeAtLeast, staleRef } from "./tool-context.js";
 
 const REF = /^[A-Za-z0-9._-]{1,16}$/;
@@ -174,7 +174,7 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
   const newest = gameThread === undefined ? undefined : newestObservation(game.db, gameThread);
   if (!newest) return refused("no_view", "The game has not shown you a view yet, so there is nothing to choose.");
   // The refs come from a view of a helper session that is no longer attached: that game restarted, and its new view has not come.
-  if (newest.attachment !== attached) return refused(STALE_VIEW_CODE, STALE_VIEW_REASON);
+  if (!isAttachedView(newest.attachment, attached)) return refused(STALE_VIEW_CODE, STALE_VIEW_REASON);
   const options = optionsOf(newest.payload.options);
   const refs = refsOf(options);
   const first = findOption(options, option);
@@ -247,7 +247,8 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
   const requested = requestAct(game.db, {
     thread: context.thread,
     turnId: context.turnId,
-    attachment: newest.attachment,
+    // The act is the attached session's (the helper pulls its acts by its session alone), whichever of its games the view was in.
+    attachment: attached,
     observationId: newest.observationId,
     found: first,
     label,

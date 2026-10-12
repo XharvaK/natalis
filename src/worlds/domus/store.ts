@@ -334,12 +334,27 @@ export function newestObservation(db: DatabaseSync, thread: string): { observati
 }
 
 /**
+ * The helper session a view's attachment belongs to. The helper names a view's attachment by its session, and adds ":<n>"
+ * once a new game has started under the same helper (its refs are new then); its heartbeat and every other route use the
+ * session alone. So a view is the attached session's when this part matches.
+ */
+export function attachmentSession(attachment: string): string {
+  return attachment.replace(/:\d+$/, "");
+}
+
+/** Whether a view's attachment is of the attached helper session (whatever game of that session it was in). */
+export function isAttachedView(attachment: string, attached: string | undefined): boolean {
+  return attached !== undefined && attachmentSession(attachment) === attached;
+}
+
+/**
  * The game's thread: the thread of the attached helper session's newest view. A session that has sent no view yet
  * gets the thread of the newest view of any session (there is one game). Undefined when no view has come at all.
  */
 export function gameThreadNow(db: DatabaseSync, attachedSession: string | undefined): string | undefined {
   if (attachedSession !== undefined) {
-    const own = db.prepare("SELECT thread FROM observations WHERE attachment = ? ORDER BY rowid DESC LIMIT 1").get(attachedSession) as Row | undefined;
+    const own = db.prepare("SELECT thread FROM observations WHERE attachment = ? OR attachment LIKE ? ORDER BY rowid DESC LIMIT 1")
+      .get(attachedSession, `${attachedSession}:%`) as Row | undefined;
     if (own) return String(own.thread);
   }
   const newest = db.prepare("SELECT thread FROM observations ORDER BY rowid DESC LIMIT 1").get() as Row | undefined;

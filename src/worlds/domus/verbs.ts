@@ -10,7 +10,7 @@ import { actRequestedMeanwhile, lastSaveAt, requestVerb, SLOT_HELD_REFUSAL, save
 import { seenItem } from "./catalog.js";
 import { findListed, listedSession, readList, REF_PATTERN } from "./lists.js";
 import { findOption, optionsOf } from "./options.js";
-import { gameThreadNow, newestObservation } from "./store.js";
+import { gameThreadNow, isAttachedView, newestObservation } from "./store.js";
 import { type GameContext, gameGate, refused, staleRef } from "./tool-context.js";
 
 /** Saves are at least this far apart, in real time (the game's own save lock is separate). */
@@ -54,7 +54,7 @@ function isRecord(value: unknown): value is Args {
 function viewOf(db: DatabaseSync, attached: string): View | undefined {
   const thread = gameThreadNow(db, attached);
   const newest = thread === undefined ? undefined : newestObservation(db, thread);
-  if (!newest || newest.attachment !== attached) return undefined;
+  if (!newest || !isAttachedView(newest.attachment, attached)) return undefined;
   return { observationId: newest.observationId, options: optionsOf(newest.payload.options) };
 }
 
