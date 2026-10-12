@@ -332,3 +332,29 @@ describe("the situations she is in, in plain words, and game tokens kept out of 
     expect(lines).toContain("Recent windows: tasks, 2 min ago.");
   });
 });
+
+describe("W12: the time a held window has left, and her role and relationship with the people she sees", () => {
+  it("says how long a held window has left before the User is handed it (A9), and says nothing when the game sent no time", () => {
+    expect(bodyLines({ asked: [{ whose: "hers", held: true, title: "Pick", hold_left_s: 42 }] })).toContain("Open for you: Pick (held for you, 42 s left).");
+    expect(bodyLines({ asked: [{ whose: "hers", held: true, title: "Pick", hold_left_s: 130 }] })).toContain("Open for you: Pick (held for you, 3 min left).");
+    expect(bodyLines({ asked: [{ whose: "hers", held: true, title: "Pick" }] })).toContain("Open for you: Pick (held for you).");
+    expect(bodyLines({ asked: [{ whose: "hers", held: false, title: "Pick", hold_left_s: 42 }] })).toContain("Open for you: Pick (not held for you).");
+  });
+
+  it("names her role with a Sim she can see, and what the game holds between them (E2)", () => {
+    const lines = bodyLines({ company: [
+      { id: "1", name: "Ilse May", distance_m: 3, role: "neighbour", relationship: { known: true, labels: ["Friends", "Gym buddies"], track: "friendship" } },
+      { id: "2", name: "Tam Reed", distance_m: 9, relationship: { met: false, tracks: { Friendship: 12 } } },
+    ] });
+    expect(lines).toContain("With you: Ilse May (3 m away, neighbour, known to you, Friends, Gym buddies, friendship); Tam Reed (9 m away, not met yet, friendship 12).");
+  });
+
+  it("says the role and the relationship of a Sim who is talking, after what is said", () => {
+    const lines = bodyLines({ company: [{ id: "1", name: "Ilse May", distance_m: 3, said: "waves at you.", role: "courier", relationship: { known: true } }] });
+    expect(lines).toContain("With you: Ilse May (3 m away: waves at you; courier, known to you).");
+  });
+
+  it("says nothing extra for a Sim with no role and no relationship, as before", () => {
+    expect(bodyLines({ company: [{ id: "1", name: "Ilse May", distance_m: 3, doing: "gardening" }] })).toContain("With you: Ilse May (3 m away, gardening).");
+  });
+});

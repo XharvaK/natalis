@@ -47,7 +47,8 @@ function heldForHer(portrait: unknown): boolean {
 }
 
 /**
- * Whether a view wakes her in this mode. A question put to her and a look she asked for always wake her, in every mode.
+ * Whether a view wakes her in this mode. A question put to her, a look she asked for, and a need that has just gone into
+ * distress always wake her, in every mode (the body's alarm, as a held window is: she may still do nothing, D1).
  * Otherwise every_change wakes her on every view, quiet on none, and when_called on a call (someone addressed her,
  * someone arrived or is on the lot, the day's record, the first view after the game attached).
  */
@@ -55,6 +56,8 @@ export function wakesFor(mode: AttentionMode, view: ViewFacts): boolean {
   if (view.percepts.some((item) => item.kind === "look")) return true;
   if (view.percepts.some((item) => item.kind === "env" && item.facts["bucket"] === "asked")) return true;
   if (heldForHer(view.portrait)) return true;
+  // The helper sends a need's percept when its band changes, so this one is the change into distress (D1).
+  if (view.percepts.some((item) => item.kind === "need" && item.facts["band"] === "distress")) return true;
   if (mode === "every_change") return true;
   if (mode === "quiet") return false;
   if (view.firstAfterAttach || view.dayRecord) return true;

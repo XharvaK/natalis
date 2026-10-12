@@ -303,6 +303,9 @@ describe("acts: the Lar asks, the helper pulls, the game reports", () => {
     expect(acts).toEqual([{ act_id: (receipt.data as { actId: string }).actId, object_id: "obj-kettle", guid64: "111", expires_at_ms: T0 + 90_000 }]);
     const actId = acts[0]?.act_id;
     expect(await call("/domus/acts/sync", { v: 1, helper_session: "helper-2", events: [] })).toMatchObject({ body: { acts: [] } });
+    // Another session's sync holds the pulled act as unknown, as a guess (SESSION_ENDED): helper-1's report still settles it.
+    expect(events.map((event) => event.text)).toEqual([expect.stringContaining("nothing says how it ended (SESSION_ENDED)")]);
+    events = [];
     const reported = await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [
       { act_id: actId, phase: "received", at_ms: T0 + 10 },
     ] });
@@ -315,7 +318,7 @@ describe("acts: the Lar asks, the helper pulls, the game reports", () => {
   it("wakes the thread for a refusal, and says the game is cut short when it is", async () => {
     const receipt = await gameAct({ option: "a2" }, "t-2");
     const actId = (receipt.data as { actId: string }).actId;
-    await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [{ act_id: actId, phase: "rejected", at_ms: T0, detail: { code: "NOT_ATTACHED" } }] });
+    await call("/domus/acts/sync", { v: 1, helper_session: "helper-1", events: [{ act_id: actId, phase: "rejected", at_ms: T0, detail: { code: "NOT_ATTACHED", by: "game" } }] });
     expect(events[0]).toMatchObject({ wake: true });
     expect(events[0]?.text).toContain("the game refused it (NOT_ATTACHED)");
   });
@@ -799,6 +802,33 @@ describe("a fresh look: she asks, the helper answers on its sync, and the answer
     await look("domus:slot3");
     await call("/domus/observation", viewBody({ percepts: [{ kind: "look", salience: 0, facts: { bucket: "asked" } }] }));
     expect(events.map((event) => event.thread)).toEqual(["domus:slot3"]);
+  });
+
+  it("a look that changed nothing answers in one line on her thread, and the choices she named still stand (D2)", async () => {
+    await attach();
+    await call("/domus/observation", viewBody());
+    events = [];
+    await look("domus:slot3");
+    await call("/domus/observation", viewBody({ percepts: [{ kind: "look", salience: 0, facts: { bucket: "asked" } }] }));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ wake: true, thread: "domus:slot3", source: "body" });
+    expect(events[0]?.text).toMatch(/^Your look: no change in the game since your last view, and the choices are the same\./);
+    expect(events[0]?.text).not.toContain("Choices you can name");
+    expect((await gameAct({ option: "a1" }, "t-after-look")).ok).toBe(true);
+  });
+
+  it("a look that comes with a change in the game's feed is still the whole view", async () => {
+    await attach();
+    await call("/domus/observation", viewBody());
+    events = [];
+    await look("domus:slot3");
+    await call("/domus/observation", viewBody({
+      percepts: [{ kind: "look", salience: 0, facts: { bucket: "asked" } }, { kind: "sim_arrives", salience: 0.8, facts: { subject: "Pim Dorrow" } }],
+    }));
+    // The choices are the same as the last view's, so the whole view says so instead of listing them again; the look is named.
+    expect(events[0]?.text).toContain("Your body now:");
+    expect(events[0]?.text).toContain("This is the look you asked for.");
+    expect(events[0]?.text).not.toMatch(/^Your look: no change/m);
   });
 });
 

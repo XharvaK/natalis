@@ -72,6 +72,15 @@ describe("which views wake her, by her mode", () => {
     }
   });
 
+  it("in every mode, a need that has just gone into distress wakes her, and a need that has not does not (D1)", () => {
+    const distress = percept("need", { subject: "social", band: "distress" });
+    for (const mode of ["every_change", "when_called", "quiet"] as const) {
+      expect(wakesFor(mode, view([distress]))).toBe(true);
+    }
+    expect(wakesFor("when_called", view([percept("need", { subject: "hunger", band: "low" })]))).toBe(false);
+    expect(wakesFor("quiet", view([percept("need", { subject: "fun", band: "ok" })]))).toBe(false);
+  });
+
   it("when quiet, nothing else wakes her, not even a call", () => {
     expect(wakesFor("quiet", view(PLAIN))).toBe(false);
     expect(wakesFor("quiet", view([percept("social", { bucket: "addressed" })]))).toBe(false);

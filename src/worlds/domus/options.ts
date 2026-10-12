@@ -5,7 +5,7 @@
 import type { Found, OptionObject, AnswerRules } from "./answers.js";
 import { answerRulesOf } from "./answers.js";
 import type { OptionsCut, Percept } from "./wire.js";
-import { type AttachmentNow, bodyLines } from "./body.js";
+import { type AttachmentNow, bodyLines, clockLine } from "./body.js";
 import { DAY_BRIEF_LINE, dayRecordLines } from "./day-record.js";
 import { BAND_WORDS, capitalised, dropTokens, ORIGIN_WORDS, plainName, textOrUndefined } from "./words.js";
 
@@ -293,7 +293,10 @@ function objectLines(object: OptionObject): string[] {
   return lines;
 }
 
-/** The choices as a set of (ref, words, no-way, opens), ignoring distances; "" when there are none. */
+/**
+ * The choices as a set of (ref, words, no-way, opens, room, near), ignoring distances; "" when there are none. A move from
+ * one room to another, or into or out of near, is a change of choices (C7).
+ */
 export function choicesSignature(options: readonly OptionObject[]): string {
   const rows = new Set<string>();
   for (const object of options) {
@@ -301,11 +304,30 @@ export function choicesSignature(options: readonly OptionObject[]): string {
       if (act && typeof act === "object" && typeof act.ref === "string" && typeof act.text === "string") {
         const noWay = typeof object.noWay === "string" ? object.noWay : null;
         const opens = typeof act.opens === "string" ? act.opens : null;
-        rows.add(JSON.stringify([act.ref, act.text, noWay, opens]));
+        const room = typeof object.room === "string" ? object.room : null;
+        rows.add(JSON.stringify([act.ref, act.text, noWay, opens, room, isNear(object)]));
       }
     }
   }
   return [...rows].sort().join("\n");
+}
+
+/**
+ * A look that changed nothing answers in one line (D2): the look is the only thing the game sent, the choices are the same
+ * as the last view's, and the view carries no day record. "Changed" means what the game sent as change, its feed; the
+ * body block of the last view still stands, except for the clock, which the line gives. Undefined when the view is not that.
+ */
+export function unchangedLookLine(input: {
+  percepts: readonly Percept[]; options: readonly OptionObject[] | undefined; lastChoices: string | undefined;
+  portrait: unknown; hasDay: boolean;
+}): string | undefined {
+  if (input.hasDay || input.options === undefined || input.lastChoices === undefined) return undefined;
+  if (!input.percepts.some((item) => item.kind === "look") || input.percepts.some((item) => item.kind !== "look")) return undefined;
+  if (choicesSignature(input.options) !== input.lastChoices) return undefined;
+  const portrait = input.portrait !== null && typeof input.portrait === "object" && !Array.isArray(input.portrait)
+    ? input.portrait as Record<string, unknown> : {};
+  const clock = clockLine(portrait);
+  return `Your look: no change in the game since your last view, and the choices are the same.${clock ? ` ${clock}` : ""}`;
 }
 
 /** The line that says how many choice objects the game left out of the table, and in which rooms. */
