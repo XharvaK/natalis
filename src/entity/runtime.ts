@@ -99,6 +99,7 @@ export const HOW_YOU_ACT = [
   "Your summoner can read your notebook and your river, except what is in private/.",
 ].join("\n");
 
+const DISCORD_PLACE_PREFIX = "discord:";
 const CHARACTER_STUB = "# Character\n\nNothing is written here yet. This is where who I am will go, in my own words.\n";
 const LIFE_PATH = "self/life.md";
 const LIFE_STUB =
@@ -596,6 +597,32 @@ class Runtime implements Entity {
   private readonly oversized = new Map<string, number>();
   /** The river seq each running turn started from, by turn id. A say reads it to see which asks the turn saw. */
   private readonly turnSnapshots = new Map<string, number>();
+  /** The Discord place each running turn has said to, so one turn never speaks in two Discord channels. */
+  private readonly turnDiscordPlaces = new Map<string, string>();
+
+  /**
+   * A Discord say goes where the turn was woken: a turn woken in a Discord place may say only there, and any turn says in
+   * at most one Discord place. Without this a guessed place (two rooms both called "general") sent words to the wrong server.
+   */
+  private discordPlaceHold(place: string, context: ToolContext): Receipt | undefined {
+    if (!place.startsWith(DISCORD_PLACE_PREFIX)) return undefined;
+    if (context.thread.startsWith(DISCORD_PLACE_PREFIX) && place !== context.thread) {
+      return refuse(
+        "wrong_place",
+        `This turn answers ${context.thread}; say it there. Nothing was sent to ${place}.`,
+        `Not sent: ${place} is not ${context.thread}, the place this turn answers.`,
+      );
+    }
+    const earlier = this.turnDiscordPlaces.get(context.turnId);
+    if (earlier !== undefined && earlier !== place) {
+      return refuse(
+        "wrong_place",
+        `This turn already spoke in ${earlier}; one turn speaks in one place. Nothing was sent to ${place}.`,
+        `Not sent: this turn already spoke in ${earlier}.`,
+      );
+    }
+    return undefined;
+  }
   /** When each running turn began, by turn id: a say held because another thread spoke meanwhile compares with it. */
   private readonly turnStarts = new Map<string, number>();
   private readonly wakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -1019,6 +1046,7 @@ class Runtime implements Entity {
     }).finally(() => {
       this.turnSnapshots.delete(turnId);
       this.turnStarts.delete(turnId);
+      this.turnDiscordPlaces.delete(turnId);
     });
     this.writeLedger(thread, result);
 
@@ -2016,7 +2044,7 @@ class Runtime implements Entity {
         {
           name: "say",
           description:
-            "Say words to a place. Give the place as it was named to you, for example discord:room:general. Before anything is sent the words are checked: secrets, your summoner's privacy list, and claims your own record contradicts are held back, and the receipt says why. If another of your threads said something in that place after this turn began, the say is held and the receipt says what was said and when. Set knowingly to true only to send words your record contradicts exactly as they are, or to send words anyway after a held say; it skips the honesty check and the check for another thread's words, never the others.",
+            "Say words to a place. Give the place exactly as the event you answer named it (such as discord:room:<name> or discord:dm:<person>); a Discord say goes only to the place this turn answers. Before anything is sent the words are checked: secrets, your summoner's privacy list, and claims your own record contradicts are held back, and the receipt says why. If another of your threads said something in that place after this turn began, the say is held and the receipt says what was said and when. Set knowingly to true only to send words your record contradicts exactly as they are, or to send words anyway after a held say; it skips the honesty check and the check for another thread's words, never the others.",
           parameters: {
             type: "object",
             properties: {
@@ -2156,6 +2184,8 @@ class Runtime implements Entity {
     }
     const knowingly = args["knowingly"] === true;
     const ownerPlace = this.isOwnerPlace(place.value);
+    const misplaced = this.discordPlaceHold(place.value, context);
+    if (misplaced !== undefined) return misplaced;
 
     if (!ownerPlace && this.stopIsOn()) return refuse("stopped", STOPPED_TEXT, STOPPED_TEXT);
 
@@ -2202,6 +2232,7 @@ class Runtime implements Entity {
     const others = this.othersSpokeHere(place.value, context.thread, nowMs);
     // The river keeps what was sent: the words, and which pictures went with them.
     const pictureLines = ids.map((id) => `[picture ${id}: ${this.shelf.get(id)?.name ?? "picture"}]`);
+    if (place.value.startsWith(DISCORD_PLACE_PREFIX)) this.turnDiscordPlaces.set(context.turnId, place.value);
     this.river.append({
       thread: place.value,
       kind: "say",
