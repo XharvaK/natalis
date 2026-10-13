@@ -1,6 +1,6 @@
 # W15: a map she can walk (design, 2026-10-13)
 
-Status: design, not built. Open questions for the User are in "Questions". Nothing here is live until it is built,
+Status: design accepted (the User took all five recommendations, 2026-10-13), not built. Nothing here is live until it is built,
 tested, deployed and seen in a live session.
 
 ## The problem, in numbers
@@ -256,7 +256,7 @@ part comes, as today.
 7. **Guidance.** One short paragraph in the Domus world text: what Here, the map, `game_look room` and `game_find`
    are. It must not say "if you are hungry, find food" or anything like it (`domus-no-scripted-play`).
 
-## Optional: a faster whole build (needs the User's answer, Q1)
+## A faster whole build (Q1: accepted)
 
 Most of the probe's build time is the act test (`preflight_test` / `test_super_affordance`) on far objects. A push
 runs the game's own test anyway, and a refusal comes back with the game's reason (`act_rejected`).
@@ -314,7 +314,7 @@ The work comes in small parts. Each part has its own focused tests, and one depl
   `schema.py` from the probe.
 - **N1:** Natalis: wire `map`, the Here rendering, the `stablePart` hook and its runtime placement, `game_look room`,
   `game_find` and the guidance paragraph.
-- **(Optional) P2:** The hybrid far build, only if the User says yes to Q1.
+- **P2:** The hybrid far build (the User said yes to Q1). Build it after P1, H1 and N1 work, as its own part.
 
 Tests that must exist:
 
@@ -342,6 +342,9 @@ The live tasks for the User's session:
 She should do each without asking for a fresh look first.
 
 ## Questions for the User
+
+**Answered 2026-10-13: the User accepted all five recommendations.** Q1 is yes, so the hybrid far build (P2) is in
+scope.
 
 - **Q1 (build speed):** May far acts be listed before the game has tested them? They would be marked "not checked yet"
   and tested when she picks one, so the whole map comes in seconds. The other choice is to keep testing everything
