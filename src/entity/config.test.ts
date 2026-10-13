@@ -270,3 +270,43 @@ describe("model.cacheMarks", () => {
     );
   });
 });
+
+describe("model.api, model.headers and model.effortMap", () => {
+  const model = { baseUrl: "https://llm.example.test/v1", model: "main", contextTokens: 32_000 };
+  const parse = (extra: Record<string, unknown>) =>
+    parseEntityConfig({ model: { ...model, ...extra }, summoner: { alias: "owner" } }).model;
+
+  it("keeps the protocol, the headers and the effort map, on the model and its backup", () => {
+    const parsed = parse({
+      api: "responses",
+      headers: { "x-session": " s-1 ", "user-agent": "natalis" },
+      effortMap: { xhigh: "max" },
+      fallback: { model: "backup", api: "chat", effortMap: { low: "minimal" } },
+    });
+    expect(parsed.api).toBe("responses");
+    expect(parsed.headers).toEqual({ "x-session": "s-1", "user-agent": "natalis" });
+    expect(parsed.effortMap).toEqual({ xhigh: "max" });
+    expect(parsed.fallback).toEqual({ model: "backup", api: "chat", effortMap: { low: "minimal" } });
+  });
+
+  it("refuses an unknown protocol, an authorization header, a bad header and an effort the entity does not know", () => {
+    expect(() => parse({ api: "completions" })).toThrow('model.api must be "chat" or "responses".');
+    expect(() => parse({ headers: { Authorization: "Bearer x" } })).toThrow("must not set authorization");
+    expect(() => parse({ headers: { "bad name": "x" } })).toThrow("header name that is not valid");
+    expect(() => parse({ headers: { "x-a": "one\ntwo" } })).toThrow("model.headers.x-a must be a non-empty text on one line.");
+    expect(() => parse({ effortMap: { ultra: "max" } })).toThrow('Unknown field "ultra" in model.effortMap.');
+  });
+
+  it("refuses cache marks on the responses protocol", () => {
+    expect(() => parse({ api: "responses", cacheMarks: true })).toThrow("model.cacheMarks is for the chat protocol only");
+  });
+
+  it("lets a world model name its own protocol and effort map", () => {
+    const parsed = parseEntityConfig({
+      model,
+      summoner: { alias: "owner" },
+      worldModels: { game: { model: "fast", api: "responses", effortMap: { high: "max" } } },
+    });
+    expect(parsed.worldModels?.["game"]).toEqual({ model: "fast", api: "responses", effortMap: { high: "max" } });
+  });
+});

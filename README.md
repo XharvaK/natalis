@@ -75,13 +75,20 @@ The file in the Lar's folder. Its blocks:
   `price` is optional and absent by default: `{ "inputPerMillion": 2, "outputPerMillion": 4 }`, what the provider charges
   per million input and output tokens, in the currency you use. With it, the now board shows the day's cost next to the
   day's tokens; without it, the board shows only the tokens the provider reported.
+  Three more optional fields fit a service to its wire. `api` is `"chat"` (`/chat/completions`, the default) or
+  `"responses"` (`/responses`, for a model a service serves only there; no `cacheMarks` then). `headers` is extra request
+  headers the service asks for, such as a workspace id, a session id or a user agent; never the key, which always comes
+  from `apiKeyEnv`. `effortMap` maps the entity's efforts to the values this model takes, e.g. `{ "xhigh": "max" }`;
+  an effort it does not name goes as it is.
 - `model.fallback`: an optional backup model, the same service and key. It answers only when the main model cannot: a rate
   limit, out of credit or over its quota (HTTP 402, or a 429 that names an insufficient quota), an unavailable or
   unreachable service, or no reply in time. A refused key or request is never sent to it. Its
   fields: `model` (required), `effort` (`low`, `medium`, `high` or `xhigh`; left out, the main model's), `effortParam`
   (left out, the main model's), `vision` (false by default: it gets no pictures, only a plain line in their place),
   `contextTokens` (a request estimated larger than this is not sent to it; the river says why) and `price` (as for the
-  main model; its tokens are not priced without it). When it answers, the river says so for that turn.
+  main model; its tokens are not priced without it), `api` (left out, the main model's) and `effortMap` (left out, none:
+  the main model's map is for the main model). It shares the main model's `headers`. When it answers, the river says so
+  for that turn.
   Before you set a backup, the summoner names its provider, its tier, and whether that provider keeps or trains on what it
   is sent, in the household note (`self/household.md` in the notebook). The body does not know these and does not check
   them. A backup on the same service as the main model shares its quota, so it does not help when that quota is spent.

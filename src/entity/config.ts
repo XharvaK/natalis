@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Ceiling } from "../contracts.js";
-import type { FallbackModelConfig, ModelConfig, ModelPrice } from "../model/from-config.js";
+import type { EffortMap, FallbackModelConfig, ModelConfig, ModelPrice } from "../model/from-config.js";
 import { parseClock } from "./wake-schedule.js";
 
 export const EFFORTS = ["low", "medium", "high", "xhigh"] as const;
@@ -45,6 +45,10 @@ export type WorldModelConfig = {
   effort?: Effort;
   /** True when this model can see pictures. Never assumed. */
   vision?: boolean;
+  /** The protocol, "chat" or "responses". Left out, the main model's. */
+  api?: "chat" | "responses";
+  /** This model's wire values for the efforts. Left out, none. */
+  effortMap?: EffortMap;
 };
 
 export const ENTITY_FILE = "entity.json";
@@ -110,13 +114,15 @@ function parseWorldModels(value: unknown): Record<string, WorldModelConfig> {
     const where = `worldModels.${world}`;
     if (!/^[a-z][a-z0-9-]*$/.test(world)) throw new Error(`${where}: a world id is lower-case letters, digits and dashes.`);
     const item = objectOf(entry, where);
-    onlyKeys(item, ["model", "effort", "vision"], where);
+    onlyKeys(item, ["model", "effort", "vision", "api", "effortMap"], where);
     const model: WorldModelConfig = { model: textOf(item["model"], `${where}.model`) };
     if (item["effort"] !== undefined) {
       if (!isEffort(item["effort"])) throw new Error(`${where}.effort must be one of ${EFFORTS.join(", ")}.`);
       model.effort = item["effort"];
     }
     if (item["vision"] !== undefined) model.vision = flagOf(item["vision"], `${where}.vision`);
+    if (item["api"] !== undefined) model.api = apiOf(item["api"], `${where}.api`);
+    if (item["effortMap"] !== undefined) model.effortMap = effortMapOf(item["effortMap"], `${where}.effortMap`);
     models[world] = model;
   }
   return models;
@@ -162,7 +168,8 @@ export function parseModel(value: unknown): ModelConfig {
   const block = objectOf(value, "model");
   onlyKeys(
     block,
-    ["baseUrl", "model", "apiKeyEnv", "contextTokens", "nativeTools", "effortParam", "timeoutMs", "vision", "cacheMarks", "fallback", "price"],
+    ["baseUrl", "model", "apiKeyEnv", "contextTokens", "nativeTools", "effortParam", "timeoutMs", "vision", "cacheMarks", "fallback", "price",
+      "api", "headers", "effortMap"],
     "model",
   );
 
@@ -196,13 +203,19 @@ export function parseModel(value: unknown): ModelConfig {
   if (block["cacheMarks"] !== undefined) model.cacheMarks = flagOf(block["cacheMarks"], "model.cacheMarks");
   if (block["fallback"] !== undefined) model.fallback = parseFallback(block["fallback"]);
   if (block["price"] !== undefined) model.price = priceOf(block["price"], "model.price");
+  if (block["api"] !== undefined) model.api = apiOf(block["api"], "model.api");
+  if (block["headers"] !== undefined) model.headers = headersOf(block["headers"], "model.headers");
+  if (block["effortMap"] !== undefined) model.effortMap = effortMapOf(block["effortMap"], "model.effortMap");
+  if (model.api === "responses" && model.cacheMarks === true) {
+    throw new Error("model.cacheMarks is for the chat protocol only; leave it out when model.api is \"responses\".");
+  }
   return model;
 }
 
 /** The backup model block: the same service, key and timeout as the main model, so only its own settings are given. */
 function parseFallback(value: unknown): FallbackModelConfig {
   const block = objectOf(value, "model.fallback");
-  onlyKeys(block, ["model", "effortParam", "vision", "cacheMarks", "effort", "contextTokens", "price"], "model.fallback");
+  onlyKeys(block, ["model", "effortParam", "vision", "cacheMarks", "effort", "contextTokens", "price", "api", "effortMap"], "model.fallback");
   const fallback: FallbackModelConfig = { model: textOf(block["model"], "model.fallback.model") };
   if (block["price"] !== undefined) fallback.price = priceOf(block["price"], "model.fallback.price");
   if (block["effortParam"] !== undefined) {
@@ -217,6 +230,8 @@ function parseFallback(value: unknown): FallbackModelConfig {
   if (block["contextTokens"] !== undefined) {
     fallback.contextTokens = positiveInt(block["contextTokens"], "model.fallback.contextTokens");
   }
+  if (block["api"] !== undefined) fallback.api = apiOf(block["api"], "model.fallback.api");
+  if (block["effortMap"] !== undefined) fallback.effortMap = effortMapOf(block["effortMap"], "model.fallback.effortMap");
   return fallback;
 }
 
@@ -245,6 +260,36 @@ function flagOf(value: unknown, where: string): boolean {
 function effortParamOf(value: unknown, where: string): "reasoning_effort" | null {
   if (value === null || value === "reasoning_effort") return value;
   throw new Error(`${where} must be "reasoning_effort" or null.`);
+}
+
+function apiOf(value: unknown, where: string): "chat" | "responses" {
+  if (value === "chat" || value === "responses") return value;
+  throw new Error(`${where} must be "chat" or "responses".`);
+}
+
+/** Header names and values are plain text. The key never goes here: it is read from apiKeyEnv and always wins. */
+function headersOf(value: unknown, where: string): Record<string, string> {
+  const block = objectOf(value, where);
+  const headers: Record<string, string> = {};
+  for (const [name, text] of Object.entries(block)) {
+    if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(name)) throw new Error(`${where} has a header name that is not valid: "${name}".`);
+    if (name.toLowerCase() === "authorization") throw new Error(`${where} must not set authorization; the key comes from apiKeyEnv.`);
+    if (typeof text !== "string" || text.trim() === "" || /[\r\n]/.test(text)) {
+      throw new Error(`${where}.${name} must be a non-empty text on one line.`);
+    }
+    headers[name] = text.trim();
+  }
+  return headers;
+}
+
+function effortMapOf(value: unknown, where: string): EffortMap {
+  const block = objectOf(value, where);
+  onlyKeys(block, EFFORTS, where);
+  const map: EffortMap = {};
+  for (const effort of EFFORTS) {
+    if (block[effort] !== undefined) map[effort] = textOf(block[effort], `${where}.${effort}`);
+  }
+  return map;
 }
 
 function parseOwner(value: unknown): { alias: string } {

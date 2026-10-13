@@ -26,7 +26,16 @@ export type ModelConfig = {
   fallback?: FallbackModelConfig;
   /** What the provider charges for this model, for the cost on the now board. Absent by default: no cost is shown. */
   price?: ModelPrice;
+  /** The protocol: "chat" (/chat/completions, the default) or "responses" (/responses, for a model served only there). */
+  api?: "chat" | "responses";
+  /** Extra request headers the service asks for, such as a workspace id, a session id or a user agent. Never the key. */
+  headers?: Record<string, string>;
+  /** Wire values for the entity's efforts when this model's levels differ, e.g. { "xhigh": "max" }. This model's only. */
+  effortMap?: EffortMap;
 };
+
+/** The entity's efforts mapped to the values one model takes on the wire. */
+export type EffortMap = Partial<Record<NonNullable<ModelRequest["effort"]>, string>>;
 
 /** A price per million tokens, in whatever currency the summoner uses. Only the summoner sets it. */
 export type ModelPrice = { inputPerMillion: number; outputPerMillion: number };
@@ -46,6 +55,10 @@ export type FallbackModelConfig = {
   effort?: NonNullable<ModelRequest["effort"]>;
   /** The backup's context window in tokens. Left out, it is the main model's. A request too big for it is not sent to it. */
   contextTokens?: number;
+  /** The backup's protocol. Left out, the main model's. */
+  api?: "chat" | "responses";
+  /** The backup's own effort map. Left out, none: the main model's map is not used for another model. */
+  effortMap?: EffortMap;
 };
 
 export function modelFromConfig(
@@ -71,6 +84,9 @@ export function modelFromConfig(
     effortParam: config.effortParam,
     timeoutMs: config.timeoutMs,
     cacheMarks: config.cacheMarks,
+    api: config.api,
+    headers: config.headers,
+    effortMap: config.effortMap,
   };
   const primary = withEmulated(createOpenAICompatiblePort(connection), config);
   if (config.fallback === undefined) return primary;
@@ -81,6 +97,8 @@ export function modelFromConfig(
       effortParam: config.fallback.effortParam ?? config.effortParam,
       contextTokens: config.fallback.contextTokens ?? config.contextTokens,
       cacheMarks: config.fallback.cacheMarks ?? config.cacheMarks,
+      api: config.fallback.api ?? config.api,
+      effortMap: config.fallback.effortMap,
     }),
     config,
   );
@@ -99,10 +117,18 @@ function withEmulated(port: ModelPort, config: ModelConfig): ModelPort {
 }
 
 /** A world's own model, as entity.json's worldModels gives it. */
-export type WorldModelSpec = { model: string; effort?: NonNullable<ModelRequest["effort"]>; vision?: boolean };
+export type WorldModelSpec = {
+  model: string;
+  effort?: NonNullable<ModelRequest["effort"]>;
+  vision?: boolean;
+  /** The world model's protocol. Left out, the main model's. */
+  api?: "chat" | "responses";
+  /** The world model's own effort map. Left out, none. */
+  effortMap?: EffortMap;
+};
 
 /**
- * One port per world that has a model of its own. Each uses the main model's service, key, context and timeout, and
+ * One port per world that has a model of its own. Each uses the main model's service, key, headers, context and timeout, and
  * falls back to the main model itself (at the entity's effort) when it cannot answer.
  */
 export function worldModelsFromConfig(
@@ -113,12 +139,17 @@ export function worldModelsFromConfig(
 ): Record<string, ModelPort> {
   const ports: Record<string, ModelPort> = {};
   for (const [world, spec] of Object.entries(worlds ?? {})) {
+    const { effortMap: mainEffortMap, ...service } = main;
     const port = modelFromConfig({
-      ...main,
+      ...service,
       model: spec.model,
       vision: spec.vision === true,
+      ...(spec.api === undefined ? {} : { api: spec.api }),
+      ...(spec.effortMap === undefined ? {} : { effortMap: spec.effortMap }),
       fallback: {
         model: main.model,
+        api: main.api ?? "chat",
+        ...(mainEffortMap === undefined ? {} : { effortMap: mainEffortMap }),
         ...(mainEffort === undefined ? {} : { effort: mainEffort }),
         ...(main.vision === undefined ? {} : { vision: main.vision }),
       },

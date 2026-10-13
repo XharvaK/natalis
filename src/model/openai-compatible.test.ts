@@ -575,3 +575,137 @@ describe("cache marks", () => {
     expect(calls[0]?.body.messages[1].content).toEqual([marked(USER)]);
   });
 });
+
+describe("headers and effort map", () => {
+  it("sends the configured headers, and the key header always wins", async () => {
+    const { port, calls } = harness([chat({ content: "ok" })], {
+      headers: { "x-session": "s-1", "user-agent": "natalis-test", authorization: "Bearer other" },
+    });
+    await port.complete(asks([{ role: "user", content: "hi" }]));
+    expect(calls[0]?.headers["x-session"]).toBe("s-1");
+    expect(calls[0]?.headers["user-agent"]).toBe("natalis-test");
+    expect(calls[0]?.headers.authorization).toBe(`Bearer ${KEY}`);
+  });
+
+  it("sends an effort under its mapped wire value, and an unmapped effort as it is", async () => {
+    const { port, calls } = harness([chat({ content: "a" }), chat({ content: "b" })], {
+      effortParam: "reasoning_effort",
+      effortMap: { xhigh: "max" },
+    });
+    await port.complete(asks([{ role: "user", content: "hi" }], { effort: "xhigh" }));
+    await port.complete(asks([{ role: "user", content: "hi" }], { effort: "low" }));
+    expect(calls[0]?.body.reasoning_effort).toBe("max");
+    expect(calls[1]?.body.reasoning_effort).toBe("low");
+  });
+
+  it("leaves reasoning items from a /responses reply out of a chat request", async () => {
+    const { port, calls } = harness([chat({ content: "ok" })]);
+    await port.complete(asks([
+      { role: "user", content: "hi" },
+      {
+        role: "assistant",
+        content: null,
+        toolCalls: [{ id: "c1", name: "recall", arguments: "{}" }],
+        providerState: { responsesReasoning: [{ type: "reasoning", encrypted_content: "x" }], reasoning_details: [1] },
+      },
+      { role: "tool", toolCallId: "c1", content: "found" },
+    ]));
+    const assistant = calls[0]?.body.messages[1];
+    expect(assistant.responsesReasoning).toBeUndefined();
+    expect(assistant.reasoning_details).toEqual([1]);
+  });
+});
+
+describe("the responses protocol", () => {
+  const responses = (output: unknown[], extra: Record<string, unknown> = {}): Response =>
+    ok({ object: "response", status: "completed", output, ...extra });
+
+  it("posts to /responses with messages as input items, flat tools, stateless storage and the effort under reasoning", async () => {
+    const tools: ToolSpec[] = [{ name: "recall", description: "Find a note.", parameters: { type: "object" } }];
+    const { port, calls } = harness([responses([{ type: "message", content: [{ type: "output_text", text: "hi" }] }])], {
+      api: "responses",
+      effortParam: "reasoning_effort",
+    });
+    await port.complete(asks(
+      [
+        { role: "system", content: "Be brief." },
+        { role: "user", content: "Look.", images: [{ type: "image", mime: "image/png", dataBase64: "AAAA" }] },
+      ],
+      { tools, toolChoice: "auto", maxOutputTokens: 500, effort: "high" },
+    ));
+    expect(calls[0]?.url).toBe("https://llm.example.test/v1/responses");
+    expect(calls[0]?.body).toEqual({
+      model: "test-model",
+      input: [
+        { role: "system", content: "Be brief." },
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: "Look." },
+            { type: "input_image", image_url: "data:image/png;base64,AAAA" },
+          ],
+        },
+      ],
+      store: false,
+      include: ["reasoning.encrypted_content"],
+      tools: [{ type: "function", name: "recall", description: "Find a note.", parameters: { type: "object" } }],
+      tool_choice: "auto",
+      max_output_tokens: 500,
+      reasoning: { effort: "high" },
+    });
+  });
+
+  it("reads text, tool calls, the reasoning summary and usage, and sends the reasoning items back before the calls", async () => {
+    const reasoning = { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "Need the note." }], encrypted_content: "enc" };
+    const { port, calls } = harness([
+      responses(
+        [
+          reasoning,
+          { type: "message", role: "assistant", content: [{ type: "output_text", text: "Let me look." }] },
+          { type: "function_call", call_id: "fc_1", name: "recall", arguments: "{\"q\":\"x\"}" },
+        ],
+        { usage: { input_tokens: 900, output_tokens: 40, total_tokens: 940, input_tokens_details: { cached_tokens: 800 } } },
+      ),
+      responses([{ type: "message", content: [{ type: "output_text", text: "Found it." }] }]),
+    ], { api: "responses" });
+
+    const first = await port.complete(asks([{ role: "user", content: "Find x." }]));
+    expect(first.content).toBe("Let me look.");
+    expect(first.toolCalls).toEqual([{ id: "fc_1", name: "recall", arguments: "{\"q\":\"x\"}" }]);
+    expect(first.finish).toBe("tool_calls");
+    expect(first.reasoning).toBe("Need the note.");
+    expect(first.usage).toEqual({ inputTokens: 900, outputTokens: 40, totalTokens: 940, cacheHitTokens: 800 });
+
+    const second = await port.complete(asks([
+      { role: "user", content: "Find x." },
+      { role: "assistant", content: first.content, toolCalls: first.toolCalls, providerState: first.providerState },
+      { role: "tool", toolCallId: "fc_1", content: "x is here" },
+    ]));
+    expect(second.content).toBe("Found it.");
+    expect(second.finish).toBe("stop");
+    expect(calls[1]?.body.input).toEqual([
+      { role: "user", content: "Find x." },
+      reasoning,
+      { role: "assistant", content: "Let me look." },
+      { type: "function_call", call_id: "fc_1", name: "recall", arguments: "{\"q\":\"x\"}" },
+      { type: "function_call_output", call_id: "fc_1", output: "x is here" },
+    ]);
+  });
+
+  it("maps an incomplete reply to its reason, and a failed one to an unavailable error", async () => {
+    const { port } = harness([
+      responses([], { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } }),
+      responses([], { status: "failed", error: { message: "server fault" } }),
+    ], { api: "responses" });
+    expect((await port.complete(asks([{ role: "user", content: "hi" }]))).finish).toBe("length");
+    const err = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+    expect(err.kind).toBe("unavailable");
+    expect(err.message).toContain("server fault");
+  });
+
+  it("treats a reply with no output list as malformed, and a call with no name as malformed", async () => {
+    const { port } = harness([ok({ status: "completed" }), responses([{ type: "function_call", call_id: "c" }])], { api: "responses" });
+    expect((await errorOf(port.complete(asks([{ role: "user", content: "hi" }])))).kind).toBe("malformed");
+    expect((await errorOf(port.complete(asks([{ role: "user", content: "hi" }])))).kind).toBe("malformed");
+  });
+});

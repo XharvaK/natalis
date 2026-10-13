@@ -244,3 +244,63 @@ describe("cacheMarks in the model block", () => {
     });
   });
 });
+
+describe("protocol, headers and effort map in the model block", () => {
+  type Sent = { url: string; headers: Record<string, string>; body: any };
+
+  /** Records each request; the model named busy answers 503 at once, the others answer in their protocol's shape. */
+  function routeFetch(busyModel: string): Sent[] {
+    const sent: Sent[] = [];
+    vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const body = JSON.parse(String(init?.body)) as { model: string };
+      sent.push({ url: String(url), headers: { ...(init?.headers as Record<string, string>) }, body });
+      if (body.model === busyModel) {
+        return new Response(JSON.stringify({ error: { message: "busy" } }), { status: 503, headers: { "retry-after": "0" } });
+      }
+      return String(url).endsWith("/responses")
+        ? new Response(JSON.stringify({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "r" }] }] }))
+        : new Response(JSON.stringify({ choices: [{ message: { content: "c" }, finish_reason: "stop" }] }));
+    });
+    return sent;
+  }
+
+  it("sends the backup on its own protocol with the shared headers, and the main model's effort map stays the main model's", async () => {
+    const sent = routeFetch("test-model");
+    const port = modelFromConfig(
+      {
+        ...config,
+        effortParam: "reasoning_effort",
+        effortMap: { xhigh: "max" },
+        headers: { "x-session": "s-1" },
+        fallback: { model: "backup-model", api: "responses" },
+      },
+      { [KEY_VAR]: KEY },
+    );
+    const answer = await port.complete({ ...ask, effort: "xhigh" });
+    expect(answer.content).toBe("r");
+    const main = sent.find((s) => s.body.model === "test-model");
+    const backup = sent.find((s) => s.body.model === "backup-model");
+    expect(main?.url).toBe("https://llm.example.test/v1/chat/completions");
+    expect(main?.body.reasoning_effort).toBe("max");
+    expect(backup?.url).toBe("https://llm.example.test/v1/responses");
+    expect(backup?.body.reasoning).toEqual({ effort: "xhigh" });
+    expect(backup?.headers["x-session"]).toBe("s-1");
+  });
+
+  it("falls a world model back to the main model on the main model's protocol and effort map", async () => {
+    const sent = routeFetch("fast-model");
+    const ports = worldModelsFromConfig(
+      { ...config, effortParam: "reasoning_effort", effortMap: { xhigh: "max" } },
+      "xhigh",
+      { game: { model: "fast-model", api: "responses" } },
+      { [KEY_VAR]: KEY },
+    );
+    await ports["game"]?.complete({ ...ask, effort: "high" });
+    const world = sent.find((s) => s.body.model === "fast-model");
+    const main = sent.find((s) => s.body.model === "test-model");
+    expect(world?.url).toBe("https://llm.example.test/v1/responses");
+    expect(world?.body.reasoning).toEqual({ effort: "high" });
+    expect(main?.url).toBe("https://llm.example.test/v1/chat/completions");
+    expect(main?.body.reasoning_effort).toBe("max");
+  });
+});

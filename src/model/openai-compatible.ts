@@ -1,10 +1,12 @@
-// One adapter for any OpenAI-compatible chat/completions service or local server. The model is the mind; this
-// file is only the wire: it maps Natalis messages and tools onto the protocol and back, retries the transient
-// failures a provider throws, and turns every failure into a ModelError that never shows the key.
+// One adapter for any OpenAI-compatible chat/completions service or local server, and for services that serve a
+// model on /responses only (responses-wire.ts). The model is the mind; this file is only the wire: it maps Natalis
+// messages and tools onto the protocol and back, retries the transient failures a provider throws, and turns every
+// failure into a ModelError that never shows the key.
 
 import { randomBytes } from "node:crypto";
 import { ModelError } from "../contracts.js";
 import { markedTextParts, markPlan } from "./cache-marks.js";
+import { buildResponsesBody, parseResponsesReply, REASONING_ITEMS } from "./responses-wire.js";
 import type {
   ChatMessage,
   FinishReason,
@@ -41,6 +43,12 @@ export type OpenAICompatibleOptions = {
    * plain string it has always been.
    */
   cacheMarks?: boolean;
+  /** The protocol: "chat" (/chat/completions, default) or "responses" (/responses). Cache marks are chat only. */
+  api?: "chat" | "responses";
+  /** Extra request headers a service asks for (a workspace id, a session id, a user agent). The key header always wins. */
+  headers?: Record<string, string>;
+  /** Wire values for the entity's efforts, for a service whose levels differ (e.g. xhigh sent as "max"). Unmapped go as they are. */
+  effortMap?: Partial<Record<NonNullable<ModelRequest["effort"]>, string>>;
 };
 
 type ModelErrorKind = ConstructorParameters<typeof ModelError>[1];
@@ -61,7 +69,8 @@ type Sent =
   | { type: "network"; detail: string };
 
 export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): ModelPort {
-  const endpoint = `${options.baseUrl.replace(/\/+$/, "")}/chat/completions`;
+  const api = options.api ?? "chat";
+  const endpoint = `${options.baseUrl.replace(/\/+$/, "")}/${api === "responses" ? "responses" : "chat/completions"}`;
   const apiKey = options.apiKey || undefined;
   const nativeTools = options.nativeTools ?? true;
   const effortParam = options.effortParam ?? null;
@@ -95,7 +104,7 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
       timer.timedOut = true;
       controller.abort();
     }, timeoutMs);
-    const headers: Record<string, string> = { "content-type": "application/json" };
+    const headers: Record<string, string> = { ...options.headers, "content-type": "application/json" };
     if (apiKey) headers.authorization = `Bearer ${apiKey}`;
     try {
       const res = await fetchFn(endpoint, { method: "POST", headers, body, signal: controller.signal });
@@ -136,7 +145,15 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
   return {
     info,
     async complete(request: ModelRequest, signal?: AbortSignal): Promise<ModelResponse> {
-      const body = JSON.stringify(buildBody({ model: options.model, nativeTools, effortParam, cacheMarks }, request));
+      const effort =
+        effortParam === null || request.effort === undefined
+          ? undefined
+          : (options.effortMap?.[request.effort] ?? request.effort);
+      const body = JSON.stringify(
+        api === "responses"
+          ? buildResponsesBody({ model: options.model, nativeTools, effort }, request)
+          : buildBody({ model: options.model, nativeTools, effortParam, effort, cacheMarks }, request),
+      );
       for (let attempt = 1; ; attempt++) {
         if (signal?.aborted) throw new ModelError("request aborted by caller", "aborted", attempt);
         const started = Date.now();
@@ -159,7 +176,10 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
         }
 
         if (sent.status >= 200 && sent.status < 300) {
-          return parseReply(sent.text, Date.now() - started, attempt, newId);
+          const latencyMs = Date.now() - started;
+          return api === "responses"
+            ? parseResponsesReply(sent.text, latencyMs, attempt, newId)
+            : parseReply(sent.text, latencyMs, attempt, newId);
         }
         if (RETRYABLE_STATUS.has(sent.status) && attempt < maxAttempts && !isOutOfCredit(sent.status, sent.text)) {
           await pause(sent.retryAfterMs ?? backoffMs(attempt), signal, attempt);
@@ -175,7 +195,13 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
 // Request side
 
 function buildBody(
-  options: { model: string; nativeTools: boolean; effortParam: "reasoning_effort" | null; cacheMarks: boolean },
+  options: {
+    model: string;
+    nativeTools: boolean;
+    effortParam: "reasoning_effort" | null;
+    effort: string | undefined;
+    cacheMarks: boolean;
+  },
   request: ModelRequest,
 ): Record<string, unknown> {
   // With marks on, each message carries its marks; with them off, no message does and the wire text is the plain string.
@@ -189,8 +215,8 @@ function buildBody(
     if (request.toolChoice !== undefined) body.tool_choice = request.toolChoice;
   }
   if (request.maxOutputTokens !== undefined) body.max_tokens = request.maxOutputTokens;
-  if (options.effortParam !== null && request.effort !== undefined) {
-    body[options.effortParam] = request.effort;
+  if (options.effortParam !== null && options.effort !== undefined) {
+    body[options.effortParam] = options.effort;
   }
   return body;
 }
@@ -230,8 +256,12 @@ function toWireMessage(message: ChatMessage, marks: readonly number[] | undefine
         role: "assistant",
         content: markedContent(message.content ?? (calls.length > 0 ? null : ""), marks),
       };
-      // Reasoning a provider asked to get back (for example reasoning_details) rides along unchanged.
-      if (message.providerState) Object.assign(wire, message.providerState);
+      // Reasoning a provider asked to get back (for example reasoning_details) rides along unchanged. Reasoning items from a
+      // /responses model (a backup that answered earlier in the turn) are not chat fields and stay behind.
+      if (message.providerState) {
+        const { [REASONING_ITEMS]: _responsesOnly, ...chatState } = message.providerState;
+        Object.assign(wire, chatState);
+      }
       if (calls.length > 0) {
         wire.tool_calls = calls.map((call) => ({
           id: call.id,
