@@ -35,6 +35,20 @@ describe("heldValues", () => {
     expect(held).toEqual({ model: MODEL_KEY, discord: BOT_TOKEN, domus: HELPER_TOKEN, vault: [] });
   });
 
+  it("reads the key of a backup on another service, in the main chain or a world's", () => {
+    const OTHER_KEY = ["other", "key", "2222222222"].join("-");
+    const WORLD_KEY = ["world", "key", "3333333333"].join("-");
+    const config: EntityConfig = {
+      ...CONFIG,
+      model: { ...CONFIG.model, fallback: { model: "b", baseUrl: "http://127.0.0.1:8/v1", apiKeyEnv: "TEST_OTHER_KEY" } },
+      worldModels: { game: { model: "g", fallback: { model: "gb", baseUrl: "http://127.0.0.1:7/v1", apiKeyEnv: "TEST_WORLD_KEY" } } },
+    };
+    const held = heldValues(dir, config, { env: { TEST_MODEL_KEY: MODEL_KEY, TEST_OTHER_KEY: OTHER_KEY, TEST_WORLD_KEY: WORLD_KEY } });
+
+    expect(held.otherModels).toEqual([OTHER_KEY, WORLD_KEY]);
+    expect(knownValueList(held)).toEqual([MODEL_KEY, OTHER_KEY, WORLD_KEY]);
+  });
+
   it("leaves out a variable that is not set, or set to nothing, and a key too short to be one", () => {
     const held = heldValues(dir, CONFIG, { env: { TEST_MODEL_KEY: "short", TEST_BOT_TOKEN: "" } });
 

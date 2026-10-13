@@ -47,11 +47,17 @@ export function withBackup(options: BackupOptions): ModelPort {
   let skipMainUntil = 0;
   return {
     info: options.primary.info,
-    routing: () => ({
-      onBackup: now() < skipMainUntil,
-      backup: options.backupName,
-      ...(options.backupEffort === undefined ? {} : { backupEffort: options.backupEffort }),
-    }),
+    routing: () => {
+      const onBackup = now() < skipMainUntil;
+      // A backup with a backup of its own: when that one is taking the calls, it is the one named.
+      const deeper = options.backup.routing?.();
+      if (onBackup && deeper?.onBackup === true) return deeper;
+      return {
+        onBackup,
+        backup: options.backupName,
+        ...(options.backupEffort === undefined ? {} : { backupEffort: options.backupEffort }),
+      };
+    },
     async complete(request: ModelRequest, signal?: AbortSignal): Promise<ModelResponse> {
       try {
         if (now() < skipMainUntil) {
@@ -91,7 +97,8 @@ export function withBackup(options: BackupOptions): ModelPort {
           }
           throw backupErr;
         }
-        return { ...answer, servedBy: options.backupName };
+        // A backup's own backup names itself; otherwise this backup answered.
+        return { ...answer, servedBy: answer.servedBy ?? options.backupName };
       }
     },
   };

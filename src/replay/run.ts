@@ -7,7 +7,7 @@ import { resolve, join } from "node:path";
 import type { ModelPort, SecretScanner, WorldEvent } from "../contracts.js";
 import { loadEntityConfig, type EntityConfig } from "../entity/config.js";
 import { openEntity } from "../entity/runtime.js";
-import { modelFromConfig } from "../model/from-config.js";
+import { modelFromConfig, modelKeyEnvs } from "../model/from-config.js";
 import { createSecretScanner } from "../secrets/index.js";
 import { copyForReplay } from "./copy.js";
 import { readEventFile, TRANSCRIPT_FILE, type CapturedEvent } from "./files.js";
@@ -147,9 +147,10 @@ function toWorldEvent(event: CapturedEvent): WorldEvent {
   return out;
 }
 
-/** The secret scanner, knowing the model key when the environment holds it. The key is read by reference only. */
+/** The secret scanner, knowing the model keys the environment holds. The keys are read by reference only. */
 function scannerForConfig(config: EntityConfig): SecretScanner {
-  const keyName = config.model.apiKeyEnv;
-  const key = keyName === undefined ? undefined : process.env[keyName];
-  return createSecretScanner({ knownValues: key !== undefined && key.length >= 8 ? [key] : [] });
+  const keys = modelKeyEnvs(config.model, config.worldModels)
+    .map((name) => process.env[name])
+    .filter((key): key is string => key !== undefined && key.length >= 8);
+  return createSecretScanner({ knownValues: keys });
 }

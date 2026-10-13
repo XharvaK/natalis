@@ -80,7 +80,7 @@ The file in the Lar's folder. Its blocks:
   headers the service asks for, such as a workspace id, a session id or a user agent; never the key, which always comes
   from `apiKeyEnv`. `effortMap` maps the entity's efforts to the values this model takes, e.g. `{ "xhigh": "max" }`;
   an effort it does not name goes as it is.
-- `model.fallback`: an optional backup model, the same service and key. It answers only when the main model cannot: a rate
+- `model.fallback`: an optional backup model, on the same service and key unless it names its own. It answers only when the main model cannot: a rate
   limit, out of credit or over its quota (HTTP 402, or a 429 that names an insufficient quota), an unavailable or
   unreachable service, or no reply in time. A refused key or request is never sent to it. Its
   fields: `model` (required), `effort` (`low`, `medium`, `high` or `xhigh`; left out, the main model's), `effortParam`
@@ -89,6 +89,15 @@ The file in the Lar's folder. Its blocks:
   main model; its tokens are not priced without it), `api` (left out, the main model's) and `effortMap` (left out, none:
   the main model's map is for the main model). It shares the main model's `headers`. When it answers, the river says so
   for that turn.
+  A backup on another service names its own `baseUrl` and `apiKeyEnv` (and `headers` if that service asks for any);
+  then it takes no key and no headers from the model above it, so one service's key or workspace id never reaches
+  another. A backup can have its own `fallback`, tried when it fails too; each level falls back to the settings of the
+  level above it. The river names the model that answered, and every key in the chain is a known value the secret
+  scanner hides.
+- `worldModels`: optional, a model of its own for one world's turns, keyed by world id (e.g. `"domus"`): `model`
+  (required), `effort`, `vision`, `api`, `effortMap`, and `fallback` (a backup chain as above). It uses the main
+  model's service, key, headers, context and timeout. Without its own `fallback`, its backup is the main model at the
+  entity's effort.
   Before you set a backup, the summoner names its provider, its tier, and whether that provider keeps or trains on what it
   is sent, in the household note (`self/household.md` in the notebook). The body does not know these and does not check
   them. A backup on the same service as the main model shares its quota, so it does not help when that quota is spent.

@@ -304,3 +304,78 @@ describe("protocol, headers and effort map in the model block", () => {
     expect(main?.body.reasoning_effort).toBe("max");
   });
 });
+
+describe("a chain of backups, and a backup on a service of its own", () => {
+  type Sent = { url: string; headers: Record<string, string>; model: string };
+  const OTHER_KEY = ["sk", "other", "xyz789"].join("-");
+  const OTHER_VAR = "NATALIS_TEST_OTHER_KEY";
+  const env = { [KEY_VAR]: KEY, [OTHER_VAR]: OTHER_KEY };
+  const other = "https://other.example.test/v1";
+
+  /** Each model named in busy answers 503 at once; the others answer. */
+  function routeFetch(busy: string[]): Sent[] {
+    const sent: Sent[] = [];
+    vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const body = JSON.parse(String(init?.body)) as { model: string };
+      sent.push({ url: String(url), headers: { ...(init?.headers as Record<string, string>) }, model: body.model });
+      if (busy.includes(body.model)) {
+        return new Response(JSON.stringify({ error: { message: "busy" } }), { status: 503, headers: { "retry-after": "0" } });
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: `from ${body.model}` }, finish_reason: "stop" }] }));
+    });
+    return sent;
+  }
+
+  const chain = {
+    ...config,
+    headers: { "x-workspace": "w-1" },
+    fallback: {
+      model: "second",
+      fallback: { model: "third", baseUrl: other, apiKeyEnv: OTHER_VAR, effort: "high" as const },
+    },
+  };
+
+  it("goes down the chain, names the model that answered, and gives a backup on its own service only its own key and headers", async () => {
+    const sent = routeFetch(["test-model", "second"]);
+    const port = modelFromConfig(chain, env);
+
+    const answer = await port.complete({ ...ask, effort: "low" });
+
+    expect(answer).toMatchObject({ content: "from third", servedBy: "third" });
+    const second = sent.find((s) => s.model === "second");
+    const third = sent.find((s) => s.model === "third");
+    expect(second?.url).toBe("https://llm.example.test/v1/chat/completions");
+    expect(second?.headers["authorization"]).toBe(`Bearer ${KEY}`);
+    expect(second?.headers["x-workspace"]).toBe("w-1");
+    expect(third?.url).toBe(`${other}/chat/completions`);
+    expect(third?.headers["authorization"]).toBe(`Bearer ${OTHER_KEY}`);
+    expect(third?.headers["x-workspace"]).toBeUndefined();
+    expect(port.routing?.()).toMatchObject({ onBackup: true, backup: "third", backupEffort: "high" });
+  });
+
+  it("names the first backup while it is the one answering", async () => {
+    routeFetch(["test-model"]);
+    const port = modelFromConfig(chain, env);
+    expect(port.routing?.()).toMatchObject({ onBackup: false, backup: "second" });
+    const answer = await port.complete(ask);
+    expect(answer.servedBy).toBe("second");
+    expect(port.routing?.()).toMatchObject({ onBackup: true, backup: "second" });
+  });
+
+  it("refuses a backup on its own service whose key variable is not set", () => {
+    expect(() => modelFromConfig(chain, { [KEY_VAR]: KEY })).toThrow(`names the environment variable ${OTHER_VAR}`);
+  });
+
+  it("falls a world model back to its own chain, not to the main model", async () => {
+    const sent = routeFetch(["fast-model"]);
+    const ports = worldModelsFromConfig(
+      config,
+      "high",
+      { game: { model: "fast-model", effort: "low", fallback: { model: "fast-elsewhere", baseUrl: other, apiKeyEnv: OTHER_VAR, effort: "low" } } },
+      env,
+    );
+    const answer = await ports["game"]!.complete({ ...ask, effort: "low" });
+    expect(answer).toMatchObject({ content: "from fast-elsewhere", servedBy: "fast-elsewhere" });
+    expect(sent.some((s) => s.model === "test-model")).toBe(false);
+  });
+});

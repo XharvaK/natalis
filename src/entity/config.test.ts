@@ -202,10 +202,44 @@ describe("model.fallback, the backup model", () => {
     expect(parse({ model: "backup", effortParam: "reasoning_effort" }).model.fallback?.effortParam).toBe("reasoning_effort");
   });
 
-  it("refuses an unknown field, and in particular a second key or service of its own", () => {
-    expect(() => parse({ model: "backup", apiKeyEnv: "OTHER_KEY" })).toThrow(/Unknown field "apiKeyEnv" in model.fallback/);
-    expect(() => parse({ model: "backup", baseUrl: "http://127.0.0.1:9/v1" })).toThrow(/Unknown field "baseUrl" in model.fallback/);
+  it("refuses an unknown field", () => {
     expect(() => parse({ model: "backup", nativeTools: false })).toThrow(/Unknown field "nativeTools" in model.fallback/);
+    expect(() => parse({ model: "backup", timeoutMs: 5 })).toThrow(/Unknown field "timeoutMs" in model.fallback/);
+  });
+
+  it("takes a service of its own and a backup of its own, and names the nested field in its errors", () => {
+    const other = ["https://", "other.example.test", "/v1"].join("");
+    const parsed = parse({
+      model: "backup",
+      baseUrl: other,
+      apiKeyEnv: "OTHER_KEY",
+      headers: { "x-session": "s-1" },
+      fallback: { model: "last", effort: "low" },
+    }).model.fallback;
+    expect(parsed).toEqual({
+      model: "backup",
+      baseUrl: other,
+      apiKeyEnv: "OTHER_KEY",
+      headers: { "x-session": "s-1" },
+      fallback: { model: "last", effort: "low" },
+    });
+    expect(() => parse({ model: "backup", baseUrl: "ftp://x" })).toThrow("model.fallback.baseUrl must start with http:// or https://.");
+    expect(() => parse({ model: "backup", apiKeyEnv: "not a name" })).toThrow(/model.fallback.apiKeyEnv must be the name/);
+    expect(() => parse({ model: "backup", headers: { authorization: "x" } })).toThrow(/must not set authorization/);
+    expect(() => parse({ model: "backup", fallback: { model: 3 } })).toThrow("model.fallback.fallback.model must be a non-empty text.");
+    expect(() => parse({ model: "backup", api: "responses", cacheMarks: true })).toThrow(/model.fallback.cacheMarks is for the chat protocol only/);
+  });
+
+  it("gives a world model a backup chain of its own", () => {
+    const config = parseEntityConfig({
+      model,
+      summoner: { alias: "owner" },
+      worldModels: { game: { model: "fast", effort: "low", fallback: { model: "fast-elsewhere", baseUrl: model.baseUrl, effort: "low" } } },
+    });
+    expect(config.worldModels?.["game"]?.fallback).toEqual({ model: "fast-elsewhere", baseUrl: model.baseUrl, effort: "low" });
+    expect(() =>
+      parseEntityConfig({ model, summoner: { alias: "owner" }, worldModels: { game: { model: "fast", fallback: {} } } }),
+    ).toThrow("worldModels.game.fallback.model must be a non-empty text.");
   });
 
   it("refuses a model name that is not text, and says which field", () => {

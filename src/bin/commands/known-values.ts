@@ -5,6 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { EntityConfig } from "../../entity/config.js";
+import { modelKeyEnvs } from "../../model/from-config.js";
 import { MIN_KNOWN_VALUE_LENGTH } from "../../secrets/index.js";
 import { DOMUS_FILE, parseDomusFile } from "../../worlds/domus/index.js";
 import { readVault } from "../../worlds/web/vault.js";
@@ -13,6 +14,8 @@ import { DISCORD_FILE, parseDiscordFile } from "./discord-file.js";
 export type HeldValues = {
   /** The model's key, when the config names an environment variable for it and the value is long enough to be a key. */
   model?: string;
+  /** The keys of backup models on other services, each when set and long enough to be a key. */
+  otherModels?: string[];
   /** The bot token, when discord.json names a variable that is set. */
   discord?: string;
   /** The game helper's token, when domus.json names a variable that is set. */
@@ -35,6 +38,11 @@ export function heldValues(dir: string, config: EntityConfig, options: HeldOptio
   const keyName = config.model.apiKeyEnv;
   const modelKey = keyName === undefined ? undefined : env[keyName];
   if (modelKey !== undefined && modelKey.length >= MIN_KNOWN_VALUE_LENGTH) held.model = modelKey;
+  const otherModels = modelKeyEnvs(config.model, config.worldModels)
+    .filter((name) => name !== keyName)
+    .map((name) => env[name])
+    .filter((value): value is string => value !== undefined && value.length >= MIN_KNOWN_VALUE_LENGTH);
+  if (otherModels.length > 0) held.otherModels = otherModels;
   const discordPath = join(dir, DISCORD_FILE);
   if (existsSync(discordPath)) {
     const discord = parseDiscordFile(JSON.parse(readFileSync(discordPath, "utf8")) as unknown);
@@ -56,7 +64,8 @@ export function heldValues(dir: string, config: EntityConfig, options: HeldOptio
 
 /** Every value in the list, as the scanner's known values. */
 export function knownValueList(held: HeldValues): string[] {
-  return [held.model, held.discord, held.domus, ...held.vault].filter((value): value is string => value !== undefined);
+  return [held.model, ...(held.otherModels ?? []), held.discord, held.domus, ...held.vault]
+    .filter((value): value is string => value !== undefined);
 }
 
 function nonEmpty(value: string | undefined): string | undefined {
@@ -69,5 +78,10 @@ function nonEmpty(value: string | undefined): string | undefined {
  */
 export function otherThanHelper(dir: string, config: EntityConfig, held: HeldValues): string[] {
   const vault = heldValues(dir, config, { vault: true }).vault;
-  return knownValueList({ model: held.model, discord: held.discord, vault });
+  return knownValueList({
+    model: held.model,
+    ...(held.otherModels === undefined ? {} : { otherModels: held.otherModels }),
+    discord: held.discord,
+    vault,
+  });
 }

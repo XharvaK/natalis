@@ -21,7 +21,8 @@ export type ModelConfig = {
   cacheMarks?: boolean;
   /**
    * A backup for when the main model cannot answer (rate limited, out of credit, unavailable, unreachable or no reply in
-   * time). It uses the same baseUrl, key, context size, timeout and tool setting as the main model.
+   * time). Left to itself it uses the main model's service, key, headers, context size, timeout and tool setting; it can
+   * name a service of its own, and a backup of its own.
    */
   fallback?: FallbackModelConfig;
   /** What the provider charges for this model, for the cost on the now board. Absent by default: no cost is shown. */
@@ -59,6 +60,17 @@ export type FallbackModelConfig = {
   api?: "chat" | "responses";
   /** The backup's own effort map. Left out, none: the main model's map is not used for another model. */
   effortMap?: EffortMap;
+  /**
+   * The backup's own service. Given, the backup takes no key and no headers from the model above it: it uses only its own
+   * apiKeyEnv and headers, so one service's key or workspace id never reaches another. Left out, the service above it.
+   */
+  baseUrl?: string;
+  /** The backup's key variable. With no baseUrl of its own, left out means the key of the model above it. */
+  apiKeyEnv?: string;
+  /** The backup's request headers. With no baseUrl of its own, left out means the headers of the model above it. */
+  headers?: Record<string, string>;
+  /** A backup for this backup, tried when it cannot answer either. Its settings fall back to this backup's. */
+  fallback?: FallbackModelConfig;
 };
 
 export function modelFromConfig(
@@ -90,18 +102,8 @@ export function modelFromConfig(
   };
   const primary = withEmulated(createOpenAICompatiblePort(connection), config);
   if (config.fallback === undefined) return primary;
-  const backup = withEmulated(
-    createOpenAICompatiblePort({
-      ...connection,
-      model: config.fallback.model,
-      effortParam: config.fallback.effortParam ?? config.effortParam,
-      contextTokens: config.fallback.contextTokens ?? config.contextTokens,
-      cacheMarks: config.fallback.cacheMarks ?? config.cacheMarks,
-      api: config.fallback.api ?? config.api,
-      effortMap: config.fallback.effortMap,
-    }),
-    config,
-  );
+  // The backup is a model block of its own, built the same way, so a backup of the backup chains on behind it.
+  const backup = modelFromConfig(backupConfig(config, config.fallback), env);
   return withBackup({
     primary,
     backup,
@@ -110,6 +112,49 @@ export function modelFromConfig(
     ...(config.fallback.effort === undefined ? {} : { backupEffort: config.fallback.effort }),
     ...(config.fallback.contextTokens === undefined ? {} : { backupContextTokens: config.fallback.contextTokens }),
   });
+}
+
+/**
+ * Every key variable the model block, its backup chain and the worlds' backup chains name: the main model's first, each
+ * once. The secret scanner learns all of their values, not only the main model's.
+ */
+export function modelKeyEnvs(main: ModelConfig, worlds?: Record<string, WorldModelSpec>): string[] {
+  const names: string[] = [];
+  const walk = (config: ModelConfig): void => {
+    if (config.apiKeyEnv !== undefined && !names.includes(config.apiKeyEnv)) names.push(config.apiKeyEnv);
+    if (config.fallback !== undefined) walk(backupConfig(config, config.fallback));
+  };
+  walk(main);
+  const { fallback: _mainChain, ...service } = main;
+  for (const spec of Object.values(worlds ?? {})) {
+    if (spec.fallback !== undefined) walk(backupConfig(service, spec.fallback));
+  }
+  return names;
+}
+
+/** The backup as a model block: its own settings, and those of the model above it where it names none. */
+function backupConfig(above: ModelConfig, backup: FallbackModelConfig): ModelConfig {
+  const ownService = backup.baseUrl !== undefined;
+  const apiKeyEnv = ownService ? backup.apiKeyEnv : (backup.apiKeyEnv ?? above.apiKeyEnv);
+  const headers = ownService ? backup.headers : (backup.headers ?? above.headers);
+  const api = backup.api ?? above.api;
+  const cacheMarks = backup.cacheMarks ?? above.cacheMarks;
+  const effortParam = backup.effortParam === undefined ? above.effortParam : backup.effortParam;
+  return {
+    baseUrl: backup.baseUrl ?? above.baseUrl,
+    model: backup.model,
+    contextTokens: backup.contextTokens ?? above.contextTokens,
+    ...(apiKeyEnv === undefined ? {} : { apiKeyEnv }),
+    ...(headers === undefined ? {} : { headers }),
+    ...(above.nativeTools === undefined ? {} : { nativeTools: above.nativeTools }),
+    ...(effortParam === undefined ? {} : { effortParam }),
+    ...(above.timeoutMs === undefined ? {} : { timeoutMs: above.timeoutMs }),
+    ...(cacheMarks === undefined ? {} : { cacheMarks }),
+    ...(api === undefined ? {} : { api }),
+    ...(backup.effortMap === undefined ? {} : { effortMap: backup.effortMap }),
+    ...(backup.vision === undefined ? {} : { vision: backup.vision }),
+    ...(backup.fallback === undefined ? {} : { fallback: backup.fallback }),
+  };
 }
 
 function withEmulated(port: ModelPort, config: ModelConfig): ModelPort {
@@ -125,11 +170,13 @@ export type WorldModelSpec = {
   api?: "chat" | "responses";
   /** The world model's own effort map. Left out, none. */
   effortMap?: EffortMap;
+  /** The world model's own backup chain. Left out, its backup is the main model at the entity's effort. */
+  fallback?: FallbackModelConfig;
 };
 
 /**
  * One port per world that has a model of its own. Each uses the main model's service, key, headers, context and timeout, and
- * falls back to the main model itself (at the entity's effort) when it cannot answer.
+ * falls back to its own backup chain when it names one, otherwise to the main model itself (at the entity's effort).
  */
 export function worldModelsFromConfig(
   main: ModelConfig,
@@ -146,7 +193,7 @@ export function worldModelsFromConfig(
       vision: spec.vision === true,
       ...(spec.api === undefined ? {} : { api: spec.api }),
       ...(spec.effortMap === undefined ? {} : { effortMap: spec.effortMap }),
-      fallback: {
+      fallback: spec.fallback ?? {
         model: main.model,
         api: main.api ?? "chat",
         ...(mainEffortMap === undefined ? {} : { effortMap: mainEffortMap }),

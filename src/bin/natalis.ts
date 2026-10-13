@@ -6,7 +6,7 @@ import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import { loadEntityConfig } from "../entity/config.js";
 import { openEntity, type Entity } from "../entity/runtime.js";
-import { modelFromConfig } from "../model/from-config.js";
+import { modelFromConfig, modelKeyEnvs } from "../model/from-config.js";
 import { createSecretScanner } from "../secrets/index.js";
 import { createCliWorld } from "../worlds/cli.js";
 import { dispatchCommand } from "./commands/index.js";
@@ -36,10 +36,11 @@ async function main(argv: string[]): Promise<number> {
 
   const dir = resolve(dirArg);
   const config = loadEntityConfig(dir);
-  // The key is read by reference and registered as a known value, so it never reaches the model or a say.
-  const keyName = config.model.apiKeyEnv;
-  const key = keyName === undefined ? undefined : process.env[keyName];
-  const scanner = createSecretScanner({ knownValues: key !== undefined && key.length >= 8 ? [key] : [] });
+  // The keys are read by reference and registered as known values, so none reaches the model or a say.
+  const keys = modelKeyEnvs(config.model, config.worldModels)
+    .map((name) => process.env[name])
+    .filter((key): key is string => key !== undefined && key.length >= 8);
+  const scanner = createSecretScanner({ knownValues: keys });
   const model = modelFromConfig(config.model);
 
   const output = process.stdout;

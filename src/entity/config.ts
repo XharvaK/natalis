@@ -49,6 +49,8 @@ export type WorldModelConfig = {
   api?: "chat" | "responses";
   /** This model's wire values for the efforts. Left out, none. */
   effortMap?: EffortMap;
+  /** This world model's own backup chain. Left out, the main model is its backup. */
+  fallback?: FallbackModelConfig;
 };
 
 export const ENTITY_FILE = "entity.json";
@@ -114,7 +116,7 @@ function parseWorldModels(value: unknown): Record<string, WorldModelConfig> {
     const where = `worldModels.${world}`;
     if (!/^[a-z][a-z0-9-]*$/.test(world)) throw new Error(`${where}: a world id is lower-case letters, digits and dashes.`);
     const item = objectOf(entry, where);
-    onlyKeys(item, ["model", "effort", "vision", "api", "effortMap"], where);
+    onlyKeys(item, ["model", "effort", "vision", "api", "effortMap", "fallback"], where);
     const model: WorldModelConfig = { model: textOf(item["model"], `${where}.model`) };
     if (item["effort"] !== undefined) {
       if (!isEffort(item["effort"])) throw new Error(`${where}.effort must be one of ${EFFORTS.join(", ")}.`);
@@ -123,6 +125,7 @@ function parseWorldModels(value: unknown): Record<string, WorldModelConfig> {
     if (item["vision"] !== undefined) model.vision = flagOf(item["vision"], `${where}.vision`);
     if (item["api"] !== undefined) model.api = apiOf(item["api"], `${where}.api`);
     if (item["effortMap"] !== undefined) model.effortMap = effortMapOf(item["effortMap"], `${where}.effortMap`);
+    if (item["fallback"] !== undefined) model.fallback = parseFallback(item["fallback"], `${where}.fallback`);
     models[world] = model;
   }
   return models;
@@ -173,35 +176,20 @@ export function parseModel(value: unknown): ModelConfig {
     "model",
   );
 
-  const baseUrl = textOf(block["baseUrl"], "model.baseUrl");
-  let protocol: string;
-  try {
-    protocol = new URL(baseUrl).protocol;
-  } catch {
-    throw new Error("model.baseUrl must be a full http:// or https:// address.");
-  }
-  if (protocol !== "http:" && protocol !== "https:") {
-    throw new Error("model.baseUrl must start with http:// or https://.");
-  }
+  const baseUrl = baseUrlOf(block["baseUrl"], "model.baseUrl");
 
   const model: ModelConfig = {
     baseUrl,
     model: textOf(block["model"], "model.model"),
     contextTokens: positiveInt(block["contextTokens"], "model.contextTokens"),
   };
-  if (block["apiKeyEnv"] !== undefined) {
-    const envName = textOf(block["apiKeyEnv"], "model.apiKeyEnv");
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(envName)) {
-      throw new Error("model.apiKeyEnv must be the name of an environment variable, such as NATALIS_MODEL_KEY.");
-    }
-    model.apiKeyEnv = envName;
-  }
+  if (block["apiKeyEnv"] !== undefined) model.apiKeyEnv = keyEnvOf(block["apiKeyEnv"], "model.apiKeyEnv");
   if (block["nativeTools"] !== undefined) model.nativeTools = flagOf(block["nativeTools"], "model.nativeTools");
   if (block["effortParam"] !== undefined) model.effortParam = effortParamOf(block["effortParam"], "model.effortParam");
   if (block["timeoutMs"] !== undefined) model.timeoutMs = positiveInt(block["timeoutMs"], "model.timeoutMs");
   if (block["vision"] !== undefined) model.vision = flagOf(block["vision"], "model.vision");
   if (block["cacheMarks"] !== undefined) model.cacheMarks = flagOf(block["cacheMarks"], "model.cacheMarks");
-  if (block["fallback"] !== undefined) model.fallback = parseFallback(block["fallback"]);
+  if (block["fallback"] !== undefined) model.fallback = parseFallback(block["fallback"], "model.fallback");
   if (block["price"] !== undefined) model.price = priceOf(block["price"], "model.price");
   if (block["api"] !== undefined) model.api = apiOf(block["api"], "model.api");
   if (block["headers"] !== undefined) model.headers = headersOf(block["headers"], "model.headers");
@@ -212,27 +200,58 @@ export function parseModel(value: unknown): ModelConfig {
   return model;
 }
 
-/** The backup model block: the same service, key and timeout as the main model, so only its own settings are given. */
-function parseFallback(value: unknown): FallbackModelConfig {
-  const block = objectOf(value, "model.fallback");
-  onlyKeys(block, ["model", "effortParam", "vision", "cacheMarks", "effort", "contextTokens", "price", "api", "effortMap"], "model.fallback");
-  const fallback: FallbackModelConfig = { model: textOf(block["model"], "model.fallback.model") };
-  if (block["price"] !== undefined) fallback.price = priceOf(block["price"], "model.fallback.price");
-  if (block["effortParam"] !== undefined) {
-    fallback.effortParam = effortParamOf(block["effortParam"], "model.fallback.effortParam");
-  }
-  if (block["vision"] !== undefined) fallback.vision = flagOf(block["vision"], "model.fallback.vision");
-  if (block["cacheMarks"] !== undefined) fallback.cacheMarks = flagOf(block["cacheMarks"], "model.fallback.cacheMarks");
+/**
+ * A backup model block. Left to itself it uses the service, key and timeout of the model above it, so only its own
+ * settings are given. It may name its own service (baseUrl, then its own apiKeyEnv and headers) and a backup of its own.
+ */
+function parseFallback(value: unknown, where: string): FallbackModelConfig {
+  const block = objectOf(value, where);
+  onlyKeys(
+    block,
+    ["model", "effortParam", "vision", "cacheMarks", "effort", "contextTokens", "price", "api", "effortMap",
+      "baseUrl", "apiKeyEnv", "headers", "fallback"],
+    where,
+  );
+  const fallback: FallbackModelConfig = { model: textOf(block["model"], `${where}.model`) };
+  if (block["price"] !== undefined) fallback.price = priceOf(block["price"], `${where}.price`);
+  if (block["effortParam"] !== undefined) fallback.effortParam = effortParamOf(block["effortParam"], `${where}.effortParam`);
+  if (block["vision"] !== undefined) fallback.vision = flagOf(block["vision"], `${where}.vision`);
+  if (block["cacheMarks"] !== undefined) fallback.cacheMarks = flagOf(block["cacheMarks"], `${where}.cacheMarks`);
   if (block["effort"] !== undefined) {
-    if (!isEffort(block["effort"])) throw new Error(`model.fallback.effort must be one of ${EFFORTS.join(", ")}.`);
+    if (!isEffort(block["effort"])) throw new Error(`${where}.effort must be one of ${EFFORTS.join(", ")}.`);
     fallback.effort = block["effort"];
   }
-  if (block["contextTokens"] !== undefined) {
-    fallback.contextTokens = positiveInt(block["contextTokens"], "model.fallback.contextTokens");
+  if (block["contextTokens"] !== undefined) fallback.contextTokens = positiveInt(block["contextTokens"], `${where}.contextTokens`);
+  if (block["api"] !== undefined) fallback.api = apiOf(block["api"], `${where}.api`);
+  if (block["effortMap"] !== undefined) fallback.effortMap = effortMapOf(block["effortMap"], `${where}.effortMap`);
+  if (block["baseUrl"] !== undefined) fallback.baseUrl = baseUrlOf(block["baseUrl"], `${where}.baseUrl`);
+  if (block["apiKeyEnv"] !== undefined) fallback.apiKeyEnv = keyEnvOf(block["apiKeyEnv"], `${where}.apiKeyEnv`);
+  if (block["headers"] !== undefined) fallback.headers = headersOf(block["headers"], `${where}.headers`);
+  if (fallback.api === "responses" && fallback.cacheMarks === true) {
+    throw new Error(`${where}.cacheMarks is for the chat protocol only; leave it out when ${where}.api is "responses".`);
   }
-  if (block["api"] !== undefined) fallback.api = apiOf(block["api"], "model.fallback.api");
-  if (block["effortMap"] !== undefined) fallback.effortMap = effortMapOf(block["effortMap"], "model.fallback.effortMap");
+  if (block["fallback"] !== undefined) fallback.fallback = parseFallback(block["fallback"], `${where}.fallback`);
   return fallback;
+}
+
+function baseUrlOf(value: unknown, where: string): string {
+  const baseUrl = textOf(value, where);
+  let protocol: string;
+  try {
+    protocol = new URL(baseUrl).protocol;
+  } catch {
+    throw new Error(`${where} must be a full http:// or https:// address.`);
+  }
+  if (protocol !== "http:" && protocol !== "https:") throw new Error(`${where} must start with http:// or https://.`);
+  return baseUrl;
+}
+
+function keyEnvOf(value: unknown, where: string): string {
+  const envName = textOf(value, where);
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(envName)) {
+    throw new Error(`${where} must be the name of an environment variable, such as NATALIS_MODEL_KEY.`);
+  }
+  return envName;
 }
 
 /** A model's price per million tokens, input and output. Both are numbers, 0 or more. Absent unless the summoner sets it. */

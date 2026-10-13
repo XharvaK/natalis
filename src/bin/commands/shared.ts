@@ -2,6 +2,7 @@
 // the entity's model key when the entity has a readable config. Nothing here decides what a command does.
 
 import { loadEntityConfig } from "../../entity/config.js";
+import { modelKeyEnvs } from "../../model/from-config.js";
 import { createSecretScanner, type CreatedSecretScanner } from "../../secrets/index.js";
 
 /** A mistake in how the command was called. Printed with the usage line, exit code 2. */
@@ -49,18 +50,20 @@ export function requireFlag(flags: ParsedFlags, name: string): string {
 }
 
 /**
- * A secret scanner that also knows the entity's model key, when the entity's config names one and it is set in
- * the environment. The key is read by reference and never printed.
+ * A secret scanner that also knows the entity's model keys (the main model's and any backup's on another service), when
+ * the entity's config names them and they are set in the environment. The keys are read by reference and never printed.
  */
 export function scannerFor(dir: string): CreatedSecretScanner {
-  let key: string | undefined;
+  let keys: string[];
   try {
-    const keyName = loadEntityConfig(dir).model.apiKeyEnv;
-    key = keyName === undefined ? undefined : process.env[keyName];
+    const config = loadEntityConfig(dir);
+    keys = modelKeyEnvs(config.model, config.worldModels)
+      .map((name) => process.env[name])
+      .filter((key): key is string => key !== undefined && key.length >= 8);
   } catch {
-    key = undefined;
+    keys = [];
   }
-  return createSecretScanner({ knownValues: key !== undefined && key.length >= 8 ? [key] : [] });
+  return createSecretScanner({ knownValues: keys });
 }
 
 /** Runs a command body, printing plain errors. Returns the exit code. */
