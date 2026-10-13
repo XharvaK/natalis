@@ -69,6 +69,8 @@ export type JudgeInput = {
 const SCORE_MIN = 1;
 const SCORE_MAX = 5;
 const MAX_ATTEMPTS = 2;
+/** The verdict is short, but a reasoning model counts its thinking inside this cap, so it is generous. */
+const JUDGE_OUTPUT_TOKENS = 16_000;
 const TOP_GAPS = 5;
 
 /** The criteria are the bullet lines of the rubric: "- name: what good looks like". The name is before the colon. */
@@ -253,7 +255,7 @@ async function askJudge(model: ModelPort, messages: ChatMessage[], criteria: str
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     let content: string | null;
     try {
-      const response = await model.complete({ messages, maxOutputTokens: 800 });
+      const response = await model.complete({ messages, maxOutputTokens: JUDGE_OUTPUT_TOKENS });
       content = response.content;
     } catch (err) {
       reason = `the model call failed (${err instanceof Error ? err.message : String(err)})`;
