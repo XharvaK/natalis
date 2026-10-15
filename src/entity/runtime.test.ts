@@ -31,7 +31,7 @@ import type { EntityConfig } from "./config.js";
 import { SUMMONER_PREFIX } from "./summoner.js";
 import { readCallLedger, readLedger } from "../river/ledger.js";
 import { changedBeyond, CLASS_RANK, partsOfMessage, type MessagePart } from "../context/layout.js";
-import { forgetInStateFile, openEntity, STATE_FILE, type Entity, type OpenEntityOptions } from "./runtime.js";
+import { forgetInStateFile, openEntity, OUTBOX_JOB_TIMEOUT_MS, STATE_FILE, type Entity, type OpenEntityOptions } from "./runtime.js";
 import { COMMITMENTS_STUB, HOUSEHOLD_PATH, OLD_COMMITMENTS_STUB } from "./commitments.js";
 import { isStopOn } from "./stop.js";
 import { PRIVACY_UNREADABLE_REASON } from "./privacy.js";
@@ -152,6 +152,36 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
     resolve = done;
   });
   return { promise, resolve };
+}
+
+/** A world that is the summoner's own and whose send never comes back: the outbox cap is tested against it. */
+function stuckOwnerWorld(): { world: World; send(text: string): void; sent: string[] } {
+  let emit: ((event: WorldEvent) => void) | undefined;
+  const sent: string[] = [];
+  const world: World = {
+    id: "stuck",
+    async start(next) {
+      emit = next;
+    },
+    async stop() {
+      emit = undefined;
+    },
+    async say(_place, text): Promise<Receipt> {
+      sent.push(text);
+      return new Promise<never>(() => {});
+    },
+    isOwnerPlace: (place) => place === "stuck:summoner",
+    tools: () => [],
+    now: () => "stuck is open.",
+  };
+  return {
+    world,
+    sent,
+    send(text) {
+      if (emit === undefined) throw new Error("the stuck world is not started");
+      emit({ world: "stuck", place: "stuck:summoner", source: "owner", text });
+    },
+  };
 }
 
 /** A world the tests drive directly: it sends outside text in and records what it is asked to say. */
@@ -1473,6 +1503,70 @@ describe("two threads, one voice", () => {
     expect(receipts.filter((item) => (item["refused"] as { code?: string } | undefined)?.code === "spoken_meanwhile")).toHaveLength(1);
   });
 
+  it("sends once when both threads pass the check before either claim is written", async () => {
+    let emit: ((event: WorldEvent) => void) | undefined;
+    const gate = deferred();
+    const said: string[] = [];
+    const room: World = {
+      id: "fake",
+      async start(next) {
+        emit = next;
+      },
+      async stop() {
+        emit = undefined;
+      },
+      async say(_place, text): Promise<Receipt> {
+        said.push(text);
+        await gate.promise;
+        return { ok: true, summary: "Delivered." };
+      },
+      tools: () => [],
+      now: () => "fake is open.",
+    };
+    const requests: Array<{ key: string; request: ModelRequest }> = [];
+    const roomTurnBegun = deferred();
+    const scripts: Record<string, ModelResponse[]> = {
+      summoner: [
+        reply({ toolCalls: [call("say", { place: "fake:room", text: "Hello from the summoner's side." })] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ],
+      room: [
+        reply({ toolCalls: [call("say", { place: "fake:room", text: "Hello from the room." })] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ],
+    };
+    const model: ModelPort = {
+      info: { id: "routing:test", contextTokens: 32_000, nativeTools: true } satisfies ModelInfo,
+      async complete(request: ModelRequest): Promise<ModelResponse> {
+        const key = userTextOf(request).includes("Say hello in the room.") ? "summoner" : "room";
+        requests.push({ key, request });
+        if (key === "room" && requests.filter((item) => item.key === "room").length === 1) roomTurnBegun.resolve();
+        return scripts[key]?.shift() ?? reply({ toolCalls: [call("end_turn")] });
+      },
+    };
+    const { entity, cli } = await open(model, {}, [room]);
+    await entity.start();
+
+    cli.send("Say hello in the room.");
+    await waitFor(() => said.length === 1);
+    // The room's turn begins while the summoner's send is still in flight: the race the place lock has to settle.
+    if (emit === undefined) throw new Error("the fake world is not started");
+    emit({ world: "fake", place: "fake:room", actor: "mara", source: "outside", text: "A passer-by asks a question." });
+    await roomTurnBegun.promise;
+    // One quiet turn of the event loop: the room's turn has taken its say as far as it can go while the summoner's send is in flight.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const reachedWorld = said.length;
+    gate.resolve();
+    await entity.idle();
+
+    // The room's say waited for the summoner's, saw its claim, and sent nothing.
+    expect(reachedWorld).toBe(1);
+    expect(said).toEqual(["Hello from the summoner's side."]);
+    const receipts = receiptsShownIn(requests.filter((item) => item.key === "room").at(-1)?.request);
+    const held = receipts.find((item) => (item["refused"] as { code?: string } | undefined)?.code === "spoken_meanwhile");
+    expect(held).toMatchObject({ ok: false, refused: { code: "spoken_meanwhile" } });
+  });
+
   it("sends a say when the other thread spoke in that place before this turn began", async () => {
     const room = fakeWorld("fake");
     const scripts: Record<string, ModelResponse[]> = {
@@ -2053,6 +2147,35 @@ describe("the summoner's commands", () => {
     await entity.idle();
     expect(said).toEqual([]);
     expect(readStateJson().welcomeSentMs).toBeUndefined();
+  });
+
+  it("gives up on a body message that never comes back, so a later turn still runs", async () => {
+    await withClock(async (advance) => {
+      const owner = stuckOwnerWorld();
+      const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+      const { entity } = await open(model, { stopPollMs: 1e9 }, [owner.world]);
+      await entity.start();
+
+      owner.send("!proposals");
+      await advance(0);
+      expect(owner.sent).toHaveLength(1);
+
+      // The stuck message holds the outbox, so this turn waits.
+      owner.send("Hello.");
+      await advance(0);
+      expect(model.requests).toHaveLength(0);
+
+      await advance(OUTBOX_JOB_TIMEOUT_MS + 1);
+      await entity.idle();
+
+      // The queue moved on: the note says why, and the waiting turn ran.
+      expect(model.requests).toHaveLength(1);
+      expect(owner.sent).toHaveLength(1);
+      const note = noteRows(entity).find((row) => row.text?.includes("could not be sent"));
+      expect(note?.text).toBe(
+        `A message to your summoner could not be sent: the send did not finish within ${OUTBOX_JOB_TIMEOUT_MS / 1000} seconds`,
+      );
+    });
   });
 });
 

@@ -113,6 +113,8 @@ export const ENTITY_STUBS: ReadonlyArray<{ path: string; text: string; reason: s
 const STOPPED_TEXT = "Your summoner's emergency stop is on: outward acts are paused. You can still answer your summoner.";
 /** How long a say counts as "someone is speaking there" for the place claims. */
 const CLAIM_WINDOW_MS = 2 * 60 * 1000;
+/** How long one queued body message may run before the outbox gives up on it, so a stuck send cannot wedge the queue. */
+export const OUTBOX_JOB_TIMEOUT_MS = 60_000;
 /** How many of the summoner's acts the board lists at once, and how much of a proposal it shows. */
 const ACTS_LIMIT = 20;
 const PROPOSAL_SHOW = 80;
@@ -610,6 +612,11 @@ class Runtime implements Entity {
    */
   private outbox: Promise<void> = Promise.resolve();
   private outboxBusy = 0;
+  /**
+   * One say at a time per place. A caller that had to wait re-checks the place claim, so two threads cannot both
+   * pass the check and both send; the release is called in a finally.
+   */
+  private readonly placeLocks = new Map<string, Promise<void>>();
   private readonly idleWaiters: Array<() => void> = [];
   private readonly abort = new AbortController();
 
@@ -1439,7 +1446,7 @@ class Runtime implements Entity {
   private queueOutbox(job: () => Promise<void>): void {
     this.outboxBusy += 1;
     this.outbox = this.outbox
-      .then(job)
+      .then(() => this.withOutboxTimeout(job()))
       .catch((err: unknown) => {
         try {
           this.river.append({
@@ -1457,6 +1464,24 @@ class Runtime implements Entity {
         this.outboxBusy -= 1;
         this.resolveIdle();
       });
+  }
+
+  /** A job that runs over its cap rejects, so one send that never comes back cannot hold every message after it. */
+  private async withOutboxTimeout(work: Promise<void>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        work,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`the send did not finish within ${OUTBOX_JOB_TIMEOUT_MS / 1000} seconds`)),
+            OUTBOX_JOB_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   /** Says words in a place through its world. A failure is noted in the self thread and returned as a receipt. */
@@ -2179,57 +2204,63 @@ class Runtime implements Entity {
     }
     // The check may have taken a while, and the stop can turn on in that time: it is checked again before the words go.
     if (!ownerPlace && this.stopIsOn()) return refuse("stopped", STOPPED_TEXT, STOPPED_TEXT);
-    if (!knowingly) {
-      const meanwhile = this.spokenMeanwhile(place.value, context.thread, context.turnId);
-      if (meanwhile !== undefined) return meanwhile;
-    }
-
-    const { files, ids } = pictures.value;
-    const options = {
-      ...(replyTo.value === undefined ? {} : { replyTo: replyTo.value }),
-      ...(files.length === 0 ? {} : { files }),
-    };
-    let receipt: Receipt;
+    // One say at a time per place: a caller that had to wait sees the claim the first one left, in the check below.
+    const release = await this.lockPlace(place.value);
     try {
-      receipt = await world.say(place.value, text.value, Object.keys(options).length === 0 ? undefined : options);
-    } catch (err) {
-      return refuse("world_error", "The world could not deliver that.", messageOf(err));
-    }
-    if (!receipt.ok) return receipt;
+      if (!knowingly) {
+        const meanwhile = this.spokenMeanwhile(place.value, context.thread, context.turnId);
+        if (meanwhile !== undefined) return meanwhile;
+      }
 
-    const nowMs = this.nowMs();
-    // Read before this say is recorded, so the claim it leaves is not counted against itself.
-    const others = this.othersSpokeHere(place.value, context.thread, nowMs);
-    // The river keeps what was sent: the words, and which pictures went with them.
-    const pictureLines = ids.map((id) => `[picture ${id}: ${this.shelf.get(id)?.name ?? "picture"}]`);
-    this.river.append({
-      thread: place.value,
-      kind: "say",
-      source: "self",
-      place: place.value,
-      text: [text.value, ...pictureLines].join("\n"),
-      ...(ids.length === 0 ? {} : { data: { pictures: ids } }),
-      atMs: nowMs,
-    });
-    // Only the asks the turn saw are answered: a message that came in during the turn is still waiting.
-    const seenUpTo = this.turnSnapshots.get(context.turnId) ?? 0;
-    this.state.asks = this.state.asks.filter((ask) => ask.place !== place.value || ask.seq > seenUpTo);
-    this.state.placeClaims[place.value] = {
-      thread: context.thread,
-      atMs: nowMs,
-      text: this.scanner.redact(clip(oneLine(text.value), SAY_CLIP)),
-    };
-    this.saveState();
-    return {
-      ok: true,
-      summary: ids.length === 0 ? `Said to ${place.value}.` : `Said to ${place.value} with ${ids.length} picture(s).`,
-      data: {
+      const { files, ids } = pictures.value;
+      const options = {
+        ...(replyTo.value === undefined ? {} : { replyTo: replyTo.value }),
+        ...(files.length === 0 ? {} : { files }),
+      };
+      let receipt: Receipt;
+      try {
+        receipt = await world.say(place.value, text.value, Object.keys(options).length === 0 ? undefined : options);
+      } catch (err) {
+        return refuse("world_error", "The world could not deliver that.", messageOf(err));
+      }
+      if (!receipt.ok) return receipt;
+
+      const nowMs = this.nowMs();
+      // Read before this say is recorded, so the claim it leaves is not counted against itself.
+      const others = this.othersSpokeHere(place.value, context.thread, nowMs);
+      // The river keeps what was sent: the words, and which pictures went with them.
+      const pictureLines = ids.map((id) => `[picture ${id}: ${this.shelf.get(id)?.name ?? "picture"}]`);
+      this.river.append({
+        thread: place.value,
+        kind: "say",
+        source: "self",
         place: place.value,
-        chars: text.value.length,
-        ...(ids.length === 0 ? {} : { pictures: ids }),
-        ...(others === undefined ? {} : { othersSpokeHere: others }),
-      },
-    };
+        text: [text.value, ...pictureLines].join("\n"),
+        ...(ids.length === 0 ? {} : { data: { pictures: ids } }),
+        atMs: nowMs,
+      });
+      // Only the asks the turn saw are answered: a message that came in during the turn is still waiting.
+      const seenUpTo = this.turnSnapshots.get(context.turnId) ?? 0;
+      this.state.asks = this.state.asks.filter((ask) => ask.place !== place.value || ask.seq > seenUpTo);
+      this.state.placeClaims[place.value] = {
+        thread: context.thread,
+        atMs: nowMs,
+        text: this.scanner.redact(clip(oneLine(text.value), SAY_CLIP)),
+      };
+      this.saveState();
+      return {
+        ok: true,
+        summary: ids.length === 0 ? `Said to ${place.value}.` : `Said to ${place.value} with ${ids.length} picture(s).`,
+        data: {
+          place: place.value,
+          chars: text.value.length,
+          ...(ids.length === 0 ? {} : { pictures: ids }),
+          ...(others === undefined ? {} : { othersSpokeHere: others }),
+        },
+      };
+    } finally {
+      release();
+    }
   }
 
   /**
@@ -2553,6 +2584,25 @@ class Runtime implements Entity {
       `Nothing was sent to ${place}. You said this there ${seconds} s ago from your ${claim.thread} thread, while this turn was running.`,
       `You said "${claim.text}" in ${place} ${seconds} s ago from your ${claim.thread} thread, after this turn began. Nothing was sent. Say it again with knowingly: true if you still want to send your words.`,
     );
+  }
+
+  /**
+   * Waits for the say already running in this place, if any, and returns the release for the say of this call. Sends to
+   * one place run one at a time, so the check and the claim cannot be passed by two threads at once.
+   */
+  private async lockPlace(place: string): Promise<() => void> {
+    const previous = this.placeLocks.get(place) ?? Promise.resolve();
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.then(() => held);
+    this.placeLocks.set(place, queued);
+    await previous;
+    return () => {
+      release();
+      if (this.placeLocks.get(place) === queued) this.placeLocks.delete(place);
+    };
   }
 
   /** One line per place another thread spoke in lately, newest first. */
