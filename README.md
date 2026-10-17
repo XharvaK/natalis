@@ -42,6 +42,12 @@ leaves every judgment to the entity: what it notices, when it thinks, what it sa
 
 Each takes `--dir <entity folder>` (the Lar's own folder) unless noted.
 
+- `new`: make the folder for a new Lar (`--summoner <your alias>`, optionally `--name`, `--time-zone`, `--base-url`,
+  `--model`, `--key-env`, `--context-tokens`). It writes `entity.json` and `DESIGN.md`, the form for designing the Lar
+  ([templates/lar/LAR_TEMPLATE.md](templates/lar/LAR_TEMPLATE.md)), and nothing else: the Lar is born on its first start.
+  Whatever the flags leave out of the model is written as `FILL-ME`, and a Lar with a blank left does not start.
+- `check`: read every file of a Lar's folder the way its body will (entity.json, nature.md, privacy.json, contacts.json,
+  welcome.md and the world files) and name what is wrong. It writes nothing; it never prints ids, tokens or private terms.
 - `chat`: talk with a Lar in the terminal.
 - `run`: keep a Lar living in its worlds (Discord) until it is stopped.
 - `stop`: the summoner's emergency stop; pauses outward acts. `--off` lifts it.

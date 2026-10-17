@@ -3,9 +3,11 @@
 
 import { backupCommand } from "./backup.js";
 import { captureCommand } from "./capture.js";
+import { checkCommand } from "./check.js";
 import { importCommand } from "./import.js";
 import { judgeCommand } from "./judge.js";
 import { ledgerCommand } from "./ledger.js";
+import { newCommand } from "./new.js";
 import { proposalsCommand } from "./proposals.js";
 import { replayCommand } from "./replay.js";
 import { restoreCommand } from "./restore.js";
@@ -31,6 +33,10 @@ export async function dispatchCommand(command: string | undefined, args: string[
       return proposalsCommand(args);
     case "ledger":
       return ledgerCommand(args, (line) => console.log(line), (line) => console.error(line));
+    case "new":
+      return newCommand(args, (line) => console.log(line), (line) => console.error(line));
+    case "check":
+      return checkCommand(args, (line) => console.log(line), (line) => console.error(line));
     default:
       return undefined;
   }

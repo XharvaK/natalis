@@ -25,8 +25,13 @@ files.
 The folder is `~/lares/<name>`. The name is also the service's instance name, so keep it to letters, digits and dashes.
 
 ```sh
-mkdir -p ~/lares/<name>
+node ~/natalis/dist/bin/natalis.js new --dir ~/lares/<name> --summoner <your alias>
 ```
+
+This writes `entity.json` and `DESIGN.md`, a form for designing the Lar: its nature, privacy list, contacts and
+welcome. Fill in the form, copy each answer into the file it names, and run
+`node ~/natalis/dist/bin/natalis.js check --dir ~/lares/<name>` before the first start. You can also write the folder
+by hand: `mkdir -p ~/lares/<name>`, then `entity.json` as below.
 
 Write `~/lares/<name>/entity.json`. The model block names the environment variable that holds the model key; the
 summoner is the alias the Lar knows you by:

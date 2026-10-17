@@ -54,6 +54,8 @@ export type WorldModelConfig = {
 };
 
 export const ENTITY_FILE = "entity.json";
+/** The blank `natalis new` leaves where only the summoner can answer (which model, which address). A Lar never starts with one. */
+export const FILL_ME = "FILL-ME";
 
 /** Reads and validates `<dir>/entity.json`. */
 export function loadEntityConfig(dir: string): EntityConfig {
@@ -70,7 +72,22 @@ export function loadEntityConfig(dir: string): EntityConfig {
   } catch (err) {
     throw new Error(`${ENTITY_FILE} is not valid JSON: ${messageOf(err)}`);
   }
+  const blank = blankIn(parsed, "");
+  if (blank !== undefined) {
+    throw new Error(`${ENTITY_FILE} still has a blank to fill: ${blank} is ${FILL_ME}. Fill it in (DESIGN.md beside it says how), then start again.`);
+  }
   return parseEntityConfig(parsed);
+}
+
+/** The path of the first value that still holds the FILL-ME blank, or undefined when none does. */
+function blankIn(value: unknown, path: string): string | undefined {
+  if (typeof value === "string") return value.includes(FILL_ME) ? path : undefined;
+  if (typeof value !== "object" || value === null) return undefined;
+  for (const [key, inner] of Object.entries(value)) {
+    const found = blankIn(inner, Array.isArray(value) ? `${path}[${key}]` : path === "" ? key : `${path}.${key}`);
+    if (found !== undefined) return found;
+  }
+  return undefined;
 }
 
 /** Validates an already-parsed entity config. Throws a plain error naming the first wrong field. */
