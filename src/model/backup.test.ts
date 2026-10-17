@@ -111,6 +111,20 @@ describe("the backup model", () => {
     expect(backup.requests).toHaveLength(0);
   });
 
+  it("hands the backup the system message exactly as the main model got it, with or without pictures", async () => {
+    for (const backupSeesPictures of [true, false]) {
+      const main = port("main", new ModelError("service is down", "unavailable", 4));
+      const backup = port("backup", answer("from the backup"));
+      const model = withBackup({ primary: main, backup, backupName: "backup-model", backupEffort: "low", backupSeesPictures });
+
+      await model.complete(request);
+
+      // Who she is lives in the system message: a model swap must never leave it behind (the persona anchor).
+      expect(backup.requests[0]?.messages[0]).toEqual(request.messages[0]);
+      expect(backup.requests[0]?.messages[0]).toBe(main.requests[0]?.messages[0]);
+    }
+  });
+
   it("strips the pictures for a backup that cannot see them, and says so in their place", async () => {
     const main = port("main", new ModelError("service is down", "unavailable", 4));
     const backup = port("backup", answer("I cannot see it, but I can answer."));

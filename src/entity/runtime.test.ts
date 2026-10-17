@@ -2598,6 +2598,123 @@ describe("repeating wakes", () => {
   });
 });
 
+describe("the persona anchor", () => {
+  // Who she is must reach the system message of every model call, on every way a turn starts. Losing it on a resumed
+  // or heartbeat turn is how an agent drifts back to a generic assistant (arXiv 2610.01490, the "Paul" incident).
+  const NATURE = "ANCHOR-NATURE: you are a gardener who writes slowly.";
+  const CHARACTER = "ANCHOR-CHARACTER: dry humour, short replies.";
+
+  function writeAnchors(): void {
+    writeFileSync(join(dir, "nature.md"), `${NATURE}\n`, "utf8");
+    mkdirSync(join(dir, "notebook", "self"), { recursive: true });
+    writeFileSync(join(dir, "notebook", "self", "character.md"), `${CHARACTER}\n`, "utf8");
+  }
+
+  function expectAnchored(requests: readonly ModelRequest[]): void {
+    expect(requests.length).toBeGreaterThan(0);
+    for (const request of requests) {
+      const system = systemTextOf(request);
+      expect(system).toContain("## who you are");
+      expect(system).toContain(NATURE);
+      expect(system).toContain(CHARACTER);
+    }
+  }
+
+  it("is in the system message of every model call of a turn", async () => {
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "Here." })] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model);
+    writeAnchors();
+    await entity.start();
+    cli.send("Are you there?");
+    await entity.idle();
+    expect(model.requests).toHaveLength(2);
+    expectAnchored(model.requests);
+  });
+
+  it("is there on a turn her own scheduled wake starts, with no message from anyone", async () => {
+    await withClock(async (advance) => {
+      const model = new ScriptedModel([
+        reply({ toolCalls: [call("schedule_wake", { in_minutes: 1, why: "look at the garden" })] }),
+        reply({ toolCalls: [call("end_turn")] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ]);
+      const { entity, cli } = await open(model, { stopPollMs: 1e9 });
+      writeAnchors();
+      await entity.start();
+      cli.send("Look at the garden later.");
+      await entity.idle();
+      await advance(60_000);
+      await entity.idle();
+      expect(userTextOf(model.requests[2])).toContain("Your wake: look at the garden");
+      expectAnchored(model.requests);
+    });
+  });
+
+  it("is there on a retried turn after a model failure", async () => {
+    const model = new ScriptedModel([
+      new ModelError("The model service is down.", "unavailable", 1),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model, { retryDelaysMs: [5] });
+    writeAnchors();
+    await entity.start();
+    cli.send("Are you there?");
+    await entity.idle();
+    expect(model.requests).toHaveLength(2);
+    expectAnchored(model.requests);
+  });
+
+  it("is there on the first turn after a restart that cut a turn short", async () => {
+    let entered: () => void = () => {};
+    const inTurn = new Promise<void>((resolve) => (entered = resolve));
+    const hanging: ModelPort = {
+      info: { id: "hanging", contextTokens: 32_000, nativeTools: true },
+      complete: (_request, signal) =>
+        new Promise((_resolve, reject) => {
+          entered();
+          signal?.addEventListener("abort", () => reject(new ModelError("stopped", "aborted", 1)));
+        }),
+    };
+    const a = await open(hanging);
+    writeAnchors();
+    await a.entity.start();
+    a.cli.send("Are you there?");
+    await inTurn;
+    await a.entity.stop();
+
+    const second = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const b = await open(second);
+    await b.entity.start();
+    await b.entity.idle();
+    expect(second.requests).toHaveLength(1);
+    expectAnchored(second.requests);
+  });
+
+  it("is there on a world's own model and while the backup model answers", async () => {
+    const main = Object.assign(new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]), {
+      routing: () => ({ onBackup: true, backup: "backup-model", backupEffort: "low" as const }),
+    });
+    const gameModel = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const game = fakeWorld("game");
+    const room = fakeWorld("room");
+    const { entity } = await open(
+      main,
+      { config: { ...CONFIG, worldModels: { game: { model: "fast", effort: "low" } } }, worldModels: { game: gameModel } },
+      [game.world, room.world],
+    );
+    writeAnchors();
+    await entity.start();
+    game.push("game:slot1", "The kettle is boiling.");
+    room.push("room:hall", "Anyone home?");
+    await entity.idle();
+    expectAnchored(gameModel.requests);
+    expectAnchored(main.requests);
+  });
+});
+
 describe("a world with a model of its own", () => {
   it("runs that world's turns on its model at its effort, and leaves the main model for the rest", async () => {
     const main = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
