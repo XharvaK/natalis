@@ -420,6 +420,94 @@ describe("a conversation", () => {
     expect(fresh).not.toContain("alpha-one");
   });
 
+  it("marks in New where her last words came, when rows arrived before she spoke in the running turn", async () => {
+    const gate = deferred();
+    const started = deferred();
+    const spoke = deferred();
+    const later = deferred();
+    const model = new ScriptedModel([
+      async () => {
+        started.resolve();
+        await gate.promise;
+        return reply({ toolCalls: [call("say", { place: "cli:summoner", text: "Unseen, not unsent." })] });
+      },
+      async () => {
+        spoke.resolve();
+        await later.promise;
+        return reply({ toolCalls: [call("end_turn")] });
+      },
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+
+    cli.send("alpha-one");
+    await started.promise;
+    cli.send("bravo-two");
+    gate.resolve();
+    await spoke.promise;
+    cli.send("charlie-three");
+    later.resolve();
+    await entity.idle();
+
+    expect(model.requests).toHaveLength(3);
+    const fresh = userTextOf(model.requests[2]).split("New:")[1] ?? "";
+    const marker = fresh.indexOf("(Your last words here, at ");
+    expect(marker).toBeGreaterThan(fresh.indexOf("bravo-two"));
+    expect(marker).toBeLessThan(fresh.indexOf("charlie-three"));
+    expect(fresh).toContain("came after the lines above. They are in Recent here.)");
+    expect(userTextOf(model.requests[2]).split("New:")[0]).toContain("Unseen, not unsent.");
+  });
+
+  it("says her last words came after all of New when nothing arrived after them", async () => {
+    const gate = deferred();
+    const started = deferred();
+    const model = new ScriptedModel([
+      async () => {
+        started.resolve();
+        await gate.promise;
+        return reply({ toolCalls: [call("say", { place: "cli:summoner", text: "Here." })] });
+      },
+      reply({ toolCalls: [call("end_turn")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+
+    cli.send("alpha-one");
+    await started.promise;
+    cli.send("bravo-two");
+    gate.resolve();
+    await entity.idle();
+
+    const fresh = userTextOf(model.requests[2]).split("New:")[1] ?? "";
+    expect(fresh).toContain("bravo-two");
+    expect(fresh).toContain("came after all of these. They are in Recent here.)");
+  });
+
+  it("adds no marker to New when she did not speak since the last turn began", async () => {
+    const gate = deferred();
+    const started = deferred();
+    const model = new ScriptedModel([
+      async () => {
+        started.resolve();
+        await gate.promise;
+        return reply({ toolCalls: [call("end_turn")] });
+      },
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+
+    cli.send("alpha-one");
+    await started.promise;
+    cli.send("bravo-two");
+    gate.resolve();
+    await entity.idle();
+
+    expect(userTextOf(model.requests[1])).not.toContain("Your last words here");
+  });
+
   it("runs two threads in parallel, and never two turns of one thread at once", async () => {
     const one = fakeWorld("fake");
     const hold = deferred();

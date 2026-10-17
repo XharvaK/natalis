@@ -1005,7 +1005,7 @@ class Runtime implements Entity {
         text: ["Recent here:", ...(cut === 0 ? [] : [cutLine(cut)]), ...(recent.length === 0 ? ["(nothing yet)"] : recentLines(sinceRows))].join("\n"),
       });
     }
-    user.push({ name: "new", cls: "turn", text: ["New:", ...fresh.map((row) => this.lineFor(row, briefed.has(row.seq)))].join("\n") });
+    user.push({ name: "new", cls: "turn", text: ["New:", ...this.newLines(thread, seen, snapshot, fresh, briefed)].join("\n") });
     for (const { key, row } of current) {
       // The heading names the game's view, not its key (CORE3-11), with when it was seen and how old it is (CORE3-5). A view
       // on another thread can be newer than the one in this thread's rows: the game's newest view can be on the game thread
@@ -2039,6 +2039,22 @@ class Runtime implements Entity {
     const bot = row.data?.["bot"] === true ? " (bot)" : "";
     const held = typeof row.data?.["heldBy"] === "string" ? ` (held: ${row.data["heldBy"]})` : "";
     return `[${this.clock(row.atMs)} ${who(row)}${outside}${bot}${held}] ${brief ? briefOf(row) : row.text ?? ""}`;
+  }
+
+  /**
+   * The New block's lines. Rows can come in while an earlier turn of this thread is still running, and that turn may
+   * speak after them; they are new to this turn all the same. A line after the last of them says when her last words
+   * here came, so she can see what she said after these rows and not answer them twice. A fact of order, not a rule.
+   */
+  private newLines(thread: string, seen: number, snapshot: number, fresh: readonly RiverRow[], briefed: ReadonlySet<number>): string[] {
+    const lines = fresh.map((row) => this.lineFor(row, briefed.has(row.seq)));
+    const lastSay = this.river.read({ thread, kinds: ["say"], sinceSeq: seen, untilSeq: snapshot, newestFirst: true, limit: 1 })[0];
+    if (lastSay === undefined) return lines;
+    const before = fresh.filter((row) => row.seq < lastSay.seq).length;
+    if (before === 0) return lines;
+    const after = before === fresh.length ? "all of these" : "the lines above";
+    lines.splice(before, 0, `(Your last words here, at ${this.clock(lastSay.atMs)}, came after ${after}. They are in Recent here.)`);
+    return lines;
   }
 
   private clock(atMs: number): string {
