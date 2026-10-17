@@ -362,6 +362,43 @@ describe("flood and loop limits", () => {
     expect(botEvents[0]?.data).toMatchObject({ bot: true });
     expect(botEvents[0]?.data?.heldBy).toBeUndefined();
   });
+
+  it("ends a bot run after a quiet gap, so a room of bots alone is not held for good", async () => {
+    const { fake, events } = await startWorld({ guestLimit: { messages: 100, perMs: 20_000 }, botQuietMs: 60_000 });
+    const bot = { id: BOT, displayName: "Crier", bot: true };
+    for (let i = 0; i < 5; i += 1) {
+      fake.deliver(incoming({ author: bot, content: `bot ${i}` }));
+      await vi.advanceTimersByTimeAsync(1600);
+    }
+    await vi.advanceTimersByTimeAsync(60_000);
+    fake.deliver(incoming({ author: bot, content: "bot after a quiet" }));
+    await vi.advanceTimersByTimeAsync(1600);
+
+    const botEvents = events.filter((event) => event.actor === "crier");
+    expect(botEvents.map((event) => event.wake)).toEqual([true, true, true, true, false, true]);
+    expect(botEvents[5]?.data?.loopCeiling).toBeUndefined();
+  });
+
+  it("counts her own messages in the run, and a quiet gap ends that run too", async () => {
+    const { world, fake, events } = await startWorld({
+      guestLimit: { messages: 100, perMs: 20_000 },
+      botExchangeLimit: 2,
+      botQuietMs: 60_000,
+    });
+    const bot = { id: BOT, displayName: "Crier", bot: true };
+    fake.deliver(incoming({ author: bot, content: "bot 0" }));
+    await vi.advanceTimersByTimeAsync(1600);
+    await world.say(events[0]!.place, "hers", {});
+    fake.deliver(incoming({ author: bot, content: "bot 1" }));
+    await vi.advanceTimersByTimeAsync(1600);
+    await world.say(events[0]!.place, "hers again", {});
+    await vi.advanceTimersByTimeAsync(60_000);
+    fake.deliver(incoming({ author: bot, content: "bot 2" }));
+    await vi.advanceTimersByTimeAsync(1600);
+
+    const botEvents = events.filter((event) => event.actor === "crier");
+    expect(botEvents.map((event) => event.wake)).toEqual([true, false, true]);
+  });
 });
 
 describe("ids stay inside the world", () => {

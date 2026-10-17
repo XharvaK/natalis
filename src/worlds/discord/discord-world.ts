@@ -133,6 +133,8 @@ export type DiscordWorldOptions = {
   maxDebounceMs?: number;
   guestLimit?: { messages: number; perMs: number };
   botExchangeLimit?: number;
+  /** A quiet this long between bot messages in a channel ends the run; the next bot message starts a new one. */
+  botQuietMs?: number;
   /** Fetches the pictures people send. Injected in tests; the global fetch is used when absent. */
   fetch?: typeof fetch;
 };
@@ -149,6 +151,8 @@ const PICTURE_HOSTS: ReadonlySet<string> = new Set(["cdn.discordapp.com", "media
 const PICTURE_FETCH_MS = 20_000;
 /** Pictures from anyone but the summoner that the Lar may ask for in one local day. */
 const OTHERS_PICTURES_PER_DAY = 50;
+/** A loop is a quick back-and-forth. Bots quiet in a channel this long are not in one, so a room of Lares alone is not held for good. */
+const BOT_QUIET_MS = 10 * 60 * 1000;
 
 /** One line in the body's log for a refused direct message, at most once an hour per author. Never the words or an id. */
 const REFUSED_DM_LOG = "[discord] a DM from someone who is not a contact was not admitted.";
@@ -195,6 +199,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
   const maxDebounceMs = options.maxDebounceMs ?? 5000;
   const guestLimit = options.guestLimit ?? { messages: 4, perMs: 20_000 };
   const botExchangeLimit = options.botExchangeLimit ?? 4;
+  const botQuietMs = options.botQuietMs ?? BOT_QUIET_MS;
 
   const ownerAlias = options.ownerAlias ?? OWNER_ALIAS;
   const aliases: AliasStore = createAliasStore({ path: options.aliasesPath, ownerUserId: options.ownerUserId, ownerAlias });
@@ -248,7 +253,14 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
   const guestHits = new Map<string, number[]>();
   /** When a refused direct message from each author was last logged. */
   const refusedDmLogged = new Map<string, number>();
-  const botRuns = new Map<string, number>();
+  /** Bot messages in a row per channel, and when the last one came. A person's message or a quiet gap ends the run. */
+  const botRuns = new Map<string, { count: number; lastAtMs: number }>();
+  function countBotMessage(channelId: string, nowMs: number): number {
+    const run = botRuns.get(channelId);
+    const count = run !== undefined && nowMs - run.lastAtMs < botQuietMs ? run.count + 1 : 1;
+    botRuns.set(channelId, { count, lastAtMs: nowMs });
+    return count;
+  }
 
   function refFor(channelId: string, messageId: string): string {
     const key = `${channelId}|${messageId}`;
@@ -425,9 +437,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     const flooded = !isOwner && !admitGuest(key, nowMs);
     let loopCeiling = false;
     if (message.author.bot) {
-      const run = (botRuns.get(message.channelId) ?? 0) + 1;
-      botRuns.set(message.channelId, run);
-      loopCeiling = run > botExchangeLimit;
+      loopCeiling = countBotMessage(message.channelId, nowMs) > botExchangeLimit;
     } else {
       botRuns.delete(message.channelId);
     }
@@ -753,7 +763,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
           const files = index === 0 && pictures.files.length > 0 ? pictures.files : undefined;
           const sentId = await client.send(target.channelId, chunk, index === 0 ? replyId : null, [...mentionUserIds], files);
           refs.push(refFor(target.channelId, sentId));
-          botRuns.set(target.channelId, (botRuns.get(target.channelId) ?? 0) + 1);
+          countBotMessage(target.channelId, Date.now());
         } catch (error) {
           const reason = `send_failed: ${cleanError(error)}`;
           const summary =
