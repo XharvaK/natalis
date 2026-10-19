@@ -19,6 +19,7 @@ import { readContacts } from "../../entity/contacts.js";
 import type { Receipt, RiverSource, SayFile, Tool, World, WorldBody, WorldEvent } from "../../contracts.js";
 import { PICTURE_BYTES_MAX } from "../../media/shelf.js";
 import { createAliasStore, OWNER_ALIAS, type AliasStore } from "./aliases.js";
+import { FILE_BYTES_MAX, saveFile, type FilesHome } from "./files.js";
 
 // ---------------------------------------------------------------------------------------------------
 // Platform port: the few calls this world needs. A fake implements it in tests; discord.js implements it
@@ -29,7 +30,7 @@ const MAX_KEPT_REFS = 20_000;
 
 type RefsFile = { version: 1; seq: number; refs: Record<string, [string, string]> };
 
-/** Pictures asked for by anyone but the summoner, counted per local day. */
+/** Pictures and files asked for by anyone but the summoner, counted per local day. */
 type PictureCount = { version: 1; day: string; others: number };
 
 function localDay(ms: number): string {
@@ -135,8 +136,13 @@ export type DiscordWorldOptions = {
   botExchangeLimit?: number;
   /** A quiet this long between bot messages in a channel ends the run; the next bot message starts a new one. */
   botQuietMs?: number;
-  /** Fetches the pictures people send. Injected in tests; the global fetch is used when absent. */
+  /** Fetches the pictures and files people send. Injected in tests; the global fetch is used when absent. */
   fetch?: typeof fetch;
+  /**
+   * Where files that are not pictures are saved: the Lar's home folder (they go in its files/ subfolder) and how she sees
+   * that folder. Left out, such a file is named in the event and not saved.
+   */
+  filesHome?: FilesHome;
 };
 
 const WORLD_ID = "discord";
@@ -149,7 +155,7 @@ const EMOJI_MAX = 32;
 /** Discord's own attachment hosts. A picture is fetched from these over https and from nowhere else. */
 const PICTURE_HOSTS: ReadonlySet<string> = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
 const PICTURE_FETCH_MS = 20_000;
-/** Pictures from anyone but the summoner that the Lar may ask for in one local day. */
+/** Pictures and files from anyone but the summoner that the Lar may ask for in one local day. */
 const OTHERS_PICTURES_PER_DAY = 50;
 /** A loop is a quick back-and-forth. Bots quiet in a channel this long are not in one, so a room of Lares alone is not held for good. */
 const BOT_QUIET_MS = 10 * 60 * 1000;
@@ -177,8 +183,8 @@ type Pending = {
     attachments: EventAttachment[];
     mentionsHer: boolean;
     replyToRef: string | null;
-    /** One line per picture the Lar keeps (or cannot keep), when the message has image attachments. */
-    pictures: Promise<string[]> | null;
+    /** One line per attachment the Lar keeps (or cannot keep), when the message has attachments. */
+    kept: Promise<string[]> | null;
   }>;
   flooded: boolean;
   loopCeiling: boolean;
@@ -246,7 +252,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
   const roomSlugs = new Map<string, string>();
 
   const pending = new Map<string, Pending>();
-  /** Bursts that wait for their pictures to be fetched and kept; stop waits for them too. */
+  /** Bursts that wait for their attachments to be fetched and kept; stop waits for them too. */
   const flushing = new Set<Promise<void>>();
   /** The body's way to keep pictures. Set at start. */
   let keeper: WorldBody | null = null;
@@ -341,17 +347,17 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     burst.timer = setTimeout(() => flush(burst.key), delay);
   }
 
-  /** Sends a burst on as one event. A burst with pictures still arriving waits for them; the world's stop waits too. */
+  /** Sends a burst on as one event. A burst with attachments still arriving waits for them; the world's stop waits too. */
   function flush(key: string): Promise<void> {
     const burst = pending.get(key);
     if (!burst) return Promise.resolve();
     if (burst.timer) clearTimeout(burst.timer);
     pending.delete(key);
-    if (!burst.messages.some((message) => message.pictures !== null)) {
+    if (!burst.messages.some((message) => message.kept !== null)) {
       emitBurst(burst, []);
       return Promise.resolve();
     }
-    const sending = Promise.all(burst.messages.map((message) => message.pictures ?? Promise.resolve<string[]>([])))
+    const sending = Promise.all(burst.messages.map((message) => message.kept ?? Promise.resolve<string[]>([])))
       .then((lines) => emitBurst(burst, lines))
       .catch((error: unknown) => {
         console.error(`[discord] a burst could not be sent: ${error instanceof Error ? error.message : String(error)}`);
@@ -446,7 +452,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     const entry = {
       ref,
       // A message the flood limit turned away is not fetched and not kept.
-      pictures: flooded ? null : pictureLines(message.attachments, `${PLACE_PREFIX}${placeAlias}`, isOwner, nowMs),
+      kept: flooded ? null : keptLines(message.attachments, `${PLACE_PREFIX}${placeAlias}`, isOwner, nowMs),
       text: readable(message.content, message.mentionedUsers),
       attachments: describeAttachments(message.attachments),
       mentionsHer: message.content.includes(`<@${self.id}>`) || message.content.includes(`<@!${self.id}>`),
@@ -490,16 +496,24 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     return true;
   }
 
-  /** One picture line per image attachment: kept on the shelf, or the reason it was not kept. Null when there are none. */
-  function pictureLines(attachments: PlatformAttachment[], place: string, fromOwner: boolean, nowMs: number): Promise<string[]> | null {
-    const images = attachments.filter((attachment) => (attachment.contentType ?? "").startsWith("image/"));
-    if (images.length === 0) return null;
+  /**
+   * One line per attachment: a picture kept on the shelf, a file saved in her home, or the reason it was not kept. Null
+   * when there are none.
+   */
+  function keptLines(attachments: PlatformAttachment[], place: string, fromOwner: boolean, nowMs: number): Promise<string[]> | null {
+    if (attachments.length === 0) return null;
+    const home = options.filesHome;
     return Promise.all(
-      images.map(async (attachment) => {
+      attachments.map(async (attachment) => {
+        const name = scrubIds(attachment.name);
+        const picture = (attachment.contentType ?? "").startsWith("image/");
+        if (!picture && home === undefined) return `[file: ${name} (not saved: you have no home folder for files)]`;
         if (!fromOwner && !takeOthersPlace(nowMs)) {
-          return `[attachment: ${scrubIds(attachment.name)} (not kept: today's picture limit for others is reached)]`;
+          return picture
+            ? `[attachment: ${name} (not kept: today's picture limit for others is reached)]`
+            : `[file: ${name} (not saved: today's limit for files from others is reached)]`;
         }
-        return keepFromDiscord(attachment, place);
+        return picture || home === undefined ? keepFromDiscord(attachment, place) : saveFromDiscord(attachment, home);
       }),
     );
   }
@@ -507,7 +521,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
   /** Fetches one picture from Discord and puts it on the shelf. Never rejects: a picture that is not kept says why. */
   async function keepFromDiscord(attachment: PlatformAttachment, place: string): Promise<string> {
     const name = scrubIds(attachment.name);
-    const fetched = await fetchPicture(attachment.url, options.fetch ?? fetch);
+    const fetched = await fetchAttachment(attachment.url, options.fetch ?? fetch, PICTURE_BYTES_MAX);
     if (!fetched.ok) return `[attachment: ${name} (not kept: ${fetched.reason})]`;
     if (keeper === null) return `[attachment: ${name} (not kept: the Lar has no shelf right now)]`;
     try {
@@ -515,6 +529,19 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       return `[picture ${ref.id}: ${ref.name}, ${Math.ceil(ref.bytes / 1024)} KB]`;
     } catch (error) {
       return `[attachment: ${name} (not kept: ${cleanError(error)})]`;
+    }
+  }
+
+  /** Fetches one file from Discord and saves it in her home. Never rejects: a file that is not saved says why. */
+  async function saveFromDiscord(attachment: PlatformAttachment, home: FilesHome): Promise<string> {
+    const name = scrubIds(attachment.name);
+    const fetched = await fetchAttachment(attachment.url, options.fetch ?? fetch, FILE_BYTES_MAX);
+    if (!fetched.ok) return `[file: ${name} (not saved: ${fetched.reason})]`;
+    try {
+      const saved = saveFile(home, name, fetched.bytes);
+      return `[file: ${name}, ${sizeText(fetched.bytes.length)}, saved in your home at ${saved.shownAt}]`;
+    } catch (error) {
+      return `[file: ${name} (not saved: ${cleanError(error)})]`;
     }
   }
 
@@ -846,13 +873,14 @@ function safeFileName(name: string, mime: string): string {
 }
 
 /**
- * A picture's bytes from one of Discord's attachment hosts, or the plain reason it was not fetched. The address is
+ * An attachment's bytes from one of Discord's attachment hosts, or the plain reason it was not fetched. The address is
  * checked before anything is requested: https, one of the two hosts, no port, no userinfo. Redirects are not
- * followed, the size is capped while reading, and it never rejects.
+ * followed, the size is capped at maxBytes while reading, and it never rejects.
  */
-async function fetchPicture(
+async function fetchAttachment(
   url: string,
   fetchFn: typeof fetch,
+  maxBytes: number,
 ): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; reason: string }> {
   let target: URL;
   try {
@@ -869,7 +897,7 @@ async function fetchPicture(
   ) {
     return { ok: false, reason: "it is not on Discord's attachment hosts" };
   }
-  const tooLarge = { ok: false as const, reason: "it is larger than 8 MiB" };
+  const tooLarge = { ok: false as const, reason: `it is larger than ${maxBytes / 1024 / 1024} MiB` };
   try {
     const response = await fetchFn(target.href, { redirect: "manual", signal: AbortSignal.timeout(PICTURE_FETCH_MS) });
     if (response.status >= 300 && response.status < 400) {
@@ -881,7 +909,7 @@ async function fetchPicture(
       return { ok: false, reason: `Discord answered ${response.status}` };
     }
     const declared = Number(response.headers.get("content-length"));
-    if (Number.isFinite(declared) && declared > PICTURE_BYTES_MAX) {
+    if (Number.isFinite(declared) && declared > maxBytes) {
       await response.body?.cancel();
       return tooLarge;
     }
@@ -893,7 +921,7 @@ async function fetchPicture(
       const { done, value } = await reader.read();
       if (done) break;
       total += value.length;
-      if (total > PICTURE_BYTES_MAX) {
+      if (total > maxBytes) {
         await reader.cancel();
         return tooLarge;
       }
@@ -903,6 +931,12 @@ async function fetchPicture(
   } catch {
     return { ok: false, reason: "it could not be downloaded" };
   }
+}
+
+/** A size the way a person reads it: KB under a megabyte, MB with one decimal above. */
+function sizeText(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.ceil(bytes / 1024))} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 /** Long digit runs are platform ids (snowflakes are 17 to 20 digits). They never reach the entity. */

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +13,7 @@ import {
   type PlatformMessage,
 } from "./discord-world.js";
 import { openShelf, PICTURE_BYTES_MAX, shelfBody } from "../../media/shelf.js";
+import { FILE_BYTES_MAX } from "./files.js";
 import { CONTACTS_FILE, writeContacts } from "../../entity/contacts.js";
 
 // Every id here is invented. Tokens are built from parts so no token-shaped literal sits in the source.
@@ -179,6 +180,13 @@ function toolNamed(world: World, name: string): { run(args: Record<string, unkno
   if (!tool) throw new Error(`no tool ${name}`);
   const context = {} as ToolContext;
   return { run: (args) => tool.run(args, context) };
+}
+
+/** The local day as the world counts it. */
+function localDayOf(ms: number): string {
+  const date = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
 function clockOf(ms: number): string {
@@ -846,12 +854,12 @@ describe("pictures in", () => {
     expect(shelf.list()).toEqual([]);
   });
 
-  it("leaves other attachments as they were: no fetch, and the same event line", async () => {
+  it("names a file that is not a picture, and fetches nothing, when she has no home folder", async () => {
     const fetchFn = fetchReturning(() => pngResponse());
     const { fake, events } = await startWorld({ fetch: fetchFn });
     fake.deliver(incoming({ author: MARA_AUTHOR, content: "notes", attachments: [{ name: "x.txt", contentType: "text/plain", url: PNG_URL }] }));
     await settle(() => expect(events).toHaveLength(1));
-    expect(events[0]?.text).toBe("notes");
+    expect(events[0]?.text).toBe("notes\n[file: x.txt (not saved: you have no home folder for files)]");
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
@@ -902,6 +910,67 @@ describe("pictures in", () => {
     expect(second.events[0]?.text).toContain("today's picture limit for others is reached");
     // The shelf holds the 50 others' pictures and the summoner's one; the refused one is not kept.
     expect(second.shelf.list()).toHaveLength(51);
+  });
+});
+
+describe("files in", () => {
+  const FILE_URL = `https://cdn.discordapp.com/attachments/${GENERAL}/${CDN_ATTACHMENT}/first_edition.html?ex=1&hm=2`;
+  const BOOK = { name: "first_edition.html", contentType: "text/html; charset=utf-8", url: FILE_URL };
+  const HTML = "<html><body>a book</body></html>";
+  const fetchReturning = (make: () => Response) => vi.fn(async () => make()) as unknown as typeof fetch & ReturnType<typeof vi.fn>;
+  const home = () => ({ dir: join(dir, "home"), shownAs: "/home/lar" });
+
+  async function settle(check: () => void): Promise<void> {
+    await vi.advanceTimersByTimeAsync(1500);
+    await vi.waitFor(check, { timeout: 2000, interval: 10 });
+  }
+
+  it("saves a file that is not a picture in her home's files folder, and the event line says where", async () => {
+    const { fake, events, shelf } = await startWorld({ fetch: fetchReturning(() => new Response(HTML)), filesHome: home() });
+    fake.deliver(incoming({ author: OWNER_AUTHOR, channelKind: "dm", content: "the book", attachments: [BOOK] }));
+    await settle(() => expect(events).toHaveLength(1));
+    expect(events[0]?.text).toBe("the book\n[file: first_edition.html, 1 KB, saved in your home at /home/lar/files/first_edition.html]");
+    expect(readFileSync(join(dir, "home", "files", "first_edition.html"), "utf8")).toBe(HTML);
+    expect(shelf.list()).toEqual([]);
+    // The platform address still never reaches her.
+    expect(JSON.stringify(events[0])).not.toContain("cdn.discordapp.com");
+  });
+
+  it("never overwrites: a second file with the same name gets -2", async () => {
+    const { fake, events } = await startWorld({ fetch: fetchReturning(() => new Response(HTML)), filesHome: home() });
+    fake.deliver(incoming({ author: OWNER_AUTHOR, channelKind: "dm", content: "one", attachments: [BOOK] }));
+    await settle(() => expect(events).toHaveLength(1));
+    fake.deliver(incoming({ author: OWNER_AUTHOR, channelKind: "dm", content: "two", attachments: [BOOK] }));
+    await settle(() => expect(events).toHaveLength(2));
+    expect(events[1]?.text).toContain("/home/lar/files/first_edition-2.html]");
+  });
+
+  it("refuses a file over 25 MiB from its declared size, and saves nothing", async () => {
+    const declared = fetchReturning(() => new Response(HTML, { headers: { "content-length": String(FILE_BYTES_MAX + 1) } }));
+    const { fake, events } = await startWorld({ fetch: declared, filesHome: home() });
+    fake.deliver(incoming({ author: OWNER_AUTHOR, channelKind: "dm", content: "big", attachments: [BOOK] }));
+    await settle(() => expect(events).toHaveLength(1));
+    expect(events[0]?.text).toBe("big\n[file: first_edition.html (not saved: it is larger than 25 MiB)]");
+    expect(existsSync(join(dir, "home", "files", "first_edition.html"))).toBe(false);
+  });
+
+  it("fetches files only from Discord's attachment hosts", async () => {
+    const fetchFn = fetchReturning(() => new Response(HTML));
+    const { fake, events } = await startWorld({ fetch: fetchFn, filesHome: home() });
+    fake.deliver(incoming({ author: OWNER_AUTHOR, channelKind: "dm", content: "x", attachments: [{ ...BOOK, url: "https://example.test/a.html" }] }));
+    await settle(() => expect(events).toHaveLength(1));
+    expect(events[0]?.text).toBe("x\n[file: first_edition.html (not saved: it is not on Discord's attachment hosts)]");
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("counts files from others in the same daily limit as pictures", async () => {
+    writeFileSync(aliasesPath.replace(/\.json$/i, "") + ".pictures.json",JSON.stringify({ version: 1, day: localDayOf(Date.now()), others: 50 }));
+    const fetchFn = fetchReturning(() => new Response(HTML));
+    const { fake, events } = await startWorld({ fetch: fetchFn, filesHome: home() });
+    fake.deliver(incoming({ author: MARA_AUTHOR, content: "for you", attachments: [BOOK] }));
+    await settle(() => expect(events).toHaveLength(1));
+    expect(events[0]?.text).toBe("for you\n[file: first_edition.html (not saved: today's limit for files from others is reached)]");
+    expect(fetchFn).not.toHaveBeenCalled();
   });
 });
 

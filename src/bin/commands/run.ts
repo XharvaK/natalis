@@ -14,7 +14,7 @@ import { createDiscordWorld } from "../../worlds/discord/index.js";
 import { DISCORD_ALIASES_FILE } from "../../worlds/discord/aliases.js";
 import { CONTACTS_FILE } from "../../entity/contacts.js";
 import { createDomusWorld, DOMUS_FILE, parseDomusFile } from "../../worlds/domus/index.js";
-import { bodyRefusal, createSandboxWorld, defaultBodyRoot, parseSandboxFile, SANDBOX_FILE } from "../../worlds/sandbox/index.js";
+import { bodyRefusal, createSandboxWorld, defaultBodyRoot, parseSandboxFile, SANDBOX_FILE, SANDBOX_HOME } from "../../worlds/sandbox/index.js";
 import { createWebWorld, loadWebFile, WEB_FILE } from "../../worlds/web/index.js";
 import { flagValue } from "./args.js";
 import { DISCORD_FILE, parseDiscordFile } from "./discord-file.js";
@@ -43,6 +43,7 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
   let opened: Entity | undefined;
   const lastOwnerMs = (): number | undefined => opened?.lastOwnerMs?.();
   const discordPath = join(dir, DISCORD_FILE);
+  const sandboxPath = join(dir, SANDBOX_FILE);
   if (existsSync(discordPath)) {
     const discord = parseDiscordFile(JSON.parse(readFileSync(discordPath, "utf8")) as unknown);
     const token = held.discord;
@@ -58,10 +59,11 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
         rooms: discord.rooms,
         aliasesPath: join(dir, DISCORD_ALIASES_FILE),
         contactsPath: join(dir, CONTACTS_FILE),
+        // Files that are not pictures go into her home, where her sandbox sees them. Without a sandbox she has no home.
+        ...(existsSync(sandboxPath) ? { filesHome: { dir: join(dir, "home"), shownAs: SANDBOX_HOME } } : {}),
       }),
     );
   }
-  const sandboxPath = join(dir, SANDBOX_FILE);
   if (existsSync(sandboxPath)) {
     const sandbox = parseSandboxFile(JSON.parse(readFileSync(sandboxPath, "utf8")) as unknown);
     // The checkout is bound at /body unless sandbox.json says "body": false. A checkout that holds a secret stops the run here.
