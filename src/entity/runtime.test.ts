@@ -2405,7 +2405,7 @@ describe("the daily turn limit", () => {
 });
 
 describe("body notes on start", () => {
-  it("says in the self thread when the Lar was last running and how long it was down", async () => {
+  it("says in the self thread when the Lar was stopped and how long until it started again", async () => {
     const first = Date.parse("2026-10-11T10:00:00Z");
     const before = await open(new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]), { nowMs: () => first });
     await before.entity.start();
@@ -2417,16 +2417,57 @@ describe("body notes on start", () => {
     await after.entity.start();
     await after.entity.idle();
 
-    const notes = allRows(after.entity).filter((row) => row.thread === "self" && row.kind === "note" && row.text?.startsWith("You were last running"));
+    const notes = allRows(after.entity).filter((row) => row.data?.["bodyNote"] === "start");
     expect(notes).toHaveLength(1);
-    expect(notes[0]?.text).toBe("You were last running at 2026-10-11 10:00 and were down for 3 h.");
+    expect(notes[0]?.thread).toBe("self");
+    expect(notes[0]?.text).toBe("You were stopped at 2026-10-11 10:00 and started again 3 h later.");
+  });
+
+  it("does not read a quiet stretch as time down: the alive stamp and the stop count, not only the last row", async () => {
+    let clock = Date.parse("2026-10-11T10:00:00Z");
+    const before = await open(new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]), { nowMs: () => clock, stopPollMs: 5 });
+    await before.entity.start();
+    before.cli.send("Hello.");
+    await before.entity.idle();
+    // Two quiet hours with no rows, then a stop.
+    clock += 2 * 3_600_000;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(readStateFile()).toMatchObject({ aliveMs: clock, stoppedCleanly: false });
+    await before.entity.stop();
+
+    clock += 60_000;
+    const after = await open(new ScriptedModel([]), { nowMs: () => clock });
+    await after.entity.start();
+    await after.entity.idle();
+
+    const note = allRows(after.entity).find((row) => row.data?.["bodyNote"] === "start");
+    expect(note?.text).toBe("You were stopped at 2026-10-11 12:00 and started again 1 min later.");
+  });
+
+  it("says the stop was not recorded when the body ended without one, and times it from the last alive stamp", async () => {
+    const first = Date.parse("2026-10-11T10:00:00Z");
+    const before = await open(new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]), { nowMs: () => first });
+    await before.entity.start();
+    before.cli.send("Hello.");
+    await before.entity.idle();
+    await before.entity.stop();
+    // As a crash leaves it: still marked running, last stamped two hours on.
+    const state = readStateFile() as unknown as Record<string, unknown>;
+    writeFileSync(join(dir, "state.json"), JSON.stringify({ ...state, stoppedCleanly: false, aliveMs: first + 2 * 3_600_000 }), "utf8");
+
+    const after = await open(new ScriptedModel([]), { nowMs: () => first + 3 * 3_600_000 });
+    await after.entity.start();
+    await after.entity.idle();
+
+    const note = allRows(after.entity).find((row) => row.data?.["bodyNote"] === "start");
+    expect(note?.text).toBe("You were last known running at 2026-10-11 12:00 and were down for about 1 h; the stop itself was not recorded.");
   });
 
   it("writes no start note on the first start of a new Lar", async () => {
     const { entity } = await open(new ScriptedModel([]), { nowMs: () => Date.parse("2026-10-11T10:00:00Z") });
     await entity.start();
     await entity.idle();
-    expect(allRows(entity).some((row) => row.text?.startsWith("You were last running"))).toBe(false);
+    expect(allRows(entity).some((row) => row.data?.["bodyNote"] === "start")).toBe(false);
   });
 });
 
@@ -2870,7 +2911,7 @@ describe("the daily rhythm", () => {
     await full.entity.start();
     // The start note the body writes on every start is not the rhythm's note, so it is left out here.
     const notes = allRows(full.entity).filter(
-      (row) => row.kind === "note" && row.source === "body" && !row.text?.startsWith("You were last running"),
+      (row) => row.kind === "note" && row.source === "body" && row.data?.["bodyNote"] !== "start",
     );
     await full.entity.stop();
 

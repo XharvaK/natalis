@@ -137,6 +137,8 @@ const SHELF_LIST = 10;
 const DEFAULT_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 300_000, 600_000];
 /** How often the stop file is looked at while the entity runs. A check is one existence test. */
 const STOP_POLL_MS = 2_000;
+/** How often a running body stamps that it is alive, so a start after a crash knows its time down to within this. */
+const ALIVE_STAMP_MS = 5 * 60_000;
 const ACTIVE_WINDOW_MS = 6 * 60 * 60 * 1000;
 const ACTIVE_ROWS_LIMIT = 2_000;
 const NOW_THREAD_LIMIT = 20;
@@ -338,6 +340,10 @@ type EntityState = {
   actsSeenSeq: number;
   /** Set once the body has given the Lar its daily rhythm of wakes (its first start). Never given again. */
   rhythmGiven?: boolean;
+  /** The last time the body knew it was running: stamped at start, every ALIVE_STAMP_MS while running, and at a stop. */
+  aliveMs?: number;
+  /** True when the body last ended with a stop of its own; false while it runs, so a crash leaves it false. */
+  stoppedCleanly?: boolean;
   /** The place the summoner last spoke in, where the body's notices to them go. */
   summonerPlace?: string;
   /**
@@ -500,6 +506,16 @@ function checkState(value: unknown): EntityState {
   if (rhythmGiven !== undefined) {
     if (typeof rhythmGiven !== "boolean") bad("rhythmGiven");
     state.rhythmGiven = rhythmGiven as boolean;
+  }
+  const aliveMs = root["aliveMs"];
+  if (aliveMs !== undefined) {
+    if (typeof aliveMs !== "number" || !Number.isSafeInteger(aliveMs) || aliveMs < 0) bad("aliveMs");
+    state.aliveMs = aliveMs as number;
+  }
+  const stoppedCleanly = root["stoppedCleanly"];
+  if (stoppedCleanly !== undefined) {
+    if (typeof stoppedCleanly !== "boolean") bad("stoppedCleanly");
+    state.stoppedCleanly = stoppedCleanly as boolean;
   }
   const selfWakeRun = root["selfWakeRun"];
   if (selfWakeRun !== undefined) {
@@ -772,10 +788,12 @@ class Runtime implements Entity {
       if (this.stopping) return;
       this.stopIsOn();
       this.privacyNow();
+      this.stampAlive(false);
     }, this.stopPollMs);
     this.privacyNow();
     this.seedRhythm();
     this.noteStart();
+    this.stampAlive(true);
     for (const wake of this.state.wakes) this.armWake(wake);
     try {
       for (const world of this.worlds) {
@@ -851,6 +869,8 @@ class Runtime implements Entity {
     }
     await Promise.allSettled([...this.running.values()]);
     this.ledger.close();
+    this.state.aliveMs = this.nowMs();
+    this.state.stoppedCleanly = true;
     this.saveState();
     this.closed = true;
     this.river.close();
@@ -1289,21 +1309,32 @@ class Runtime implements Entity {
 
   /**
    * The body's note at each start, in the self thread (where the body's own notes go): when the Lar was last running, and
-   * how long it was down since. The newest row that is not a start note is the last time it was running; a start note
-   * is skipped, since it was written at the start itself. A new Lar has no rows yet, so it gets no note.
+   * how long it was down since. The last time is the newer of the alive stamp and the newest row that is not a start
+   * note, so a quiet stretch with no rows is not read as time down. After a stop of its own the note says it was
+   * stopped; otherwise the stop was not seen, and the time down is known to within ALIVE_STAMP_MS. A new Lar has no
+   * rows yet, so it gets no note.
    */
   private noteStart(): void {
-    const last = this.lastRunningRow();
-    if (last === undefined) return;
+    const row = this.lastRunningRow();
+    if (row === undefined) return;
+    const alive = this.state.aliveMs ?? 0;
+    const lastMs = Math.max(row.atMs, alive);
     const now = this.nowMs();
-    this.river.append({
-      thread: "self",
-      kind: "note",
-      source: "body",
-      text: `You were last running at ${this.stamp(last.atMs)} and were down for ${formatDuration(Math.max(0, now - last.atMs))}.`,
-      data: { bodyNote: "start" },
-      atMs: now,
-    });
+    const down = formatDuration(Math.max(0, now - lastMs));
+    const text =
+      this.state.stoppedCleanly === true && alive >= row.atMs
+        ? `You were stopped at ${this.stamp(lastMs)} and started again ${down} later.`
+        : `You were last known running at ${this.stamp(lastMs)} and were down for about ${down}; the stop itself was not recorded.`;
+    this.river.append({ thread: "self", kind: "note", source: "body", text, data: { bodyNote: "start" }, atMs: now });
+  }
+
+  /** Stamps the time the body knew it was running, at start and then every ALIVE_STAMP_MS; a start also marks it not stopped. */
+  private stampAlive(starting: boolean): void {
+    const now = this.nowMs();
+    if (!starting && this.state.aliveMs !== undefined && now - this.state.aliveMs < ALIVE_STAMP_MS) return;
+    this.state.aliveMs = now;
+    if (starting) this.state.stoppedCleanly = false;
+    this.saveState();
   }
 
   /** The newest row that is not a start note, read in growing batches until one is found or the river is read through. */
