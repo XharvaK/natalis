@@ -300,8 +300,36 @@ describe("reply mapping", () => {
       ]),
     );
     expect(second.reasoning).toBe("All found.");
-    expect(second.providerState).toBeUndefined();
+    expect(second.providerState).toEqual({ reasoning_content: "All found." });
     expect(calls[1]?.body.messages[1]).toMatchObject({ role: "assistant", reasoning_details: details });
+    // Reasoning in the reasoning field is kept as the summary but not sent back: only reasoning_content is asked for.
+    expect(calls[1]?.body.messages[1]).not.toHaveProperty("reasoning");
+  });
+
+  it("sends a thinking model's reasoning_content back on the turn's next call, as it came", async () => {
+    const { port, calls } = harness([
+      chat(
+        {
+          role: "assistant",
+          content: null,
+          reasoning_content: "Read the board first.",
+          tool_calls: [{ id: "call_1", type: "function", function: { name: "recall", arguments: "{}" } }],
+        },
+        "tool_calls",
+      ),
+      chat({ role: "assistant", content: "done" }),
+    ]);
+
+    const first = await port.complete(asks([{ role: "user", content: "hi" }]));
+    expect(first.providerState).toEqual({ reasoning_content: "Read the board first." });
+    await port.complete(
+      asks([
+        { role: "user", content: "hi" },
+        { role: "assistant", content: null, toolCalls: first.toolCalls, providerState: first.providerState! },
+        { role: "tool", toolCallId: "call_1", content: "ok" },
+      ]),
+    );
+    expect(calls[1]?.body.messages[1]).toMatchObject({ role: "assistant", reasoning_content: "Read the board first." });
   });
 
   it("reads a content-parts reply as text", async () => {
@@ -754,7 +782,17 @@ describe("a streamed reply", () => {
       finish: "tool_calls",
       reasoning: "The user wants an echo.",
       usage: { inputTokens: 292, outputTokens: 54, totalTokens: 346, cacheHitTokens: 128 },
+      providerState: { reasoning_content: "The user wants an echo." },
     });
+  });
+
+  it("keeps streamed reasoning in the reasoning field as the summary, and does not send it back", async () => {
+    const { port } = harness([sse([delta({ reasoning: "Plain thought." }), delta({ content: "ok" }, "stop")])], { stream: true });
+
+    const reply = await port.complete(asks([{ role: "user", content: "Hi." }]));
+
+    expect(reply.reasoning).toBe("Plain thought.");
+    expect(reply.providerState).toBeUndefined();
   });
 
   it("keeps two tool calls apart by their index, and words with no tool call", async () => {

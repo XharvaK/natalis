@@ -388,9 +388,12 @@ function parseChoices(
     (value): value is string => typeof value === "string" && value.trim() !== "",
   );
   if (reasoning !== undefined) response.reasoning = reasoning;
-  if (message.reasoning_details !== undefined && message.reasoning_details !== null) {
-    response.providerState = { reasoning_details: message.reasoning_details };
-  }
+  const state: Record<string, unknown> = {};
+  if (message.reasoning_details !== undefined && message.reasoning_details !== null) state.reasoning_details = message.reasoning_details;
+  // A thinking model can require its reasoning back on the turn's later calls (DeepSeek refuses the request without it),
+  // so reasoning_content goes back as it came.
+  if (typeof message.reasoning_content === "string" && message.reasoning_content !== "") state.reasoning_content = message.reasoning_content;
+  if (Object.keys(state).length > 0) response.providerState = state;
   if (isRecord(parsed.usage)) {
     const usage: NonNullable<ModelResponse["usage"]> = {};
     if (typeof parsed.usage.prompt_tokens === "number") usage.inputTokens = parsed.usage.prompt_tokens;
@@ -447,6 +450,7 @@ type StreamedCall = { id?: string; name?: string; args: string };
 function joinStream(text: string, attempt: number, safe: (text: string) => string): Record<string, unknown> | undefined {
   let content: string | null = null;
   let reasoning = "";
+  let reasoningField: "reasoning_content" | "reasoning" = "reasoning";
   const details: unknown[] = [];
   const calls = new Map<number, StreamedCall>();
   let finish: unknown;
@@ -478,8 +482,13 @@ function joinStream(text: string, attempt: number, safe: (text: string) => strin
     const delta = isRecord(choice.delta) ? choice.delta : undefined;
     if (delta === undefined) continue;
     if (typeof delta.content === "string") content = (content ?? "") + delta.content;
-    const thought = [delta.reasoning_content, delta.reasoning].find((value): value is string => typeof value === "string");
-    if (thought !== undefined) reasoning += thought;
+    // The joined reasoning keeps the field name the provider streamed it in, so it goes back under that name.
+    if (typeof delta.reasoning_content === "string") {
+      reasoning += delta.reasoning_content;
+      reasoningField = "reasoning_content";
+    } else if (typeof delta.reasoning === "string") {
+      reasoning += delta.reasoning;
+    }
     if (Array.isArray(delta.reasoning_details)) details.push(...delta.reasoning_details);
     if (Array.isArray(delta.tool_calls)) {
       for (const raw of delta.tool_calls) {
@@ -500,7 +509,7 @@ function joinStream(text: string, attempt: number, safe: (text: string) => strin
     .sort((a, b) => a[0] - b[0])
     .map(([, call]) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.args } }));
   const message: Record<string, unknown> = { role: "assistant", content };
-  if (reasoning !== "") message.reasoning_content = reasoning;
+  if (reasoning !== "") message[reasoningField] = reasoning;
   if (details.length > 0) message.reasoning_details = details;
   if (toolCalls.length > 0) message.tool_calls = toolCalls;
   return { choices: [{ message, finish_reason: finish ?? null }], ...(usage === undefined ? {} : { usage }) };
