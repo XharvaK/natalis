@@ -231,7 +231,17 @@ notebook after. The keys file `~/lares/<name>.env` is not in the backup and is n
 emergency stop off, whatever it was when the backup was made.
 
 A restore from a plain backup brings back no vault, because a plain backup holds none. The Lar's web values must then be
-kept again, and until they are the web's logins are not sent. A restore from a sealed copy brings the vault back, at mode
+kept again, and until they are the web's logins are not sent. The Lar can keep a value a site shows it (web_request's
+`keep`). A value only you can see, such as a key from a site's owner page, you keep yourself; type it at the hidden
+prompt, never on the command line:
+
+```sh
+node ~/natalis/dist/bin/natalis.js vault --dir ~/lares/<name> --keep <value name> --host <the site's host> [--replace]
+systemctl --user restart natalis@<name>
+```
+
+The restart makes the Lar hide the new value if a site ever shows it back. `natalis vault --dir ~/lares/<name>` lists
+the names and their hosts, never the values. A restore from a sealed copy brings the vault back, at mode
 0600 (see "Opening a sealed copy" below). A restore never writes into a folder that holds anything, so a vault that is
 already in the target folder is never replaced or deleted: the restore is refused and the folder is left as it was.
 

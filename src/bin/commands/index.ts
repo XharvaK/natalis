@@ -12,6 +12,7 @@ import { proposalsCommand } from "./proposals.js";
 import { replayCommand } from "./replay.js";
 import { restoreCommand } from "./restore.js";
 import { unsealCommand } from "./unseal.js";
+import { readHiddenLine, vaultCommand } from "./vault.js";
 
 export async function dispatchCommand(command: string | undefined, args: string[]): Promise<number | undefined> {
   switch (command) {
@@ -33,6 +34,8 @@ export async function dispatchCommand(command: string | undefined, args: string[
       return proposalsCommand(args);
     case "ledger":
       return ledgerCommand(args, (line) => console.log(line), (line) => console.error(line));
+    case "vault":
+      return vaultCommand(args, readHiddenLine, (line) => console.log(line), (line) => console.error(line));
     case "new":
       return newCommand(args, (line) => console.log(line), (line) => console.error(line));
     case "check":
