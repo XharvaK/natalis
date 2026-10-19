@@ -49,6 +49,13 @@ export type OpenAICompatibleOptions = {
   headers?: Record<string, string>;
   /** Wire values for the entity's efforts, for a service whose levels differ (e.g. xhigh sent as "max"). Unmapped go as they are. */
   effortMap?: Partial<Record<NonNullable<ModelRequest["effort"]>, string>>;
+  /**
+   * Ask for the reply as a stream (chat protocol only), so a model that goes silent is noticed: when nothing arrives for
+   * idleTimeoutMs, the call fails as a timeout and a backup can answer. timeoutMs still bounds the whole call. Default false.
+   */
+  stream?: boolean;
+  /** With stream on: the longest wait for the next piece of the reply, the first included. Default 120000. */
+  idleTimeoutMs?: number;
 };
 
 type ModelErrorKind = ConstructorParameters<typeof ModelError>[1];
@@ -58,6 +65,7 @@ const RETRYABLE_STATUS = new Set([408, 409, 429, 500, 502, 503, 504, 524]);
 const BACKOFF_BASE_MS = 1000;
 const BACKOFF_CAP_MS = 30_000;
 const DEFAULT_TIMEOUT_MS = 180_000;
+const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
 const DEFAULT_ATTEMPTS = 4;
 const DETAIL_CHARS = 300;
 
@@ -65,6 +73,7 @@ const DETAIL_CHARS = 300;
 type Sent =
   | { type: "reply"; status: number; retryAfterMs: number | undefined; text: string }
   | { type: "timeout" }
+  | { type: "silent" }
   | { type: "aborted" }
   | { type: "network"; detail: string };
 
@@ -79,6 +88,8 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
   const sleep = options.sleep ?? defaultSleep;
   const idPrefix = options.idPrefix ?? "call";
   const cacheMarks = options.cacheMarks === true;
+  const streaming = options.stream === true && api === "chat";
+  const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
   const info: ModelInfo = {
     id: `openai-compatible:${options.model}`,
     contextTokens: options.contextTokens,
@@ -97,18 +108,30 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
     if (signal?.aborted) return { type: "aborted" };
     const fetchFn = options.fetch ?? globalThis.fetch;
     const controller = new AbortController();
-    const timer = { timedOut: false };
+    const timer = { timedOut: false, silent: false };
     const onCallerAbort = (): void => controller.abort();
     signal?.addEventListener("abort", onCallerAbort, { once: true });
     const timeout = setTimeout(() => {
       timer.timedOut = true;
       controller.abort();
     }, timeoutMs);
+    // With a stream, every piece that arrives starts the silence watch again; without one, there is no watch.
+    let idle: ReturnType<typeof setTimeout> | undefined;
+    const heard = (): void => {
+      if (!streaming) return;
+      clearTimeout(idle);
+      idle = setTimeout(() => {
+        timer.silent = true;
+        controller.abort();
+      }, idleTimeoutMs);
+    };
+    heard();
     const headers: Record<string, string> = { ...options.headers, "content-type": "application/json" };
     if (apiKey) headers.authorization = `Bearer ${apiKey}`;
     try {
       const res = await fetchFn(endpoint, { method: "POST", headers, body, signal: controller.signal });
-      const text = await res.text();
+      heard();
+      const text = streaming && res.ok && res.body ? await readAll(res.body, heard, controller.signal) : await res.text();
       return {
         type: "reply",
         status: res.status,
@@ -117,10 +140,12 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
       };
     } catch (err) {
       if (timer.timedOut) return { type: "timeout" };
+      if (timer.silent) return { type: "silent" };
       if (signal?.aborted) return { type: "aborted" };
       return { type: "network", detail: safe(errorText(err)) };
     } finally {
       clearTimeout(timeout);
+      clearTimeout(idle);
       signal?.removeEventListener("abort", onCallerAbort);
     }
   };
@@ -152,7 +177,7 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
       const body = JSON.stringify(
         api === "responses"
           ? buildResponsesBody({ model: options.model, nativeTools, effort }, request)
-          : buildBody({ model: options.model, nativeTools, effortParam, effort, cacheMarks }, request),
+          : buildBody({ model: options.model, nativeTools, effortParam, effort, cacheMarks, streaming }, request),
       );
       for (let attempt = 1; ; attempt++) {
         if (signal?.aborted) throw new ModelError("request aborted by caller", "aborted", attempt);
@@ -162,6 +187,9 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
         if (sent.type === "aborted") throw new ModelError("request aborted by caller", "aborted", attempt);
         if (sent.type === "timeout") {
           throw new ModelError(`no reply from the model service within ${timeoutMs} ms`, "timeout", attempt);
+        }
+        if (sent.type === "silent") {
+          throw new ModelError(`the model service sent nothing for ${idleTimeoutMs} ms`, "timeout", attempt);
         }
         if (sent.type === "network") {
           if (attempt >= maxAttempts) {
@@ -177,9 +205,16 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
 
         if (sent.status >= 200 && sent.status < 300) {
           const latencyMs = Date.now() - started;
-          return api === "responses"
-            ? parseResponsesReply(sent.text, latencyMs, attempt, newId)
-            : parseReply(sent.text, latencyMs, attempt, newId);
+          if (api === "responses") return parseResponsesReply(sent.text, latencyMs, attempt, newId);
+          if (!streaming || !isStream(sent.text)) return parseReply(sent.text, latencyMs, attempt, newId);
+          const whole = joinStream(sent.text, attempt, safe);
+          if (whole !== undefined) return parseChoices(whole, latencyMs, attempt, newId);
+          // The stream stopped before its end: the same as a dropped connection, so it is tried again.
+          if (attempt >= maxAttempts) {
+            throw new ModelError(`model service stream was cut off before its end, after ${attempt} attempts`, "unavailable", attempt);
+          }
+          await pause(backoffMs(attempt), signal, attempt);
+          continue;
         }
         if (RETRYABLE_STATUS.has(sent.status) && attempt < maxAttempts && !isOutOfCredit(sent.status, sent.text)) {
           await pause(sent.retryAfterMs ?? backoffMs(attempt), signal, attempt);
@@ -201,6 +236,7 @@ function buildBody(
     effortParam: "reasoning_effort" | null;
     effort: string | undefined;
     cacheMarks: boolean;
+    streaming?: boolean;
   },
   request: ModelRequest,
 ): Record<string, unknown> {
@@ -217,6 +253,11 @@ function buildBody(
   if (request.maxOutputTokens !== undefined) body.max_tokens = request.maxOutputTokens;
   if (options.effortParam !== null && options.effort !== undefined) {
     body[options.effortParam] = options.effort;
+  }
+  if (options.streaming === true) {
+    body.stream = true;
+    // The token counts come in the stream's last piece only when asked for.
+    body.stream_options = { include_usage: true };
   }
   return body;
 }
@@ -309,6 +350,16 @@ function parseReply(
   } catch {
     throw new ModelError("model service reply was not JSON", "malformed", attempt);
   }
+  return parseChoices(parsed, latencyMs, attempt, newId);
+}
+
+/** A chat reply, already parsed: a whole reply, or a stream's pieces joined into one (joinStream). */
+function parseChoices(
+  parsed: unknown,
+  latencyMs: number,
+  attempt: number,
+  newId: () => string,
+): ModelResponse {
   if (!isRecord(parsed) || !Array.isArray(parsed.choices) || parsed.choices.length === 0) {
     throw new ModelError("model service reply had no choices", "malformed", attempt);
   }
@@ -353,6 +404,106 @@ function parseReply(
     if (Object.keys(usage).length > 0) response.usage = usage;
   }
   return response;
+}
+
+/**
+ * Reads a response body to its end, calling `heard` each time a piece arrives. An abort cancels the reading at once, so
+ * a body that has gone silent never holds the call.
+ */
+async function readAll(body: ReadableStream<Uint8Array>, heard: () => void, signal: AbortSignal): Promise<string> {
+  const reader = body.getReader();
+  const onAbort = (): void => {
+    reader.cancel().catch(() => undefined);
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (signal.aborted) throw new Error("the reading of the reply was aborted");
+      if (done) break;
+      heard();
+      text += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+  return text + decoder.decode();
+}
+
+/** True when a reply is a server-sent event stream rather than one JSON reply. */
+function isStream(text: string): boolean {
+  return /^\s*(data|event|:)/.test(text);
+}
+
+type StreamedCall = { id?: string; name?: string; args: string };
+
+/**
+ * A chat stream's pieces joined into the one reply the service would have sent without a stream: the words, the
+ * reasoning, each tool call's arguments in order, the finish reason and the token counts. Undefined when the stream
+ * stopped before its end (no finish reason and no [DONE]). An error the service sent inside the stream is thrown.
+ */
+function joinStream(text: string, attempt: number, safe: (text: string) => string): Record<string, unknown> | undefined {
+  let content: string | null = null;
+  let reasoning = "";
+  const details: unknown[] = [];
+  const calls = new Map<number, StreamedCall>();
+  let finish: unknown;
+  let usage: unknown;
+  let done = false;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice(5).trim();
+    if (data === "") continue;
+    if (data === "[DONE]") {
+      done = true;
+      continue;
+    }
+    let piece: unknown;
+    try {
+      piece = JSON.parse(data);
+    } catch {
+      throw new ModelError("model service stream had a piece that was not JSON", "malformed", attempt);
+    }
+    if (!isRecord(piece)) continue;
+    if (piece.error !== undefined) {
+      const detail = providerMessage(JSON.stringify(piece));
+      throw new ModelError(`model service sent an error in its stream${detail ? `: ${safe(detail)}` : ""}`, "unavailable", attempt);
+    }
+    if (isRecord(piece.usage)) usage = piece.usage;
+    const choice: unknown = Array.isArray(piece.choices) ? piece.choices[0] : undefined;
+    if (!isRecord(choice)) continue;
+    if (choice.finish_reason !== undefined && choice.finish_reason !== null) finish = choice.finish_reason;
+    const delta = isRecord(choice.delta) ? choice.delta : undefined;
+    if (delta === undefined) continue;
+    if (typeof delta.content === "string") content = (content ?? "") + delta.content;
+    const thought = [delta.reasoning_content, delta.reasoning].find((value): value is string => typeof value === "string");
+    if (thought !== undefined) reasoning += thought;
+    if (Array.isArray(delta.reasoning_details)) details.push(...delta.reasoning_details);
+    if (Array.isArray(delta.tool_calls)) {
+      for (const raw of delta.tool_calls) {
+        if (!isRecord(raw)) continue;
+        const index = typeof raw.index === "number" ? raw.index : calls.size;
+        const call = calls.get(index) ?? { args: "" };
+        if (typeof raw.id === "string" && raw.id !== "") call.id ??= raw.id;
+        if (isRecord(raw.function)) {
+          if (typeof raw.function.name === "string" && raw.function.name !== "") call.name ??= raw.function.name;
+          if (typeof raw.function.arguments === "string") call.args += raw.function.arguments;
+        }
+        calls.set(index, call);
+      }
+    }
+  }
+  if (!done && finish === undefined) return undefined;
+  const toolCalls = [...calls.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, call]) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.args } }));
+  const message: Record<string, unknown> = { role: "assistant", content };
+  if (reasoning !== "") message.reasoning_content = reasoning;
+  if (details.length > 0) message.reasoning_details = details;
+  if (toolCalls.length > 0) message.tool_calls = toolCalls;
+  return { choices: [{ message, finish_reason: finish ?? null }], ...(usage === undefined ? {} : { usage }) };
 }
 
 /**

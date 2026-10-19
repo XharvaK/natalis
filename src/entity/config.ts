@@ -189,7 +189,7 @@ export function parseModel(value: unknown): ModelConfig {
   onlyKeys(
     block,
     ["baseUrl", "model", "apiKeyEnv", "contextTokens", "nativeTools", "effortParam", "timeoutMs", "vision", "cacheMarks", "fallback", "price",
-      "api", "headers", "effortMap"],
+      "api", "headers", "effortMap", "stream", "idleTimeoutMs"],
     "model",
   );
 
@@ -211,8 +211,16 @@ export function parseModel(value: unknown): ModelConfig {
   if (block["api"] !== undefined) model.api = apiOf(block["api"], "model.api");
   if (block["headers"] !== undefined) model.headers = headersOf(block["headers"], "model.headers");
   if (block["effortMap"] !== undefined) model.effortMap = effortMapOf(block["effortMap"], "model.effortMap");
+  if (block["stream"] !== undefined) model.stream = flagOf(block["stream"], "model.stream");
+  if (block["idleTimeoutMs"] !== undefined) model.idleTimeoutMs = positiveInt(block["idleTimeoutMs"], "model.idleTimeoutMs");
   if (model.api === "responses" && model.cacheMarks === true) {
     throw new Error("model.cacheMarks is for the chat protocol only; leave it out when model.api is \"responses\".");
+  }
+  if (model.api === "responses" && model.stream === true) {
+    throw new Error("model.stream is for the chat protocol only; leave it out when model.api is \"responses\".");
+  }
+  if (model.idleTimeoutMs !== undefined && model.stream !== true) {
+    throw new Error("model.idleTimeoutMs only works with model.stream true: without a stream, a silence cannot be told from a long answer.");
   }
   return model;
 }
@@ -226,7 +234,7 @@ function parseFallback(value: unknown, where: string): FallbackModelConfig {
   onlyKeys(
     block,
     ["model", "effortParam", "vision", "cacheMarks", "effort", "contextTokens", "price", "api", "effortMap",
-      "baseUrl", "apiKeyEnv", "headers", "fallback"],
+      "baseUrl", "apiKeyEnv", "headers", "stream", "fallback"],
     where,
   );
   const fallback: FallbackModelConfig = { model: textOf(block["model"], `${where}.model`) };
@@ -244,8 +252,12 @@ function parseFallback(value: unknown, where: string): FallbackModelConfig {
   if (block["baseUrl"] !== undefined) fallback.baseUrl = baseUrlOf(block["baseUrl"], `${where}.baseUrl`);
   if (block["apiKeyEnv"] !== undefined) fallback.apiKeyEnv = keyEnvOf(block["apiKeyEnv"], `${where}.apiKeyEnv`);
   if (block["headers"] !== undefined) fallback.headers = headersOf(block["headers"], `${where}.headers`);
+  if (block["stream"] !== undefined) fallback.stream = flagOf(block["stream"], `${where}.stream`);
   if (fallback.api === "responses" && fallback.cacheMarks === true) {
     throw new Error(`${where}.cacheMarks is for the chat protocol only; leave it out when ${where}.api is "responses".`);
+  }
+  if (fallback.api === "responses" && fallback.stream === true) {
+    throw new Error(`${where}.stream is for the chat protocol only; leave it out when ${where}.api is "responses".`);
   }
   if (block["fallback"] !== undefined) fallback.fallback = parseFallback(block["fallback"], `${where}.fallback`);
   return fallback;
@@ -337,7 +349,7 @@ function parseOwner(value: unknown): { alias: string } {
 function parseCeiling(value: unknown): Ceiling {
   if (value === undefined) return { ...DEFAULT_CEILING };
   const block = objectOf(value, "ceiling");
-  onlyKeys(block, ["maxModelCalls", "maxToolCalls"], "ceiling");
+  onlyKeys(block, ["maxModelCalls", "maxToolCalls", "wholeResultsChars"], "ceiling");
   return {
     maxModelCalls:
       block["maxModelCalls"] === undefined
@@ -347,6 +359,9 @@ function parseCeiling(value: unknown): Ceiling {
       block["maxToolCalls"] === undefined
         ? DEFAULT_CEILING.maxToolCalls
         : positiveInt(block["maxToolCalls"], "ceiling.maxToolCalls"),
+    ...(block["wholeResultsChars"] === undefined
+      ? {}
+      : { wholeResultsChars: positiveInt(block["wholeResultsChars"], "ceiling.wholeResultsChars") }),
   };
 }
 

@@ -1,7 +1,7 @@
 // A backup model: when the main model cannot answer, one more call goes to the backup. The wrapper is a plain port, so
-// the loop above sees the same ModelResponse shape; the response says which model answered (servedBy) so the loop can
-// write it into the river. Only a service failure moves the call to the backup: a caller's abort, a refused key or a
-// refused request is final and is never sent to another model.
+// the loop above sees the same ModelResponse shape; the response says which model answered (servedBy) and why the main
+// one did not (mainError), so the loop can write both into the river. Only a service failure moves the call to the
+// backup: a caller's abort, a refused key or a refused request is final and is never sent to another model.
 
 import { ModelError, type ChatMessage, type ModelPort, type ModelRequest, type ModelResponse } from "../contracts.js";
 
@@ -13,6 +13,9 @@ export const PICTURE_STAND_IN = "[A picture was here; the backup model cannot se
  * no reply in time. A refused key or request is not among them.
  */
 const SERVICE_FAILURES: ReadonlySet<string> = new Set(["rate_limit", "out_of_credit", "unavailable", "timeout"]);
+
+/** How many failed turns a port remembers. Turns run one per thread at a time, so a few are plenty. */
+const HELD_TURNS = 16;
 
 /** The same rough size the context assembly uses: characters divided by 4. */
 const CHARS_PER_TOKEN = 4;
@@ -31,75 +34,73 @@ export type BackupOptions = {
    * be larger is not sent to the backup: the backup is not tried and the error says why, rather than overflowing it.
    */
   backupContextTokens?: number;
-  /** After the main model fails, how long calls go straight to the backup before the main one is tried again. Default 10 minutes. */
-  holdMs?: number;
-  /** The clock. Injected in tests. */
-  nowMs?: () => number;
 };
 
-/** How long, after the main model failed, calls go straight to the backup. A turn's later calls do not wait out the main model's retries again. */
-export const BACKUP_HOLD_MS = 10 * 60_000;
-
+/**
+ * After the main model fails in a turn, the rest of that turn's calls go straight to the backup, so they do not wait out
+ * the main model's retries again. The next turn tries the main model first. A call with no turn is never held.
+ */
 export function withBackup(options: BackupOptions): ModelPort {
-  const now = options.nowMs ?? Date.now;
-  const holdMs = options.holdMs ?? BACKUP_HOLD_MS;
-  /** Until this time, the main model is skipped: it failed a moment ago. */
-  let skipMainUntil = 0;
+  /** The turns whose main model failed, each with that failure, said once more on each call it sends to the backup. */
+  const held = new Map<string, string>();
   return {
     info: options.primary.info,
-    routing: () => {
-      const onBackup = now() < skipMainUntil;
-      // A backup with a backup of its own: when that one is taking the calls, it is the one named.
-      const deeper = options.backup.routing?.();
-      if (onBackup && deeper?.onBackup === true) return deeper;
-      return {
-        onBackup,
-        backup: options.backupName,
-        ...(options.backupEffort === undefined ? {} : { backupEffort: options.backupEffort }),
-      };
-    },
+    routing: () => ({
+      // A new turn always tries the main model first, so as a turn starts the main model takes its calls.
+      onBackup: false,
+      backup: options.backupName,
+      ...(options.backupEffort === undefined ? {} : { backupEffort: options.backupEffort }),
+    }),
     async complete(request: ModelRequest, signal?: AbortSignal): Promise<ModelResponse> {
-      try {
-        if (now() < skipMainUntil) {
+      let mainError: ModelError;
+      const earlier = request.turnId === undefined ? undefined : held.get(request.turnId);
+      if (earlier !== undefined) {
+        mainError = new ModelError(`it failed earlier in this turn (${earlier}), so this call went to the backup`, "unavailable", 0);
+      } else {
+        try {
+          return await options.primary.complete(request, signal);
+        } catch (err) {
+          if (!isServiceFailure(err) || signal?.aborted) throw err;
+          mainError = err;
+          if (request.turnId !== undefined) {
+            held.set(request.turnId, err.message);
+            // Only the newest turns are kept: an older turn has ended long ago.
+            for (const turnId of held.keys()) {
+              if (held.size <= HELD_TURNS) break;
+              held.delete(turnId);
+            }
+          }
+        }
+      }
+      const sent = toBackupRequest(request, options);
+      if (options.backupContextTokens !== undefined) {
+        const estimate = estimateTokens(sent);
+        if (estimate > options.backupContextTokens) {
           throw new ModelError(
-            `the main model failed less than ${Math.round(holdMs / 60_000)} minutes ago, so this call went to the backup`,
-            "unavailable",
-            0,
+            `${mainError.message}. The backup model (${options.backupName}) was not tried: this request is about ${estimate} tokens, more than its ${options.backupContextTokens}-token context.`,
+            mainError.kind,
+            mainError.attempts,
           );
         }
-        const answer = await options.primary.complete(request, signal);
-        skipMainUntil = 0;
-        return answer;
-      } catch (err) {
-        if (!isServiceFailure(err) || signal?.aborted) throw err;
-        if (now() >= skipMainUntil) skipMainUntil = now() + holdMs;
-        const sent = toBackupRequest(request, options);
-        if (options.backupContextTokens !== undefined) {
-          const estimate = estimateTokens(sent);
-          if (estimate > options.backupContextTokens) {
-            throw new ModelError(
-              `${err.message}. The backup model (${options.backupName}) was not tried: this request is about ${estimate} tokens, more than its ${options.backupContextTokens}-token context.`,
-              err.kind,
-              err.attempts,
-            );
-          }
-        }
-        let answer: ModelResponse;
-        try {
-          answer = await options.backup.complete(sent, signal);
-        } catch (backupErr) {
-          if (backupErr instanceof ModelError) {
-            throw new ModelError(
-              `${backupErr.message}. The main model failed first: ${err.message}`,
-              backupErr.kind,
-              backupErr.attempts,
-            );
-          }
-          throw backupErr;
-        }
-        // A backup's own backup names itself; otherwise this backup answered.
-        return { ...answer, servedBy: answer.servedBy ?? options.backupName };
       }
+      let answer: ModelResponse;
+      try {
+        answer = await options.backup.complete(sent, signal);
+      } catch (backupErr) {
+        if (backupErr instanceof ModelError) {
+          throw new ModelError(
+            `${backupErr.message}. The main model failed first: ${mainError.message}`,
+            backupErr.kind,
+            backupErr.attempts,
+          );
+        }
+        throw backupErr;
+      }
+      // A backup's own backup names itself, and its own reason; this one's reason comes first.
+      const why = answer.mainError === undefined
+        ? mainError.message
+        : `${mainError.message}; then ${options.backupName}: ${answer.mainError}`;
+      return { ...answer, servedBy: answer.servedBy ?? options.backupName, mainError: why };
     },
   };
 }

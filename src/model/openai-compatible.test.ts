@@ -709,3 +709,137 @@ describe("the responses protocol", () => {
     expect((await errorOf(port.complete(asks([{ role: "user", content: "hi" }])))).kind).toBe("malformed");
   });
 });
+
+describe("a streamed reply", () => {
+  /** A stream of server-sent events: each piece as one data line, then [DONE] unless `end` is false. */
+  const sse = (pieces: unknown[], end = true): Response => {
+    const lines = pieces.map((piece) => `data: ${JSON.stringify(piece)}\n\n`);
+    if (end) lines.push("data: [DONE]\n\n");
+    return new Response(lines.join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  /** A stream that sends its first pieces, then nothing until the call is aborted. */
+  const stalls = (pieces: unknown[]): Response => {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const piece of pieces) controller.enqueue(encoder.encode(`data: ${JSON.stringify(piece)}\n\n`));
+      },
+    });
+    return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  const delta = (d: Record<string, unknown>, finish: string | null = null) => ({ choices: [{ index: 0, delta: d, finish_reason: finish }] });
+
+  it("asks for a stream with its token counts, and joins the pieces into one reply", async () => {
+    const { port, calls } = harness(
+      [
+        sse([
+          delta({ role: "assistant", reasoning_content: "The user " }),
+          delta({ reasoning_content: "wants an echo." }),
+          delta({ content: "", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "echo", arguments: "" } }] }),
+          delta({ tool_calls: [{ index: 0, function: { arguments: "{\"text\":" } }] }),
+          delta({ tool_calls: [{ index: 0, function: { arguments: "\"hi\"}" } }] }),
+          delta({}, "tool_calls"),
+          { choices: [], usage: { prompt_tokens: 292, completion_tokens: 54, total_tokens: 346, prompt_tokens_details: { cached_tokens: 128 } } },
+        ]),
+      ],
+      { stream: true },
+    );
+
+    const reply = await port.complete(asks([{ role: "user", content: "Call echo." }]));
+
+    expect(calls[0]?.body).toMatchObject({ stream: true, stream_options: { include_usage: true } });
+    expect(reply).toMatchObject({
+      content: "",
+      toolCalls: [{ id: "call_1", name: "echo", arguments: "{\"text\":\"hi\"}" }],
+      finish: "tool_calls",
+      reasoning: "The user wants an echo.",
+      usage: { inputTokens: 292, outputTokens: 54, totalTokens: 346, cacheHitTokens: 128 },
+    });
+  });
+
+  it("keeps two tool calls apart by their index, and words with no tool call", async () => {
+    const { port } = harness(
+      [
+        sse([
+          delta({ tool_calls: [{ index: 1, id: "b", function: { name: "second", arguments: "{}" } }] }),
+          delta({ tool_calls: [{ index: 0, id: "a", function: { name: "first", arguments: "{}" } }] }),
+          delta({}, "tool_calls"),
+        ]),
+        sse([delta({ content: "Hello" }), delta({ content: " there." }, "stop")]),
+      ],
+      { stream: true },
+    );
+
+    const both = await port.complete(asks([{ role: "user", content: "two" }]));
+    expect(both.toolCalls.map((c) => c.name)).toEqual(["first", "second"]);
+
+    const words = await port.complete(asks([{ role: "user", content: "words" }]));
+    expect(words).toMatchObject({ content: "Hello there.", toolCalls: [], finish: "stop" });
+  });
+
+  it("fails as a timeout when the stream goes silent, so a backup can answer", async () => {
+    const { port } = harness([stalls([delta({ reasoning_content: "Thinking" })])], { stream: true, idleTimeoutMs: 30 });
+
+    const failure = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+
+    expect(failure.kind).toBe("timeout");
+    expect(failure.message).toBe("the model service sent nothing for 30 ms");
+  });
+
+  it("fails as a timeout when nothing at all comes back, not even the headers", async () => {
+    const { port } = harness(["hang"], { stream: true, idleTimeoutMs: 30 });
+
+    const failure = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+
+    expect(failure).toMatchObject({ kind: "timeout", message: "the model service sent nothing for 30 ms" });
+  });
+
+  it("tries again when the stream is cut off before its end", async () => {
+    const { port, calls } = harness(
+      [sse([delta({ content: "Hel" })], false), sse([delta({ content: "Hello." }, "stop")])],
+      { stream: true },
+    );
+
+    const reply = await port.complete(asks([{ role: "user", content: "hi" }]));
+
+    expect(reply.content).toBe("Hello.");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("says when every try was cut off", async () => {
+    const cut = () => sse([delta({ content: "Hel" })], false);
+    const { port } = harness([cut(), cut()], { stream: true, maxAttempts: 2 });
+
+    const failure = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+
+    expect(failure).toMatchObject({ kind: "unavailable", message: "model service stream was cut off before its end, after 2 attempts" });
+  });
+
+  it("treats an error the service sends inside the stream as an outage, without the key", async () => {
+    const { port } = harness([sse([{ error: { message: `upstream overloaded for ${KEY}` } }])], { stream: true });
+
+    const failure = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+
+    expect(failure.kind).toBe("unavailable");
+    expect(failure.message).toBe("model service sent an error in its stream: upstream overloaded for [key removed]");
+  });
+
+  it("reads a plain JSON reply even when it asked for a stream", async () => {
+    const { port } = harness([chat({ role: "assistant", content: "plain" })], { stream: true });
+    expect((await port.complete(asks([{ role: "user", content: "hi" }]))).content).toBe("plain");
+  });
+
+  it("asks for no stream when stream is off, and never on the responses protocol", async () => {
+    const off = harness([chat({ role: "assistant", content: "plain" })]);
+    await off.port.complete(asks([{ role: "user", content: "hi" }]));
+    expect(off.calls[0]?.body).not.toHaveProperty("stream");
+    expect(off.calls[0]?.body).not.toHaveProperty("stream_options");
+
+    const responses = harness(
+      [ok({ output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }], status: "completed" })],
+      { stream: true, api: "responses" },
+    );
+    await responses.port.complete(asks([{ role: "user", content: "hi" }]));
+    expect(responses.calls[0]?.body).not.toHaveProperty("stream");
+  });
+});

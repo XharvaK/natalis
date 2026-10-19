@@ -3469,3 +3469,44 @@ function partsOfRequest(request: ModelRequest | undefined): MessagePart[] {
     (message.role === "system" || (message.role === "user" && message.layout !== undefined)) ? partsOfMessage(message) : [],
   );
 }
+
+describe("a resting world's tools", () => {
+  function restingRoom(): ReturnType<typeof fakeWorld> {
+    const room = fakeWorld("fake");
+    const poke: Tool = {
+      spec: { name: "poke", description: "The poke tool.", parameters: { type: "object", properties: {} } },
+      run: async () => ({ ok: true, summary: "ran poke" }),
+    };
+    return { ...room, world: { ...room.world, tools: () => [poke], resting: () => true } };
+  }
+  const names = (request: ModelRequest | undefined) => (request?.tools ?? []).map((spec) => spec.name);
+
+  it("are left out of a turn in another thread, and the now board says so", async () => {
+    const room = restingRoom();
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model, {}, [room.world]);
+    await entity.start();
+
+    cli.send("Hello, Iris.");
+    await entity.idle();
+
+    expect(names(model.requests[0])).not.toContain("poke");
+    expect(names(model.requests[0])).toContain("end_turn");
+    expect(userTextOf(model.requests[0])).toContain(
+      "- fake: fake is open. Its tools are left out of this turn until it can act again.",
+    );
+  });
+
+  it("stay in a turn in that world's own thread", async () => {
+    const room = restingRoom();
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity } = await open(model, {}, [room.world]);
+    await entity.start();
+
+    room.push("fake:room", "A passer-by says hi.");
+    await entity.idle();
+
+    expect(names(model.requests[0])).toContain("poke");
+    expect(userTextOf(model.requests[0])).not.toContain("Its tools are left out of this turn");
+  });
+});

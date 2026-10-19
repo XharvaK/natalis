@@ -350,16 +350,17 @@ describe("a chain of backups, and a backup on a service of its own", () => {
     expect(third?.url).toBe(`${other}/chat/completions`);
     expect(third?.headers["authorization"]).toBe(`Bearer ${OTHER_KEY}`);
     expect(third?.headers["x-workspace"]).toBeUndefined();
-    expect(port.routing?.()).toMatchObject({ onBackup: true, backup: "third", backupEffort: "high" });
+    expect(answer.mainError).toContain("; then second: ");
+    // The next turn tries the main model first, so as it starts the main model is named.
+    expect(port.routing?.()).toMatchObject({ onBackup: false, backup: "second" });
   });
 
-  it("names the first backup while it is the one answering", async () => {
+  it("names the first backup when it is the one answering", async () => {
     routeFetch(["test-model"]);
     const port = modelFromConfig(chain, env);
     expect(port.routing?.()).toMatchObject({ onBackup: false, backup: "second" });
     const answer = await port.complete(ask);
     expect(answer.servedBy).toBe("second");
-    expect(port.routing?.()).toMatchObject({ onBackup: true, backup: "second" });
   });
 
   it("refuses a backup on its own service whose key variable is not set", () => {
@@ -377,5 +378,47 @@ describe("a chain of backups, and a backup on a service of its own", () => {
     const answer = await ports["game"]!.complete({ ...ask, effort: "low" });
     expect(answer).toMatchObject({ content: "from fast-elsewhere", servedBy: "fast-elsewhere" });
     expect(sent.some((s) => s.model === "test-model")).toBe(false);
+  });
+});
+
+describe("streaming down a chain of backups", () => {
+  /** Each model named in busy answers 503; the others answer with a plain reply. Records each model's request body. */
+  function bodies(busy: string[]): Array<Record<string, unknown>> {
+    const sent: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      sent.push(body);
+      if (busy.includes(String(body["model"]))) return new Response("{}", { status: 503, headers: { "retry-after": "0" } });
+      if (body["input"] !== undefined) {
+        return new Response(JSON.stringify({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "ok" }] }] }));
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }));
+    });
+    return sent;
+  }
+  const env = { [KEY_VAR]: KEY };
+
+  it("gives a chat backup the main model's stream, and never asks a responses backup for one", async () => {
+    const sent = bodies(["test-model", "second"]);
+    const port = modelFromConfig(
+      { ...config, stream: true, fallback: { model: "second", fallback: { model: "third", api: "responses" } } },
+      env,
+    );
+
+    await port.complete(ask);
+
+    const of = (name: string) => sent.find((body) => body["model"] === name);
+    expect(of("test-model")?.["stream"]).toBe(true);
+    expect(of("second")?.["stream"]).toBe(true);
+    expect(of("third")).not.toHaveProperty("stream");
+  });
+
+  it("lets a backup turn the stream off for itself", async () => {
+    const sent = bodies(["test-model"]);
+    const port = modelFromConfig({ ...config, stream: true, fallback: { model: "second", stream: false } }, env);
+
+    await port.complete(ask);
+
+    expect(sent.find((body) => body["model"] === "second")).not.toHaveProperty("stream");
   });
 });

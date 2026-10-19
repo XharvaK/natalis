@@ -143,6 +143,8 @@ const NOW_THREAD_LIMIT = 20;
 const SAY_CLIP = 160;
 /** How much of one cut tool call's arguments the retry shows. */
 const DONE_ARGS_CLIP = 400;
+/** The notebook tools a turn's closing call offers at the ceiling: what to keep of an unfinished turn is the Lar's to write. */
+const CLOSING_TOOLS = ["write_note", "append_note", "edit_note"] as const;
 /** The turn ends that did not finish a turn: its cursor stays, and its rows are shown as done on the next try. */
 const CUT_ENDS = new Set(["model_error", "aborted"]);
 /** Recent here shows at least this many rows: the oldest shown row moves on only in steps of RECENT_PAGE, so it holds 30 to 39. */
@@ -585,6 +587,8 @@ class Runtime implements Entity {
   private failedRun = 0;
   private readonly ceiling: Ceiling;
   private readonly tools: Tool[];
+  /** The names of each world's own tools, so a resting world's can be left out of other threads' turns. */
+  private readonly worldToolNames = new Map<string, Set<string>>();
   private readonly clockFormat: Intl.DateTimeFormat;
   private readonly stampFormat: Intl.DateTimeFormat;
 
@@ -698,7 +702,11 @@ class Runtime implements Entity {
       hourCycle: "h23",
     });
 
-    const worldTools = init.worlds.flatMap((world) => world.tools()).map((tool) => this.gateWorldTool(tool));
+    const worldTools = init.worlds.flatMap((world) => {
+      const own = world.tools();
+      this.worldToolNames.set(world.id, new Set(own.map((tool) => tool.spec.name)));
+      return own;
+    }).map((tool) => this.gateWorldTool(tool));
     this.tools = [...notebookTools(), ...worldTools, ...this.builtInTools()];
     const names = new Set<string>();
     for (const tool of this.tools) {
@@ -1036,7 +1044,8 @@ class Runtime implements Entity {
     this.turnStarts.set(turnId, nowMs);
     const { result } = await runTurnWithMessages({
       model: withWitness(turnModel, this.witness, this.threadKind(thread), { cacheMarks: this.config.model.cacheMarks === true }),
-      tools: this.tools,
+      tools: this.toolsFor(thread),
+      closingTools: CLOSING_TOOLS,
       system: laid.system,
       systemLayout: laid.systemLayout,
       history: [],
@@ -1770,13 +1779,15 @@ class Runtime implements Entity {
     lines.push("Worlds:");
     // A world whose line cannot be read says so, and the turn goes on (CORE3-2): one world never silences the others.
     const unreadable: string[] = [];
+    const resting = new Set(this.restingWorlds(thread));
     for (const world of this.worlds) {
       const said = worldSaid(() => world.now());
       if (said === undefined) {
         unreadable.push(world.id);
         lines.push(`- ${world.id}: not available right now.`);
       } else {
-        lines.push(`- ${world.id}: ${said}`);
+        const left = resting.has(world) ? " Its tools are left out of this turn until it can act again." : "";
+        lines.push(`- ${world.id}: ${said}${left}`);
       }
     }
     const shelf = this.shelf.summary();
@@ -2797,6 +2808,18 @@ class Runtime implements Entity {
   }
 
   // --- helpers ----------------------------------------------------------------------------------
+
+  /** The worlds that cannot act now, other than the thread's own world: their tools are left out of this turn. */
+  private restingWorlds(thread: string): World[] {
+    const own = this.worldFor(thread);
+    return this.worlds.filter((world) => world !== own && worldSaid(() => world.resting?.()) === true);
+  }
+
+  /** A turn's tools: all of them, without the tools of a world that is resting (unless the turn is in that world). */
+  private toolsFor(thread: string): Tool[] {
+    const left = new Set(this.restingWorlds(thread).flatMap((world) => [...(this.worldToolNames.get(world.id) ?? [])]));
+    return left.size === 0 ? this.tools : this.tools.filter((tool) => !left.has(tool.spec.name));
+  }
 
   private worldFor(place: string): World | undefined {
     let found: World | undefined;

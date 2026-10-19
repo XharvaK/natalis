@@ -54,12 +54,25 @@ Optional: `~/lares/<name>/nature.md` replaces the default nature every Lar start
 An empty file removes that section. Without the file the default stays. The Lar reads it on each turn, so an edit needs no restart.
 
 Optional in the `model` block: `"vision": true` when the model can see pictures, and a backup for when the main model
-cannot answer (rate limited, down, or no reply in time), on the same address and key:
-`"fallback": { "model": "<model name>", "effort": "xhigh", "vision": true }`. After a failure, calls go to the backup
-for 10 minutes before the main model is tried again, and the Lar reads a note saying the backup answered. A world can have a model of its own for its turns, on the same address and key, with the main
-model as its backup: `"worldModels": { "domus": { "model": "<model name>", "effort": "medium", "vision": true } }` at
-the top level of entity.json. The honesty
-check (a second model call on each reply) is off unless the entity sets `"holds": { "honesty": true }`.
+cannot answer (rate limited, down, or no reply in time):
+`"fallback": { "model": "<model name>", "effort": "xhigh", "vision": true }`. A backup uses the main model's address
+and key unless it names its own (`baseUrl`, `apiKeyEnv`, `headers`), and it can have a backup of its own in the same
+way. After a failure, the rest of that turn's calls go to the backup; the next turn tries the main model again. The
+Lar reads a note saying which backup answered and why the main model did not. A world can have a model of its own for
+its turns, on the same address and key, with the main model as its backup:
+`"worldModels": { "domus": { "model": "<model name>", "effort": "medium", "vision": true } }` at the top level of
+entity.json. The honesty check (a second model call on each reply) is off unless the entity sets
+`"holds": { "honesty": true }`.
+
+On the chat protocol, `"stream": true` in the `model` block has the reply sent as it is written, and
+`"idleTimeoutMs": 120000` then ends a call when the model service sends nothing for that long, so a silent model
+goes to the backup in two minutes instead of waiting out `timeoutMs`. A backup on the chat protocol streams when the
+main model does, unless it says `"stream": false`; a backup on the responses protocol never streams.
+
+The `ceiling` block at the top level caps one turn: `"ceiling": { "maxModelCalls": 64, "maxToolCalls": 128 }`. Near the
+cap the Lar sees how many calls are left, and at the cap it gets one last call to keep a note. With
+`"wholeResultsChars": 48000` beside them, older tool results in a turn are shortened to 2 KB each once together they
+pass that many characters; the Lar can call the tool again to see one in full.
 
 To connect the Lar to Discord, add `~/lares/<name>/discord.json`. It names the variable that holds the bot token, never
 the token itself:

@@ -232,34 +232,103 @@ describe("the backup model", () => {
 });
 
 describe("the backup hold", () => {
-  it("sends calls straight to the backup for a while after the main model failed, then tries the main one again", async () => {
-    let clock = 1_000;
-    let mainDown = true;
-    const mainCalls: ModelRequest[] = [];
-    const main: ModelPort = {
+  /** A main model that is down until told otherwise, and counts its calls. */
+  function flaky(): ModelPort & { calls: ModelRequest[]; down: boolean } {
+    const calls: ModelRequest[] = [];
+    const main = {
       info: { id: "fake:main", contextTokens: 8000, nativeTools: true },
+      calls,
+      down: true,
       async complete(sent: ModelRequest): Promise<ModelResponse> {
-        mainCalls.push(sent);
-        if (mainDown) throw new ModelError("service is down", "unavailable", 4);
+        calls.push(sent);
+        if (main.down) throw new ModelError("service is down", "unavailable", 4);
         return answer("from the main model");
       },
     };
+    return main;
+  }
+
+  it("sends the rest of a turn straight to the backup after the main model failed in it", async () => {
+    const main = flaky();
     const backup = port("backup", answer("from the backup"));
-    const model = withBackup({ primary: main, backup, backupName: "backup-model", backupSeesPictures: true, holdMs: 60_000, nowMs: () => clock });
+    const model = withBackup({ primary: main, backup, backupName: "backup-model", backupSeesPictures: true });
+
+    await model.complete({ ...request, turnId: "turn-1" });
+    main.down = false;
+    const again = await model.complete({ ...request, turnId: "turn-1" });
+
+    expect(again).toMatchObject({ content: "from the backup", servedBy: "backup-model" });
+    expect(again.mainError).toBe("it failed earlier in this turn (service is down), so this call went to the backup");
+    expect(main.calls).toHaveLength(1);
+    expect(backup.requests).toHaveLength(2);
+  });
+
+  it("tries the main model first on the next turn", async () => {
+    const main = flaky();
+    const model = withBackup({ primary: main, backup: port("backup", answer("from the backup")), backupName: "b", backupSeesPictures: true });
+
+    await model.complete({ ...request, turnId: "turn-1" });
+    main.down = false;
+    const next = await model.complete({ ...request, turnId: "turn-2" });
+
+    expect(next.content).toBe("from the main model");
+    expect(next).not.toHaveProperty("servedBy");
+    expect(next).not.toHaveProperty("mainError");
+    expect(main.calls).toHaveLength(2);
+  });
+
+  it("never holds a call that has no turn", async () => {
+    const main = flaky();
+    const model = withBackup({ primary: main, backup: port("backup", answer("from the backup")), backupName: "b", backupSeesPictures: true });
 
     await model.complete(request);
-    expect(mainCalls).toHaveLength(1);
+    await model.complete(request);
 
-    clock += 30_000;
-    mainDown = false;
-    expect(await model.complete(request)).toMatchObject({ content: "from the backup", servedBy: "backup-model" });
-    expect(mainCalls).toHaveLength(1);
+    expect(main.calls).toHaveLength(2);
+  });
 
-    clock += 31_000;
-    const back = await model.complete(request);
-    expect(back.content).toBe("from the main model");
-    expect(back.servedBy).toBeUndefined();
-    expect(mainCalls).toHaveLength(2);
+  it("keeps one turn's hold apart from another's", async () => {
+    const main = flaky();
+    const model = withBackup({ primary: main, backup: port("backup", answer("from the backup")), backupName: "b", backupSeesPictures: true });
+
+    await model.complete({ ...request, turnId: "room" });
+    await model.complete({ ...request, turnId: "dm" });
+    main.down = false;
+    // The room's turn stays on the backup; a third turn tries the main model.
+    expect((await model.complete({ ...request, turnId: "room" })).servedBy).toBe("b");
+    expect((await model.complete({ ...request, turnId: "wake" })).servedBy).toBeUndefined();
+    expect(main.calls).toHaveLength(3);
+  });
+});
+
+describe("why the backup answered", () => {
+  it("carries the main model's own error with the backup's answer", async () => {
+    const main = port("main", new ModelError("no reply from the model service within 120000 ms", "timeout", 1));
+    const model = withBackup({ primary: main, backup: port("backup", answer("ok")), backupName: "backup-model", backupSeesPictures: true });
+
+    const reply = await model.complete(request);
+
+    expect(reply.mainError).toBe("no reply from the model service within 120000 ms");
+  });
+
+  it("names each failed model in a chain, in order", async () => {
+    const second = withBackup({
+      primary: port("second", new ModelError("second is out of credit", "out_of_credit", 1)),
+      backup: port("third", answer("from the third")),
+      backupName: "third-model",
+      backupSeesPictures: true,
+    });
+    const model = withBackup({
+      primary: port("main", new ModelError("main is rate limited", "rate_limit", 4)),
+      backup: second,
+      backupName: "second-model",
+      backupSeesPictures: true,
+    });
+
+    const reply = await model.complete(request);
+
+    expect(reply).toMatchObject({ content: "from the third", servedBy: "third-model" });
+    expect(reply.mainError).toBe("main is rate limited; then second-model: second is out of credit");
   });
 });
 
@@ -283,8 +352,7 @@ describe("withoutPictures", () => {
 });
 
 describe("the backup's routing", () => {
-  it("says the backup takes the calls only while the main model is held out, with the backup's effort", async () => {
-    let clock = 1_000;
+  it("says the main model takes a new turn's calls, even after a failed turn, with the backup's effort", async () => {
     const main: ModelPort = {
       info: { id: "fake:main", contextTokens: 8000, nativeTools: true },
       async complete(): Promise<ModelResponse> {
@@ -297,16 +365,11 @@ describe("the backup's routing", () => {
       backupName: "backup-model",
       backupSeesPictures: true,
       backupEffort: "low",
-      holdMs: 60_000,
-      nowMs: () => clock,
     });
     expect(model.routing?.()).toEqual({ onBackup: false, backup: "backup-model", backupEffort: "low" });
 
-    await model.complete(request);
-    expect(model.routing?.()).toEqual({ onBackup: true, backup: "backup-model", backupEffort: "low" });
-
-    clock += 61_000;
-    expect(model.routing?.().onBackup).toBe(false);
+    await model.complete({ ...request, turnId: "turn-1" });
+    expect(model.routing?.()).toEqual({ onBackup: false, backup: "backup-model", backupEffort: "low" });
   });
 
   it("leaves the backup's effort out when the backup has none of its own", () => {

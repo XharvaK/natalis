@@ -344,3 +344,44 @@ describe("model.api, model.headers and model.effortMap", () => {
     expect(parsed.worldModels?.["game"]).toEqual({ model: "fast", api: "responses", effortMap: { high: "max" } });
   });
 });
+
+describe("model.stream and model.idleTimeoutMs", () => {
+  const model = { baseUrl: "https://llm.example.test/v1", model: "main", contextTokens: 32_000 };
+  const parse = (extra: Record<string, unknown>) =>
+    parseEntityConfig({ model: { ...model, ...extra }, summoner: { alias: "owner" } }).model;
+
+  it("is off unless the model block says true, and keeps the silence limit and a backup's own setting", () => {
+    expect(parse({}).stream).toBeUndefined();
+    const parsed = parse({ stream: true, idleTimeoutMs: 120_000, fallback: { model: "backup", api: "responses", stream: false } });
+    expect(parsed.stream).toBe(true);
+    expect(parsed.idleTimeoutMs).toBe(120_000);
+    expect(parsed.fallback).toEqual({ model: "backup", api: "responses", stream: false });
+  });
+
+  it("refuses a stream on the responses protocol, and a silence limit without a stream", () => {
+    expect(() => parse({ api: "responses", stream: true })).toThrow("model.stream is for the chat protocol only");
+    expect(() => parse({ fallback: { model: "b", api: "responses", stream: true } })).toThrow(
+      "model.fallback.stream is for the chat protocol only",
+    );
+    expect(() => parse({ idleTimeoutMs: 60_000 })).toThrow("model.idleTimeoutMs only works with model.stream true");
+    expect(() => parse({ stream: "yes" })).toThrow("model.stream must be true or false.");
+    expect(() => parse({ stream: true, idleTimeoutMs: 0 })).toThrow("model.idleTimeoutMs must be a whole number, 1 or more.");
+  });
+});
+
+describe("ceiling.wholeResultsChars", () => {
+  it("is left out unless given, and kept beside the call limits when it is", () => {
+    expect(parseEntityConfig(MINIMAL).ceiling).not.toHaveProperty("wholeResultsChars");
+    expect(parseEntityConfig({ ...MINIMAL, ceiling: { maxModelCalls: 64, maxToolCalls: 128, wholeResultsChars: 48_000 } }).ceiling).toEqual({
+      maxModelCalls: 64,
+      maxToolCalls: 128,
+      wholeResultsChars: 48_000,
+    });
+  });
+
+  it("refuses a budget that is not a positive whole number", () => {
+    expect(() => parseEntityConfig({ ...MINIMAL, ceiling: { wholeResultsChars: -1 } })).toThrow(
+      "ceiling.wholeResultsChars must be a whole number, 1 or more.",
+    );
+  });
+});

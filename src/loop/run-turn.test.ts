@@ -714,3 +714,207 @@ describe("runTurnWithMessages: the layout of the system text and the event", () 
     expect("layout" in (messages[0] ?? {})).toBe(false);
   });
 });
+
+describe("runTurn: the turn on each call", () => {
+  it("sends the turn's id with every model call, so a backup can hold for the rest of the turn", async () => {
+    const { input, model } = await setup({
+      steps: [reply({ toolCalls: [call("read_note", { path: "people/mara.md" })] }), reply({ toolCalls: [call(END_TURN)] })],
+    });
+
+    await runTurn(input);
+
+    expect(model.requests.map((request) => request.turnId)).toEqual(["turn-1", "turn-1"]);
+  });
+
+  it("says in the backup note why the main model did not answer", async () => {
+    const backed = {
+      ...reply({ toolCalls: [call(END_TURN)] }),
+      servedBy: "backup-model",
+      mainError: "no output from the model service for 120000 ms",
+    };
+    const { input, river } = await setup({ steps: [backed] });
+
+    await runTurn(input);
+
+    const note = rowsOf(river).find((r) => r.data?.["kind"] === "backup_model");
+    expect(note?.text).toBe(
+      "Your main model did not answer; your backup model (backup-model) answered this turn. Why: no output from the model service for 120000 ms",
+    );
+    expect(note?.data?.["mainError"]).toBe("no output from the model service for 120000 ms");
+  });
+});
+
+describe("runTurn: calls left", () => {
+  const read = (): ScriptStep => reply({ toolCalls: [call("read_note", { path: "people/mara.md" })] });
+  const lastUser = (messages: ChatMessage[]): string => {
+    const last = messages[messages.length - 1];
+    return last?.role === "user" ? last.content : "";
+  };
+
+  it("tells the model how many calls are left once a quarter are left, and keeps the line out of the turn", async () => {
+    const { input, model } = await setup({
+      steps: [read(), read(), read(), read(), read(), read(), read(), read(), read(), reply({ toolCalls: [call(END_TURN)] })],
+      ceiling: { maxModelCalls: 12, maxToolCalls: 40 },
+    });
+
+    const { messages } = await runTurnWithMessages(input);
+
+    // 12 calls: a quarter is 3, so the line shows from the tenth call on, when 3 are left.
+    expect(lastUser(model.requests[8]?.messages ?? [])).not.toContain("Calls left");
+    expect(lastUser(model.requests[9]?.messages ?? [])).toBe(
+      "Calls left in this turn, this one included: 3 model calls and 31 tool calls. Then the turn stops.",
+    );
+    expect(messages.some((m) => m.role === "user" && m.content.includes("Calls left"))).toBe(false);
+  });
+
+  it("counts tool calls too, and names the closing call when there is one", async () => {
+    const { input, model } = await setup({
+      steps: [reply({ toolCalls: [call("read_note", { path: "people/mara.md" }), call("read_note", { path: "people/mara.md" })] }), read()],
+      ceiling: { maxModelCalls: 40, maxToolCalls: 5 },
+      closingTools: ["append_note"],
+    });
+
+    await runTurn(input);
+
+    expect(lastUser(model.requests[1]?.messages ?? [])).toBe(
+      "Calls left in this turn, this one included: 39 model calls and 3 tool calls. Then the turn stops, and you get one last call to keep a note.",
+    );
+  });
+
+  it("puts the line beside pictures a tool handed over, in the same message", async () => {
+    const picture = { type: "image" as const, mime: "image/png", dataBase64: "AAAA" };
+    const looker: Tool = {
+      spec: { name: "look", description: "Look.", parameters: { type: "object", properties: {} } },
+      async run(): Promise<Receipt> {
+        return { ok: true, summary: "Here it is.", images: [picture] };
+      },
+    };
+    const { input, model } = await setup({
+      steps: [reply({ toolCalls: [call("look")] }), reply({ toolCalls: [call(END_TURN)] })],
+      tools: [looker],
+      ceiling: { maxModelCalls: 2, maxToolCalls: 40 },
+    });
+
+    await runTurn(input);
+
+    const last = model.requests[1]?.messages.at(-1);
+    expect(last).toMatchObject({ role: "user", images: [picture] });
+    expect(last?.role === "user" ? last.content : "").toContain("You see it on this call only.\nCalls left in this turn");
+  });
+});
+
+describe("runTurn: the closing call", () => {
+  const read = (): ScriptStep => reply({ toolCalls: [call("read_note", { path: "people/mara.md" })] });
+
+  it("makes one last call at the ceiling with only the closing tools, and keeps the note", async () => {
+    const { input, model, notebook } = await setup({
+      steps: [read(), read(), reply({ toolCalls: [call("append_note", { path: "diary.md", text: "Read about Mara.", why: "diary" })] })],
+      ceiling: { maxModelCalls: 2, maxToolCalls: 40 },
+      closingTools: ["append_note", "write_note"],
+    });
+
+    const result = await runTurn(input);
+
+    expect(result.endedBy).toBe("ceiling");
+    expect(result.modelCalls).toBe(3);
+    expect(model.requests[2]?.tools?.map((t) => t.name)).toEqual(["write_note", "append_note", END_TURN]);
+    const asked = model.requests[2]?.messages.at(-1);
+    expect(asked?.role === "user" ? asked.content : "").toContain("This is its last call: you can keep a note with write_note, append_note");
+    expect(notebook.read("diary.md")).toContain("Read about Mara.");
+  });
+
+  it("does not run a tool that is not a closing tool, and runs at most three", async () => {
+    const appendCall = (n: number) => call("append_note", { path: "diary.md", text: `line ${n}`, why: "diary" });
+    const { input, notebook } = await setup({
+      steps: [read(), reply({ toolCalls: [call("read_note", { path: "people/mara.md" }), appendCall(1), appendCall(2), appendCall(3), appendCall(4)] })],
+      ceiling: { maxModelCalls: 1, maxToolCalls: 40 },
+      closingTools: ["append_note"],
+    });
+
+    const { messages } = await runTurnWithMessages(input);
+
+    const diary = notebook.read("diary.md") ?? "";
+    expect(diary).toContain("line 3");
+    expect(diary).not.toContain("line 4");
+    const notRun = toolMessages(messages).map((m) => JSON.parse(m.content)).filter((r) => r.refused?.code === "not_run");
+    expect(notRun.map((r) => r.refused.reason)).toEqual([
+      "The turn is at its limit: only a note can be kept now.",
+      "The closing call's calls are used up.",
+    ]);
+  });
+
+  it("records a failed closing call and still ends the turn at the ceiling", async () => {
+    const { input, river } = await setup({
+      steps: [read(), new ModelError("service is down", "unavailable", 4)],
+      ceiling: { maxModelCalls: 1, maxToolCalls: 40 },
+      closingTools: ["append_note"],
+    });
+
+    const result = await runTurn(input);
+
+    expect(result.endedBy).toBe("ceiling");
+    expect(result.error).toBeUndefined();
+    expect(rowsOf(river).find((r) => r.data?.["kind"] === "closing_call")?.text).toBe("The closing call failed: service is down");
+  });
+
+  it("makes no closing call without closing tools, or when the ceiling is zero", async () => {
+    const without = await setup({ steps: [read()], ceiling: { maxModelCalls: 1, maxToolCalls: 40 } });
+    expect((await runTurn(without.input)).modelCalls).toBe(1);
+
+    const zero = await setup({ steps: [read()], ceiling: { maxModelCalls: 0, maxToolCalls: 0 }, closingTools: ["append_note"] });
+    expect((await runTurn(zero.input)).modelCalls).toBe(0);
+  });
+});
+
+describe("runTurn: shortening older results", () => {
+  const bulky: Tool = {
+    spec: { name: "bulk", description: "Returns a lot.", parameters: { type: "object", properties: {} } },
+    async run(): Promise<Receipt> {
+      return { ok: true, summary: "A long page.", data: { page: "p".repeat(6000) } };
+    },
+  };
+  const bulk = (): ScriptStep => reply({ toolCalls: [call("bulk")] });
+
+  it("shortens results before the newest reply once they pass the budget, and keeps them short", async () => {
+    const { input, model, river } = await setup({
+      steps: [bulk(), bulk(), bulk(), bulk(), reply({ toolCalls: [call(END_TURN)] })],
+      tools: [bulky],
+      ceiling: { maxModelCalls: 40, maxToolCalls: 40, wholeResultsChars: 10_000 },
+    });
+
+    const result = await runTurn(input);
+
+    const sizes = (i: number) => toolMessages(model.requests[i]?.messages ?? []).map((m) => m.content.length);
+    // Call 3: one result before the newest reply, under the budget, so all stay whole.
+    expect(sizes(2).every((size) => size > 6000)).toBe(true);
+    // Call 4: two results before the newest reply, over the budget together, so both are shortened; the newest stays whole.
+    const fourth = sizes(3);
+    expect(fourth[0]).toBeLessThan(2500);
+    expect(fourth[1]).toBeLessThan(2500);
+    expect(fourth[2]).toBeGreaterThan(6000);
+    // Call 5: a shortened result is the same text as before, and the one older result left is under the budget.
+    const fifth = toolMessages(model.requests[4]?.messages ?? []);
+    expect(fifth[0]?.content).toBe(toolMessages(model.requests[3]?.messages ?? [])[0]?.content);
+    expect(fifth[2]?.content.length).toBeGreaterThan(6000);
+    const short = JSON.parse(fifth[0]?.content ?? "{}");
+    expect(short).toMatchObject({ ok: true, summary: "A long page." });
+    expect(short.shortened).toMatch(/^This result was shortened to keep this turn small: it was \d+ characters\. Call the tool again/);
+    expect(String(short.dataStart).length).toBeLessThanOrEqual(2048);
+    expect(result.endedBy).toBe("end_turn");
+    expect(rowsOf(river).find((r) => r.kind === "turn" && r.data?.["phase"] === "end")?.data?.["shortenedResults"]).toBe(2);
+  });
+
+  it("never shortens without a budget, and leaves small results whole", async () => {
+    const plain = await setup({ steps: [bulk(), bulk(), bulk(), reply({ toolCalls: [call(END_TURN)] })], tools: [bulky] });
+    await runTurn(plain.input);
+    expect(toolMessages(plain.model.requests[3]?.messages ?? []).every((m) => m.content.length > 6000)).toBe(true);
+
+    const readMara = (): ScriptStep => reply({ toolCalls: [call("read_note", { path: "people/mara.md" })] });
+    const small = await setup({
+      steps: [readMara(), readMara(), reply({ toolCalls: [call(END_TURN)] })],
+      ceiling: { maxModelCalls: 40, maxToolCalls: 40, wholeResultsChars: 10 },
+    });
+    await runTurn(small.input);
+    expect(toolMessages(small.model.requests[2]?.messages ?? [])[0]?.content).toContain("Mara likes tea.");
+  });
+});

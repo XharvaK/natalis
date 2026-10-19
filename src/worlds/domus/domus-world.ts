@@ -740,6 +740,11 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       return `The Sims 4 (Domus): your household's game, at a thread named domus: and a slot name, while your summoner's link to the game is attached. The link runs on your summoner's computer; the game's side runs inside the game. ${LIVING_IT}`;
     },
 
+    resting() {
+      // While no game is attached, no act or look can reach the game, so the game's tools are of no use outside its threads.
+      return !db || !book || !book.attachedAt(nowMs());
+    },
+
     now() {
       if (!db || !book) return "Domus: not running.";
       const at = nowMs();

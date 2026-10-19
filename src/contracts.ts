@@ -64,6 +64,11 @@ export type ModelRequest = {
   maxOutputTokens?: number;
   /** Provider-neutral effort hint; adapters map it or ignore it. */
   effort?: "low" | "medium" | "high" | "xhigh";
+  /**
+   * The turn this call belongs to, when the loop makes it. A port with a backup keeps the backup for the rest of a turn
+   * once the main model failed in it; a call without a turn always tries the main model first. Never sent to a provider.
+   */
+  turnId?: string;
 };
 
 export type FinishReason = "stop" | "tool_calls" | "length" | "content_filter" | "error";
@@ -93,6 +98,11 @@ export type ModelResponse = {
    * river note from it, so the Lar can read which model answered. Absent when the main model answered.
    */
   servedBy?: string;
+  /**
+   * Set with servedBy: why the backup answered, as the main model's own error (and each failed backup's in a chain). The
+   * loop writes it into the river, so a backup never hides why the main model did not answer.
+   */
+  mainError?: string;
 };
 
 export type ModelInfo = {
@@ -113,7 +123,10 @@ export interface ModelPort {
 
 /** Where a port with a backup sends its next call: the backup while the main model is held out, otherwise the main model. */
 export type ModelRouting = {
-  /** True while the backup takes the calls, because the main model failed moments ago and is not tried again yet. */
+  /**
+   * True while the backup takes the calls because the main model is held out. A port that holds the main model out only
+   * for the rest of a failed turn says false here: a new turn tries the main model first.
+   */
   onBackup: boolean;
   /** The backup's configured name. */
   backup: string;
@@ -314,6 +327,12 @@ export type Ceiling = {
   maxModelCalls: number;
   /** Most tool calls in one turn. */
   maxToolCalls: number;
+  /**
+   * Each model call re-sends the whole turn. When the tool results before the newest reply pass this many characters, each
+   * of them is shortened to its summary and the start of its data, and the Lar can call the tool again for all of it.
+   * Absent: results are never shortened.
+   */
+  wholeResultsChars?: number;
 };
 
 // ---------------------------------------------------------------------------------------------------
@@ -407,6 +426,11 @@ export interface World {
   isOwnerPlace?(place: string): boolean;
   /** Extra tools this world offers (react, act_in_game, ...). */
   tools(): Tool[];
+  /**
+   * True while this world cannot act at all (a game that is not attached). Its tools are then left out of turns in other
+   * worlds' threads, and the now board says so. Optional: a world that can always act does not define it.
+   */
+  resting?(): boolean;
   /** One or two plain lines for the now board: connected or not, places open. */
   now(): string;
   /**

@@ -33,6 +33,13 @@ export type ModelConfig = {
   headers?: Record<string, string>;
   /** Wire values for the entity's efforts when this model's levels differ, e.g. { "xhigh": "max" }. This model's only. */
   effortMap?: EffortMap;
+  /**
+   * Ask for replies as a stream (chat protocol only), so a model that goes silent is noticed after idleTimeoutMs and its
+   * backup can answer. timeoutMs still bounds the whole call. Default false.
+   */
+  stream?: boolean;
+  /** With stream on: the longest silence before a call fails as a timeout. Default 120000. */
+  idleTimeoutMs?: number;
 };
 
 /** The entity's efforts mapped to the values one model takes on the wire. */
@@ -69,6 +76,8 @@ export type FallbackModelConfig = {
   apiKeyEnv?: string;
   /** The backup's request headers. With no baseUrl of its own, left out means the headers of the model above it. */
   headers?: Record<string, string>;
+  /** Streaming for the backup. Left out, the setting of the model above it (a responses model never streams). */
+  stream?: boolean;
   /** A backup for this backup, tried when it cannot answer either. Its settings fall back to this backup's. */
   fallback?: FallbackModelConfig;
 };
@@ -99,6 +108,8 @@ export function modelFromConfig(
     api: config.api,
     headers: config.headers,
     effortMap: config.effortMap,
+    stream: config.stream,
+    idleTimeoutMs: config.idleTimeoutMs,
   };
   const primary = withEmulated(createOpenAICompatiblePort(connection), config);
   if (config.fallback === undefined) return primary;
@@ -140,6 +151,7 @@ function backupConfig(above: ModelConfig, backup: FallbackModelConfig): ModelCon
   const api = backup.api ?? above.api;
   const cacheMarks = backup.cacheMarks ?? above.cacheMarks;
   const effortParam = backup.effortParam === undefined ? above.effortParam : backup.effortParam;
+  const stream = backup.stream ?? above.stream;
   return {
     baseUrl: backup.baseUrl ?? above.baseUrl,
     model: backup.model,
@@ -149,6 +161,8 @@ function backupConfig(above: ModelConfig, backup: FallbackModelConfig): ModelCon
     ...(above.nativeTools === undefined ? {} : { nativeTools: above.nativeTools }),
     ...(effortParam === undefined ? {} : { effortParam }),
     ...(above.timeoutMs === undefined ? {} : { timeoutMs: above.timeoutMs }),
+    ...(above.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: above.idleTimeoutMs }),
+    ...(stream === undefined ? {} : { stream }),
     ...(cacheMarks === undefined ? {} : { cacheMarks }),
     ...(api === undefined ? {} : { api }),
     ...(backup.effortMap === undefined ? {} : { effortMap: backup.effortMap }),

@@ -29,8 +29,17 @@ import {
 import { MalformedToolBlock } from "../model/emulated-tools.js";
 
 export const END_TURN = "end_turn";
-/** How much of a receipt's data JSON the river keeps. The SHA-256 of all of it is kept beside the start. */
+/** How much of a receipt's data JSON the river keeps, and a shortened result shows. The SHA-256 of all of it is kept beside the start. */
 const RECEIPT_KEPT_BYTES = 2048;
+/** A result is worth shortening only when it is this much larger than what a shortened one keeps. */
+const SHORTEN_MARGIN_CHARS = 1024;
+/** The calls-left line shows once a quarter of the turn's calls are left, and never later than with this many left. */
+const CALLS_LEFT_SHARE = 4;
+const CALLS_LEFT_MIN = 3;
+/** The most tool calls the closing call runs. */
+const CLOSING_TOOL_CALLS = 3;
+/** How much of the main model's error the backup note shows. */
+const MAIN_ERROR_CLIP = 300;
 
 /** The loop's own tool. Always offered; calling it ends the turn once its receipt is ok. */
 export const endTurnSpec: ToolSpec = {
@@ -88,6 +97,11 @@ export type RunTurnInput = {
   turnId: string;
   signal?: AbortSignal;
   effort?: ModelRequest["effort"];
+  /**
+   * The tools a closing call may use. When the turn reaches its ceiling, one last model call is made with only these and
+   * end_turn, so the Lar can keep a note of what it was doing. Left out or empty, there is no closing call.
+   */
+  closingTools?: readonly string[];
 };
 
 export type RunTurnOutput = { result: TurnResult; messages: ChatMessage[] };
@@ -101,6 +115,7 @@ export async function runTurn(input: RunTurnInput): Promise<TurnResult> {
 export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnOutput> {
   const { model, system, systemLayout, history, event, eventLayout, thread, river, notebook, ceiling, nowMs, turnId, signal, effort } =
     input;
+  const closing = new Set(input.closingTools ?? []);
 
   const ownTools = new Map<string, Tool>();
   for (const tool of input.tools) {
@@ -134,6 +149,9 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
   let backupTokens: TokenCount | undefined;
   // The cached-prompt counts, kept apart from the meter's token counts and written beside them when reported.
   let cache: { hit?: number; miss?: number } | undefined;
+  // Each tool message, so the older ones can be shortened when the turn's results grow past wholeResultsChars.
+  const results: ToolResult[] = [];
+  let shortenedResults = 0;
 
   const write = (row: Omit<RiverRowInput, "thread" | "atMs">): void => {
     river.append({ ...row, thread, atMs: nowMs() });
@@ -181,8 +199,102 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
       },
     });
     receipts.push({ tool: call.name, receipt });
-    messages.push({ role: "tool", toolCallId: call.id, content: JSON.stringify(receipt) });
+    const content = JSON.stringify(receipt);
+    results.push({ index: messages.length, round: modelCalls, receipt, chars: content.length, short: false });
+    messages.push({ role: "tool", toolCallId: call.id, content });
     return receipt;
+  };
+
+  // What one model reply leaves in the record and the meter; the same for every call, the closing one too.
+  const take = (response: ModelResponse): ToolCall[] => {
+    if (response.usage !== undefined) {
+      const counted = countOf(response.usage);
+      tokens = addTokens(tokens, counted);
+      cache = addCache(cache, response.usage);
+      if (response.servedBy !== undefined) backupTokens = addTokens(backupTokens, counted);
+    }
+    if (response.servedBy !== undefined && !backupNoted) {
+      backupNoted = true;
+      const why = response.mainError === undefined ? "" : ` Why: ${clipText(response.mainError, MAIN_ERROR_CLIP)}`;
+      write({
+        kind: "note",
+        source: "body",
+        text: `Your main model did not answer; your backup model (${response.servedBy}) answered this turn.${why}`,
+        data: {
+          turnId,
+          kind: "backup_model",
+          model: response.servedBy,
+          ...(response.mainError === undefined ? {} : { mainError: response.mainError }),
+        },
+      });
+    }
+    const calls = response.toolCalls ?? [];
+    const content = response.content;
+    // The reasoning summary is part of the Lar's thinking record; it is kept, never shown to anyone as speech.
+    if (response.reasoning !== undefined) {
+      write({ kind: "note", source: "self", text: response.reasoning, data: { thought: true, reasoning: true, turnId } });
+    }
+    if (typeof content === "string" && content.trim() !== "") {
+      thoughts.push(content);
+      write({ kind: "note", source: "self", text: content, data: { thought: true, turnId } });
+    }
+    messages.push({
+      role: "assistant",
+      content,
+      ...(calls.length > 0 ? { toolCalls: calls } : {}),
+      ...(response.providerState ? { providerState: response.providerState } : {}),
+    });
+    return calls;
+  };
+
+  // Every result before the newest reply is shortened once they pass the budget together. A shortened one stays short, so
+  // the start of the turn stays the same from call to call and the provider can keep reusing it.
+  const shortenOlder = (): void => {
+    const budget = ceiling.wholeResultsChars;
+    if (budget === undefined) return;
+    const older = results.filter((result) => !result.short && result.round < modelCalls);
+    if (older.reduce((sum, result) => sum + result.chars, 0) <= budget) return;
+    for (const result of older) {
+      if (result.chars <= RECEIPT_KEPT_BYTES + SHORTEN_MARGIN_CHARS) continue;
+      const message = messages[result.index];
+      if (message?.role !== "tool") continue;
+      messages[result.index] = { ...message, content: shortenedReceipt(result.receipt, result.chars) };
+      result.short = true;
+      shortenedResults += 1;
+    }
+  };
+
+  // One last call at the ceiling, with only the closing tools: what the Lar keeps of an unfinished turn is its own to write.
+  // Its failure is recorded and the turn still ends at the ceiling, since everything before it was done.
+  const closingCall = async (): Promise<void> => {
+    const offered = specs.filter((spec) => closing.has(spec.name) || spec.name === END_TURN);
+    const names = offered.filter((spec) => spec.name !== END_TURN).map((spec) => spec.name).join(", ");
+    messages.push({
+      role: "user",
+      content:
+        `This turn has reached its limit of ${ceiling.maxModelCalls} model calls or ${ceiling.maxToolCalls} tool calls. ` +
+        `This is its last call: you can keep a note with ${names === "" ? "end_turn" : names} (at most ${CLOSING_TOOL_CALLS} calls), ` +
+        "and nothing else runs. Anything unfinished can wait for a later turn.",
+    });
+    modelCalls += 1;
+    let response: ModelResponse;
+    try {
+      response = await model.complete({ messages: messages.slice(), tools: offered, toolChoice: "auto", effort, turnId }, signal);
+    } catch (err) {
+      write({ kind: "note", source: "body", text: `The closing call failed: ${messageOf(err)}`, data: { turnId, kind: "closing_call" } });
+      return;
+    }
+    let ran = 0;
+    for (const call of take(response)) {
+      if (!closing.has(call.name) && call.name !== END_TURN) {
+        skip(call, "The turn is at its limit: only a note can be kept now.");
+      } else if (ran >= CLOSING_TOOL_CALLS || signal?.aborted) {
+        skip(call, "The closing call's calls are used up.");
+      } else {
+        ran += 1;
+        await runCall(call);
+      }
+    }
   };
 
   // A call the loop did not run still gets a tool message, so the message list stays valid for the model.
@@ -209,11 +321,14 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
         break;
       }
 
+      shortenOlder();
+      const left = callsLeft(ceiling, modelCalls, toolCalls, closing.size > 0);
       modelCalls += 1;
       let response: ModelResponse;
       try {
-        const shown: ChatMessage[] = pictures.length === 0 ? messages.slice() : [...messages, pictureMessage(pictures.splice(0))];
-        response = await model.complete({ messages: shown, tools: specs, toolChoice: "auto", effort }, signal);
+        const tail = tailMessage(pictures.splice(0), left);
+        const shown: ChatMessage[] = tail === undefined ? messages.slice() : [...messages, tail];
+        response = await model.complete({ messages: shown, tools: specs, toolChoice: "auto", effort, turnId }, signal);
       } catch (err) {
         if (signal?.aborted || (err instanceof ModelError && err.kind === "aborted")) {
           endedBy = "aborted";
@@ -243,37 +358,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
         break;
       }
 
-      if (response.usage !== undefined) {
-        const counted = countOf(response.usage);
-        tokens = addTokens(tokens, counted);
-        cache = addCache(cache, response.usage);
-        if (response.servedBy !== undefined) backupTokens = addTokens(backupTokens, counted);
-      }
-      if (response.servedBy !== undefined && !backupNoted) {
-        backupNoted = true;
-        write({
-          kind: "note",
-          source: "body",
-          text: `Your main model did not answer; your backup model (${response.servedBy}) answered this turn.`,
-          data: { turnId, kind: "backup_model", model: response.servedBy },
-        });
-      }
-      const calls = response.toolCalls ?? [];
-      const content = response.content;
-      // The reasoning summary is part of the Lar's thinking record; it is kept, never shown to anyone as speech.
-      if (response.reasoning !== undefined) {
-        write({ kind: "note", source: "self", text: response.reasoning, data: { thought: true, reasoning: true, turnId } });
-      }
-      if (typeof content === "string" && content.trim() !== "") {
-        thoughts.push(content);
-        write({ kind: "note", source: "self", text: content, data: { thought: true, turnId } });
-      }
-      messages.push({
-        role: "assistant",
-        content,
-        ...(calls.length > 0 ? { toolCalls: calls } : {}),
-        ...(response.providerState ? { providerState: response.providerState } : {}),
-      });
+      const calls = take(response);
 
       if (calls.length === 0) {
         endedBy = "no_tool_call";
@@ -326,6 +411,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
       text: "Turn stopped at the loop ceiling.",
       data: { turnId, ...(skipped.length > 0 ? { skipped } : {}) },
     });
+    if (thrown === undefined && closing.size > 0 && ceiling.maxModelCalls > 0 && signal?.aborted !== true) await closingCall();
   }
   // The meter: the model's id, the effort asked for, and the tokens the provider reported. Only what was reported is written.
   const meter = {
@@ -339,7 +425,15 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
   write({
     kind: "turn",
     source: "body",
-    data: { phase: "end", endedBy: finalReason, turnId, modelCalls, toolCalls, ...meter },
+    data: {
+      phase: "end",
+      endedBy: finalReason,
+      turnId,
+      modelCalls,
+      toolCalls,
+      ...(shortenedResults === 0 ? {} : { shortenedResults }),
+      ...meter,
+    },
   });
   if (thrown !== undefined) throw thrown.error;
 
@@ -421,13 +515,50 @@ export function addTokens(sum: TokenCount | undefined, counted: TokenCount): Tok
   return next;
 }
 
-/** The one call that carries pictures the tools handed over: they are not added to the messages kept for the turn. */
-function pictureMessage(images: ImagePart[]): ChatMessage {
-  return {
-    role: "user",
-    content: `Here ${images.length === 1 ? "is the picture" : "are the pictures"} you asked to look at. You see ${images.length === 1 ? "it" : "them"} on this call only.`,
-    images,
-  };
+/** One tool message of the turn: where it sits, the model call whose reply asked for it, and whether it is shortened. */
+type ToolResult = { index: number; round: number; receipt: Omit<Receipt, "images">; chars: number; short: boolean };
+
+/** A result shortened to its summary and the start of its data, and a line saying so. */
+function shortenedReceipt(receipt: Omit<Receipt, "images">, chars: number): string {
+  const { data, ...rest } = receipt;
+  const json = data === undefined ? undefined : JSON.stringify(data);
+  return JSON.stringify({
+    ...rest,
+    ...(json === undefined ? {} : { dataStart: clipBytes(json, RECEIPT_KEPT_BYTES) }),
+    shortened: `This result was shortened to keep this turn small: it was ${chars} characters. Call the tool again to see all of it.`,
+  });
+}
+
+/**
+ * The calls-left line, once few calls are left; undefined before then. `made` and `toolsMade` are the calls made so far,
+ * so the count includes the call about to be made.
+ */
+function callsLeft(ceiling: Ceiling, made: number, toolsMade: number, closes: boolean): string | undefined {
+  const models = ceiling.maxModelCalls - made;
+  const tools = ceiling.maxToolCalls - toolsMade;
+  const near = (left: number, max: number): boolean => left <= Math.max(CALLS_LEFT_MIN, Math.ceil(max / CALLS_LEFT_SHARE));
+  if (!near(models, ceiling.maxModelCalls) && !near(tools, ceiling.maxToolCalls)) return undefined;
+  const after = closes ? " Then the turn stops, and you get one last call to keep a note." : " Then the turn stops.";
+  return `Calls left in this turn, this one included: ${models} model ${models === 1 ? "call" : "calls"} and ${tools} tool ${tools === 1 ? "call" : "calls"}.${after}`;
+}
+
+/**
+ * The message the model sees after the turn's own, on this call only: pictures the tools handed over, and the calls-left
+ * line. Neither is added to the messages kept for the turn. Undefined when there is neither.
+ */
+function tailMessage(images: ImagePart[], left: string | undefined): ChatMessage | undefined {
+  const lines: string[] = [];
+  if (images.length > 0) {
+    const one = images.length === 1;
+    lines.push(`Here ${one ? "is the picture" : "are the pictures"} you asked to look at. You see ${one ? "it" : "them"} on this call only.`);
+  }
+  if (left !== undefined) lines.push(left);
+  if (lines.length === 0) return undefined;
+  return { role: "user", content: lines.join("\n"), ...(images.length > 0 ? { images } : {}) };
+}
+
+function clipText(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}...` : text;
 }
 
 type Parsed = { ok: true; value: Record<string, unknown> } | { ok: false; receipt: Receipt };
