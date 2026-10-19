@@ -685,7 +685,10 @@ export function createWebWorld(options: WebWorldOptions): World {
             description: "GET (default) and HEAD read any public site. POST, PUT, PATCH and DELETE work only on sites your summoner listed.",
           },
           headers: { type: "object", additionalProperties: { type: "string" }, description: `Up to ${HEADERS_MAX} headers.` },
-          json: { description: "A JSON body, for POST, PUT, PATCH or DELETE." },
+          json: {
+            description:
+              'A JSON body, for POST, PUT, PATCH or DELETE: the value itself, such as {"post_id": 1, "body": "text"}, sent as application/json. A string here is sent as one JSON string, not read as JSON; JSON text you already wrote goes in body.',
+          },
           body: { type: "string", description: `A text body, up to ${REQUEST_BODY_MAX / 1024} KiB.` },
           auth: {
             type: "object",

@@ -269,6 +269,14 @@ describe("writes", () => {
     expect(new TextDecoder().decode(calls[0]!.body)).toBe('{"name":"lamp"}');
   });
 
+  it("sends a string json as one JSON string, and its spec says so and where JSON text goes", async () => {
+    await run({ url: "https://example.org/items", method: "POST", json: '{"name":"lamp"}' });
+    expect(new TextDecoder().decode(calls[0]!.body)).toBe(JSON.stringify('{"name":"lamp"}'));
+    const spec = world.tools().find((tool) => tool.spec.name === "web_request")?.spec;
+    const json = (spec?.parameters["properties"] as Record<string, { description?: string }> | undefined)?.["json"];
+    expect(json?.description).toContain("A string here is sent as one JSON string, not read as JSON; JSON text you already wrote goes in body.");
+  });
+
   it("reads web.json fresh on each request, so an edit needs no restart", async () => {
     saveWebFile(dir, { sites: [] });
     expect((await run({ url: "https://example.org/x", method: "POST", body: "x" })).refused?.code).toBe("site_not_listed");
