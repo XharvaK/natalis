@@ -102,6 +102,11 @@ export type RunTurnInput = {
    * end_turn, so the Lar can keep a note of what it was doing. Left out or empty, there is no closing call.
    */
   closingTools?: readonly string[];
+  /**
+   * What came in from outside since the turn began, as lines for the model, or undefined when nothing did. Asked before
+   * each model call and shown on that call only, so a message that arrives mid-turn is seen in this turn.
+   */
+  arrivals?: () => string | undefined;
 };
 
 export type RunTurnOutput = { result: TurnResult; messages: ChatMessage[] };
@@ -326,7 +331,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
       modelCalls += 1;
       let response: ModelResponse;
       try {
-        const tail = tailMessage(pictures.splice(0), left);
+        const tail = tailMessage(pictures.splice(0), input.arrivals?.(), left);
         const shown: ChatMessage[] = tail === undefined ? messages.slice() : [...messages, tail];
         response = await model.complete({ messages: shown, tools: specs, toolChoice: "auto", effort, turnId }, signal);
       } catch (err) {
@@ -543,15 +548,16 @@ function callsLeft(ceiling: Ceiling, made: number, toolsMade: number, closes: bo
 }
 
 /**
- * The message the model sees after the turn's own, on this call only: pictures the tools handed over, and the calls-left
- * line. Neither is added to the messages kept for the turn. Undefined when there is neither.
+ * The message the model sees after the turn's own, on this call only: pictures the tools handed over, what came in since
+ * the turn began, and the calls-left line. None is added to the messages kept for the turn. Undefined when there is none.
  */
-function tailMessage(images: ImagePart[], left: string | undefined): ChatMessage | undefined {
+function tailMessage(images: ImagePart[], arrived: string | undefined, left: string | undefined): ChatMessage | undefined {
   const lines: string[] = [];
   if (images.length > 0) {
     const one = images.length === 1;
     lines.push(`Here ${one ? "is the picture" : "are the pictures"} you asked to look at. You see ${one ? "it" : "them"} on this call only.`);
   }
+  if (arrived !== undefined) lines.push(arrived);
   if (left !== undefined) lines.push(left);
   if (lines.length === 0) return undefined;
   return { role: "user", content: lines.join("\n"), ...(images.length > 0 ? { images } : {}) };

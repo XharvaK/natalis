@@ -144,6 +144,14 @@ const SAY_CLIP = 160;
 /** How much of one cut tool call's arguments the retry shows. */
 const DONE_ARGS_CLIP = 400;
 /** The notebook tools a turn's closing call offers at the ceiling: what to keep of an unfinished turn is the Lar's to write. */
+/** How many of this thread's messages that came in during a turn its model calls show, and how long each line may be. */
+const ARRIVED_SHOWN = 5;
+const ARRIVED_LINE_CHARS = 1500;
+
+function clipArrived(line: string): string {
+  return line.length > ARRIVED_LINE_CHARS ? `${line.slice(0, ARRIVED_LINE_CHARS)}... (cut: read_history shows all of it)` : line;
+}
+
 const CLOSING_TOOLS = ["write_note", "append_note", "edit_note"] as const;
 /** The turn ends that did not finish a turn: its cursor stays, and its rows are shown as done on the next try. */
 const CUT_ENDS = new Set(["model_error", "aborted"]);
@@ -1046,6 +1054,7 @@ class Runtime implements Entity {
       model: withWitness(turnModel, this.witness, this.threadKind(thread), { cacheMarks: this.config.model.cacheMarks === true }),
       tools: this.toolsFor(thread),
       closingTools: CLOSING_TOOLS,
+      arrivals: () => this.arrivedSince(thread, snapshot),
       system: laid.system,
       systemLayout: laid.systemLayout,
       history: [],
@@ -1962,6 +1971,39 @@ class Runtime implements Entity {
       .slice(0, RECALL_LIMIT)
       .map(({ row }) => `[${this.stamp(row.atMs)} ${row.thread} ${who(row)}] ${shownRow(row)}`)
       .join("\n");
+  }
+
+  /**
+   * What came in from outside since a turn's snapshot, for the line its next model call shows: this thread's messages in
+   * full, the last few of them, and a count for each other thread. Game views are left out: the game's newest view is
+   * read with its own tools. Undefined when nothing came in.
+   */
+  private arrivedSince(thread: string, snapshot: number): string | undefined {
+    let rows: RiverRow[];
+    try {
+      rows = this.river
+        .read({ kinds: ["event"], sinceSeq: snapshot, limit: ALL_ROWS })
+        .filter((row) => (row.source === "owner" || row.source === "outside") && viewKeyOf(row) === undefined);
+    } catch (err) {
+      return `Could not check for messages that came in during this turn: ${messageOf(err)}`;
+    }
+    const here = rows.filter((row) => row.thread === thread && !this.hiddenHere(row, thread));
+    const elsewhere = new Map<string, number>();
+    for (const row of rows) if (row.thread !== thread) elsewhere.set(row.thread, (elsewhere.get(row.thread) ?? 0) + 1);
+    if (here.length === 0 && elsewhere.size === 0) return undefined;
+    const lines: string[] = [];
+    if (here.length > 0) {
+      const shown = here.slice(-ARRIVED_SHOWN);
+      const earlier = here.length - shown.length;
+      lines.push(`New here since this turn began${earlier > 0 ? ` (the last ${shown.length}; ${earlier} earlier)` : ""}:`);
+      for (const row of shown) lines.push(this.scanner.redact(clipArrived(this.lineFor(row))));
+      lines.push("You can answer them in this turn. The next turn shows them again under New, after your last words here.");
+    }
+    if (elsewhere.size > 0) {
+      const counts = [...elsewhere].map(([place, n]) => `${place} (${n} ${n === 1 ? "message" : "messages"})`);
+      lines.push(`New elsewhere since this turn began: ${counts.join(", ")}. Each place gets its own turn after this one.`);
+    }
+    return lines.join("\n");
   }
 
   /**

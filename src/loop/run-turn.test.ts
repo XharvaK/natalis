@@ -918,3 +918,26 @@ describe("runTurn: shortening older results", () => {
     expect(toolMessages(small.model.requests[2]?.messages ?? [])[0]?.content).toContain("Mara likes tea.");
   });
 });
+
+describe("runTurn: what came in during the turn", () => {
+  it("shows the arrivals line on each call that has one, after pictures and before calls left, and never keeps it", async () => {
+    const said: Array<string | undefined> = [undefined, "New here since this turn began:\n[08:30 mara] One more thing."];
+    let asked = 0;
+    const { input, model } = await setup({
+      steps: [reply({ toolCalls: [call("read_note", { path: "people/mara.md" })] }), reply({ toolCalls: [call(END_TURN)] })],
+      ceiling: { maxModelCalls: 2, maxToolCalls: 40 },
+      arrivals: () => said[asked++],
+    });
+
+    const { messages } = await runTurnWithMessages(input);
+
+    expect(asked).toBe(2);
+    const first = model.requests[0]?.messages.at(-1);
+    expect(first?.role === "user" ? first.content : "").not.toContain("New here");
+    const last = model.requests[1]?.messages.at(-1);
+    expect(last?.role === "user" ? last.content : "").toBe(
+      "New here since this turn began:\n[08:30 mara] One more thing.\nCalls left in this turn, this one included: 1 model call and 39 tool calls. Then the turn stops.",
+    );
+    expect(messages.some((m) => m.role === "user" && m.content.includes("New here"))).toBe(false);
+  });
+});

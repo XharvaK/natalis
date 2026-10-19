@@ -119,6 +119,12 @@ function userTextOf(request: ModelRequest | undefined): string {
   return message?.role === "user" ? message.content : "";
 }
 
+/** The turn's own message, the first user message: a later call can end with a line about what came in meanwhile. */
+function eventTextOf(request: ModelRequest | undefined): string {
+  const message = request?.messages.find((item) => item.role === "user");
+  return message?.role === "user" ? message.content : "";
+}
+
 function systemTextOf(request: ModelRequest | undefined): string {
   const message = request?.messages[0];
   return message?.role === "system" ? message.content : "";
@@ -1560,7 +1566,7 @@ describe("two threads, one voice", () => {
     const model: ModelPort = {
       info: { id: "routing:test", contextTokens: 32_000, nativeTools: true } satisfies ModelInfo,
       async complete(request: ModelRequest): Promise<ModelResponse> {
-        const key = userTextOf(request).includes("Say hello in the room.") ? "summoner" : "room";
+        const key = eventTextOf(request).includes("Say hello in the room.") ? "summoner" : "room";
         requests.push({ key, request });
         if (key === "summoner" && !heldOnce) {
           heldOnce = true;
@@ -1626,7 +1632,7 @@ describe("two threads, one voice", () => {
     const model: ModelPort = {
       info: { id: "routing:test", contextTokens: 32_000, nativeTools: true } satisfies ModelInfo,
       async complete(request: ModelRequest): Promise<ModelResponse> {
-        const key = userTextOf(request).includes("Say hello in the room.") ? "summoner" : "room";
+        const key = eventTextOf(request).includes("Say hello in the room.") ? "summoner" : "room";
         requests.push({ key, request });
         if (key === "room" && requests.filter((item) => item.key === "room").length === 1) roomTurnBegun.resolve();
         return scripts[key]?.shift() ?? reply({ toolCalls: [call("end_turn")] });
@@ -1670,7 +1676,7 @@ describe("two threads, one voice", () => {
     const model: ModelPort = {
       info: { id: "routing:test", contextTokens: 32_000, nativeTools: true } satisfies ModelInfo,
       async complete(request: ModelRequest): Promise<ModelResponse> {
-        const key = userTextOf(request).includes("Say hello in the room.") ? "summoner" : "room";
+        const key = eventTextOf(request).includes("Say hello in the room.") ? "summoner" : "room";
         return scripts[key]?.shift() ?? reply({ toolCalls: [call("end_turn")] });
       },
     };
@@ -3508,5 +3514,46 @@ describe("a resting world's tools", () => {
 
     expect(names(model.requests[0])).toContain("poke");
     expect(userTextOf(model.requests[0])).not.toContain("Its tools are left out of this turn");
+  });
+});
+
+describe("messages that come in during a turn", () => {
+  const lastUserText = (request: ModelRequest | undefined): string => {
+    const last = request?.messages.at(-1);
+    return last?.role === "user" ? last.content : "";
+  };
+
+  it("are shown on the turn's next call: this thread's in full, another thread's as a count, and New shows them again next turn", async () => {
+    const room = fakeWorld("fake");
+    let cli: CliWorld | undefined;
+    const model = new ScriptedModel([
+      async () => {
+        cli?.send("One more thing, while you think.");
+        room.push("fake:room", "A passer-by says hi.");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return reply({ toolCalls: [call("say", { place: "cli:summoner", text: "Got it." })] });
+      },
+      reply({ toolCalls: [call("end_turn")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const opened = await open(model, {}, [room.world]);
+    cli = opened.cli;
+    await opened.entity.start();
+
+    cli.send("Hello, Iris.");
+    await opened.entity.idle();
+
+    // The room's turn runs beside this one, so the calls are found by what they show, not by their order.
+    const tails = model.requests.map(lastUserText);
+    expect(tails[0]).not.toContain("since this turn began");
+    expect(tails.filter((tail) => tail.includes("since this turn began"))).toHaveLength(1);
+    const second = tails.find((tail) => tail.includes("since this turn began")) ?? "";
+    expect(second).toContain("New here since this turn began:");
+    expect(second).toContain("One more thing, while you think.");
+    expect(second).toContain("New elsewhere since this turn began: fake:room (1 message). Each place gets its own turn after this one.");
+    expect(second).not.toContain("A passer-by says hi.");
+    // The next turn here shows the message again under New.
+    expect(userTextOf(model.requests.at(-1))).toMatch(/New:[^]*One more thing, while you think\./);
   });
 });
