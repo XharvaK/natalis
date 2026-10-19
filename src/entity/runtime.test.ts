@@ -2460,7 +2460,7 @@ describe("body notes on start", () => {
     await after.entity.idle();
 
     const note = allRows(after.entity).find((row) => row.data?.["bodyNote"] === "start");
-    expect(note?.text).toBe("You were last known running at 2026-10-11 12:00 and were down for about 1 h; the stop itself was not recorded.");
+    expect(note?.text).toBe("You were last known running at 2026-10-11 12:00 and started again 1 h after that; the stop itself was not recorded.");
   });
 
   it("writes no start note on the first start of a new Lar", async () => {

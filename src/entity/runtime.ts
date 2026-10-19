@@ -1311,7 +1311,7 @@ class Runtime implements Entity {
    * The body's note at each start, in the self thread (where the body's own notes go): when the Lar was last running, and
    * how long it was down since. The last time is the newer of the alive stamp and the newest row that is not a start
    * note, so a quiet stretch with no rows is not read as time down. After a stop of its own the note says it was
-   * stopped; otherwise the stop was not seen, and the time down is known to within ALIVE_STAMP_MS. A new Lar has no
+   * stopped; otherwise the stop was not seen, and it ran for up to ALIVE_STAMP_MS after the last stamp. A new Lar has no
    * rows yet, so it gets no note.
    */
   private noteStart(): void {
@@ -1324,7 +1324,7 @@ class Runtime implements Entity {
     const text =
       this.state.stoppedCleanly === true && alive >= row.atMs
         ? `You were stopped at ${this.stamp(lastMs)} and started again ${down} later.`
-        : `You were last known running at ${this.stamp(lastMs)} and were down for about ${down}; the stop itself was not recorded.`;
+        : `You were last known running at ${this.stamp(lastMs)} and started again ${down} after that; the stop itself was not recorded.`;
     this.river.append({ thread: "self", kind: "note", source: "body", text, data: { bodyNote: "start" }, atMs: now });
   }
 
