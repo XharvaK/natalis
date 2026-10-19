@@ -280,7 +280,7 @@ describe("observations", () => {
 
 describe("heartbeats", () => {
   it("is attached while the latest heartbeat says so and is recent, and says since when it is not", async () => {
-    expect(world?.now()).toBe("Domus: the game is not attached; no helper has reported yet.");
+    expect(world?.now()).toBe("Domus: the game is not attached; no helper has reported yet. The first view after it attaches wakes you, unless your attention there is quiet.");
     expect(world?.resting()).toBe(true);
     const heartbeat = { v: 1, helper_session: "helper-1", sent_at_ms: T0, attached: true };
     expect(await call("/domus/heartbeat", heartbeat)).toEqual({ status: 200, body: { status: "ok" } });
@@ -288,9 +288,9 @@ describe("heartbeats", () => {
     expect(world?.resting()).toBe(false);
     clock = T0 + 181_000;
     expect(world?.resting()).toBe(true);
-    expect(world?.now()).toBe(`Domus: the game is not attached since ${new Date(T0).toISOString()}.`);
+    expect(world?.now()).toBe(`Domus: the game is not attached since ${new Date(T0).toISOString()}. The first view after it attaches wakes you, unless your attention there is quiet.`);
     await call("/domus/heartbeat", { ...heartbeat, sent_at_ms: clock, attached: false });
-    expect(world?.now()).toBe(`Domus: the game is not attached since ${new Date(clock).toISOString()}.`);
+    expect(world?.now()).toBe(`Domus: the game is not attached since ${new Date(clock).toISOString()}. The first view after it attaches wakes you, unless your attention there is quiet.`);
   });
 
   it("refuses a heartbeat with an unknown key or a non-boolean attached as 400", async () => {

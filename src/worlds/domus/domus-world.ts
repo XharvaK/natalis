@@ -38,6 +38,8 @@ export const DOMUS_DEFAULT_HOST = "127.0.0.1";
 export const DOMUS_DEFAULT_PORT = 3711;
 /** Requested acts and plan steps are looked at this often, between the helper's syncs. */
 const SWEEP_MS = 5_000;
+/** Said while no game is attached, so she need not wake herself to check (see wakesFor in attention.ts). */
+const WAKE_ON_ATTACH = " The first view after it attaches wakes you, unless your attention there is quiet.";
 /** Observations are pruned this often (see pruneObservations). */
 const PRUNE_MS = 10 * 60_000;
 
@@ -751,11 +753,11 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       const latest = book.latest();
       const pending = pendingCounts(db, at);
       let line: string;
-      if (!latest) line = "Domus: the game is not attached; no helper has reported yet.";
+      if (!latest) line = `Domus: the game is not attached; no helper has reported yet.${WAKE_ON_ATTACH}`;
       else if (book.attachedAt(at)) line = "Domus: the game is attached.";
       else {
         const since = latest.attached ? latest.receivedAtMs : latest.changedAtMs;
-        line = `Domus: the game is not attached since ${new Date(since).toISOString()}.`;
+        line = `Domus: the game is not attached since ${new Date(since).toISOString()}.${WAKE_ON_ATTACH}`;
       }
       if (pending.requested > 0) line += ` ${pending.requested} requested act(s) wait for the game.`;
       return line;
