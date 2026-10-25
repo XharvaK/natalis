@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { join } from "node:path";
 import { assembleSystem, droppedNote, formatDuration, layoutRequest, timeFacts, type LayoutPart } from "../context/index.js";
 import { addTokens, runTurnWithMessages } from "../loop/index.js";
+import { TURN_DEADLINE_MS, withTurnDeadline } from "../model/turn-deadline.js";
 import { openNotebook, seedNotebook } from "../notebook/index.js";
 import { FORGOTTEN_LINE, lineHoldsWords, queryWords } from "../notebook/forget.js";
 import { ModelError, type ModelErrorKind } from "../contracts.js";
@@ -216,6 +217,8 @@ export type OpenEntityOptions = {
   scanner?: SecretScanner;
   /** Waits before a failed turn is tried again. The last one repeats. Defaults to 30 s, 1, 2, 5, 10 min. */
   retryDelaysMs?: number[];
+  /** How long a turn's model calls may run before the turn's watchdog stops them. Defaults to 20 min. */
+  turnDeadlineMs?: number;
   /** How often the stop file is looked at while the entity runs. Defaults to 2 s. */
   stopPollMs?: number;
 };
@@ -294,6 +297,7 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
     nowMs,
     scanner,
     retryDelaysMs,
+    ...(options.turnDeadlineMs === undefined ? {} : { turnDeadlineMs: options.turnDeadlineMs }),
     stopPollMs,
     statePath,
     dir,
@@ -570,6 +574,7 @@ type RuntimeInit = {
   nowMs: () => number;
   scanner: SecretScanner;
   retryDelaysMs: number[];
+  turnDeadlineMs?: number;
   stopPollMs: number;
   statePath: string;
   dir: string;
@@ -594,6 +599,8 @@ class Runtime implements Entity {
   private readonly nowMs: () => number;
   private readonly scanner: SecretScanner;
   private readonly delays: number[];
+  /** How long a turn's model calls may run in all before the turn's watchdog stops them. */
+  private readonly turnDeadlineMs: number;
   private readonly stopPollMs: number;
   private readonly statePath: string;
   private readonly dir: string;
@@ -692,6 +699,7 @@ class Runtime implements Entity {
     this.nowMs = init.nowMs;
     this.scanner = init.scanner;
     this.delays = init.retryDelaysMs;
+    this.turnDeadlineMs = init.turnDeadlineMs ?? TURN_DEADLINE_MS;
     this.stopPollMs = init.stopPollMs;
     this.statePath = init.statePath;
     this.dir = init.dir;
@@ -1070,8 +1078,11 @@ class Runtime implements Entity {
 
     this.turnSnapshots.set(turnId, snapshot);
     this.turnStarts.set(turnId, nowMs);
+    // The turn's watchdog: a model call still running after TURN_DEADLINE_MS fails as a timeout, so the turn ends as a
+    // model error (its normal note, then the usual retry) instead of waiting forever.
+    const watchdog = withTurnDeadline(turnModel, this.turnDeadlineMs);
     const { result } = await runTurnWithMessages({
-      model: withWitness(turnModel, this.witness, this.threadKind(thread), { cacheMarks: this.config.model.cacheMarks === true }),
+      model: withWitness(watchdog.model, this.witness, this.threadKind(thread), { cacheMarks: this.config.model.cacheMarks === true }),
       tools: this.toolsFor(thread),
       closingTools: CLOSING_TOOLS,
       arrivals: () => this.arrivedSince(thread, snapshot),
@@ -1089,6 +1100,7 @@ class Runtime implements Entity {
       signal: this.abort.signal,
       ...(effort === undefined ? {} : { effort }),
     }).finally(() => {
+      watchdog.done();
       this.turnSnapshots.delete(turnId);
       this.turnStarts.delete(turnId);
       this.turnDiscordPlaces.delete(turnId);

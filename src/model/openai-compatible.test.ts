@@ -429,6 +429,57 @@ describe("retries", () => {
   });
 });
 
+describe("long waits and the call's limit", () => {
+  it("a Retry-After over 60 s is not waited out: the call fails at once as a rate limit, so a backup can answer", async () => {
+    const lines: string[] = [];
+    const { port, calls, sleeps } = harness([status(429, {}, { "retry-after": "7200" }), chat({ content: "never" })], { log: (l: string) => lines.push(l) });
+    const err = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+    expect(err.kind).toBe("rate_limit");
+    expect(calls).toHaveLength(1);
+    expect(sleeps).toEqual([]);
+    expect(lines.join("\n")).toMatch(/retry-after 7200000 ms is over 60000 ms/);
+  });
+
+  it("a Retry-After of 60 s or less is still waited, and the plain backoff stays capped at 30 s", async () => {
+    const { port, sleeps } = harness([status(429, {}, { "retry-after": "60" }), chat({ content: "hi" })]);
+    expect((await port.complete(asks([{ role: "user", content: "hi" }]))).content).toBe("hi");
+    expect(sleeps).toEqual([60000]);
+  });
+
+  it("no wait starts past the call's overall limit: the call fails as a timeout", async () => {
+    const { port, calls, sleeps } = harness([status(503, {}, { "retry-after": "30" }), chat({ content: "never" })], { callDeadlineMs: 5000 });
+    const err = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+    expect(err.kind).toBe("timeout");
+    expect(calls).toHaveLength(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it("logs one line per retry with provider, model, status, attempt and wait, and no body or key", async () => {
+    const lines: string[] = [];
+    const { port } = harness([status(503, { error: { message: "secret-body-text" } }), chat({ content: "hi" })], { log: (l: string) => lines.push(l), apiKey: "sk-test-key-123" });
+    await port.complete(asks([{ role: "user", content: "hi" }]));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/llm\.example\.test .* HTTP 503, attempt 1\/4, waiting 1000 ms/);
+    expect(lines[0]).not.toMatch(/secret-body-text|sk-test-key-123/);
+  });
+});
+
+describe("quota bodies are final", () => {
+  it.each([
+    { error: { type: "FreeUsageLimitError", message: "Rate limit exceeded. Please try again later." } },
+    { error: { message: "Subscription quota exceeded for this period." } },
+    { error: { message: "Insufficient credits. Add credits to continue." } },
+    { message: "Usage limit reached for your plan" },
+    { error: { message: "Billing hard limit has been reached" } },
+  ])("429 %j is out of credit, not retried", async (body) => {
+    const { port, calls, sleeps } = harness([status(429, body), chat({ content: "never" })]);
+    const err = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+    expect(err.kind).toBe("out_of_credit");
+    expect(calls).toHaveLength(1);
+    expect(sleeps).toEqual([]);
+  });
+});
+
 describe("final errors", () => {
   it("402 is out of credit and is not retried, and so is a 429 that names an insufficient quota", async () => {
     const paid = harness([status(402)]);

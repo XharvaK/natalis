@@ -56,6 +56,13 @@ export type OpenAICompatibleOptions = {
   stream?: boolean;
   /** With stream on: the longest wait for the next piece of the reply, the first included. Default 120000. */
   idleTimeoutMs?: number;
+  /**
+   * The whole call's limit: every attempt and every wait between attempts. Default timeoutMs + 120000. No attempt runs,
+   * and no wait starts, past it.
+   */
+  callDeadlineMs?: number;
+  /** Writes one line per retry. Default: console.error to the journal. Never given a key or a reply body. */
+  log?: (line: string) => void;
 };
 
 type ModelErrorKind = ConstructorParameters<typeof ModelError>[1];
@@ -67,6 +74,9 @@ const BACKOFF_CAP_MS = 30_000;
 const DEFAULT_TIMEOUT_MS = 180_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
 const DEFAULT_ATTEMPTS = 4;
+/** A Retry-After longer than this is not waited out: the call fails at once so a backup can answer. */
+export const RETRY_AFTER_MAX_MS = 60_000;
+const DEADLINE_SLACK_MS = 120_000;
 const DETAIL_CHARS = 300;
 
 /** Outcome of one HTTP attempt, before any retry decision. */
@@ -90,6 +100,16 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
   const cacheMarks = options.cacheMarks === true;
   const streaming = options.stream === true && api === "chat";
   const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+  const callDeadlineMs = options.callDeadlineMs ?? timeoutMs + DEADLINE_SLACK_MS;
+  const log = options.log ?? ((line: string) => console.error(`[natalis] ${line}`));
+  const provider = (() => {
+    try {
+      return new URL(options.baseUrl).host;
+    } catch {
+      return "model service";
+    }
+  })();
+  const now = (): number => Date.now();
   const info: ModelInfo = {
     id: `openai-compatible:${options.model}`,
     contextTokens: options.contextTokens,
@@ -104,7 +124,7 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
 
   const newId = (): string => `${idPrefix}_${randomBytes(6).toString("hex")}`;
 
-  const send = async (body: string, signal: AbortSignal | undefined): Promise<Sent> => {
+  const send = async (body: string, signal: AbortSignal | undefined, limitMs: number): Promise<Sent> => {
     if (signal?.aborted) return { type: "aborted" };
     const fetchFn = options.fetch ?? globalThis.fetch;
     const controller = new AbortController();
@@ -114,7 +134,7 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
     const timeout = setTimeout(() => {
       timer.timedOut = true;
       controller.abort();
-    }, timeoutMs);
+    }, Math.max(1, Math.min(timeoutMs, limitMs)));
     // With a stream, every piece that arrives starts the silence watch again; without one, there is no watch.
     let idle: ReturnType<typeof setTimeout> | undefined;
     const heard = (): void => {
@@ -179,13 +199,24 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
           ? buildResponsesBody({ model: options.model, nativeTools, effort }, request)
           : buildBody({ model: options.model, nativeTools, effortParam, effort, cacheMarks, streaming }, request),
       );
+      const deadlineAt = now() + callDeadlineMs;
+      const overDeadline = (attempt: number): ModelError =>
+        new ModelError(`no answer from the model service within the call's ${callDeadlineMs} ms limit, after ${attempt} attempts`, "timeout", attempt);
+      // Waits before the next attempt, or fails when the wait would run past the call's limit.
+      const retryWait = async (ms: number, attempt: number, why: string): Promise<void> => {
+        if (now() + ms >= deadlineAt) throw overDeadline(attempt);
+        log(`model retry: ${provider} ${options.model} ${why}, attempt ${attempt}/${maxAttempts}, waiting ${ms} ms`);
+        await pause(ms, signal, attempt);
+      };
       for (let attempt = 1; ; attempt++) {
         if (signal?.aborted) throw new ModelError("request aborted by caller", "aborted", attempt);
-        const started = Date.now();
-        const sent = await send(body, signal);
+        const started = now();
+        if (started >= deadlineAt) throw overDeadline(attempt - 1);
+        const sent = await send(body, signal, deadlineAt - started);
 
         if (sent.type === "aborted") throw new ModelError("request aborted by caller", "aborted", attempt);
         if (sent.type === "timeout") {
+          if (now() >= deadlineAt) throw overDeadline(attempt);
           throw new ModelError(`no reply from the model service within ${timeoutMs} ms`, "timeout", attempt);
         }
         if (sent.type === "silent") {
@@ -199,7 +230,7 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
               attempt,
             );
           }
-          await pause(backoffMs(attempt), signal, attempt);
+          await retryWait(backoffMs(attempt), attempt, "unreachable");
           continue;
         }
 
@@ -213,11 +244,17 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
           if (attempt >= maxAttempts) {
             throw new ModelError(`model service stream was cut off before its end, after ${attempt} attempts`, "unavailable", attempt);
           }
-          await pause(backoffMs(attempt), signal, attempt);
+          await retryWait(backoffMs(attempt), attempt, "stream cut off");
           continue;
         }
         if (RETRYABLE_STATUS.has(sent.status) && attempt < maxAttempts && !isOutOfCredit(sent.status, sent.text)) {
-          await pause(sent.retryAfterMs ?? backoffMs(attempt), signal, attempt);
+          // A long Retry-After is not waited out: the service will not answer soon, so the call fails now and a backup
+          // takes it. A short one, or none, waits as before (the backoff stays capped at BACKOFF_CAP_MS).
+          if (sent.retryAfterMs !== undefined && sent.retryAfterMs > RETRY_AFTER_MAX_MS) {
+            log(`model retry: ${provider} ${options.model} HTTP ${sent.status}, attempt ${attempt}/${maxAttempts}, retry-after ${sent.retryAfterMs} ms is over ${RETRY_AFTER_MAX_MS} ms, not retried`);
+            throw httpError(sent.status, sent.text, attempt, safe);
+          }
+          await retryWait(sent.retryAfterMs ?? backoffMs(attempt), attempt, `HTTP ${sent.status}`);
           continue;
         }
         throw httpError(sent.status, sent.text, attempt, safe);
@@ -520,8 +557,15 @@ function joinStream(text: string, attempt: number, safe: (text: string) => strin
  * It is an outage, not a rate limit, so it is not retried here: the same key will not get credit back in a few seconds.
  */
 function isOutOfCredit(status: number, text: string): boolean {
-  return status === 402 || (status === 429 && /insufficient_quota/i.test(text));
+  return status === 402 || (status === 429 && OUT_OF_CREDIT_429.test(text));
 }
+
+/**
+ * A 429 body naming spent quota, credit, billing or a usage limit (OpenAI's insufficient_quota, OpenCode's usage-limit
+ * and subscription-quota errors, CommandCode's credit errors). Such a limit lasts hours, not seconds, so it is final.
+ */
+const OUT_OF_CREDIT_429 =
+  /insufficient[_ ]quota|quota|credit|billing|usage[_ ]?limit|limit[_ ]?exceeded|exceeded[^"]{0,40}limit|UsageLimitError|subscription/i;
 
 function httpError(
   status: number,
