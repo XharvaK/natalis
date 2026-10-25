@@ -173,6 +173,20 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
   // Waits before a retry; a caller abort during the wait ends the call at once.
   const pause = (ms: number, signal: AbortSignal | undefined, attempt: number): Promise<void> =>
     new Promise<void>((resolve, reject) => {
+      if (options.sleep === undefined) {
+        // The default wait is a plain timer, cleared on abort so a stopping process is not kept alive by it.
+        if (signal?.aborted) return reject(new ModelError("request aborted by caller", "aborted", attempt));
+        const timer = setTimeout(() => {
+          signal?.removeEventListener("abort", onTimerAbort);
+          resolve();
+        }, ms);
+        const onTimerAbort = (): void => {
+          clearTimeout(timer);
+          reject(new ModelError("request aborted by caller", "aborted", attempt));
+        };
+        signal?.addEventListener("abort", onTimerAbort, { once: true });
+        return;
+      }
       const onAbort = (): void => reject(new ModelError("request aborted by caller", "aborted", attempt));
       signal?.addEventListener("abort", onAbort, { once: true });
       sleep(ms).then(

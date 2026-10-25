@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ModelError } from "../contracts.js";
 import type { ModelRequest, ToolSpec } from "../contracts.js";
 import { createOpenAICompatiblePort } from "./openai-compatible.js";
@@ -477,6 +477,26 @@ describe("quota bodies are final", () => {
     expect(err.kind).toBe("out_of_credit");
     expect(calls).toHaveLength(1);
     expect(sleeps).toEqual([]);
+  });
+});
+
+describe("the default wait", () => {
+  it("clears its timer when the caller aborts, so a stopping process is not kept alive", async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const fake = fakeFetch([status(503), chat({ content: "never" })]);
+      const port = createOpenAICompatiblePort({ baseUrl: "https://llm.example.test/v1", model: "m", contextTokens: 1000, fetch: fake.fetch, log: () => {} });
+      const pending = port.complete(asks([{ role: "user", content: "hi" }]), controller.signal).catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(1);
+      controller.abort();
+      const err = (await pending) as { kind: string };
+      expect(err.kind).toBe("aborted");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

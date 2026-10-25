@@ -4,6 +4,7 @@
 // Ids stay on this side of the line. Places, people and messages reach the entity only as aliases and opaque
 // refs (m1, m2 ...). The real ids are held in memory here and in the aliases file, and nowhere else.
 
+import { whenText } from "../../entity/when.js";
 import {
   ChannelType,
   Client,
@@ -111,6 +112,10 @@ export type PlatformClient = {
 // Options and the world.
 
 export type DiscordWorldOptions = {
+  /** The entity's zone for the dates read_history shows. Default Europe/Istanbul. */
+  timeZone?: string;
+  /** The clock read_history measures ages against. Default Date.now. */
+  nowMs?: () => number;
   token: string;
   ownerUserId: string;
   /** The owner's alias in places ("discord:dm:<alias>"). Defaults to "owner", the entity config's usual alias. */
@@ -196,6 +201,7 @@ type EventAttachment = { name: string; contentType: string | null; url: string }
 type Target = { ok: true; channelId: string } | { ok: false; receipt: Receipt };
 
 export function createDiscordWorld(options: DiscordWorldOptions): World {
+  const nowMs = options.nowMs ?? Date.now;
   if (!options.token) throw new Error("Discord world needs a bot token.");
   if (!options.ownerUserId) throw new Error("Discord world needs the owner's user id.");
   if (!options.aliasesPath) throw new Error("Discord world needs a path for its aliases file.");
@@ -638,7 +644,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
         .filter(Boolean)
         .join(" ");
       const ref = refFor(message.channelId, message.id);
-      return `[${clock(message.createdAtMs)} ${authorLabel(message.author)} ${ref}] ${body || "(no text)"}`;
+      return `[${clock(message.createdAtMs, nowMs(), options.timeZone)} ${authorLabel(message.author)} ${ref}] ${body || "(no text)"}`;
     });
     return {
       ok: true,
@@ -944,10 +950,9 @@ function scrubIds(text: string): string {
   return text.replace(/(?<!\d)\d{17,20}(?!\d)/g, "[id]");
 }
 
-function clock(ms: number): string {
-  const date = new Date(ms);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+/** A message's time as read_history shows it: alone for today, with its date and age for an earlier day. */
+function clock(ms: number, nowMs: number = Date.now(), timeZone?: string): string {
+  return whenText(ms, nowMs, timeZone);
 }
 
 function parseLimit(value: unknown): number | null {

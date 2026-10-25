@@ -56,6 +56,7 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
         token,
         ownerUserId: discord.ownerUserId,
         ownerAlias: config.owner.alias,
+        ...(config.timeZone === undefined ? {} : { timeZone: config.timeZone }),
         rooms: discord.rooms,
         aliasesPath: join(dir, DISCORD_ALIASES_FILE),
         contactsPath: join(dir, CONTACTS_FILE),

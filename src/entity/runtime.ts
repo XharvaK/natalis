@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { assembleSystem, droppedNote, formatDuration, layoutRequest, timeFacts, type LayoutPart } from "../context/index.js";
 import { addTokens, runTurnWithMessages } from "../loop/index.js";
 import { TURN_DEADLINE_MS, withTurnDeadline } from "../model/turn-deadline.js";
+import { whenText } from "./when.js";
 import { openNotebook, seedNotebook } from "../notebook/index.js";
 import { FORGOTTEN_LINE, lineHoldsWords, queryWords } from "../notebook/forget.js";
 import { ModelError, type ModelErrorKind } from "../contracts.js";
@@ -160,6 +161,11 @@ const CLOSING_TOOLS = ["write_note", "append_note", "edit_note"] as const;
 const CUT_ENDS = new Set(["model_error", "aborted"]);
 /** Recent here shows at least this many rows: the oldest shown row moves on only in steps of RECENT_PAGE, so it holds 30 to 39. */
 const RECENT_LIMIT = 30;
+/** Her own outward writes shown in each turn: per site, and direct messages; how far back to look; how long a line is. */
+const OUTWARD_PER_SITE = 3;
+const OUTWARD_DMS = 5;
+const OUTWARD_SCAN = 400;
+const OUTWARD_CLIP = 200;
 const RECENT_PAGE = 10;
 /** The most other threads' game acts the now board lists; the rest are said as a count. */
 const BOARD_ASKS_MAX = 20;
@@ -620,7 +626,6 @@ class Runtime implements Entity {
   private readonly tools: Tool[];
   /** The names of each world's own tools, so a resting world's can be left out of other threads' turns. */
   private readonly worldToolNames = new Map<string, Set<string>>();
-  private readonly clockFormat: Intl.DateTimeFormat;
   private readonly stampFormat: Intl.DateTimeFormat;
 
   /** Threads with a waking event that no turn has taken yet. */
@@ -718,12 +723,6 @@ class Runtime implements Entity {
     this.witness = createWitness({ write: (row) => this.ledger.appendCall(row), now: () => this.nowMs() });
     this.larRiver = this.riverForLar(this.river);
     this.notebook = init.notebook;
-    this.clockFormat = new Intl.DateTimeFormat("en-GB", {
-      timeZone: init.config.timeZone,
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-    });
     this.stampFormat = new Intl.DateTimeFormat("en-GB", {
       timeZone: init.config.timeZone,
       year: "numeric",
@@ -1049,6 +1048,8 @@ class Runtime implements Entity {
         text: ["Recent here:", ...(cut === 0 ? [] : [cutLine(cut)]), ...(recent.length === 0 ? ["(nothing yet)"] : recentLines(sinceRows))].join("\n"),
       });
     }
+    const outward = this.outwardLines(snapshot);
+    if (outward.length > 0) user.push({ name: "your recent writes", cls: "turn", text: ["Your recent writes:", ...outward].join("\n") });
     user.push({ name: "new", cls: "turn", text: ["New:", ...this.newLines(thread, seen, snapshot, fresh, briefed)].join("\n") });
     for (const { key, row } of current) {
       // The heading names the game's view, not its key (CORE3-11), with when it was seen and how old it is (CORE3-5). A view
@@ -2153,8 +2154,47 @@ class Runtime implements Entity {
     return lines;
   }
 
+  /**
+   * Her own recent outward writes, newest first: the last OUTWARD_PER_SITE writes per site (a web_request POST, PUT or
+   * PATCH that went through, by host) and her last OUTWARD_DMS direct messages, each with its date. Built from the
+   * river's tool calls, receipts and says up to the snapshot, so she sees what she already posted without reading for it.
+   */
+  private outwardLines(snapshot: number): string[] {
+    const calls = this.river.read({ kinds: ["tool_call"], untilSeq: snapshot, newestFirst: true, limit: OUTWARD_SCAN });
+    const writes = calls.filter((row) => row.text === "web_request");
+    const lines: string[] = [];
+    if (writes.length > 0) {
+      const oldest = writes[writes.length - 1]?.seq ?? 0;
+      const ok = new Set<string>();
+      for (const row of this.river.read({ kinds: ["receipt"], sinceSeq: oldest, untilSeq: snapshot, limit: OUTWARD_SCAN * 2 })) {
+        if (row.data?.["tool"] === "web_request" && row.data?.["ok"] === true) ok.add(String(row.data?.["callId"]));
+      }
+      const perSite = new Map<string, string[]>();
+      for (const row of writes) {
+        if (!ok.has(String(row.data?.["callId"]))) continue;
+        const write = outwardWrite(row.data?.["args"]);
+        if (write === undefined) continue;
+        const list = perSite.get(write.host) ?? [];
+        if (list.length >= OUTWARD_PER_SITE) continue;
+        list.push(`- [${this.clock(row.atMs)}] ${write.method} ${write.path}${write.text === "" ? "" : `: ${clip(oneLine(write.text), OUTWARD_CLIP)}`}`);
+        perSite.set(write.host, list);
+      }
+      for (const [host, list] of perSite) lines.push(`On ${host}:`, ...list);
+    }
+    const dms = this.river
+      .read({ kinds: ["say"], untilSeq: snapshot, newestFirst: true, limit: OUTWARD_SCAN })
+      .filter((row) => row.source === "self" && (row.place ?? row.thread).includes(":dm:"))
+      .slice(0, OUTWARD_DMS);
+    if (dms.length > 0) {
+      lines.push("Your last direct messages:");
+      for (const row of dms) lines.push(`- [${this.clock(row.atMs)}] to ${row.place ?? row.thread}: ${clip(oneLine(row.text ?? ""), OUTWARD_CLIP)}`);
+    }
+    return lines;
+  }
+
+  /** A time for the context: alone for today, with its date and age for an earlier day (when.ts). */
   private clock(atMs: number): string {
-    return this.clockFormat.format(new Date(atMs));
+    return whenText(atMs, this.nowMs(), this.config.timeZone);
   }
 
   /** A wake's time as the board shows it: its stamp, or a repeating wake's rhythm and next occurrence. */
@@ -3148,4 +3188,44 @@ function noteOutOfOrder(names: string[]): void {
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** A web_request call's args as an outward write: a POST, PUT or PATCH, with its host, path and the words it carried. */
+function outwardWrite(raw: unknown): { method: string; host: string; path: string; text: string } | undefined {
+  let args: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      args = JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
+  }
+  if (typeof args !== "object" || args === null) return undefined;
+  const record = args as Record<string, unknown>;
+  const method = typeof record["method"] === "string" ? record["method"].toUpperCase() : "GET";
+  if (!["POST", "PUT", "PATCH"].includes(method) || typeof record["url"] !== "string") return undefined;
+  let url: URL;
+  try {
+    url = new URL(record["url"]);
+  } catch {
+    return undefined;
+  }
+  return { method, host: url.host, path: url.pathname, text: wordsOf(record["json"] ?? record["body"]) };
+}
+
+/** The words a write body carried: its text-like fields, or the body itself when it is text. */
+function wordsOf(body: unknown): string {
+  if (typeof body === "string") {
+    try {
+      return wordsOf(JSON.parse(body) as unknown);
+    } catch {
+      return body;
+    }
+  }
+  if (typeof body !== "object" || body === null) return "";
+  const record = body as Record<string, unknown>;
+  for (const key of ["body", "text", "content", "comment", "message", "title"]) {
+    if (typeof record[key] === "string" && record[key] !== "") return record[key] as string;
+  }
+  return "";
 }

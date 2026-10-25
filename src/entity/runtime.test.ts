@@ -465,6 +465,31 @@ describe("a conversation", () => {
     expect(userTextOf(model.requests[2]).split("New:")[0]).toContain("Unseen, not unsent.");
   });
 
+  it("shows her own recent outward writes per site and her last direct messages, with dates", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model);
+    const day = Date.parse("2026-10-20T09:00:00Z");
+    const post = (id: string, method: string, url: string, json: unknown, ok: boolean) => {
+      entity.river.append({ thread: "self", kind: "tool_call", source: "self", text: "web_request", data: { args: JSON.stringify({ url, method, json }), turnId: "t", callId: id }, atMs: day });
+      entity.river.append({ thread: "self", kind: "receipt", source: "body", text: "sent", data: { tool: "web_request", ok, turnId: "t", callId: id }, atMs: day });
+    };
+    post("c1", "POST", "https://forum.example/api/comments", { post_id: 1, body: "fixture comment one" }, true);
+    post("c2", "POST", "https://forum.example/api/comments", { body: "refused comment" }, false);
+    post("c3", "GET", "https://forum.example/api/feed", undefined, true);
+    entity.river.append({ thread: "discord:dm:mara", kind: "say", source: "self", place: "discord:dm:mara", text: "fixture dm to mara", atMs: day });
+    await entity.start();
+    cli.send("hello");
+    await entity.idle();
+    const user = userTextOf(model.requests[0]);
+    expect(user).toContain("Your recent writes:");
+    expect(user).toContain("On forum.example:");
+    expect(user).toMatch(/- \[2026-10-20 \d\d:00, \d+ days? ago\] POST \/api\/comments: fixture comment one/);
+    expect(user).not.toContain("refused comment");
+    expect(user).not.toContain("/api/feed");
+    expect(user).toContain("Your last direct messages:");
+    expect(user).toMatch(/to discord:dm:mara: fixture dm to mara/);
+  });
+
   it("says her last words came after all of New when nothing arrived after them", async () => {
     const gate = deferred();
     const started = deferred();
@@ -3496,7 +3521,8 @@ describe("cache order: the slow sections first, then the rows that change", () =
     expect(parts(1).some((part) => part.cls === "page")).toBe(true);
     const steps: Array<{ label: string; before: number; after: number; change: "turn" | "notes" | "page" }> = [
       { label: "new rows inside one page", before: 1, after: 2, change: "turn" },
-      { label: "a clock step of a day", before: 2, after: 3, change: "turn" },
+      // A day step dates the older lines (when.ts), so the page may change once a day; nothing slower does.
+      { label: "a clock step of a day", before: 2, after: 3, change: "page" },
       { label: "a note write", before: 3, after: 4, change: "notes" },
       { label: "a batch of new rows", before: 4, after: 5, change: "turn" },
       { label: "a page step", before: 5, after: 6, change: "page" },

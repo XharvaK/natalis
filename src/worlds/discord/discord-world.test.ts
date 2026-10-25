@@ -1,3 +1,4 @@
+import { whenText } from "../../entity/when.js";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -594,9 +595,22 @@ describe("tools", () => {
     const receipt = await toolNamed(world, "read_history").run({ place: "discord:room:general", limit: 5 });
     expect(receipt).toMatchObject({ ok: true, summary: "Read 2 message(s) from discord:room:general.", data: { count: 2 } });
     expect(receipt.data?.lines).toEqual([
-      `[${clockOf(first)} mara m1] first line [attachment: x.txt]`,
-      `[${clockOf(second)} you m2] second line`,
+      `[${whenText(first, Date.now(), undefined)} mara m1] first line [attachment: x.txt]`,
+      `[${whenText(second, Date.now(), undefined)} you m2] second line`,
     ]);
+  });
+
+  it("read_history dates a message from an earlier day and gives its age, in the entity's zone", async () => {
+    const now = Date.UTC(2026, 9, 25, 19, 0);
+    const { world, fake } = await startWorld({ nowMs: () => now, timeZone: "Europe/Istanbul" });
+    fake.history.push(
+      incoming({ id: "71".padEnd(18, "0"), author: MARA_AUTHOR, content: "today", createdAtMs: Date.UTC(2026, 9, 25, 7, 0) }),
+      incoming({ id: "72".padEnd(18, "0"), author: MARA_AUTHOR, content: "older", createdAtMs: Date.UTC(2026, 9, 22, 7, 1) }),
+    );
+    const receipt = await toolNamed(world, "read_history").run({ place: "discord:room:general", limit: 5 });
+    const lines = receipt.data?.lines as string[];
+    expect(lines[0]).toMatch(/^\[2026-10-22 10:01, 3 days ago mara /);
+    expect(lines[1]).toMatch(/^\[10:00 mara /);
   });
 
   it("validates the history limit", async () => {
