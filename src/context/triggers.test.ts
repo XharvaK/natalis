@@ -58,4 +58,21 @@ describe("trigger words in a turn", () => {
     expect(textOf(model.requests[0])).not.toContain("The ferry leaves at six.");
     expect(textOf(model.requests[1])).toContain("The ferry leaves at six.");
   });
+
+  it("SHOULD-2: a trashed note with trigger words is not loaded back", async () => {
+    const root = mkdtempSync(join(tmpdir(), "natalis-trig-"));
+    roots.push(root);
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const cli = createCliWorld({ onSay: () => {} });
+    const entity = await openEntity({ dir: join(root, "lar"), config: CONFIG, model, worlds: [cli] });
+    await entity.notebook.write("places/harbour.md", "triggers: harbour\nThe ferry leaves at six.", "test", "self");
+    await entity.notebook.remove("places/harbour.md", "retired", "self");
+    expect(entity.notebook.list().some((e) => e.path.startsWith("trash/") && e.firstLine.startsWith("triggers:"))).toBe(true);
+    await entity.start();
+    cli.send("Shall we go to the harbour?");
+    await entity.idle();
+    await entity.stop();
+    expect(textOf(model.requests[0])).not.toContain("The ferry leaves at six.");
+    expect(textOf(model.requests[0])).not.toContain("triggered notes");
+  });
 });
