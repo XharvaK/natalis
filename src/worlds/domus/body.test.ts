@@ -143,6 +143,13 @@ describe("her body now", () => {
     expect(bodyLines(BUSY).some((l) => l.startsWith("Senses unavailable"))).toBe(false);
   });
 
+  it("NIT: says when some moodlets could not be read, and nothing otherwise", () => {
+    expect(bodyLines({ ...BUSY, senses_partial: ["moodlets"] })).toContain(
+      "Senses partial: some of your moodlets could not be read from the game just now, so the list may be incomplete.",
+    );
+    expect(bodyLines(BUSY).some((line) => line.startsWith("Senses partial"))).toBe(false);
+  });
+
   it("says whose each open window is, and whether it is held for her", () => {
     const lines = bodyLines(BUSY);
     expect(lines).toContain("Open for you: Pick a recipe (held for you). Choose one.");
