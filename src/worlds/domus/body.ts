@@ -240,13 +240,18 @@ function windowLines(asked: Record_[]): string[] {
   });
 }
 
+/** C2: "needs", "moodlets" or "needs and moodlets" from the helper's senses_unavailable list; undefined when none. */
+function sensesWord(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const parts = ["needs", "moodlets"].filter((part) => value.includes(part));
+  return parts.length === 0 ? undefined : parts.join(" and ");
+}
+
 function flagLines(portrait: Record_): string[] {
   const flags: Array<[boolean, string]> = [
-    // C2 (Owner 2026-10-26): the helper could not read her needs; she is told, not shown a body with no needs.
-    [
-      Array.isArray(portrait.senses_unavailable) && portrait.senses_unavailable.includes("needs"),
-      "Senses unavailable: your needs could not be read from the game just now, so they are not shown. Do not guess them.",
-    ],
+    // C2 (Owner 2026-10-26): the helper could not read her needs and/or moodlets; she is told, not shown them empty.
+    [sensesWord(portrait.senses_unavailable) !== undefined,
+      `Senses unavailable: your ${sensesWord(portrait.senses_unavailable)} could not be read from the game just now, so they are not shown. Do not guess them.`],
     [portrait.building === true, "Build mode is on."],
     [portrait.fire_on_lot === true, "A fire is burning on the lot."],
     [portrait.user_plays_another === true, "Your summoner is playing another Sim of the household, so your acts are refused for now."],
