@@ -3643,3 +3643,19 @@ describe("messages that come in during a turn", () => {
     expect(userTextOf(model.requests.at(-1))).toMatch(/New:[^]*One more thing, while you think\./);
   });
 });
+
+describe("private/ notes outside the summoner's place", () => {
+  it("leaves private/ out of the index in a room turn and keeps it in the summoner's", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);
+    const room = fakeWorld("fake");
+    const { entity, cli } = await open(model, {}, [room.world]);
+    await entity.notebook.write("private/close.md", "A kept thing.\n", "Keep it close", "body");
+    await entity.start();
+    room.push("fake:room", "Hello, room.");
+    await entity.idle();
+    cli.send("Hello.");
+    await entity.idle();
+    expect(systemTextOf(model.requests[0])).not.toContain("private/close.md");
+    expect(systemTextOf(model.requests[1])).toContain("private/close.md");
+  });
+});

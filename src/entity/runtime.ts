@@ -17,6 +17,7 @@ import { TURN_DEADLINE_MS, withTurnDeadline } from "../model/turn-deadline.js";
 import { whenText } from "./when.js";
 import { openNotebook, seedNotebook } from "../notebook/index.js";
 import { FORGOTTEN_LINE, lineHoldsWords, queryWords } from "../notebook/forget.js";
+import { withoutPrivate } from "../notebook/private-view.js";
 import { ModelError, type ModelErrorKind, type QuotaWindow } from "../contracts.js";
 import { planRetry, type QuotaRetryTuning } from "./retry-plan.js";
 import { openRiver } from "../river/index.js";
@@ -1103,7 +1104,7 @@ class Runtime implements Entity {
       eventLayout: laid.userLayout,
       thread,
       river: this.larRiver,
-      notebook: this.notebook,
+      notebook: this.notebookFor(thread),
       ceiling: this.ceiling,
       nowMs: () => this.nowMs(),
       turnId,
@@ -1775,7 +1776,7 @@ class Runtime implements Entity {
       { name: "character", text: this.noteOr("self/character.md", CHARACTER_STUB), priority: 100, core: true, cls: "notes" },
       { name: "your life", text: this.noteOr(LIFE_PATH, LIFE_STUB), priority: 100, core: true, cls: "notes" },
       { name: "privacy list", text: privacyText(this.privacyNow()), priority: 100, core: true, cls: "notes" },
-      { name: "index", text: this.indexText(), priority: 50, cls: "notes" },
+      { name: "index", text: this.indexText(thread), priority: 50, cls: "notes" },
     ];
     // What changes every turn goes in the user message, after the new rows: the now board, the time facts, then recall.
     const changing: Section[] = [
@@ -2002,8 +2003,14 @@ class Runtime implements Entity {
     return lines;
   }
 
-  private indexText(): string {
-    const entries = this.notebook.list().filter((entry) => {
+  /** The notebook a turn here sees: whole in the summoner's place and her own thread, without private/ anywhere else. */
+  private notebookFor(thread: string): Notebook {
+    const kind = this.threadKind(thread);
+    return kind === "summoner" || kind === "self" ? this.notebook : withoutPrivate(this.notebook);
+  }
+
+  private indexText(thread: string): string {
+    const entries = this.notebookFor(thread).list().filter((entry) => {
       const base = entry.path.split("/").pop() ?? entry.path;
       return base !== "README.md" && !base.startsWith(".");
     });
