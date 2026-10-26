@@ -159,12 +159,12 @@ function clipArrived(line: string): string {
 }
 
 const CLOSING_TOOLS = ["write_note", "append_note", "edit_note"] as const;
-/** The turn ends that did not finish a turn: its cursor stays, and its rows are shown as done on the next try. */
 /** A receipt the turn deadline wrote while its tool was still running (run-turn raceDeadline). */
 function isOutcomeUnknown(row: RiverRow): boolean {
   const refused = row.data?.["refused"];
   return typeof refused === "object" && refused !== null && (refused as Record<string, unknown>)["code"] === "outcome_unknown";
 }
+/** The turn ends that did not finish a turn: its cursor stays, and its rows are shown as done on the next try. */
 const CUT_ENDS = new Set(["model_error", "aborted"]);
 /** Recent here shows at least this many rows: the oldest shown row moves on only in steps of RECENT_PAGE, so it holds 30 to 39. */
 const RECENT_LIMIT = 30;

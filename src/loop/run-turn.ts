@@ -293,7 +293,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
     modelCalls += 1;
     let response: ModelResponse;
     try {
-      response = await model.complete({ messages: messages.slice(), tools: offered, toolChoice: "auto", effort, turnId }, signal);
+      response = await model.complete({ messages: messages.slice(), tools: offered, toolChoice: "auto", effort, turnId, thread }, signal);
     } catch (err) {
       write({ kind: "note", source: "body", text: `The closing call failed: ${messageOf(err)}`, data: { turnId, kind: "closing_call" } });
       return;
@@ -342,7 +342,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
       try {
         const tail = tailMessage(pictures.splice(0), input.arrivals?.(), left);
         const shown: ChatMessage[] = tail === undefined ? messages.slice() : [...messages, tail];
-        response = await model.complete({ messages: shown, tools: specs, toolChoice: "auto", effort, turnId }, signal);
+        response = await model.complete({ messages: shown, tools: specs, toolChoice: "auto", effort, turnId, thread }, signal);
       } catch (err) {
         if (signal?.aborted || (err instanceof ModelError && err.kind === "aborted")) {
           endedBy = "aborted";

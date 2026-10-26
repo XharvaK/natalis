@@ -1,5 +1,5 @@
 // When a failed turn is tried again. A spent quota whose reset the provider named is waited out to that reset plus a
-// small margin, but a plain rate limit whose reset is shorter than that margin waits max(reset + 5 s, the normal step); a spent quota with no known reset backs off (10, 20, 40, 80 min, then every 2 h); anything else keeps the
+// small margin, but a plain rate limit whose reset is shorter than that margin waits max(reset + 5 s + 0-5 s jitter, the normal step), ramping to the margin by twice the margin; a spent quota with no known reset backs off (10, 20, 40, 80 min, then every 2 h); anything else keeps the
 // runtime's normal schedule (30 s, 1, 2, 5 min, then every 10 min). The in-call Retry-After cap (60 s) is separate.
 
 import type { ModelErrorKind, QuotaWindow } from "../contracts.js";
@@ -8,6 +8,8 @@ import type { ModelErrorKind, QuotaWindow } from "../contracts.js";
 export const RESET_MARGIN_MS = 3 * 60_000;
 /** Added to a short plain rate-limit reset instead of the margin and jitter. */
 export const SHORT_RESET_PAD_MS = 5_000;
+/** Up to this much jitter on a short plain rate-limit reset. */
+export const SHORT_RESET_JITTER_MS = 5_000;
 /** Up to this much more, at random, so retries after a reset do not all land in the same second. */
 export const RESET_JITTER_MS = 60_000;
 /** The longest wait for a named reset (a monthly limit can be weeks away; the daily wake and new events still run). */
@@ -51,8 +53,14 @@ export function planRetry(input: RetryInput): RetryPlan {
   const named = quota?.limit !== undefined && NAMED_LIMITS.has(quota.limit);
   const margin = input.tuning?.marginMs ?? RESET_MARGIN_MS;
   // A plain rate limit (not a quota, no named limit) resets in seconds: the 3-min margin and jitter would only add delay.
-  if (kind === "rate_limit" && !named && quota?.resetAtMs !== undefined && quota.resetAtMs - nowMs < margin) {
-    const resetMs = Math.max(0, quota.resetAtMs - nowMs) + SHORT_RESET_PAD_MS;
+  // Below the margin it waits reset + 5 s + 0-5 s jitter; from the margin to twice it the pad and jitter ramp up to the
+  // margin and 60 s, so there is no cliff at the margin (R8 S2). The normal step is the floor.
+  if (kind === "rate_limit" && !named && quota?.resetAtMs !== undefined && quota.resetAtMs - nowMs < 2 * margin) {
+    const untilReset = Math.max(0, quota.resetAtMs - nowMs);
+    const ramp = Math.min(1, Math.max(0, (untilReset - margin) / margin));
+    const pad = SHORT_RESET_PAD_MS + ramp * Math.max(0, margin - SHORT_RESET_PAD_MS);
+    const jitterMax = SHORT_RESET_JITTER_MS + ramp * Math.max(0, (input.tuning?.jitterMs ?? RESET_JITTER_MS) - SHORT_RESET_JITTER_MS);
+    const resetMs = Math.round(untilReset + pad + (input.random ?? Math.random)() * jitterMax);
     if (scheduleMs >= resetMs) {
       return { delayMs: scheduleMs, basis: "schedule", reason: `rate_limit, short provider reset, normal schedule step ${input.failed + 1}` };
     }

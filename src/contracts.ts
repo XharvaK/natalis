@@ -69,6 +69,8 @@ export type ModelRequest = {
    * once the main model failed in it; a call without a turn always tries the main model first. Never sent to a provider.
    */
   turnId?: string;
+  /** The thread this call belongs to, when the loop makes it. A port keeps per-thread state by it. Never sent to a provider. */
+  thread?: string;
 };
 
 export type FinishReason = "stop" | "tool_calls" | "length" | "content_filter" | "error";

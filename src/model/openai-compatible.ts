@@ -106,9 +106,10 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
   // Without a stream nothing can be heard before the whole reply, so a silence limit that was set bounds each attempt
   // (P1-3, 2026-10-26: the muse backup on the responses protocol could hold a turn for its full 15 min attempt).
   const silenceCapsAttempt = !streaming && options.idleTimeoutMs !== undefined && idleTimeoutMs < timeoutMs;
-  // S-C (Auditor recheck 2026-10-26): without a stream a slow reply looks like silence, so the cap is a first guess only.
-  // After one cut the next try (in this call, or the next call when this one cannot retry) gets the full timeoutMs.
-  let uncapNext = false;
+  // S-C/R8 S1 (Auditor rechecks 2026-10-26): without a stream a slow reply looks like silence, so the cap is a first guess
+  // only. After one cut in a thread, that thread's tries get the full timeoutMs for the life of the port, and the call
+  // that was cut gets the cut's time added to its deadline. Kept per thread (R8 N3): one thread's cut does not uncap another.
+  const uncapped = new Set<string>();
   const callDeadlineMs = options.callDeadlineMs ?? timeoutMs + DEADLINE_SLACK_MS;
   const log = options.log ?? ((line: string) => console.error(`[natalis] ${line}`));
   const provider = (() => {
@@ -224,7 +225,8 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
           ? buildResponsesBody({ model: options.model, nativeTools, effort }, request)
           : buildBody({ model: options.model, nativeTools, effortParam, effort, cacheMarks, streaming }, request),
       );
-      const deadlineAt = now() + callDeadlineMs;
+      let deadlineAt = now() + callDeadlineMs;
+      const threadKey = request.thread ?? "";
       const overDeadline = (attempt: number): ModelError =>
         new ModelError(`no answer from the model service within the call's ${callDeadlineMs} ms limit, after ${attempt} attempts`, "timeout", attempt);
       // Waits before the next attempt, or fails when the wait would run past the call's limit.
@@ -237,9 +239,8 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
         if (signal?.aborted) throw new ModelError("request aborted by caller", "aborted", attempt);
         const started = now();
         if (started >= deadlineAt) throw overDeadline(attempt - 1);
-        const capped = silenceCapsAttempt && !uncapNext;
+        const capped = silenceCapsAttempt && !uncapped.has(threadKey);
         const sent = await send(body, signal, deadlineAt - started, capped);
-        if (sent.type === "reply") uncapNext = false;
 
         if (sent.type === "aborted") throw new ModelError("request aborted by caller", "aborted", attempt);
         if (sent.type === "timeout") {
@@ -247,8 +248,9 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
           throw new ModelError(`no reply from the model service within ${timeoutMs} ms`, "timeout", attempt);
         }
         if (sent.type === "silent" && capped) {
-          uncapNext = true;
-          log(`model retry: ${provider} ${options.model} attempt cap without a stream (${idleTimeoutMs} ms) cut attempt ${attempt}; the next try gets the full ${timeoutMs} ms`);
+          uncapped.add(threadKey);
+          deadlineAt += now() - started;
+          log(`model retry: ${provider} ${options.model} attempt cap without a stream (${idleTimeoutMs} ms) cut attempt ${attempt}; this thread's tries now get the full ${timeoutMs} ms`);
           if (attempt < maxAttempts && now() < deadlineAt) continue;
         }
         if (sent.type === "silent") {

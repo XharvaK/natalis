@@ -43,13 +43,13 @@ describe("planRetry round 6", () => {
 });
 
 describe("planRetry round 7: a short plain rate-limit reset", () => {
-  it("waits max(reset + 5 s, the schedule step), with no margin and no jitter", () => {
+  it("waits max(reset + 5 s, the schedule step), with no margin (jitter 0 here; R8 adds 0-5 s)", () => {
     expect(SHORT_RESET_PAD_MS).toBe(5_000);
-    const first = planRetry({ ...base, failed: 0, kind: "rate_limit", quota: { resetAtMs: NOW + 50_000 }, random: () => 0.9 });
+    const first = planRetry({ ...base, failed: 0, kind: "rate_limit", quota: { resetAtMs: NOW + 50_000 }, random: () => 0 });
     expect(first).toMatchObject({ basis: "reset", delayMs: 55_000 });
-    const scheduleWins = planRetry({ ...base, failed: 0, kind: "rate_limit", quota: { resetAtMs: NOW + 10_000 }, random: () => 0.9 });
+    const scheduleWins = planRetry({ ...base, failed: 0, kind: "rate_limit", quota: { resetAtMs: NOW + 10_000 }, random: () => 0 });
     expect(scheduleWins).toMatchObject({ basis: "schedule", delayMs: 30_000 });
-    const past = planRetry({ ...base, failed: 1, kind: "rate_limit", quota: { resetAtMs: NOW - 5_000 }, random: () => 0.9 });
+    const past = planRetry({ ...base, failed: 1, kind: "rate_limit", quota: { resetAtMs: NOW - 5_000 }, random: () => 0 });
     expect(past.delayMs).toBe(60_000);
   });
 
