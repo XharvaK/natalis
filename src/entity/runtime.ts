@@ -334,7 +334,8 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
 
 type Ask = { place: string; seq: number; atMs: number };
 /** A scheduled wake. A repeating one keeps its local clock in the Lar's zone; atMs is its next occurrence. */
-type Wake = { id: string; atMs: number; why: string; scheduledIn: string; repeat?: WakeRepeat; clock?: string };
+/** `rhythm` is set only by seedRhythm (the body's daily rhythm), never by schedule_wake (SHOULD-A). */
+type Wake = { id: string; atMs: number; why: string; scheduledIn: string; repeat?: WakeRepeat; clock?: string; rhythm?: true };
 type ThreadState = { seenSeq: number; lastTurnMs?: number };
 /** The latest thing a thread said in a place. Kept per place, so the board can show who is speaking there. */
 type PlaceClaim = { thread: string; atMs: number; text: string };
@@ -463,6 +464,7 @@ function checkState(value: unknown): EntityState {
         scheduledIn: wake.scheduledIn,
         repeat: wake.repeat,
         clock: wake.clock,
+        ...(wake.rhythm === true ? { rhythm: true as const } : {}),
       };
     }),
     mood: (mood as string | null) ?? null,
@@ -1399,6 +1401,7 @@ class Runtime implements Entity {
         scheduledIn: "self",
         repeat: "daily",
         clock,
+        rhythm: true,
       });
     }
     const notMade = times.length - made.length;
@@ -2883,13 +2886,12 @@ class Runtime implements Entity {
     // The daily rhythm is the body's, not hers, and game events are not wakes, so neither is counted.
     const wanted = atMs;
     if (this.wokenByOwnWake.get(context.thread) === true) atMs = Math.max(atMs, this.nowMs() + WAKE_HOLD_MS);
-    const others = this.state.wakes
-      .filter((item) => item.why !== RHYTHM_WHY)
-      .map((item) => item.atMs)
-      .sort((x, y) => x - y);
-    for (const other of others) {
-      if (Math.abs(other - atMs) < WAKE_HOLD_MS) atMs = other + WAKE_HOLD_MS;
-    }
+    // SHOULD-B: a repeating wake is compared by its place in the period (time of day, or of the week), both ways, so
+    // two wakes that fire close together on any later day are spaced too. Moved forward a minute at a time.
+    const others = this.state.wakes.filter((item) => item.rhythm !== true);
+    const mine = repeat !== undefined && isWakeRepeat(repeat) ? repeat : undefined;
+    const tooClose = (at: number) => others.some((other) => wakeGap(at, mine, other.atMs, other.repeat) < WAKE_HOLD_MS);
+    for (let step = 0; step < 7 * 24 * 60 && tooClose(atMs); step++) atMs += 60_000;
     const held = atMs !== wanted;
 
     const zone = this.config.timeZone;
@@ -3091,6 +3093,15 @@ function shownRow(row: RiverRow): string {
 function who(row: RiverRow): string {
   if (row.kind === "say" && row.source === "self") return "you";
   return row.actor ?? row.source;
+}
+
+/** SHOULD-B: how far apart two wakes fire, over their period when either repeats (daily wins over weekly). */
+function wakeGap(a: number, aRepeat: WakeRepeat | undefined, b: number, bRepeat: WakeRepeat | undefined): number {
+  const day = 24 * 60 * 60_000;
+  const period = aRepeat === "daily" || bRepeat === "daily" ? day : aRepeat === "weekly" || bRepeat === "weekly" ? 7 * day : 0;
+  if (period === 0) return Math.abs(a - b);
+  const d = (((a - b) % period) + period) % period;
+  return Math.min(d, period - d);
 }
 
 /** A row that one of the Lar's own wakes put in its thread. */

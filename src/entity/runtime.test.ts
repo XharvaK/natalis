@@ -3015,9 +3015,9 @@ describe("the daily rhythm", () => {
     const wakes = readStateFile().wakes as RhythmWake[];
     // One wake per time, in the order the times are listed. The 09:00 has passed for today, so it is tomorrow's.
     expect(wakes).toEqual([
-      { id: expect.any(String), atMs: Date.parse("2026-10-12T09:00:00Z"), why: "Your daily rhythm.", scheduledIn: "self", repeat: "daily", clock: "09:00" },
-      { id: expect.any(String), atMs: Date.parse("2026-10-11T14:00:00Z"), why: "Your daily rhythm.", scheduledIn: "self", repeat: "daily", clock: "14:00" },
-      { id: expect.any(String), atMs: Date.parse("2026-10-11T20:00:00Z"), why: "Your daily rhythm.", scheduledIn: "self", repeat: "daily", clock: "20:00" },
+      { id: expect.any(String), atMs: Date.parse("2026-10-12T09:00:00Z"), why: "Your daily rhythm.", scheduledIn: "self", repeat: "daily", clock: "09:00", rhythm: true },
+      { id: expect.any(String), atMs: Date.parse("2026-10-11T14:00:00Z"), why: "Your daily rhythm.", scheduledIn: "self", repeat: "daily", clock: "14:00", rhythm: true },
+      { id: expect.any(String), atMs: Date.parse("2026-10-11T20:00:00Z"), why: "Your daily rhythm.", scheduledIn: "self", repeat: "daily", clock: "20:00", rhythm: true },
     ]);
     expect(stateObject()["rhythmGiven"]).toBe(true);
     expect(new Set(wakes.map((wake) => wake.id)).size).toBe(3);
