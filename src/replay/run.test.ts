@@ -218,3 +218,28 @@ describe("runReplay", () => {
     expect(built.map((port) => port.info.id)).toEqual(["scripted:scripted"]);
   });
 });
+
+describe("runReplay fork at row N", () => {
+  it("forks a copy at a river row and feeds the events from there", async () => {
+    const source = await buildSource();
+    const last = lastSeqOf(source);
+    const eventsPath = writeEvents("events.jsonl", TWO_EVENTS.slice(0, 1));
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const result = await runReplay({ dir: source, eventsPath, outDir: join(root, "run"), forkAtSeq: last, modelFor: () => model, scanner: createSecretScanner(), retryDelaysMs: [1] });
+    expect(result.eventsFed).toBe(1);
+    const river = openRiver(join(result.entityDir, "river.db"));
+    const texts = river.read({ limit: 100_000 }).map((row) => row.text);
+    river.close();
+    expect(texts).toContain("Good morning.");
+    expect(texts).not.toContain("Good morning to you.");
+    expect(lastSeqOf(source)).toBe(last);
+  });
+
+  it("refuses events that come before the fork row", async () => {
+    const source = await buildSource();
+    const early = [{ ...TWO_EVENTS[0], atMs: H0 - MIN }];
+    const eventsPath = writeEvents("events.jsonl", early);
+    await expect(runReplay({ dir: source, eventsPath, outDir: join(root, "run"), forkAtSeq: lastSeqOf(source), modelFor: () => new ScriptedModel([]) })).rejects.toThrow(/before the fork row/);
+  });
+});
+

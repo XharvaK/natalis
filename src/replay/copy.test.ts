@@ -211,3 +211,29 @@ describe("copyForReplay", () => {
     expect(state).not.toHaveProperty("lastOwnerMs");
   });
 });
+
+describe("copyForReplay fork at row N", () => {
+  it("keeps the rows before seq N, and cuts the notebook and state at row N's time", async () => {
+    const source = join(root, "source");
+    const { firstSha, secondSha } = buildSource(source);
+    const atThree = await copyForReplay({ from: source, to: join(root, "c3"), cutAtSeq: 3 });
+    expect(atThree.lastSeq).toBe(2);
+    expect(atThree.notebookCommit).toBe(firstSha);
+    const atFour = await copyForReplay({ from: source, to: join(root, "c4"), cutAtSeq: 4 });
+    expect(atFour.lastSeq).toBe(3);
+    expect(atFour.notebookCommit).toBe(secondSha);
+    const river = openRiver(join(root, "c4", "river.db"));
+    expect(river.read({ limit: 100 }).map((row) => row.text)).toEqual(["Hello.", "Hello back.", "Still there?"]);
+    river.close();
+    expect(lastSeqOf(source)).toBe(4);
+  });
+
+  it("refuses a row that is not in the river, and both a time and a row", async () => {
+    const source = join(root, "source");
+    buildSource(source);
+    await expect(copyForReplay({ from: source, to: join(root, "x"), cutAtSeq: 9 })).rejects.toThrow(/no row 9/);
+    await expect(copyForReplay({ from: source, to: join(root, "y"), cutAtSeq: 0 })).rejects.toThrow(/no row 0/);
+    await expect(copyForReplay({ from: source, to: join(root, "z"), cutAtMs: CUT, cutAtSeq: 2 })).rejects.toThrow(/not both/);
+  });
+});
+
