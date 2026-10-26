@@ -198,6 +198,8 @@ const RECEIPT_SHOW = 200;
 const MOOD_LIMIT = 200;
 /** The most characters a wake's reason may hold, so a wake can never carry a page of text into every later turn. */
 const WAKE_WHY_MAX = 500;
+/** W-1: the longest until text a wake keeps. */
+const WAKE_UNTIL_MAX = 200;
 /** Context-size rejections in a row after which a thread waits for a new event instead of trying the same words again. */
 const OVERSIZE_TRIES = 3;
 const WAKE_LIMIT_MINUTES = 60 * 24 * 365 * 10;
@@ -220,6 +222,9 @@ const VIEW_SCAN_PAGE = 500;
 const SOURCES: readonly RiverSource[] = ["owner", "outside", "self", "body"];
 const BUILT_IN_NAMES = ["say", "schedule_wake", "cancel_wake", "set_mood", "let_go"] as const;
 
+/** W-2: what the host's precheck sees of a rhythm wake. Its answer: "fire" or "skip". */
+export type WakePrecheck = (wake: { id: string; why: string; scheduledIn: string; atMs: number }) => "fire" | "skip";
+
 export type OpenEntityOptions = {
   /** The entity's folder. Created if missing. */
   dir: string;
@@ -241,6 +246,8 @@ export type OpenEntityOptions = {
   dryRun?: boolean;
   /** Why this Lar runs: live (default), eval or replay. An eval Lar is not held to the daily limit; a replay is, for fidelity. */
   purpose?: Purpose;
+  /** W-2: asked when a body rhythm wake fires; "skip" lets it pass with a note and no turn. Never asked about her own wakes. */
+  wakePrecheck?: WakePrecheck;
   /** How often the stop file is looked at while the entity runs. Defaults to 2 s. */
   stopPollMs?: number;
 };
@@ -323,6 +330,7 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
     ...(options.turnDeadlineMs === undefined ? {} : { turnDeadlineMs: options.turnDeadlineMs }),
     ...(options.dryRun === true ? { dryRun: true } : {}),
     ...(options.purpose === undefined ? {} : { purpose: options.purpose }),
+    ...(options.wakePrecheck === undefined ? {} : { wakePrecheck: options.wakePrecheck }),
     stopPollMs,
     statePath,
     dir,
@@ -342,7 +350,7 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
 type Ask = { place: string; seq: number; atMs: number };
 /** A scheduled wake. A repeating one keeps its local clock in the Lar's zone; atMs is its next occurrence. */
 /** `rhythm` is set only by seedRhythm (the body's daily rhythm), never by schedule_wake (SHOULD-A). */
-type Wake = { id: string; atMs: number; why: string; scheduledIn: string; repeat?: WakeRepeat; clock?: string; rhythm?: true };
+type Wake = { id: string; atMs: number; why: string; scheduledIn: string; repeat?: WakeRepeat; clock?: string; rhythm?: true; until?: string };
 type ThreadState = { seenSeq: number; lastTurnMs?: number };
 /** The latest thing a thread said in a place. Kept per place, so the board can show who is speaking there. */
 type PlaceClaim = { thread: string; atMs: number; text: string };
@@ -463,7 +471,9 @@ function checkState(value: unknown): EntityState {
         bad("a scheduled wake");
       }
       // A wake without a repeat fires once, as every wake did before repeating ones existed.
-      if (wake.repeat === undefined) return { id: wake.id, atMs: wake.atMs, why: wake.why, scheduledIn: wake.scheduledIn };
+      if (wake.until !== undefined && typeof wake.until !== "string") bad("a scheduled wake's until");
+      const until = typeof wake.until === "string" ? { until: wake.until } : {};
+      if (wake.repeat === undefined) return { id: wake.id, atMs: wake.atMs, why: wake.why, scheduledIn: wake.scheduledIn, ...until };
       if (!isWakeRepeat(wake.repeat)) bad("a scheduled wake's repeat is not daily or weekly");
       if (typeof wake.clock !== "string" || parseClock(wake.clock) === undefined) bad("a repeating wake's clock");
       return {
@@ -474,6 +484,7 @@ function checkState(value: unknown): EntityState {
         repeat: wake.repeat,
         clock: wake.clock,
         ...(wake.rhythm === true ? { rhythm: true as const } : {}),
+        ...until,
       };
     }),
     mood: (mood as string | null) ?? null,
@@ -603,6 +614,7 @@ type RuntimeInit = {
   scanner: SecretScanner;
   retryDelaysMs: number[];
   quotaRetry?: QuotaRetryTuning;
+  wakePrecheck?: WakePrecheck;
   purpose?: Purpose;
   dryRun?: boolean;
   turnDeadlineMs?: number;
@@ -635,6 +647,7 @@ class Runtime implements Entity {
   private readonly turnDeadlineMs: number;
   private readonly dryRun: boolean;
   private readonly purpose: Purpose;
+  private readonly wakePrecheck: WakePrecheck | undefined;
   private readonly stopPollMs: number;
   private readonly statePath: string;
   private readonly dir: string;
@@ -740,6 +753,7 @@ class Runtime implements Entity {
     this.turnDeadlineMs = init.turnDeadlineMs ?? TURN_DEADLINE_MS;
     this.dryRun = init.dryRun === true;
     this.purpose = init.purpose ?? "live";
+    this.wakePrecheck = init.wakePrecheck;
     this.stopPollMs = init.stopPollMs;
     this.statePath = init.statePath;
     this.dir = init.dir;
@@ -1485,6 +1499,31 @@ class Runtime implements Entity {
     }
   }
 
+  /**
+   * W-2: the host's precheck may let a body rhythm wake pass without a turn when nothing needs her. Only rhythm wakes
+   * (the body's, flagged rhythm) are asked about: a wake she set herself always fires. A precheck that throws, or
+   * answers anything but "skip", lets the wake fire. A skip leaves a body note in the self thread.
+   */
+  private precheckSkips(wake: Wake): boolean {
+    if (wake.rhythm !== true || this.wakePrecheck === undefined) return false;
+    let answer: unknown;
+    try {
+      answer = this.wakePrecheck({ id: wake.id, why: wake.why, scheduledIn: wake.scheduledIn, atMs: wake.atMs });
+    } catch {
+      return false;
+    }
+    if (answer !== "skip") return false;
+    this.river.append({
+      thread: "self",
+      kind: "note",
+      source: "body",
+      text: "A rhythm wake passed quietly: nothing new needed you.",
+      data: { wakeSkipped: wake.id },
+      atMs: this.nowMs(),
+    });
+    return true;
+  }
+
   private fireWake(wake: Wake): void {
     if (wake.repeat === undefined || wake.clock === undefined) {
       this.state.wakes = this.state.wakes.filter((item) => item.id !== wake.id);
@@ -1502,13 +1541,14 @@ class Runtime implements Entity {
       this.armWake(wake);
     }
     this.saveState();
+    if (this.precheckSkips(wake)) return;
     this.intake({
       world: "body",
       place: "self",
       thread: "self",
       actor: "body",
       source: "body",
-      text: `Your wake: ${wake.why}`,
+      text: `Your wake: ${wake.why}${wake.until === undefined ? "" : ` (You said it is no longer needed once: ${wake.until}. If so, let it go with cancel_wake.)`}`,
       data: { wakeId: wake.id, scheduledIn: wake.scheduledIn },
       atMs: this.nowMs(),
     });
@@ -2330,6 +2370,7 @@ class Runtime implements Entity {
                 enum: ["daily", "weekly"],
                 description: "Optional. daily or weekly: the same local time each day or each week, until you cancel it.",
               },
+              until: { type: "string", description: "Optional. When this wake is no longer needed, in your own words; you see it when the wake fires. At most 200 characters." },
             },
             required: ["why"],
           },
@@ -2886,6 +2927,14 @@ class Runtime implements Entity {
     }
     const secret = this.secretHold(why.value, "nothing was kept");
     if (secret !== undefined) return secret;
+    const until = args["until"];
+    if (until !== undefined) {
+      if (typeof until !== "string" || until.trim() === "" || Array.from(until).length > WAKE_UNTIL_MAX) {
+        return refuse("bad_arguments", `until must be text of at most ${WAKE_UNTIL_MAX} characters.`, "until not text or too long");
+      }
+      const untilSecret = this.secretHold(until, "nothing was kept");
+      if (untilSecret !== undefined) return untilSecret;
+    }
     const hasMinutes = args["in_minutes"] !== undefined;
     const hasAt = args["at_iso"] !== undefined;
     if (hasMinutes === hasAt) {
@@ -2946,7 +2995,7 @@ class Runtime implements Entity {
     const held = atMs !== wanted;
 
     const zone = this.config.timeZone;
-    const wake: Wake = { id: randomUUID().slice(0, 8), atMs, why: why.value, scheduledIn: context.thread };
+    const wake: Wake = { id: randomUUID().slice(0, 8), atMs, why: why.value, scheduledIn: context.thread, ...(typeof until === "string" ? { until } : {}) };
     if (repeat !== undefined && isWakeRepeat(repeat)) {
       // The clock is the first occurrence's local time in the Lar's zone: the rhythm keeps it across daylight saving.
       wake.repeat = repeat;
