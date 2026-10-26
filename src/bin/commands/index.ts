@@ -4,6 +4,7 @@
 import { backupCommand } from "./backup.js";
 import { captureCommand } from "./capture.js";
 import { checkCommand } from "./check.js";
+import { evalCommand } from "./eval.js";
 import { importCommand } from "./import.js";
 import { judgeCommand } from "./judge.js";
 import { ledgerCommand } from "./ledger.js";
@@ -38,6 +39,8 @@ export async function dispatchCommand(command: string | undefined, args: string[
       return vaultCommand(args, readHiddenLine, (line) => console.log(line), (line) => console.error(line));
     case "new":
       return newCommand(args, (line) => console.log(line), (line) => console.error(line));
+    case "eval":
+      return evalCommand(args);
     case "check":
       return checkCommand(args, (line) => console.log(line), (line) => console.error(line));
     default:
