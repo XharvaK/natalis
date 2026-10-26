@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { Ceiling } from "../contracts.js";
 import type { EffortMap, FallbackModelConfig, ModelConfig, ModelPrice } from "../model/from-config.js";
 import { parseClock } from "./wake-schedule.js";
+import { parseToolPolicy, type ToolTable } from "./tool-policy.js";
 
 export const EFFORTS = ["low", "medium", "high", "xhigh"] as const;
 export type Effort = (typeof EFFORTS)[number];
@@ -28,6 +29,8 @@ export type EntityConfig = {
   owner: { alias: string };
   /** Body checks on what the Lar says. Each one is off unless the block says true. */
   holds?: { honesty?: boolean };
+  /** The summoner's tool table: tool name to allow, ask or deny. Left out, or a tool not named, is allowed. */
+  tools?: ToolTable;
   /** Daily limits. Left out, there is none. */
   limits?: { turnsPerDay?: number };
   /** Local clock times ("HH:MM") the Lar gets a daily wake at, once, on its first start. Left out or [], none. */
@@ -95,7 +98,7 @@ export function parseEntityConfig(value: unknown): EntityConfig {
   const root = objectOf(value, ENTITY_FILE);
   onlyKeys(
     root,
-    ["name", "timeZone", "model", "effort", "ceiling", "summoner", "owner", "holds", "limits", "rhythm", "worldModels"],
+    ["name", "timeZone", "model", "effort", "ceiling", "summoner", "owner", "holds", "tools", "limits", "rhythm", "worldModels"],
     ENTITY_FILE,
   );
   if (root["summoner"] !== undefined && root["owner"] !== undefined) {
@@ -121,6 +124,7 @@ export function parseEntityConfig(value: unknown): EntityConfig {
     config.effort = root["effort"];
   }
   if (root["holds"] !== undefined) config.holds = parseHolds(root["holds"]);
+  if (root["tools"] !== undefined) config.tools = parseToolPolicy(root["tools"]);
   if (root["limits"] !== undefined) config.limits = parseLimits(root["limits"]);
   if (root["worldModels"] !== undefined) config.worldModels = parseWorldModels(root["worldModels"]);
   return config;

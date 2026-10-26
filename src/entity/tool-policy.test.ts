@@ -54,20 +54,20 @@ describe("tool table (allow, ask, deny)", () => {
   });
 
   it("with no table, a write runs as before", async () => {
-    const rows = await run(CONFIG, [call("write_note", { path: "notes/a.md", text: "A note." })]);
+    const rows = await run(CONFIG, [call("write_note", { path: "notes/a.md", text: "A note.", why: "test" })]);
     expect(codes(rows)).not.toContain("denied_tool");
     expect(codes(rows)[0]).toBe("ok");
   });
 
   it("a denied tool is refused with a plain receipt and does nothing", async () => {
-    const rows = await run({ ...CONFIG, tools: { write_note: "deny" } }, [call("write_note", { path: "notes/a.md", text: "A note." })]);
+    const rows = await run({ ...CONFIG, tools: { write_note: "deny" } }, [call("write_note", { path: "notes/a.md", text: "A note.", why: "test" })]);
     expect(codes(rows)).toContain("denied_tool");
     const receipt = rows.find((r) => r.kind === "receipt");
     expect(String(receipt?.text)).toMatch(/summoner/i);
   });
 
   it("an ask tool is refused until the summoner allows it, and the receipt says to ask", async () => {
-    const rows = await run({ ...CONFIG, tools: { write_note: "ask" } }, [call("write_note", { path: "notes/a.md", text: "A note." })]);
+    const rows = await run({ ...CONFIG, tools: { write_note: "ask" } }, [call("write_note", { path: "notes/a.md", text: "A note.", why: "test" })]);
     expect(codes(rows)).toContain("ask_summoner");
   });
 });

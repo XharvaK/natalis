@@ -8,6 +8,7 @@
 //   notebook/     the Lar's notebook: plain text, versioned with git
 //   state.json    cursors per thread, open asks, scheduled wakes, mood, written atomically after each change
 
+import { policyFor, policyRefusal } from "./tool-policy.js";
 import { CLI_WORLD_ID } from "../worlds/cli.js";
 import { createEventBus, observeRiver, type EventType, type Hook } from "../river/events.js";
 import type { Purpose } from "../river/purpose.js";
@@ -805,7 +806,7 @@ class Runtime implements Entity {
       this.worldToolNames.set(world.id, new Set(own.map((tool) => tool.spec.name)));
       return own;
     }).map((tool) => this.gateWorldTool(tool));
-    this.tools = [...notebookTools(), ...worldTools, ...this.builtInTools()];
+    this.tools = [...notebookTools(), ...worldTools, ...this.builtInTools()].map((tool) => this.gateToolTable(tool));
     const names = new Set<string>();
     for (const tool of this.tools) {
       if (tool.spec.name === "end_turn") throw new Error('"end_turn" belongs to the loop; no tool may use that name.');
@@ -2701,6 +2702,16 @@ class Runtime implements Entity {
 
   private isOwnerPlace(place: string): boolean {
     return this.worldFor(place)?.isOwnerPlace?.(place) === true;
+  }
+
+  /** Every tool passes the summoner's tool table first; with no table, or the tool not in it, it runs as before. */
+  private gateToolTable(tool: Tool): Tool {
+    const table = this.config.tools;
+    if (policyFor(table, tool.spec.name) === "allow") return tool;
+    return {
+      spec: tool.spec,
+      run: async (args, context) => policyRefusal(table, tool.spec.name) ?? tool.run(args, context),
+    };
   }
 
   /** A tool of a world, gated by the emergency stop. The model never sees the body-only flag. */

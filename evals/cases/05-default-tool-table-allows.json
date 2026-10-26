@@ -1,0 +1,2 @@
+{ "name": "with no tool table a note the owner asks for is written, not refused", "events": ["Please write a note that the blue mug is on the shelf."], "iterations": 3,
+  "assertions": [{ "type": "calledTool", "tool": "write_note", "mode": "soft" }, { "type": "noFailedActions" }] }
