@@ -986,6 +986,40 @@ describe("what the Lar sends and what it is shown", () => {
     });
   });
 
+  it("SHOULD-2: decides 'woken by her own wake' per turn, so a message arriving during a self-woken turn does not lift its hold", async () => {
+    await withClock(async (advance) => {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let entered = false;
+      const model = new ScriptedModel([
+        reply({ toolCalls: [call("schedule_wake", { in_minutes: 1, why: "start" }), call("end_turn")] }),
+        async () => {
+          entered = true;
+          await gate;
+          return reply({ toolCalls: [call("schedule_wake", { in_minutes: 1, why: "again" }), call("end_turn")] });
+        },
+        reply({ toolCalls: [call("end_turn")] }),
+      ]);
+      const { entity, cli } = await open(model, { stopPollMs: 1e9 });
+      await entity.start();
+      cli.send("Go.");
+      await entity.idle();
+      await advance(60_000);
+      await waitFor(() => entered);
+      // While the self-woken turn waits on its model, a message arrives from outside.
+      cli.send("Something else.");
+      await advance(0);
+      release();
+      await entity.idle();
+
+      const wakeReceipts = allRows(entity).filter((row) => row.kind === "receipt" && row.data?.["tool"] === "schedule_wake");
+      expect(wakeReceipts).toHaveLength(2);
+      expect(wakeReceipts[1]?.text).toContain("15 minutes");
+    });
+  });
+
   it("spaces the wakes a self-woken turn fans out 15 minutes apart, so her own wakes wake at most one turn per 15 minutes", async () => {
     await withClock(async (advance) => {
       const fan = reply({
