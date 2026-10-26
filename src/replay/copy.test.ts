@@ -237,3 +237,16 @@ describe("copyForReplay fork at row N", () => {
   });
 });
 
+describe("NIT-3: fork over rows dated after the fork row", () => {
+  it("refuses when a row before seq N is dated after row N, and copies nothing", async () => {
+    const source = join(root, "source");
+    buildSource(source);
+    const river = openRiver(join(source, "river.db"));
+    river.append({ thread: "cli:owner", kind: "event", source: "owner", place: "cli:owner", text: "Late.", atMs: T0 + 90 * MIN });
+    river.append({ thread: "cli:owner", kind: "event", source: "owner", place: "cli:owner", text: "Imported old.", atMs: T0 + 50 * MIN });
+    river.close();
+    await expect(copyForReplay({ from: source, to: join(root, "c"), cutAtSeq: 6 })).rejects.toThrow(/dated after/);
+    expect(existsSync(join(root, "c", "river.db"))).toBe(false);
+  });
+});
+
