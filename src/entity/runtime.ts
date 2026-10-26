@@ -684,6 +684,8 @@ class Runtime implements Entity {
   /** When each running turn began, by turn id: a say held because another thread spoke meanwhile compares with it. */
   private readonly turnStarts = new Map<string, number>();
   private readonly wakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Per thread: whether its current (or last) turn was woken only by her own wakes (SHOULD-2). */
+  private readonly wokenByOwnWake = new Map<string, boolean>();
   /** Threads held back by the daily turn limit. They wait for the next local day; idle does not wait for them. */
   private readonly limited = new Set<string>();
   private limitTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1019,6 +1021,9 @@ class Runtime implements Entity {
       .filter((row) => !this.hiddenHere(row, thread));
     if (fresh.length === 0) return;
     this.noteWakeRun(fresh);
+    // SHOULD-2 (Auditor, 2026-10-26): whether this turn was woken by her own wake is decided from its own rows and kept
+    // for this turn; other threads' events cannot change it. Turns of one thread run one at a time.
+    this.wokenByOwnWake.set(thread, fresh.some(isWakeRow) && !fresh.some(isOutsideRow));
 
     const turnId = randomUUID();
     const nowMs = this.nowMs();
@@ -2892,9 +2897,8 @@ class Runtime implements Entity {
 
     // The hold: a wake set in a turn her own wake woke is held to WAKE_HOLD_MS from now, and spaced WAKE_HOLD_MS from
     // every other wake set from this thread, so her own wakes wake at most one turn per WAKE_HOLD_MS from it.
-    const run = this.state.selfWakeRun ?? 0;
     const wanted = atMs;
-    if (run > 0) {
+    if (this.wokenByOwnWake.get(context.thread) === true) {
       atMs = Math.max(atMs, this.nowMs() + WAKE_HOLD_MS);
       const others = this.state.wakes
         .filter((item) => item.scheduledIn === context.thread)
