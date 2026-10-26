@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ModelError } from "../contracts.js";
 import type { ModelRequest, ToolSpec } from "../contracts.js";
 import { createOpenAICompatiblePort } from "./openai-compatible.js";
+import { planRetry } from "../entity/retry-plan.js";
 
 // Built at runtime so no token-shaped literal sits in the repository.
 const KEY = ["sk", "test", "abc123"].join("-");
@@ -970,5 +971,37 @@ describe("quota windows on a 429", () => {
     const err = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
     expect(err.kind).toBe("out_of_credit");
     expect(err.quota).toEqual({ limit: "5-hour" });
+  });
+});
+
+describe("AU-HANG round 6", () => {
+  it("S2: a plain 'Rate limit exceeded' 429 is a rate limit, and takes the normal schedule", async () => {
+    const { port } = harness([status(429, { error: { message: "Rate limit exceeded" } }), status(429, { error: { message: "Rate limit exceeded" } }), status(429, { error: { message: "Rate limit exceeded" } }), status(429, { error: { message: "Rate limit exceeded" } }), status(429, { error: { message: "Rate limit exceeded" } }), status(429, { error: { message: "Rate limit exceeded" } })]);
+    const err = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+    expect(err.kind).toBe("rate_limit");
+    const plan = planRetry({ delays: [30_000, 600_000], failed: 0, kind: err.kind, quota: err.quota, unknownQuotaFails: 0, nowMs: Date.now() });
+    expect(plan.basis).toBe("schedule");
+  });
+
+  it("S2: a 429 naming metadata.limitName is still out of credit", async () => {
+    const { port } = harness([status(429, { error: { message: "Rate limit exceeded" }, metadata: { limitName: "weekly" } })]);
+    const err = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+    expect(err.kind).toBe("out_of_credit");
+  });
+
+  it("S3: a Retry-After HTTP date 3 h ahead becomes the reset", async () => {
+    const date = new Date(Date.now() + 3 * 3600_000).toUTCString();
+    const { port } = harness([status(429, { error: { message: "Go usage limit exceeded" } }, { "retry-after": date })]);
+    const err = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+    const target = Date.parse(date);
+    expect(Math.abs((err.quota?.resetAtMs ?? 0) - target)).toBeLessThan(5_000);
+    const plan = planRetry({ delays: [30_000], failed: 0, kind: err.kind, quota: err.quota, unknownQuotaFails: 0, nowMs: Date.now() });
+    expect(plan.basis).toBe("reset");
+  });
+
+  it("N1: an out-of-range Retry-After does not make planRetry throw", async () => {
+    const { port } = harness([status(429, { error: { message: "Go usage limit exceeded" } }, { "retry-after": "9000000000000" })]);
+    const err = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+    expect(() => planRetry({ delays: [30_000], failed: 0, kind: err.kind, quota: err.quota, unknownQuotaFails: 0, nowMs: Date.now() })).not.toThrow();
   });
 });

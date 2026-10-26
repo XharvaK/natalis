@@ -28,7 +28,16 @@ describe("planRetry", () => {
 
   it("keeps the normal schedule for other failures and for a rate limit with no reset", () => {
     expect(planRetry({ ...base, failed: 0, kind: "unavailable", quota: undefined })).toMatchObject({ basis: "schedule", delayMs: 30_000 });
-    expect(planRetry({ ...base, kind: "rate_limit", quota: { limit: "weekly" } })).toMatchObject({ basis: "schedule", delayMs: 600_000 });
+    expect(planRetry({ ...base, kind: "rate_limit", quota: {} })).toMatchObject({ basis: "schedule", delayMs: 600_000 });
     expect(planRetry({ ...base, kind: "timeout", quota: { resetAtMs: NOW + 1e9 } })).toMatchObject({ basis: "schedule" });
+  });
+});
+
+describe("planRetry round 6", () => {
+  it("S4: a rate limit naming a weekly limit with no reset takes the quota backoff", () => {
+    expect(planRetry({ ...base, kind: "rate_limit", quota: { limit: "weekly" } })).toMatchObject({ basis: "quota_backoff", delayMs: 600_000 });
+  });
+  it("N1: a reset beyond the Date range does not throw", () => {
+    expect(() => planRetry({ ...base, kind: "out_of_credit", quota: { resetAtMs: 9e15 } })).not.toThrow();
   });
 });

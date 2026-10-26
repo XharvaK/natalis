@@ -18,3 +18,9 @@ describe("whenText", () => {
     expect(whenText(Date.parse("2026-10-24T20:30:00Z"), now, undefined)).toBe("2026-10-24 23:30, 1 day ago");
   });
 });
+
+describe("whenText round 6", () => {
+  it("N2: a row stamped on a later day reads with its date, not as today", () => {
+    expect(whenText(now + 2 * 86_400_000, now, "Europe/Istanbul")).toMatch(/^2026-10-27 22:00/);
+  });
+});

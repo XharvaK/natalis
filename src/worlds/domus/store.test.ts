@@ -307,3 +307,14 @@ describe("schema migration (version 1 adds acts.words and acts.pulled_at_ms; ver
     raw.close();
   });
 });
+
+describe("openDomusDb round 6", () => {
+  it("P1-1: waits up to 5 s on a lock instead of failing at once", () => {
+    const opened = openDomusDb(dir);
+    try {
+      expect(opened.prepare("PRAGMA busy_timeout").get()).toEqual({ timeout: 5000 });
+    } finally {
+      opened.close();
+    }
+  });
+});

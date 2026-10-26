@@ -941,3 +941,23 @@ describe("runTurn: what came in during the turn", () => {
     expect(messages.some((m) => m.role === "user" && m.content.includes("New here"))).toBe(false);
   });
 });
+
+describe("runTurn round 6: the turn deadline covers tools", () => {
+  it("S1: a tool that awaits forever ends the turn as a model error within about 100 ms of a 20 ms deadline", async () => {
+    const { withTurnDeadline } = await import("../model/turn-deadline.js");
+    const hang: Tool = {
+      spec: { name: "hang", description: "Never returns.", parameters: { type: "object", properties: {} } },
+      run: () => new Promise<Receipt>(() => {}),
+    };
+    const { input } = await setup({ steps: [reply({ toolCalls: [call("hang", {}, "c1")] }), reply({ toolCalls: [call(END_TURN, { note: "x" }, "c2")] })], tools: [hang] });
+    const dog = withTurnDeadline(input.model, 20, () => {});
+    const started = Date.now();
+    const result = await Promise.race([
+      runTurn({ ...input, model: dog.model, deadline: dog.signal } as RunTurnInput),
+      new Promise<"hung">((r) => setTimeout(() => r("hung"), 500)),
+    ]).finally(() => dog.done());
+    expect(result).not.toBe("hung");
+    expect(Date.now() - started).toBeLessThan(150);
+    expect((result as { endedBy: string }).endedBy).toBe("model_error");
+  });
+});

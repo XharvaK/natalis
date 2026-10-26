@@ -969,3 +969,24 @@ describe("game memory: she asks the game, the helper answers from its record", (
     expect(await askMemory("Pim")).toMatchObject({ ok: false, refused: { code: "already_asked" } });
   });
 });
+
+describe("the timed pass, round 6", () => {
+  it("P1-1: a pass that hits 'database is locked' is tried again, a bounded number of times", async () => {
+    const { retryBusyPass } = await import("./domus-world.js");
+    let runs = 0;
+    const scheduled: Array<() => void> = [];
+    const lines: string[] = [];
+    retryBusyPass(() => { runs += 1; if (runs < 3) throw new Error("database is locked"); }, { tries: 3, schedule: (fn) => scheduled.push(fn), log: (l) => lines.push(l) });
+    while (scheduled.length > 0) scheduled.shift()!();
+    expect(runs).toBe(3);
+    expect(lines).toHaveLength(0);
+    runs = -100;
+    retryBusyPass(() => { runs += 1; throw new Error("database is locked"); }, { tries: 3, schedule: (fn) => scheduled.push(fn), log: (l) => lines.push(l) });
+    while (scheduled.length > 0) scheduled.shift()!();
+    expect(runs).toBe(-97);
+    expect(lines).toHaveLength(1);
+    retryBusyPass(() => { throw new Error("other"); }, { tries: 3, schedule: (fn) => scheduled.push(fn), log: (l) => lines.push(l) });
+    expect(scheduled).toHaveLength(0);
+    expect(lines).toHaveLength(2);
+  });
+});
