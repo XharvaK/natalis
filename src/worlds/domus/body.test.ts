@@ -127,11 +127,20 @@ describe("her body now", () => {
     expect(lines).toContain("Talking to you: someone (greet).");
   });
 
-  it("C2: says the senses are unavailable when the helper could not read her needs, and nothing when it could", () => {
-    expect(bodyLines({ ...BUSY, senses_unavailable: ["needs"] })).toContain(
+  it("C2: says which senses are unavailable (needs, moodlets or both), in one wording, and nothing when all were read", () => {
+    const line = (list: unknown) => bodyLines({ ...BUSY, senses_unavailable: list }).filter((l) => l.startsWith("Senses unavailable"));
+    expect(line(["needs"])).toEqual([
       "Senses unavailable: your needs could not be read from the game just now, so they are not shown. Do not guess them.",
-    );
-    expect(bodyLines(BUSY).some((line) => line.startsWith("Senses unavailable"))).toBe(false);
+    ]);
+    expect(line(["moodlets"])).toEqual([
+      "Senses unavailable: your moodlets could not be read from the game just now, so they are not shown. Do not guess them.",
+    ]);
+    expect(line(["needs", "moodlets"])).toEqual([
+      "Senses unavailable: your needs and moodlets could not be read from the game just now, so they are not shown. Do not guess them.",
+    ]);
+    expect(line([])).toEqual([]);
+    expect(line(["something else"])).toEqual([]);
+    expect(bodyLines(BUSY).some((l) => l.startsWith("Senses unavailable"))).toBe(false);
   });
 
   it("says whose each open window is, and whether it is held for her", () => {
