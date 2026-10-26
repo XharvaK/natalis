@@ -71,6 +71,8 @@ export type ModelRequest = {
   turnId?: string;
   /** The thread this call belongs to, when the loop makes it. A port keeps per-thread state by it. Never sent to a provider. */
   thread?: string;
+  /** When the turn's time is up (epoch ms), set by the turn watchdog. A port does not extend a call past it. Never sent. */
+  turnDeadlineAtMs?: number;
 };
 
 export type FinishReason = "stop" | "tool_calls" | "length" | "content_filter" | "error";

@@ -64,6 +64,8 @@ export type OpenAICompatibleOptions = {
    * and no wait starts, past it.
    */
   callDeadlineMs?: number;
+  /** The clock for the call deadline and the uncap's age. Default Date.now. Tests move it. */
+  nowMs?: () => number;
   /** Writes one line per retry. Default: console.error to the journal. Never given a key or a reply body. */
   log?: (line: string) => void;
 };
@@ -80,6 +82,10 @@ const DEFAULT_ATTEMPTS = 4;
 /** A Retry-After longer than this is not waited out: the call fails at once so a backup can answer. */
 export const RETRY_AFTER_MAX_MS = 60_000;
 const DEADLINE_SLACK_MS = 120_000;
+/** How long a thread stays uncapped after a silence cut without a stream. */
+export const UNCAP_FOR_MS = 60 * 60_000;
+/** Fast replies in a row (under half of idleTimeoutMs) that end a thread's uncap early. */
+export const UNCAP_FAST_REPLIES = 3;
 const DETAIL_CHARS = 300;
 
 /** Outcome of one HTTP attempt, before any retry decision. */
@@ -106,10 +112,16 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
   // Without a stream nothing can be heard before the whole reply, so a silence limit that was set bounds each attempt
   // (P1-3, 2026-10-26: the muse backup on the responses protocol could hold a turn for its full 15 min attempt).
   const silenceCapsAttempt = !streaming && options.idleTimeoutMs !== undefined && idleTimeoutMs < timeoutMs;
-  // S-C/R8 S1 (Auditor rechecks 2026-10-26): without a stream a slow reply looks like silence, so the cap is a first guess
-  // only. After one cut in a thread, that thread's tries get the full timeoutMs for the life of the port, and the call
-  // that was cut gets the cut's time added to its deadline. Kept per thread (R8 N3): one thread's cut does not uncap another.
-  const uncapped = new Set<string>();
+  // S-C/R8 S1/R9 (Auditor rechecks 2026-10-26): without a stream a slow reply looks like silence, so the cap is a first
+  // guess only. After one cut in a thread, that thread's tries get the full timeoutMs, and the cut call's deadline grows by
+  // the cut's time, never past the turn's deadline. The uncap ends UNCAP_FOR_MS after the cut, or after UNCAP_FAST_REPLIES
+  // fast replies in a row (each under half of idleTimeoutMs), so a later real hang is cut at idleTimeoutMs again. It is kept
+  // per thread (R8 N3); a call without a thread keeps its uncap for that call only (R9 NIT-2). Ended entries are pruned.
+  const uncapped = new Map<string, { sinceMs: number; fast: number }>();
+  const isUncapped = (key: string | undefined, at: number): boolean => {
+    for (const [k, entry] of uncapped) if (at - entry.sinceMs >= UNCAP_FOR_MS) uncapped.delete(k);
+    return key !== undefined && uncapped.has(key);
+  };
   const callDeadlineMs = options.callDeadlineMs ?? timeoutMs + DEADLINE_SLACK_MS;
   const log = options.log ?? ((line: string) => console.error(`[natalis] ${line}`));
   const provider = (() => {
@@ -119,7 +131,7 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
       return "model service";
     }
   })();
-  const now = (): number => Date.now();
+  const now = options.nowMs ?? ((): number => Date.now());
   const info: ModelInfo = {
     id: `openai-compatible:${options.model}`,
     contextTokens: options.contextTokens,
@@ -226,7 +238,8 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
           : buildBody({ model: options.model, nativeTools, effortParam, effort, cacheMarks, streaming }, request),
       );
       let deadlineAt = now() + callDeadlineMs;
-      const threadKey = request.thread ?? "";
+      const threadKey = request.thread;
+      let callUncapped = false;
       const overDeadline = (attempt: number): ModelError =>
         new ModelError(`no answer from the model service within the call's ${callDeadlineMs} ms limit, after ${attempt} attempts`, "timeout", attempt);
       // Waits before the next attempt, or fails when the wait would run past the call's limit.
@@ -239,7 +252,7 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
         if (signal?.aborted) throw new ModelError("request aborted by caller", "aborted", attempt);
         const started = now();
         if (started >= deadlineAt) throw overDeadline(attempt - 1);
-        const capped = silenceCapsAttempt && !uncapped.has(threadKey);
+        const capped = silenceCapsAttempt && !callUncapped && !isUncapped(threadKey, started);
         const sent = await send(body, signal, deadlineAt - started, capped);
 
         if (sent.type === "aborted") throw new ModelError("request aborted by caller", "aborted", attempt);
@@ -248,8 +261,10 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
           throw new ModelError(`no reply from the model service within ${timeoutMs} ms`, "timeout", attempt);
         }
         if (sent.type === "silent" && capped) {
-          uncapped.add(threadKey);
+          callUncapped = true;
+          if (threadKey !== undefined) uncapped.set(threadKey, { sinceMs: now(), fast: 0 });
           deadlineAt += now() - started;
+          if (request.turnDeadlineAtMs !== undefined) deadlineAt = Math.min(deadlineAt, request.turnDeadlineAtMs);
           log(`model retry: ${provider} ${options.model} attempt cap without a stream (${idleTimeoutMs} ms) cut attempt ${attempt}; this thread's tries now get the full ${timeoutMs} ms`);
           if (attempt < maxAttempts && now() < deadlineAt) continue;
         }
@@ -270,6 +285,11 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
 
         if (sent.status >= 200 && sent.status < 300) {
           const latencyMs = Date.now() - started;
+          const entry = threadKey === undefined || callUncapped ? undefined : uncapped.get(threadKey);
+          if (entry !== undefined) {
+            entry.fast = now() - started < idleTimeoutMs / 2 ? entry.fast + 1 : 0;
+            if (entry.fast >= UNCAP_FAST_REPLIES) uncapped.delete(threadKey!);
+          }
           if (api === "responses") return parseResponsesReply(sent.text, latencyMs, attempt, newId);
           if (!streaming || !isStream(sent.text)) return parseReply(sent.text, latencyMs, attempt, newId);
           const whole = joinStream(sent.text, attempt, safe);

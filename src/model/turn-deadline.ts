@@ -22,6 +22,7 @@ export function withTurnDeadline(
   log: (line: string) => void = (line) => console.error(`[natalis] ${line}`),
 ): TurnWatchdog {
   const watchdog = new AbortController();
+  const deadlineAtMs = Date.now() + deadlineMs;
   const minutes = Math.round(deadlineMs / 60_000);
   const timedOut = (attempts: number): ModelError =>
     new ModelError(`turn timed out: it ran past ${minutes} minutes and its model call was stopped`, "timeout", attempts);
@@ -37,7 +38,7 @@ export function withTurnDeadline(
       if (watchdog.signal.aborted && !signal?.aborted) throw timedOut(0);
       const joined = signal === undefined ? watchdog.signal : AbortSignal.any([signal, watchdog.signal]);
       try {
-        return await model.complete(request, joined);
+        return await model.complete({ ...request, turnDeadlineAtMs: deadlineAtMs }, joined);
       } catch (err) {
         if (watchdog.signal.aborted && !signal?.aborted) throw timedOut(err instanceof ModelError ? err.attempts : 0);
         throw err;
