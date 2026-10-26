@@ -2990,6 +2990,98 @@ describe("a world with a model of its own", () => {
   });
 });
 
+describe("smart wakes", () => {
+  it("W-1: keeps an until text with the wake and shows it when the wake fires", async () => {
+    await withClock(async (advance) => {
+      const model = new ScriptedModel([
+        reply({ toolCalls: [call("schedule_wake", { in_minutes: 1, why: "Check the lamp.", until: "the lamp is lit" }), call("end_turn")] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ]);
+      const { entity, cli } = await open(model, { stopPollMs: 1e9 });
+      await entity.start();
+      cli.send("Remind me.");
+      await entity.idle();
+      expect((readStateFile().wakes as Array<Record<string, unknown>>)[0]?.["until"]).toBe("the lamp is lit");
+      await advance(61_000);
+      await entity.idle();
+      const fired = allRows(entity).find((row) => row.thread === "self" && row.text?.startsWith("Your wake:"));
+      expect(fired?.text).toContain("Check the lamp.");
+      expect(fired?.text).toContain("the lamp is lit");
+    });
+  });
+
+  it("W-1: refuses an until longer than 200 characters and keeps no wake", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("schedule_wake", { in_minutes: 5, why: "x", until: "y".repeat(201) }), call("end_turn")] })]);
+    const { entity, cli } = await open(model, { stopPollMs: 1e9 });
+    await entity.start();
+    cli.send("Go.");
+    await entity.idle();
+    await entity.stop();
+    expect(readStateFile().wakes).toHaveLength(0);
+  });
+
+  it("W-2: a precheck that says skip lets a body rhythm wake pass with a note and no turn, and the rhythm goes on", async () => {
+    await withClock(async (advance) => {
+      vi.setSystemTime(Date.parse("2026-10-11T13:59:00Z"));
+      const model = new ScriptedModel([]);
+      const seen: string[] = [];
+      const { entity } = await open(model, {
+        stopPollMs: 1e9,
+        config: { ...CONFIG, rhythm: ["14:00"] },
+        wakePrecheck: (wake) => {
+          seen.push(wake.why);
+          return "skip";
+        },
+      });
+      await entity.start();
+      await advance(61_000);
+      await entity.idle();
+      expect(model.requests).toHaveLength(0);
+      expect(seen).toEqual(["Your daily rhythm."]);
+      expect(allRows(entity).some((row) => row.thread === "self" && row.kind === "note" && row.data?.["wakeSkipped"] !== undefined)).toBe(true);
+      const wakes = readStateFile().wakes as Array<{ atMs: number }>;
+      expect(wakes).toHaveLength(1);
+      expect(wakes[0]!.atMs).toBe(Date.parse("2026-10-12T14:00:00Z"));
+    });
+  });
+
+  it("W-2: never asks the precheck about a wake she set herself; it always fires", async () => {
+    await withClock(async (advance) => {
+      const model = new ScriptedModel([
+        reply({ toolCalls: [call("schedule_wake", { in_minutes: 1, why: "Mine." }), call("end_turn")] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ]);
+      let asked = 0;
+      const { entity, cli } = await open(model, { stopPollMs: 1e9, wakePrecheck: () => ((asked += 1), "skip") });
+      await entity.start();
+      cli.send("Set it.");
+      await entity.idle();
+      await advance(61_000);
+      await entity.idle();
+      expect(asked).toBe(0);
+      expect(model.requests).toHaveLength(2);
+    });
+  });
+
+  it("W-2: a precheck that throws lets the wake fire", async () => {
+    await withClock(async (advance) => {
+      vi.setSystemTime(Date.parse("2026-10-11T13:59:00Z"));
+      const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+      const { entity } = await open(model, {
+        stopPollMs: 1e9,
+        config: { ...CONFIG, rhythm: ["14:00"] },
+        wakePrecheck: () => {
+          throw new Error("no idea");
+        },
+      });
+      await entity.start();
+      await advance(61_000);
+      await entity.idle();
+      expect(model.requests).toHaveLength(1);
+    });
+  });
+});
+
 describe("turn purpose on the Lar", () => {
   async function oneRoomTurn(extra: Partial<OpenEntityOptions>) {
     const room = emitter("fake");
