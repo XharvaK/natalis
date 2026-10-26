@@ -3,6 +3,7 @@
 // end_turn, when the ceiling is reached, when the model fails, or when the signal aborts.
 // Every step is written to the river, so the turn can be read back later.
 
+import type { Purpose } from "../river/purpose.js";
 import { effectOf } from "../tools/effects.js";
 import { createHash } from "node:crypto";
 import {
@@ -114,6 +115,8 @@ export type RunTurnInput = {
   closingTools?: readonly string[];
   /** Dry run: read tools run, every other tool (end_turn aside) gets a stub receipt marked stubbed and is not run. */
   dryRun?: boolean;
+  /** Why the turn runs; stamped on its turn rows when not live. Absent means live. */
+  purpose?: Purpose;
   /**
    * What came in from outside since the turn began, as lines for the model, or undefined when nothing did. Asked before
    * each model call and shown on that call only, so a message that arrives mid-turn is seen in this turn.
@@ -171,6 +174,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
   const results: ToolResult[] = [];
   let shortenedResults = 0;
 
+  const purposeData = input.purpose === undefined || input.purpose === "live" ? {} : { purpose: input.purpose };
   const write = (row: Omit<RiverRowInput, "thread" | "atMs">): void => {
     river.append({ ...row, thread, atMs: nowMs() });
   };
@@ -341,7 +345,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
     messages.push({ role: "tool", toolCallId: call.id, content: JSON.stringify(receipt) });
   };
 
-  write({ kind: "turn", source: "body", data: { phase: "start", turnId } });
+  write({ kind: "turn", source: "body", data: { phase: "start", turnId, ...purposeData } });
 
   try {
     while (endedBy === undefined) {
@@ -465,6 +469,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
     kind: "turn",
     source: "body",
     data: {
+      ...purposeData,
       phase: "end",
       endedBy: finalReason,
       turnId,

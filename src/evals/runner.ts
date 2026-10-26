@@ -43,7 +43,7 @@ export async function runEvalCase(def: EvalCase, options: RunOptions): Promise<C
       const dir = join(root, "lar");
       mkdirSync(dir);
       const cli = createCliWorld({ onSay: () => {} });
-      const entity = await openEntity({ dir, config: options.config ?? EVAL_CONFIG, model: options.makeModel(), worlds: [cli], ...(options.dryRun === true ? { dryRun: true } : {}) });
+      const entity = await openEntity({ dir, config: options.config ?? EVAL_CONFIG, model: options.makeModel(), worlds: [cli], purpose: "eval", ...(options.dryRun === true ? { dryRun: true } : {}) });
       await entity.start();
       for (const text of def.events) {
         cli.send(text);

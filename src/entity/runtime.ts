@@ -8,6 +8,7 @@
 //   notebook/     the Lar's notebook: plain text, versioned with git
 //   state.json    cursors per thread, open asks, scheduled wakes, mood, written atomically after each change
 
+import type { Purpose } from "../river/purpose.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -238,6 +239,8 @@ export type OpenEntityOptions = {
   turnDeadlineMs?: number;
   /** Dry run: every turn runs reads and stubs writes (see run-turn). For evals; never set on a live Lar. */
   dryRun?: boolean;
+  /** Why this Lar runs: live (default), eval or replay. An eval Lar is not held to the daily limit; a replay is, for fidelity. */
+  purpose?: Purpose;
   /** How often the stop file is looked at while the entity runs. Defaults to 2 s. */
   stopPollMs?: number;
 };
@@ -319,6 +322,7 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
     ...(options.quotaRetry === undefined ? {} : { quotaRetry: options.quotaRetry }),
     ...(options.turnDeadlineMs === undefined ? {} : { turnDeadlineMs: options.turnDeadlineMs }),
     ...(options.dryRun === true ? { dryRun: true } : {}),
+    ...(options.purpose === undefined ? {} : { purpose: options.purpose }),
     stopPollMs,
     statePath,
     dir,
@@ -599,6 +603,7 @@ type RuntimeInit = {
   scanner: SecretScanner;
   retryDelaysMs: number[];
   quotaRetry?: QuotaRetryTuning;
+  purpose?: Purpose;
   dryRun?: boolean;
   turnDeadlineMs?: number;
   stopPollMs: number;
@@ -629,6 +634,7 @@ class Runtime implements Entity {
   /** How long a turn's model calls may run in all before the turn's watchdog stops them. */
   private readonly turnDeadlineMs: number;
   private readonly dryRun: boolean;
+  private readonly purpose: Purpose;
   private readonly stopPollMs: number;
   private readonly statePath: string;
   private readonly dir: string;
@@ -733,6 +739,7 @@ class Runtime implements Entity {
     this.quotaRetry = init.quotaRetry;
     this.turnDeadlineMs = init.turnDeadlineMs ?? TURN_DEADLINE_MS;
     this.dryRun = init.dryRun === true;
+    this.purpose = init.purpose ?? "live";
     this.stopPollMs = init.stopPollMs;
     this.statePath = init.statePath;
     this.dir = init.dir;
@@ -991,7 +998,7 @@ class Runtime implements Entity {
       this.releaseLimited();
       for (const thread of [...this.due]) {
         if (this.running.has(thread)) continue;
-        if (!this.limitExempt(thread) && this.limitReached()) {
+        if (this.purpose !== "eval" && !this.limitExempt(thread) && this.limitReached()) {
           this.holdForLimit(thread);
           continue;
         }
@@ -1040,7 +1047,7 @@ class Runtime implements Entity {
     const cut = this.cutBefore(thread, seen, recent);
     const shown = new Set<number>([...recent, ...fresh].map((row) => row.seq));
     const done = this.doneBeforeCut(thread, seen);
-    if (!this.limitExempt(thread)) this.countTurn(nowMs);
+    if (this.purpose !== "eval" && !this.limitExempt(thread)) this.countTurn(nowMs);
     // A world with a model of its own runs its turns on that model. A place is named for its world ("domus:...").
     const world = this.worldFor(thread)?.id ?? "";
     const worldModel = this.worldModels[world];
@@ -1118,6 +1125,7 @@ class Runtime implements Entity {
       tools: this.toolsFor(thread),
       closingTools: CLOSING_TOOLS,
       ...(this.dryRun ? { dryRun: true } : {}),
+      purpose: this.purpose,
       arrivals: () => this.arrivedSince(thread, snapshot),
       system: laid.system,
       systemLayout: laid.systemLayout,

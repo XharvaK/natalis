@@ -96,6 +96,7 @@ export async function runReplay(options: ReplayOptions): Promise<ReplayResult> {
     nowMs: () => recorder.now(),
     scanner,
     retryDelaysMs: options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS,
+    purpose: "replay",
   });
 
   let fed = 0;
