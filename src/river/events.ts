@@ -2,6 +2,7 @@
 // gets a frozen copy, and cannot change the row or the turn. A hook that throws (or rejects) is reported to onError and
 // skipped; the append and the other hooks go on. Observe outside the secret guard, so hooks only ever see scanned rows.
 
+import { createHash } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import type { River, RiverRow } from "../contracts.js";
 import { purposeOf, type Purpose } from "./purpose.js";
@@ -113,9 +114,12 @@ export function observeRiver(river: River, bus: EventBus, purpose: Purpose): Riv
   };
 }
 
-/** H-3: a hook that appends one JSON line per event: type, seq, time, thread and purpose. Never text or data. */
-export function jsonlExporter(path: string): Hook {
+/** H-3: a hook that appends one JSON line per event: type, seq, time, purpose, and the thread only as a hash on request. Never text or data. */
+export function jsonlExporter(path: string, options: { threads?: "omit" | "hash" } = {}): Hook {
+  // NIT-3: a thread name can carry a person's alias, so it is left out by default, or given as a short hash.
+  const hash = options.threads === "hash";
   return (event) => {
-    appendFileSync(path, JSON.stringify({ type: event.type, seq: event.seq, atMs: event.atMs, thread: event.thread, purpose: event.purpose }) + "\n");
+    const thread = hash ? { thread: createHash("sha256").update(event.thread).digest("hex").slice(0, 12) } : {};
+    appendFileSync(path, JSON.stringify({ type: event.type, seq: event.seq, atMs: event.atMs, ...thread, purpose: event.purpose }) + "\n");
   };
 }
