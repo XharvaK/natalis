@@ -14,6 +14,9 @@ export const RESET_WAIT_CAP_MS = 8 * 24 * 60 * 60_000;
 export const QUOTA_BACKOFF_START_MS = 10 * 60_000;
 export const QUOTA_BACKOFF_CAP_MS = 2 * 60 * 60_000;
 
+/** The limits quotaWindow names: each lasts hours or more. */
+const NAMED_LIMITS: ReadonlySet<string> = new Set(["5-hour", "daily", "weekly", "monthly"]);
+
 export type RetryInput = {
   /** The runtime's normal schedule, and how many turns in this thread failed in a row before this one. */
   delays: readonly number[];
@@ -46,9 +49,12 @@ export function planRetry(input: RetryInput): RetryPlan {
     const jitter = Math.floor((input.random ?? Math.random)() * (input.tuning?.jitterMs ?? RESET_JITTER_MS));
     const margin = input.tuning?.marginMs ?? RESET_MARGIN_MS;
     const delayMs = Math.min(RESET_WAIT_CAP_MS, Math.max(0, quota.resetAtMs - nowMs) + margin + jitter);
-    return { delayMs, basis: "reset", reason: `${kind}${limit}, provider reset at ${new Date(quota.resetAtMs).toISOString()}, waiting past it` };
+    const at = new Date(quota.resetAtMs);
+    const resetText = Number.isFinite(at.getTime()) ? at.toISOString() : "an out-of-range time";
+    return { delayMs, basis: "reset", reason: `${kind}${limit}, provider reset at ${resetText}, waiting past it` };
   }
-  if (kind === "out_of_credit") {
+  // A named hours-scale limit is a spent quota whatever the kind, so a weekly 429 with no reset is not retried every 30 s.
+  if (kind === "out_of_credit" || (quotaKind && quota?.limit !== undefined && NAMED_LIMITS.has(quota.limit))) {
     const start = input.tuning?.backoffStartMs ?? QUOTA_BACKOFF_START_MS;
     const cap = input.tuning?.backoffCapMs ?? QUOTA_BACKOFF_CAP_MS;
     const delayMs = Math.min(cap, start * 2 ** Math.min(input.unknownQuotaFails, 20));

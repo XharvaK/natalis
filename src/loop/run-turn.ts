@@ -97,6 +97,11 @@ export type RunTurnInput = {
   nowMs: () => number;
   turnId: string;
   signal?: AbortSignal;
+  /**
+   * The turn's deadline (the watchdog's signal). Tools see it joined with `signal`, and a tool still running when it
+   * aborts is stopped with a failed receipt; the next model call then fails as the turn's timeout.
+   */
+  deadline?: AbortSignal;
   effort?: ModelRequest["effort"];
   /**
    * The tools a closing call may use. When the turn reaches its ceiling, one last model call is made with only these and
@@ -176,9 +181,11 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
         refused: { code: "unknown_tool", reason: `The tools you can call are: ${names}.` },
       };
     }
-    const context: ToolContext = { thread, turnId, nowMs: nowMs(), river, notebook, signal };
+    const deadline = input.deadline;
+    const toolSignal = deadline === undefined ? signal : signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
+    const context: ToolContext = { thread, turnId, nowMs: nowMs(), river, notebook, ...(toolSignal === undefined ? {} : { signal: toolSignal }) };
     try {
-      return await tool.run(parsed.value, context);
+      return await raceDeadline(tool.run(parsed.value, context), deadline);
     } catch (err) {
       const message = messageOf(err);
       return { ok: false, summary: `The tool failed: ${message}`, refused: { code: "tool_error", reason: message } };
@@ -383,6 +390,11 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
         if (signal?.aborted) {
           endedBy ??= "aborted";
           skip(call, "The turn was aborted before this call.");
+          earlierRefused = true;
+          continue;
+        }
+        if (input.deadline?.aborted) {
+          skip(call, "The turn ran past its time limit before this call.");
           earlierRefused = true;
           continue;
         }
@@ -604,4 +616,29 @@ function parseArguments(raw: string): Parsed {
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** The tool's result, or a failed receipt as soon as the turn's deadline aborts (the tool itself may keep running). */
+function raceDeadline(run: Promise<Receipt>, deadline: AbortSignal | undefined): Promise<Receipt> {
+  if (deadline === undefined) return run;
+  const stopped: Receipt = {
+    ok: false,
+    summary: "The tool was stopped: the turn ran past its time limit.",
+    refused: { code: "tool_error", reason: "turn deadline" },
+  };
+  if (deadline.aborted) return Promise.resolve(stopped);
+  return new Promise<Receipt>((resolve, reject) => {
+    const onAbort = (): void => resolve(stopped);
+    deadline.addEventListener("abort", onAbort, { once: true });
+    run.then(
+      (receipt) => {
+        deadline.removeEventListener("abort", onAbort);
+        resolve(receipt);
+      },
+      (err: unknown) => {
+        deadline.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
 }

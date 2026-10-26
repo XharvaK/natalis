@@ -1108,6 +1108,7 @@ class Runtime implements Entity {
       nowMs: () => this.nowMs(),
       turnId,
       signal: this.abort.signal,
+      deadline: watchdog.signal,
       ...(effort === undefined ? {} : { effort }),
     }).finally(() => {
       watchdog.done();

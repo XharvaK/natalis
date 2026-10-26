@@ -10,6 +10,8 @@ export const TURN_DEADLINE_MS = 20 * 60_000;
 
 export type TurnWatchdog = {
   model: ModelPort;
+  /** Aborts when the turn's time is up; run-turn joins it into what tools see, so a tool is stopped at the deadline too. */
+  signal: AbortSignal;
   /** Clears the timer. Call when the turn has ended. */
   done(): void;
 };
@@ -42,5 +44,5 @@ export function withTurnDeadline(
       }
     },
   };
-  return { model: port, done: () => clearTimeout(timer) };
+  return { model: port, signal: watchdog.signal, done: () => clearTimeout(timer) };
 }

@@ -645,8 +645,12 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
   }
 
   function sweepNow(): void {
+    retryBusyPass(sweepPass, { log: (line) => console.error(`[domus] ${line}`) });
+  }
+
+  function sweepPass(): void {
     if (!db) return;
-    try {
+    {
       const now = nowMs();
       checkAttachment(now);
       if (isStopOn(options.dir)) for (const note of withholdForStop(db, now)) deliver(noteEvent(note, now));
@@ -659,8 +663,6 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
         lastPruneMs = now;
         pruneObservations(db, now);
       }
-    } catch (error) {
-      console.error(`[domus] the timed pass failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -779,4 +781,37 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
       return db ? forgetText(db, words, nowMs()) : forgetInDomusFile(options.dir, words, nowMs());
     },
   };
+}
+
+/** A locked database (SQLITE_BUSY), as node:sqlite reports it. */
+export function isDbBusy(error: unknown): boolean {
+  const text = error instanceof Error ? `${error.message} ${String((error as { code?: unknown }).code ?? "")}` : String(error);
+  return /database is locked|SQLITE_BUSY/i.test(text);
+}
+
+export type BusyRetryOptions = {
+  /** Tries in all, the first included. */
+  tries?: number;
+  delayMs?: number;
+  schedule?: (fn: () => void, delayMs: number) => void;
+  log: (line: string) => void;
+};
+
+/**
+ * Runs one timed pass; a pass that fails on a locked database is tried again after a short wait, up to `tries` in all.
+ * Any other failure, or the last busy one, is logged once and the pass waits for its next tick.
+ */
+export function retryBusyPass(pass: () => void, options: BusyRetryOptions, attempt = 1): void {
+  const tries = options.tries ?? 3;
+  try {
+    pass();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isDbBusy(error) && attempt < tries) {
+      const schedule = options.schedule ?? ((fn, ms) => setTimeout(fn, ms).unref?.());
+      schedule(() => retryBusyPass(pass, options, attempt + 1), options.delayMs ?? 1000);
+      return;
+    }
+    options.log(`the timed pass failed${attempt > 1 ? ` after ${attempt} tries` : ""}: ${message}`);
+  }
 }

@@ -15,7 +15,10 @@ export function whenText(atMs: number, nowMs: number, timeZone: string | undefin
     new Date(atMs),
   );
   const day = dayKey(atMs, zone);
-  if (day >= dayKey(nowMs, zone)) return time;
-  const days = Math.max(1, Math.round((Date.parse(dayKey(nowMs, zone)) - Date.parse(day)) / DAY_MS));
-  return `${day} ${time}, ${days === 1 ? "1 day" : `${days} days`} ago`;
+  const today = dayKey(nowMs, zone);
+  if (day === today) return time;
+  const days = Math.max(1, Math.round(Math.abs(Date.parse(today) - Date.parse(day)) / DAY_MS));
+  const span = days === 1 ? "1 day" : `${days} days`;
+  // A later day (clock skew or a bad stamp) is dated too, so it is never read as today.
+  return day > today ? `${day} ${time}, ${span} ahead` : `${day} ${time}, ${span} ago`;
 }

@@ -244,12 +244,17 @@ export function migrateDomusDb(db: DatabaseSync): void {
   }
 }
 
+/** How long a Domus statement waits on a lock before SQLITE_BUSY. */
+export const DOMUS_BUSY_TIMEOUT_MS = 5000;
+
 /** Opens (or creates) the Domus database in the Lar's domus folder, at the current schema version. */
 export function openDomusDb(dir: string): DatabaseSync {
   const folder = join(dir, DOMUS_FOLDER);
   mkdirSync(folder, { recursive: true });
   const db = new DatabaseSync(join(folder, DOMUS_DB_FILE));
   try {
+    // Wait up to 5 s on another holder's lock (the backup, the offline forget) instead of failing the pass at once.
+    db.exec(`PRAGMA busy_timeout = ${DOMUS_BUSY_TIMEOUT_MS}`);
     db.exec(SCHEMA);
     migrateDomusDb(db);
   } catch (error) {

@@ -571,7 +571,7 @@ function joinStream(text: string, attempt: number, safe: (text: string) => strin
  * It is an outage, not a rate limit, so it is not retried here: the same key will not get credit back in a few seconds.
  */
 function isOutOfCredit(status: number, text: string): boolean {
-  return status === 402 || (status === 429 && OUT_OF_CREDIT_429.test(text));
+  return status === 402 || (status === 429 && (OUT_OF_CREDIT_429.test(text) || namesLimit(text)));
 }
 
 /**
@@ -579,7 +579,17 @@ function isOutOfCredit(status: number, text: string): boolean {
  * and subscription-quota errors, CommandCode's credit errors). Such a limit lasts hours, not seconds, so it is final.
  */
 const OUT_OF_CREDIT_429 =
-  /insufficient[_ ]quota|quota|credit|billing|usage[_ ]?limit|limit[_ ]?exceeded|exceeded[^"]{0,40}limit|UsageLimitError|subscription/i;
+  /insufficient[_ ]quota|quota|credit|billing|usage[_ ]?limit|exceeded[^"]{0,40}limit|UsageLimitError|subscription/i;
+
+/** A body whose metadata names its limit (OpenCode's limitName): a named, hours-scale limit, not a burst rate limit. */
+function namesLimit(text: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return isRecord(parsed) && isRecord(parsed.metadata) && typeof parsed.metadata.limitName === "string";
+  } catch {
+    return false;
+  }
+}
 
 function httpError(
   status: number,
@@ -675,11 +685,23 @@ function backoffMs(attempt: number): number {
   return Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** (attempt - 1));
 }
 
-/** Retry-After as delay-seconds. HTTP-date form is not used by the providers Natalis targets; it falls back. */
-function parseRetryAfter(value: string | null): number | undefined {
+/** The longest Retry-After kept (a year), so a reset built from it stays a valid Date. */
+const RETRY_AFTER_KEEP_MS = 365 * 24 * 60 * 60_000;
+
+/** Retry-After as delay-seconds or as an HTTP date (RFC 7231), clamped to 0 .. a year. Unreadable: undefined. */
+function parseRetryAfter(value: string | null, nowMs: number = Date.now()): number | undefined {
   if (value === null || value.trim() === "") return undefined;
   const seconds = Number(value.trim());
-  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : undefined;
+  let ms: number;
+  if (Number.isFinite(seconds)) {
+    if (seconds < 0) return undefined;
+    ms = seconds * 1000;
+  } else {
+    const at = Date.parse(value.trim());
+    if (!Number.isFinite(at)) return undefined;
+    ms = Math.max(0, at - nowMs);
+  }
+  return Math.min(ms, RETRY_AFTER_KEEP_MS);
 }
 
 function mapFinish(raw: unknown): FinishReason {

@@ -125,5 +125,24 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
   out("Stopping…");
   await entity.stop();
   out("Stopped.");
+  // If a handle is left open the event loop never drains and systemd kills us after 300 s; exit after a short grace.
+  armExitFailsafe(0);
   return 0;
+}
+
+/** After this long past "Stopped.", the process exits even if something still holds the event loop. */
+export const EXIT_GRACE_MS = 10_000;
+
+/** An unref'd timer that exits with `code` after `graceMs`; it never keeps the process alive by itself. */
+export function armExitFailsafe(
+  code: number,
+  graceMs: number = EXIT_GRACE_MS,
+  exit: (code: number) => void = (c) => process.exit(c),
+): NodeJS.Timeout {
+  const timer = setTimeout(() => {
+    console.error(`[natalis] the event loop did not drain ${graceMs} ms after stopping; exiting`);
+    exit(code);
+  }, graceMs);
+  timer.unref();
+  return timer;
 }
