@@ -1,7 +1,7 @@
 import { cpSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RiverRow } from "../contracts.js";
 import { ScriptedModel, call, reply } from "../testing/scripted-model.js";
 import { createCliWorld } from "../worlds/cli.js";
@@ -69,5 +69,17 @@ describe("tool table (allow, ask, deny)", () => {
   it("an ask tool is refused until the summoner allows it, and the receipt says to ask", async () => {
     const rows = await run({ ...CONFIG, tools: { write_note: "ask" } }, [call("write_note", { path: "notes/a.md", text: "A note.", why: "test" })]);
     expect(codes(rows)).toContain("ask_summoner");
+  });
+
+  it("NIT-4: a table name that matches no tool gives one warning line on stderr", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await run({ ...CONFIG, tools: { write_notes: "deny", write_note: "allow" } }, [call("end_turn")]);
+      const lines = spy.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("write_notes"));
+      expect(lines).toHaveLength(1);
+      expect(spy.mock.calls.some((c) => / write_note[^s]/.test(String(c[0])))).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
