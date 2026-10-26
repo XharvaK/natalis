@@ -2132,7 +2132,11 @@ class Runtime implements Entity {
     const notebook = this.notebookFor(thread);
     const notes = notebook
       .list()
-      .filter((entry) => parseTriggers(entry.firstLine).length > 0)
+      // Not trash (a retired note keeps no authority), not README files, not dot files: the same notes the index shows.
+      .filter((entry) => {
+        const base = entry.path.split("/").pop() ?? entry.path;
+        return !entry.path.startsWith("trash/") && base !== "README.md" && !base.startsWith(".") && parseTriggers(entry.firstLine).length > 0;
+      })
       .flatMap((entry) => {
         const body = notebook.read(entry.path);
         return body === null ? [] : [{ path: entry.path, firstLine: entry.firstLine, text: body }];
