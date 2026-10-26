@@ -36,4 +36,11 @@ describe("nearby notes before a new note is written", () => {
     expect((await run("write_note", { path: "places/harbour.md", text: "The harbour\nFerries.", why: "update" })).ok).toBe(true);
     expect((await run("write_note", { path: "diary/2026-10-27.md", text: "A quiet day.", why: "diary" })).ok).toBe(true);
   });
+
+  it("NIT-2: common words alone do not count as near", async () => {
+    const { notebook, run } = await fixture();
+    await notebook.write("memory/that-time.md", "That time with the rain\nWet.", "f", "t");
+    expect(nearbyNotes(notebook, "memory/note-about-this.md", "This note is about that thing with them")).toEqual([]);
+    expect((await run("write_note", { path: "memory/note-about-this.md", text: "This note is about that thing with them", why: "t" })).ok).toBe(true);
+  });
 });
