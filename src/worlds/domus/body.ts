@@ -242,6 +242,11 @@ function windowLines(asked: Record_[]): string[] {
 
 function flagLines(portrait: Record_): string[] {
   const flags: Array<[boolean, string]> = [
+    // C2 (Owner 2026-10-26): the helper could not read her needs; she is told, not shown a body with no needs.
+    [
+      Array.isArray(portrait.senses_unavailable) && portrait.senses_unavailable.includes("needs"),
+      "Senses unavailable: your needs could not be read from the game just now, so they are not shown. Do not guess them.",
+    ],
     [portrait.building === true, "Build mode is on."],
     [portrait.fire_on_lot === true, "A fire is burning on the lot."],
     [portrait.user_plays_another === true, "Your summoner is playing another Sim of the household, so your acts are refused for now."],
