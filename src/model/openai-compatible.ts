@@ -54,7 +54,10 @@ export type OpenAICompatibleOptions = {
    * idleTimeoutMs, the call fails as a timeout and a backup can answer. timeoutMs still bounds the whole call. Default false.
    */
   stream?: boolean;
-  /** With stream on: the longest wait for the next piece of the reply, the first included. Default 120000. */
+  /**
+   * With stream on: the longest wait for the next piece of the reply, the first included. Default 120000. Without a
+   * stream (the responses protocol), a value set here bounds each attempt, since nothing arrives before the whole reply.
+   */
   idleTimeoutMs?: number;
   /**
    * The whole call's limit: every attempt and every wait between attempts. Default timeoutMs + 120000. No attempt runs,
@@ -100,6 +103,9 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
   const cacheMarks = options.cacheMarks === true;
   const streaming = options.stream === true && api === "chat";
   const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+  // Without a stream nothing can be heard before the whole reply, so a silence limit that was set bounds each attempt
+  // (P1-3, 2026-10-26: the muse backup on the responses protocol could hold a turn for its full 15 min attempt).
+  const silenceCapsAttempt = !streaming && options.idleTimeoutMs !== undefined && idleTimeoutMs < timeoutMs;
   const callDeadlineMs = options.callDeadlineMs ?? timeoutMs + DEADLINE_SLACK_MS;
   const log = options.log ?? ((line: string) => console.error(`[natalis] ${line}`));
   const provider = (() => {
@@ -131,10 +137,12 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
     const timer = { timedOut: false, silent: false };
     const onCallerAbort = (): void => controller.abort();
     signal?.addEventListener("abort", onCallerAbort, { once: true });
+    const attemptMs = silenceCapsAttempt ? idleTimeoutMs : timeoutMs;
     const timeout = setTimeout(() => {
-      timer.timedOut = true;
+      if (silenceCapsAttempt && attemptMs <= limitMs) timer.silent = true;
+      else timer.timedOut = true;
       controller.abort();
-    }, Math.max(1, Math.min(timeoutMs, limitMs)));
+    }, Math.max(1, Math.min(attemptMs, limitMs)));
     // With a stream, every piece that arrives starts the silence watch again; without one, there is no watch.
     let idle: ReturnType<typeof setTimeout> | undefined;
     const heard = (): void => {

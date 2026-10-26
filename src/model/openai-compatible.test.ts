@@ -904,6 +904,25 @@ describe("a streamed reply", () => {
     expect(failure).toMatchObject({ kind: "timeout", message: "the model service sent nothing for 30 ms" });
   });
 
+  it("without a stream, a set silence limit bounds each attempt (the muse backup on the responses protocol)", async () => {
+    // P1-3 (polish audit 2026-10-26): a non-streaming backup had no silence watch, only the 15 min attempt limit.
+    const { port } = harness(["hang"], { api: "responses", idleTimeoutMs: 30, timeoutMs: 60_000, maxAttempts: 1 });
+
+    const started = Date.now();
+    const failure = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+
+    expect(failure).toMatchObject({ kind: "timeout", message: "the model service sent nothing for 30 ms" });
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("without a stream and no silence limit set, only the attempt limit applies", async () => {
+    const { port } = harness(["hang"], { api: "responses", timeoutMs: 40, maxAttempts: 1 });
+
+    const failure = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+
+    expect(failure).toMatchObject({ kind: "timeout", message: "no reply from the model service within 40 ms" });
+  });
+
   it("tries again when the stream is cut off before its end", async () => {
     const { port, calls } = harness(
       [sse([delta({ content: "Hel" })], false), sse([delta({ content: "Hello." }, "stop")])],
