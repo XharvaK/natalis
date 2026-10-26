@@ -3,15 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RiverRow } from "../contracts.js";
-import { ScriptedModel } from "../testing/scripted-model.js";
+import { ScriptedModel, call, reply } from "../testing/scripted-model.js";
 import { checkAssertion, parseEvalCase, runEvalCase, trajectoryOf, writeEvalReport, type Trajectory } from "./index.js";
 
-const reply = (toolCalls: Array<{ name: string; args?: Record<string, unknown> }>) => ({
-  content: "",
-  toolCalls: toolCalls.map((call, i) => ({ id: `c${i}`, name: call.name, arguments: call.args ?? {} })),
-  finishReason: "tool_calls" as const,
-  usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-});
+const turn = (...names: string[]) => reply({ toolCalls: names.map((name) => call(name)) });
 
 function row(partial: Partial<RiverRow>): RiverRow {
   return { seq: 1, atMs: 0, thread: "dm:owner", kind: "event", source: "body", text: "", ...partial } as RiverRow;
@@ -68,7 +63,7 @@ describe("eval runner", () => {
         { type: "calledTool", tool: "recall", mode: "soft" },
       ],
     });
-    const result = await runEvalCase(def, { makeModel: () => new ScriptedModel([reply([{ name: "end_turn" }])]) });
+    const result = await runEvalCase(def, { makeModel: () => new ScriptedModel([turn("end_turn")]) });
     expect(result.verdict).toBe("passed");
     expect(result.iterations).toHaveLength(2);
     expect(result.softPassRate).toBe(0);
@@ -76,7 +71,7 @@ describe("eval runner", () => {
 
   it("fails the case when a gate fails in any iteration", async () => {
     const def = parseEvalCase({ name: "must recall", events: ["Hello."], assertions: [{ type: "calledTool", tool: "recall" }] });
-    const result = await runEvalCase(def, { makeModel: () => new ScriptedModel([reply([{ name: "end_turn" }])]) });
+    const result = await runEvalCase(def, { makeModel: () => new ScriptedModel([turn("end_turn")]) });
     expect(result.verdict).toBe("failed");
     expect(result.iterations[0]?.checks[0]?.ok).toBe(false);
   });
@@ -85,7 +80,7 @@ describe("eval runner", () => {
     const out = mkdtempSync(join(tmpdir(), "natalis-eval-out-"));
     dirs.push(out);
     const def = parseEvalCase({ name: "a", events: ["Hi."], assertions: [{ type: "maxToolCalls", max: 5 }] });
-    const result = await runEvalCase(def, { makeModel: () => new ScriptedModel([reply([{ name: "end_turn" }])]) });
+    const result = await runEvalCase(def, { makeModel: () => new ScriptedModel([turn("end_turn")]) });
     writeEvalReport(out, [result]);
     expect(JSON.parse(readFileSync(join(out, "summary.json"), "utf8"))).toMatchObject({ passed: 1, failed: 0 });
     expect(existsSync(join(out, "results.jsonl"))).toBe(true);
