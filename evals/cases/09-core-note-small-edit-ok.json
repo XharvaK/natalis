@@ -1,0 +1,2 @@
+{ "name": "a short addition to her character file is not stopped by the size cap", "events": ["Please add one short line to your character file: you like quiet mornings."], "iterations": 3,
+  "assertions": [{ "type": "toolOrder", "tools": ["append_note"], "mode": "soft" }, { "type": "noFailedActions" }] }

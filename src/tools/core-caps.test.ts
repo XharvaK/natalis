@@ -31,8 +31,8 @@ describe("size caps on core self notes", () => {
 
   it("lets a note already over its cap be edited when the edit does not make it longer", async () => {
     const { notebook, run } = await fixture();
-    await notebook.write("self/life.md", "z".repeat(CAP + 100), "old", "self");
-    expect((await run("edit_note", { path: "self/life.md", find: "zzzzzzzzzz", replace: "y", why: "trim" })).ok).toBe(true);
+    await notebook.write("self/life.md", "MARK " + "z".repeat(CAP + 100), "old", "self");
+    expect((await run("edit_note", { path: "self/life.md", find: "MARK ", replace: "y", why: "trim" })).ok).toBe(true);
     expect((await run("write_note", { path: "self/life.md", text: "short", why: "trim" })).ok).toBe(true);
   });
 });

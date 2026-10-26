@@ -82,6 +82,8 @@ const writeNote: Tool = {
     if (!text.ok) return text.receipt;
     const why = requireText(args, "why", "The reason");
     if (!why.ok) return why.receipt;
+    const full = capRefusal(path.value, context.notebook.read(path.value), text.value.length);
+    if (full !== undefined) return full;
     return guarded(async () => {
       await context.notebook.write(path.value, text.value, why.value, authorOf(context));
       return { ok: true, summary: `Wrote ${path.value}.`, data: { path: path.value, chars: text.value.length } };
@@ -116,6 +118,11 @@ const editNote: Tool = {
     if (!replace.ok) return replace.receipt;
     const why = requireText(args, "why", "The reason");
     if (!why.ok) return why.receipt;
+    const current = CORE_NOTE_CAPS[path.value] === undefined ? null : context.notebook.read(path.value);
+    if (current !== null && current.includes(find.value)) {
+      const full = capRefusal(path.value, current, current.length - find.value.length + replace.value.length);
+      if (full !== undefined) return full;
+    }
     return guarded(
       async () => {
         await context.notebook.edit(path.value, find.value, replace.value, why.value, authorOf(context));
@@ -152,6 +159,12 @@ const appendNote: Tool = {
     if (!text.ok) return text.receipt;
     const why = requireText(args, "why", "The reason");
     if (!why.ok) return why.receipt;
+    if (CORE_NOTE_CAPS[path.value] !== undefined) {
+      const current = context.notebook.read(path.value);
+      // An append may add one line break before the text.
+      const full = capRefusal(path.value, current, (current?.length ?? 0) + text.value.length + 1);
+      if (full !== undefined) return full;
+    }
     return guarded(async () => {
       await context.notebook.append(path.value, text.value, why.value, authorOf(context));
       return { ok: true, summary: `Added to ${path.value}.`, data: { path: path.value, chars: text.value.length } };
@@ -367,6 +380,22 @@ function authorOf(context: ToolContext): string {
 }
 
 /** The refusal for a note only the body may change, or undefined when the Lar may change it. */
+/**
+ * Size caps on the core self notes that are always in her context. A change that would make one longer than its cap is
+ * refused; a change that leaves it no longer is allowed, so a note already over the cap can still be trimmed.
+ */
+export const CORE_NOTE_CAPS: Readonly<Record<string, number>> = { "self/character.md": 8000, "self/life.md": 8000 };
+
+function capRefusal(path: string, before: string | null, after: number): Receipt | undefined {
+  const cap = CORE_NOTE_CAPS[path];
+  if (cap === undefined || after <= cap || after <= (before?.length ?? 0)) return undefined;
+  return refuse(
+    "core_note_full",
+    `${path} would be ${after} characters, over its cap of ${cap}, so nothing was changed.`,
+    `${path} is always in your context and is capped at ${cap} characters. Shorten it, or move detail into another note.`,
+  );
+}
+
 function protectedRefusal(path: string): Receipt | undefined {
   const reason = protectedNoteReason(path);
   return reason === undefined ? undefined : refuse("protected", reason, reason);

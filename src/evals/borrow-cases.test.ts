@@ -61,4 +61,13 @@ describe("OSS-borrow eval cases", () => {
     });
     expect(result.verdict).toBe("passed");
   });
+
+  it("item 4: a short addition to the character file is not refused", async () => {
+    const def = { ...byFile("a short addition to her character file is not stopped by the size cap"), iterations: 1 };
+    const result = await runEvalCase(def, {
+      makeModel: () => new ScriptedModel([reply({ toolCalls: [call("append_note", { path: "self/character.md", text: "I like quiet mornings.", why: "asked" })] }), reply({ toolCalls: [call("end_turn")] })]),
+    });
+    expect(result.verdict).toBe("passed");
+    expect(result.softPassRate).toBe(1);
+  });
 });
