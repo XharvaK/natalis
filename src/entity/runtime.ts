@@ -816,6 +816,10 @@ class Runtime implements Entity {
       if (names.has(tool.spec.name)) throw new Error(`Two tools share the name "${tool.spec.name}".`);
       names.add(tool.spec.name);
     }
+    // A name in the summoner's tool table that matches no tool would deny nothing: say so once, on stderr.
+    for (const name of Object.keys(this.config.tools ?? {})) {
+      if (!names.has(name)) console.error(`natalis: entity.json tools names "${name}", but no connected tool has that name; it has no effect.`);
+    }
   }
 
   /** The river the Lar's tools get. Every method is the river's own, except forget, which also scrubs the state and the worlds' stores. */
