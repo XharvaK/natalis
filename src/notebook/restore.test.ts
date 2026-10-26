@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -46,10 +46,30 @@ describe("restore the notebook to a commit", () => {
 
   it("is a command: natalis notebook-restore --dir --commit --reason", async () => {
     const { root, good } = await book();
+    writeFileSync(join(root, "state.json"), JSON.stringify({ stoppedCleanly: true, aliveMs: 1 }));
     const out: string[] = [];
     const code = await notebookRestoreCommand(["--dir", root, "--commit", good, "--reason", "Undo"], (l) => out.push(l), (l) => out.push(l));
     expect(code).toBe(0);
     expect(out.join("\n")).toMatch(/Restored/);
     expect(await notebookRestoreCommand(["--dir", root], () => {}, () => {})).toBe(2);
+  });
+
+  it("SHOULD-3: refuses while state.json does not show a clean stop, unless --force", async () => {
+    const { root, dir, good } = await book();
+    const before = head(dir);
+    const quiet = () => {};
+    // Running: not stopped cleanly.
+    writeFileSync(join(root, "state.json"), JSON.stringify({ stoppedCleanly: false, aliveMs: Date.now() }));
+    const err: string[] = [];
+    expect(await notebookRestoreCommand(["--dir", root, "--commit", good, "--reason", "Undo"], quiet, (l) => err.push(l))).toBe(1);
+    expect(err.join("\n")).toMatch(/stop/i);
+    expect(head(dir)).toBe(before);
+    // No state file at all: no clean stop is shown either.
+    rmSync(join(root, "state.json"));
+    expect(await notebookRestoreCommand(["--dir", root, "--commit", good, "--reason", "Undo"], quiet, quiet)).toBe(1);
+    expect(head(dir)).toBe(before);
+    // --force goes ahead.
+    expect(await notebookRestoreCommand(["--dir", root, "--commit", good, "--reason", "Undo", "--force"], quiet, quiet)).toBe(0);
+    expect(head(dir)).not.toBe(before);
   });
 });
