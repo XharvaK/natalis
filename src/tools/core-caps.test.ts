@@ -1,4 +1,8 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { openNotebook } from "../notebook/git-notebook.js";
 import type { Receipt, ToolContext } from "../contracts.js";
 import { MemoryNotebook } from "../testing/memory-notebook.js";
 import { MemoryRiver } from "../testing/memory-river.js";
@@ -63,5 +67,25 @@ describe("size caps on core self notes", () => {
     expect([...(notebook.read("self/character.md") ?? "")].length).toBe(CAP);
     expect((await run("append_note", { path: "self/character.md", text: "\u{1F600}", why: "t" })).refused?.code).toBe("core_note_full");
     expect((await run("write_note", { path: "self/character.md", text: "\u{1F600}".repeat(CAP + 1), why: "t" })).refused?.code).toBe("core_note_full");
+  });
+});
+
+describe("NIT-1: the cap holds under concurrent appends", () => {
+  it("two appends that together cross the cap, on a git notebook: one is refused", async () => {
+    const root = mkdtempSync(join(tmpdir(), "natalis-cap-race-"));
+    try {
+      const notebook = await openNotebook(join(root, "nb"));
+      await notebook.write("self/character.md", "a".repeat(CAP - 10), "f", "self");
+      const context: ToolContext = { thread: "dm:owner", turnId: "t", nowMs: NOW, river: new MemoryRiver({ nowMs: () => NOW }), notebook };
+      const run = (args: Record<string, unknown>) => notebookTools().find((t) => t.spec.name === "append_note")!.run(args, context);
+      const [one, two] = await Promise.all([
+        run({ path: "self/character.md", text: "b".repeat(6), why: "t" }),
+        run({ path: "self/character.md", text: "c".repeat(6), why: "t" }),
+      ]);
+      expect([one.ok, two.ok].filter(Boolean)).toHaveLength(1);
+      expect([...(notebook.read("self/character.md") ?? "")].length).toBeLessThanOrEqual(CAP);
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+    }
   });
 });
