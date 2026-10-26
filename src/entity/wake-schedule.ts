@@ -28,6 +28,18 @@ export function clockOf(ms: number, timeZone: string | undefined): string {
   return `${pad(parts.hour)}:${pad(parts.minute)}`;
 }
 
+/**
+ * N3: where an instant falls in a local day or week, in minutes, in the Lar's zone. Spacing repeating wakes on this
+ * keeps them apart by wall-clock time, so a daylight-saving change does not shift the gap by an hour.
+ */
+export function localMinuteOf(ms: number, repeat: WakeRepeat, timeZone: string | undefined): number {
+  const parts = zoneParts(ms, timeZone);
+  const ofDay = parts.hour * 60 + parts.minute;
+  if (repeat === "daily") return ofDay;
+  const weekday = new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay();
+  return weekday * 1440 + ofDay;
+}
+
 /** The local calendar day of an instant in a zone, as YYYY-MM-DD. */
 export function localDayOf(ms: number, timeZone: string | undefined): string {
   const parts = zoneParts(ms, timeZone);

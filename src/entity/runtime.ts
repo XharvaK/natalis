@@ -81,7 +81,7 @@ import {
   type SummonerDesk,
 } from "./summoner.js";
 import { isStopOn, readStop } from "./stop.js";
-import { clockOf, firstDailyOccurrence, instantOfLocal, isWakeRepeat, nextOccurrence, parseAtIso, parseClock, WAKE_LIMIT, type WakeRepeat } from "./wake-schedule.js";
+import { clockOf, firstDailyOccurrence, localMinuteOf, instantOfLocal, isWakeRepeat, nextOccurrence, parseAtIso, parseClock, WAKE_LIMIT, type WakeRepeat } from "./wake-schedule.js";
 import { DEFAULT_RHYTHM } from "./config.js";
 
 export const STATE_FILE = "state.json";
@@ -2918,7 +2918,7 @@ class Runtime implements Entity {
     // two wakes that fire close together on any later day are spaced too. Moved forward a minute at a time.
     const others = this.state.wakes.filter((item) => item.rhythm !== true);
     const mine = repeat !== undefined && isWakeRepeat(repeat) ? repeat : undefined;
-    const tooClose = (at: number) => others.some((other) => wakeGap(at, mine, other.atMs, other.repeat) < WAKE_HOLD_MS);
+    const tooClose = (at: number) => others.some((other) => wakeGap(at, mine, other.atMs, other.repeat, this.config.timeZone) < WAKE_HOLD_MS);
     for (let step = 0; step < 7 * 24 * 60 && tooClose(atMs); step++) atMs += 60_000;
     // N2: when no minute in the search keeps the spacing, nothing is saved and the receipt says so.
     if (tooClose(atMs)) {
@@ -3131,13 +3131,16 @@ function who(row: RiverRow): string {
   return row.actor ?? row.source;
 }
 
-/** SHOULD-B: how far apart two wakes fire, over their period when either repeats (daily wins over weekly). */
-function wakeGap(a: number, aRepeat: WakeRepeat | undefined, b: number, bRepeat: WakeRepeat | undefined): number {
-  const day = 24 * 60 * 60_000;
-  const period = aRepeat === "daily" || bRepeat === "daily" ? day : aRepeat === "weekly" || bRepeat === "weekly" ? 7 * day : 0;
-  if (period === 0) return Math.abs(a - b);
-  const d = (((a - b) % period) + period) % period;
-  return Math.min(d, period - d);
+/**
+ * SHOULD-B: how far apart two wakes fire, over their period when either repeats (daily wins over weekly). N3: the
+ * period is compared in local wall-clock minutes in the Lar's zone, so a daylight-saving change keeps the gap.
+ */
+function wakeGap(a: number, aRepeat: WakeRepeat | undefined, b: number, bRepeat: WakeRepeat | undefined, timeZone?: string): number {
+  const repeat: WakeRepeat | undefined = aRepeat === "daily" || bRepeat === "daily" ? "daily" : aRepeat === "weekly" || bRepeat === "weekly" ? "weekly" : undefined;
+  if (repeat === undefined) return Math.abs(a - b);
+  const period = repeat === "daily" ? 1440 : 7 * 1440;
+  const d = (((localMinuteOf(a, repeat, timeZone) - localMinuteOf(b, repeat, timeZone)) % period) + period) % period;
+  return Math.min(d, period - d) * 60_000;
 }
 
 /** A row that one of the Lar's own wakes put in its thread. */

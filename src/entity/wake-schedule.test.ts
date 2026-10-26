@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clockOf, firstDailyOccurrence, instantOfLocal, isWakeRepeat, localDayOf, nextOccurrence, parseAtIso, parseClock, WAKE_LIMIT } from "./wake-schedule.js";
+import { clockOf, firstDailyOccurrence, instantOfLocal, isWakeRepeat, localDayOf, localMinuteOf, nextOccurrence, parseAtIso, parseClock, WAKE_LIMIT } from "./wake-schedule.js";
 
 const ISTANBUL = "Europe/Istanbul"; // UTC+3, no daylight saving
 const LONDON = "Europe/London";
@@ -152,5 +152,16 @@ describe("parseAtIso", () => {
   it("is NaN for text that is not a date and time, and for a day that does not exist", () => {
     expect(parseAtIso("soon", "UTC")).toBeNaN();
     expect(parseAtIso("2026-02-30T09:00", "UTC")).toBeNaN();
+  });
+});
+
+describe("localMinuteOf (N3)", () => {
+  it("gives the same local minute of the day either side of a daylight-saving change", () => {
+    expect(localMinuteOf(Date.parse("2026-10-31T13:00:00Z"), "daily", "America/New_York")).toBe(9 * 60);
+    expect(localMinuteOf(Date.parse("2026-11-02T14:00:00Z"), "daily", "America/New_York")).toBe(9 * 60);
+  });
+  it("counts the weekday for weekly wakes, Sunday first", () => {
+    expect(localMinuteOf(Date.parse("2026-10-25T00:30:00Z"), "weekly", "UTC")).toBe(30);
+    expect(localMinuteOf(Date.parse("2026-10-26T00:30:00Z"), "weekly", "UTC")).toBe(1440 + 30);
   });
 });
