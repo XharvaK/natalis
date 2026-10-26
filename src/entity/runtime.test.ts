@@ -3659,3 +3659,27 @@ describe("private/ notes outside the summoner's place", () => {
     expect(systemTextOf(model.requests[1])).toContain("private/close.md");
   });
 });
+
+describe("round 8 (N1)", () => {
+  it("a cut turn's outcome-unknown receipt reads 'outcome unknown ... check before doing it again' on the retry", async () => {
+    const world = fakeWorld("web");
+    const unknownTool: Tool = {
+      spec: { name: "post_slow", description: "Posts slowly.", parameters: { type: "object", properties: {} } },
+      async run(): Promise<Receipt> {
+        return { ok: false, summary: "The turn ran past its time limit.", refused: { code: "outcome_unknown", reason: "turn deadline" } };
+      },
+    };
+    world.world.tools = () => [unknownTool];
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("post_slow", {}, "c1")] }),
+      new ModelError("The model service is down.", "unavailable", 1),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model, { retryDelaysMs: [5] }, [world.world]);
+    await entity.start();
+    cli.send("Post it?");
+    await entity.idle();
+    expect(model.requests).toHaveLength(3);
+    expect(userTextOf(model.requests[2])).toContain("post_slow {}: outcome unknown, it may have finished after the cut: check before doing it again");
+  });
+});

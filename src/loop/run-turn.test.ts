@@ -992,3 +992,10 @@ describe("runTurn round 6: the turn deadline covers tools", () => {
   });
 });
 
+describe("round 8", () => {
+  it("N3: each model call names its thread", async () => {
+    const { input, model } = await setup({ steps: [reply({ toolCalls: [call(END_TURN, { note: "ok" }, "c1")] })] });
+    await runTurn(input);
+    expect(model.requests[0]?.thread).toBe(THREAD);
+  });
+});

@@ -936,6 +936,45 @@ describe("a streamed reply", () => {
     expect(lines.some((l) => l.includes("attempt cap without a stream"))).toBe(true);
   });
 
+  it("R8 S1: a reply at 0.85 x timeoutMs after a cut fits in the call, and the next call on that thread is not cut again", async () => {
+    // Scaled live ratio: idle = timeout/3, call slack 12 (120 s at x0.1). Every answer takes 77 ms (0.85 x 90).
+    const body = () => ok({ object: "response", status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "late" }] }] });
+    let calls = 0;
+    const slowFetch: typeof fetch = (_url, init) => {
+      calls += 1;
+      return new Promise<Response>((resolve, reject) => {
+        const timer = setTimeout(() => resolve(body()), 77);
+        init?.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new DOMException("aborted", "AbortError")); }, { once: true });
+      });
+    };
+    const { port } = harness([], { api: "responses", idleTimeoutMs: 30, timeoutMs: 90, callDeadlineMs: 102, maxAttempts: 3, fetch: slowFetch, log: () => {} });
+
+    expect((await port.complete(asks([{ role: "user", content: "hi" }], { thread: "a" }))).content).toBe("late");
+    expect(calls).toBe(2);
+    expect((await port.complete(asks([{ role: "user", content: "again" }], { thread: "a" }))).content).toBe("late");
+    expect(calls).toBe(3);
+  });
+
+  it("R8 N3: a cut uncaps only its own thread", async () => {
+    const body = () => ok({ object: "response", status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "late" }] }] });
+    let calls = 0;
+    const slowFetch: typeof fetch = (_url, init) => {
+      calls += 1;
+      return new Promise<Response>((resolve, reject) => {
+        const timer = setTimeout(() => resolve(body()), 60);
+        init?.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new DOMException("aborted", "AbortError")); }, { once: true });
+      });
+    };
+    const { port } = harness([], { api: "responses", idleTimeoutMs: 30, timeoutMs: 5_000, maxAttempts: 3, fetch: slowFetch, log: () => {} });
+
+    await port.complete(asks([{ role: "user", content: "hi" }], { thread: "a" }));
+    expect(calls).toBe(2);
+    await port.complete(asks([{ role: "user", content: "hi" }], { thread: "b" }));
+    expect(calls).toBe(4);
+    await port.complete(asks([{ role: "user", content: "hi" }], { thread: "a" }));
+    expect(calls).toBe(5);
+  });
+
   it("without a stream and no silence limit set, only the attempt limit applies", async () => {
     const { port } = harness(["hang"], { api: "responses", timeoutMs: 40, maxAttempts: 1 });
 

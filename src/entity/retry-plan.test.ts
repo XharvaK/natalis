@@ -60,3 +60,23 @@ describe("planRetry round 7: a short plain rate-limit reset", () => {
     expect(named.delayMs).toBe(50_000 + RESET_MARGIN_MS + 30_000);
   });
 });
+
+describe("planRetry round 8 (S2)", () => {
+  it("adds 0 to 5 s of jitter to a short plain rate-limit reset, so threads do not fire together", () => {
+    const delays = [0, 0.2, 0.4, 0.6, 0.8].map((r) =>
+      planRetry({ ...base, failed: 0, kind: "rate_limit", quota: { resetAtMs: NOW + 50_000 }, random: () => r }).delayMs);
+    expect(new Set(delays).size).toBe(5);
+    for (const d of delays) {
+      expect(d).toBeGreaterThanOrEqual(55_000);
+      expect(d).toBeLessThan(60_000);
+    }
+  });
+
+  it("has no cliff at the margin: a reset just under and just at 3 min wait about the same", () => {
+    for (const r of [0, 0.5, 0.999]) {
+      const under = planRetry({ ...base, failed: 0, kind: "rate_limit", quota: { resetAtMs: NOW + RESET_MARGIN_MS - 1 }, random: () => r }).delayMs;
+      const at = planRetry({ ...base, failed: 0, kind: "rate_limit", quota: { resetAtMs: NOW + RESET_MARGIN_MS }, random: () => r }).delayMs;
+      expect(Math.abs(at - under)).toBeLessThan(61_000);
+    }
+  });
+});
