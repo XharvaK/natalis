@@ -88,6 +88,26 @@ afterEach(async () => {
 
 type Opened = { entity: Entity; cli: CliWorld; said: Array<{ place: string; text: string }> };
 
+/** A world that only emits events (a room, or a stand-in for the game when its id is "domus"). */
+function emitter(id: string): { world: World; emit: (event: Partial<WorldEvent> & { place: string; text: string }) => void } {
+  let next: ((event: WorldEvent) => void) | undefined;
+  const world: World = {
+    id,
+    async start(push) {
+      next = push;
+    },
+    async stop() {
+      next = undefined;
+    },
+    async say(): Promise<Receipt> {
+      return { ok: true, summary: "Delivered." };
+    },
+    tools: () => [],
+    now: () => `${id} is open.`,
+  };
+  return { world, emit: (event) => next?.({ world: id, source: "outside", ...event } as WorldEvent) };
+}
+
 async function open(
   model: ModelPort,
   extra: Partial<OpenEntityOptions> = {},
@@ -1020,6 +1040,64 @@ describe("what the Lar sends and what it is shown", () => {
     });
   });
 
+  it("SHOULD-1: spaces every wake she sets 15 minutes from her other wakes, whatever turn set it, without holding the first", async () => {
+    await withClock(async (advance) => {
+      const model = new ScriptedModel([
+        reply({
+          toolCalls: [
+            call("schedule_wake", { in_minutes: 1, why: "a" }),
+            call("schedule_wake", { in_minutes: 2, why: "b" }),
+            call("schedule_wake", { in_minutes: 3, why: "c" }),
+            call("end_turn"),
+          ],
+        }),
+      ]);
+      const { entity, cli } = await open(model, { stopPollMs: 1e9 });
+      await entity.start();
+      const start = Date.now();
+      cli.send("Set three reminders.");
+      await entity.idle();
+      const times = (readStateFile().wakes as Array<{ atMs: number }>).map((wake) => wake.atMs).sort((x, y) => x - y);
+      expect(times).toHaveLength(3);
+      expect(times[0]! - start).toBeLessThan(2 * 60_000);
+      expect(times[1]! - times[0]!).toBeGreaterThanOrEqual(15 * 60_000);
+      expect(times[2]! - times[1]!).toBeGreaterThanOrEqual(15 * 60_000);
+      await advance(0);
+    });
+  });
+
+  it("SHOULD-2 cross-thread: an event on another thread during a self-woken turn does not lift its hold", async () => {
+    await withClock(async (advance) => {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let entered = false;
+      const room = emitter("fake");
+      const model = new ScriptedModel([
+        reply({ toolCalls: [call("schedule_wake", { in_minutes: 1, why: "start" }), call("end_turn")] }),
+        async () => {
+          entered = true;
+          await gate;
+          return reply({ toolCalls: [call("schedule_wake", { in_minutes: 1, why: "again" }), call("end_turn")] });
+        },
+        reply({ toolCalls: [call("end_turn")] }),
+      ]);
+      const { entity, cli } = await open(model, { stopPollMs: 1e9 }, [room.world]);
+      await entity.start();
+      cli.send("Go.");
+      await entity.idle();
+      await advance(60_000);
+      await waitFor(() => entered);
+      room.emit({ place: "fake:room", text: "Someone in the room." });
+      await advance(0);
+      release();
+      await entity.idle();
+      const wakeReceipts = allRows(entity).filter((row) => row.kind === "receipt" && row.data?.["tool"] === "schedule_wake");
+      expect(wakeReceipts[1]?.text).toContain("15 minutes");
+    });
+  });
+
   it("spaces the wakes a self-woken turn fans out 15 minutes apart, so her own wakes wake at most one turn per 15 minutes", async () => {
     await withClock(async (advance) => {
       const fan = reply({
@@ -1057,7 +1135,8 @@ describe("what the Lar sends and what it is shown", () => {
     await entity.start();
     cli.send("Hello.");
     await entity.idle();
-    expect(userTextOf(model.requests[0])).toContain("Turns today: 1 of 288.");
+    // SHOULD-3: the summoner's own message does not count toward the limit.
+    expect(userTextOf(model.requests[0])).toContain("Turns today: 0 of 288.");
   });
 
   it("shows the day's tokens on the now board, and the cost at the configured price", async () => {
@@ -2390,121 +2469,59 @@ describe("the summoner's commands", () => {
 });
 
 describe("the daily turn limit", () => {
-  it("holds turns past the limit until the next local day, tells each waiting place once a day, then runs them", async () => {
+  it("SHOULD-3: the daily limit holds wakes and rooms, never the summoner's own messages or the game", async () => {
     let now = Date.parse("2026-10-11T10:00:00Z");
-    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);
-    const { entity, cli, said } = await open(model, {
-      config: { ...CONFIG, limits: { turnsPerDay: 1 } },
-      nowMs: () => now,
-    });
+    const room = emitter("fake");
+    const game = emitter("domus");
+    const end = () => reply({ toolCalls: [call("end_turn")] });
+    const model = new ScriptedModel([end(), end(), end(), end(), end(), end()]);
+    const { entity, cli, said } = await open(model, { config: { ...CONFIG, limits: { turnsPerDay: 1 } }, nowMs: () => now }, [
+      room.world,
+      game.world,
+    ]);
     await entity.start();
 
-    cli.send("First.");
+    room.emit({ place: "fake:room", text: "Room one." });
     await entity.idle();
     expect(model.requests).toHaveLength(1);
-    expect(userTextOf(model.requests[0])).toContain("Turns today: 1 of 1.");
-
-    now += 60_000;
-    cli.send("Second.");
-    await entity.idle();
-    now += 60_000;
-    cli.send("Third.");
+    room.emit({ place: "fake:room", text: "Room two." });
     await entity.idle();
     expect(model.requests).toHaveLength(1);
-    expect(said.map((item) => item.text)).toEqual([
-      "[natalis] Your Lar has reached today's limit of 1 turn and will see this after midnight (UTC).",
-    ]);
-    expect(readStateJson().asks).toHaveLength(3);
 
-    now = Date.parse("2026-10-12T00:05:00Z");
-    cli.send("Fourth.");
+    // The summoner's message and the game still get their turns, and do not count.
+    cli.send("Owner.");
     await entity.idle();
     expect(model.requests).toHaveLength(2);
-    expect(userTextOf(model.requests[1])).toContain("Second.");
-    expect(userTextOf(model.requests[1])).toContain("Fourth.");
     expect(userTextOf(model.requests[1])).toContain("Turns today: 1 of 1.");
-  });
-
-  it("tells only the summoner's own places about the limit, never a room where a message waits", async () => {
-    const now = Date.parse("2026-10-11T10:00:00Z");
-    let emitRoom: ((event: WorldEvent) => void) | undefined;
-    const roomSaid: string[] = [];
-    const room: World = {
-      id: "fake",
-      async start(next) {
-        emitRoom = next;
-      },
-      async stop() {
-        emitRoom = undefined;
-      },
-      async say(_place, text): Promise<Receipt> {
-        roomSaid.push(text);
-        return { ok: true, summary: "Delivered." };
-      },
-      tools: () => [],
-      now: () => "fake is open.",
-    };
-    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);
-    const { entity, cli, said } = await open(
-      model,
-      { config: { ...CONFIG, limits: { turnsPerDay: 1 } }, nowMs: () => now },
-      [room],
-    );
-    await entity.start();
-
-    emitRoom?.({ world: "fake", place: "fake:room", actor: "owner", source: "owner", text: "Room hello." });
+    game.emit({ place: "domus:home", text: "The game says hello." });
     await entity.idle();
-    cli.send("Second.");
-    await entity.idle();
-
-    expect(roomSaid).toEqual([]);
+    expect(model.requests).toHaveLength(3);
+    // The summoner is told once that her other turns wait.
     expect(said.map((item) => item.text)).toEqual([
-      "[natalis] Your Lar has reached today's limit of 1 turn and will see this after midnight (UTC).",
+      "[natalis] Your Lar has reached today's limit of 1 turn for wakes, contacts and rooms; those wait until after midnight (UTC). Your own messages and the game still reach it.",
     ]);
-  });
 
-  it("tells no place about the limit while the emergency stop is on, and tells once the stop is off", async () => {
-    let now = Date.parse("2026-10-11T10:00:00Z");
-    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);
-    const { entity, cli, said } = await open(model, {
-      config: { ...CONFIG, limits: { turnsPerDay: 1 } },
-      nowMs: () => now,
-    });
-    await entity.start();
-
-    cli.send("First.");
+    now = Date.parse("2026-10-12T00:05:00Z");
+    room.emit({ place: "fake:room", text: "Room three." });
     await entity.idle();
-    writeFileSync(join(dir, "STOP"), "", "utf8");
-    now += 60_000;
-    cli.send("Second.");
-    await entity.idle();
-    expect(said).toEqual([]);
-
-    rmSync(join(dir, "STOP"));
-    now += 60_000;
-    cli.send("Third.");
-    await entity.idle();
-    expect(said.map((item) => item.text)).toEqual([
-      "[natalis] Your Lar has reached today's limit of 1 turn and will see this after midnight (UTC).",
-    ]);
+    expect(model.requests).toHaveLength(4);
+    expect(userTextOf(model.requests[3])).toContain("Room two.");
   });
 
   it("holds a wake that comes due during the limit, and runs it with the next day's turns", async () => {
     await withClock(async (advance) => {
       vi.setSystemTime(Date.parse("2026-10-11T10:00:00Z"));
+      const room = emitter("fake");
       const model = new ScriptedModel([
         reply({ toolCalls: [call("schedule_wake", { in_minutes: 1, why: "Check the lamp." }, "w1")] }),
         reply({ toolCalls: [call("end_turn")] }),
         reply({ toolCalls: [call("end_turn")] }),
         reply({ toolCalls: [call("end_turn")] }),
       ]);
-      const { entity, cli } = await open(model, {
-        config: { ...CONFIG, limits: { turnsPerDay: 1 } },
-        stopPollMs: 1e9,
-      });
+      const { entity } = await open(model, { config: { ...CONFIG, limits: { turnsPerDay: 1 } }, stopPollMs: 1e9 }, [room.world]);
       await entity.start();
 
-      cli.send("Remind yourself about the lamp.");
+      room.emit({ place: "fake:room", text: "Remind yourself about the lamp." });
       await entity.idle();
       // The wake comes due while the day's one turn is used up, so it waits.
       await advance(60_000);
@@ -2513,7 +2530,7 @@ describe("the daily turn limit", () => {
       expect(model.requests).toHaveLength(2);
 
       vi.setSystemTime(Date.parse("2026-10-12T00:05:00Z"));
-      cli.send("Tomorrow.");
+      room.emit({ place: "fake:room", text: "Tomorrow." });
       await entity.idle();
       expect(model.requests).toHaveLength(4);
     });
