@@ -975,6 +975,68 @@ describe("a streamed reply", () => {
     expect(calls).toBe(5);
   });
 
+  // Round 9: a fetch whose every answer takes `ms()` ms, counting calls.
+  function timedFetch(ms: () => number): { fetch: typeof fetch; calls: () => number } {
+    let calls = 0;
+    const body = () => ok({ object: "response", status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "r" }] }] });
+    return {
+      calls: () => calls,
+      fetch: (_url, init) => {
+        calls += 1;
+        const wait = ms();
+        return new Promise<Response>((resolve, reject) => {
+          const timer = setTimeout(() => resolve(body()), wait);
+          init?.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new DOMException("aborted", "AbortError")); }, { once: true });
+        });
+      },
+    };
+  }
+
+  it("R9 SHOULD-1: the extended deadline after a cut stops at the turn's deadline", async () => {
+    const slow = timedFetch(() => 10_000);
+    const { port } = harness([], { api: "responses", idleTimeoutMs: 30, timeoutMs: 400, callDeadlineMs: 1_000, maxAttempts: 3, fetch: slow.fetch, log: () => {} });
+    const started = Date.now();
+    const failure = await errorOf(port.complete(asks([{ role: "user", content: "hi" }], { thread: "a", turnDeadlineAtMs: started + 120 })));
+    expect(failure.kind).toBe("timeout");
+    expect(Date.now() - started).toBeLessThan(250);
+  });
+
+  it("R9 SHOULD-2: the uncap ends 1 h after the cut", async () => {
+    let offset = 0;
+    const slow = timedFetch(() => 60);
+    const { port } = harness([], { api: "responses", idleTimeoutMs: 30, timeoutMs: 5_000, maxAttempts: 3, fetch: slow.fetch, log: () => {}, nowMs: () => Date.now() + offset });
+    await port.complete(asks([{ role: "user", content: "hi" }], { thread: "a" }));
+    expect(slow.calls()).toBe(2);
+    await port.complete(asks([{ role: "user", content: "hi" }], { thread: "a" }));
+    expect(slow.calls()).toBe(3);
+    offset = 60 * 60_000 + 1;
+    await port.complete(asks([{ role: "user", content: "hi" }], { thread: "a" }));
+    expect(slow.calls()).toBe(5);
+  });
+
+  it("R9 SHOULD-2: the uncap ends after 3 fast replies in a row", async () => {
+    let wait = 60;
+    const timed = timedFetch(() => wait);
+    const { port } = harness([], { api: "responses", idleTimeoutMs: 40, timeoutMs: 5_000, maxAttempts: 3, fetch: timed.fetch, log: () => {} });
+    await port.complete(asks([{ role: "user", content: "hi" }], { thread: "a" }));
+    expect(timed.calls()).toBe(2);
+    wait = 1;
+    for (let i = 0; i < 3; i++) await port.complete(asks([{ role: "user", content: "hi" }], { thread: "a" }));
+    expect(timed.calls()).toBe(5);
+    wait = 60;
+    await port.complete(asks([{ role: "user", content: "hi" }], { thread: "a" }));
+    expect(timed.calls()).toBe(7);
+  });
+
+  it("R9 NIT-2: calls without a thread do not share an uncap", async () => {
+    const slow = timedFetch(() => 60);
+    const { port } = harness([], { api: "responses", idleTimeoutMs: 30, timeoutMs: 5_000, maxAttempts: 3, fetch: slow.fetch, log: () => {} });
+    await port.complete(asks([{ role: "user", content: "hi" }]));
+    expect(slow.calls()).toBe(2);
+    await port.complete(asks([{ role: "user", content: "hi" }]));
+    expect(slow.calls()).toBe(4);
+  });
+
   it("without a stream and no silence limit set, only the attempt limit applies", async () => {
     const { port } = harness(["hang"], { api: "responses", timeoutMs: 40, maxAttempts: 1 });
 

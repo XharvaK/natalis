@@ -46,3 +46,22 @@ describe("turn watchdog", () => {
     dog.done();
   });
 });
+
+describe("turn watchdog, round 9", () => {
+  it("SHOULD-1: tells the model call when the turn's time is up", async () => {
+    let seen: number | undefined;
+    const ok: ModelPort = {
+      info: { id: "ok", contextTokens: 1000, nativeTools: true },
+      complete: async (request) => {
+        seen = request.turnDeadlineAtMs;
+        return { content: "hi", toolCalls: [], finishReason: "stop" } as never;
+      },
+    };
+    const before = Date.now();
+    const dog = withTurnDeadline(ok, 60_000, () => {});
+    await dog.model.complete({ messages: [] });
+    dog.done();
+    expect(seen).toBeGreaterThanOrEqual(before + 60_000);
+    expect(seen).toBeLessThanOrEqual(Date.now() + 60_000);
+  });
+});
