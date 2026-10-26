@@ -8,6 +8,7 @@
 //   notebook/     the Lar's notebook: plain text, versioned with git
 //   state.json    cursors per thread, open asks, scheduled wakes, mood, written atomically after each change
 
+import { parseTriggers, triggeredText } from "../context/triggers.js";
 import { SAY_CHECKS } from "./say-checks.js";
 import { policyFor, policyRefusal } from "./tool-policy.js";
 import { CLI_WORLD_ID } from "../worlds/cli.js";
@@ -1896,6 +1897,8 @@ class Runtime implements Entity {
         cls: "turn",
       },
     ];
+    const triggered = this.triggeredNotesText(thread, fresh);
+    if (triggered !== "") changing.push({ name: "triggered notes", text: triggered, priority: 45, cls: "turn" });
     const recall = this.recallText(thread, fresh, shown);
     if (recall !== "") changing.push({ name: "recall", text: recall, priority: 40, cls: "turn" });
     // One budget over all of them, as before: an optional section that does not fit is dropped whole, and named.
@@ -2119,6 +2122,21 @@ class Runtime implements Entity {
     });
     if (entries.length === 0) return "Your notebook has no notes yet.";
     return entries.map((entry) => `- ${entry.path}: ${entry.firstLine.trim() || "(empty)"}`).join("\n");
+  }
+
+  /** Notes with a "triggers:" first line whose words appear in the fresh rows (not views), loaded under one budget. */
+  private triggeredNotesText(thread: string, fresh: RiverRow[]): string {
+    const text = fresh.filter((row) => viewKeyOf(row) === undefined).map((row) => row.text ?? "").join("\n");
+    if (text.trim() === "") return "";
+    const notebook = this.notebookFor(thread);
+    const notes = notebook
+      .list()
+      .filter((entry) => parseTriggers(entry.firstLine).length > 0)
+      .flatMap((entry) => {
+        const body = notebook.read(entry.path);
+        return body === null ? [] : [{ path: entry.path, firstLine: entry.firstLine, text: body }];
+      });
+    return triggeredText(notes, text);
   }
 
   private recallText(thread: string, fresh: RiverRow[], shown: Set<number>): string {

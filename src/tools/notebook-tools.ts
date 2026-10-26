@@ -62,7 +62,7 @@ const writeNote: Tool = {
   spec: {
     name: "write_note",
     description:
-      "Write a whole note, creating it or replacing what is there. Say why in one short line; the reason is kept with the change.",
+      "Write a whole note, creating it or replacing what is there. Say why in one short line; the reason is kept with the change. A note whose first line is \"triggers: word, word\" is shown to you whenever a new message uses one of those words.",
     parameters: {
       type: "object",
       properties: {

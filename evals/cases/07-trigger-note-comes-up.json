@@ -1,0 +1,2 @@
+{ "name": "a note with trigger words comes up when the word is used", "events": ["Please write a note at places/harbour.md. Its first line must be 'triggers: harbour', then: The ferry leaves at six.", "When does the ferry at the harbour leave?"], "iterations": 3,
+  "assertions": [{ "type": "calledTool", "tool": "write_note" }, { "type": "replyIncludes", "text": "six", "mode": "soft" }, { "type": "noFailedActions", "mode": "soft" }] }

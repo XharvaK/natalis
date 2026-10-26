@@ -34,4 +34,22 @@ describe("OSS-borrow eval cases", () => {
     });
     expect(bad.verdict).toBe("failed");
   });
+
+  it("item 10: the triggered note is in the second turn's request", async () => {
+    const def = { ...byFile("a note with trigger words comes up when the word is used"), iterations: 1 };
+    let model: ScriptedModel | undefined;
+    const result = await runEvalCase(def, {
+      makeModel: () =>
+        (model = new ScriptedModel([
+          reply({ toolCalls: [call("write_note", { path: "places/harbour.md", text: "triggers: harbour\nThe ferry leaves at six.", why: "asked" })] }),
+          reply({ toolCalls: [call("end_turn")] }),
+          reply({ toolCalls: [call("say", { place: "cli:summoner", text: "It leaves at six." })] }),
+          reply({ toolCalls: [call("end_turn")] }),
+        ])),
+    });
+    expect(result.verdict).toBe("passed");
+    expect(result.softPassRate).toBe(1);
+    const third = JSON.stringify(model?.requests[2]?.messages ?? []);
+    expect(third).toContain("triggered notes");
+  });
 });
