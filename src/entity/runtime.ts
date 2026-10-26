@@ -203,11 +203,13 @@ const WAKE_LIMIT_MINUTES = 60 * 24 * 365 * 10;
 /** The shortest a wake may be set: a minute from now. */
 const WAKE_MIN_MS = 60_000;
 /**
- * After this many turns in a row woken only by her own wakes, with nothing from outside between them, a wake she sets
- * fires no sooner than WAKE_CHAIN_HOLD_MS after it was set. The count is a meter's ceiling, not a judgment of the wake.
+ * A1 (Owner 2026-10-26): a wake set in a turn that her own wake woke fires no sooner than WAKE_HOLD_MS after it was set,
+ * and no closer than WAKE_HOLD_MS to another wake set from the same thread. Without the spacing, one self-woken turn
+ * could fan out many wakes past the hold, each waking its own turn (NIGHT_4 case B: about 6 turns a minute).
  */
-const WAKE_CHAIN_LIMIT = 6;
-const WAKE_CHAIN_HOLD_MS = 15 * 60_000;
+const WAKE_HOLD_MS = 15 * 60_000;
+/** The daily turn limit when entity.json sets none: one turn per 5 minutes on average. */
+export const DEFAULT_TURNS_PER_DAY = 288;
 /** The reason a rhythm wake carries. It names nothing about what the wake is for. */
 const RHYTHM_WHY = "Your daily rhythm.";
 const TIMER_LIMIT_MS = 2_147_483_647;
@@ -1490,7 +1492,7 @@ class Runtime implements Entity {
   }
 
   private limitReached(): boolean {
-    const limit = this.config.limits?.turnsPerDay;
+    const limit = this.config.limits?.turnsPerDay ?? DEFAULT_TURNS_PER_DAY;
     return limit !== undefined && this.turnsToday(this.nowMs()) >= limit;
   }
 
@@ -1548,7 +1550,7 @@ class Runtime implements Entity {
   }
 
   private async sayLimit(place: string): Promise<void> {
-    const limit = this.config.limits?.turnsPerDay;
+    const limit = this.config.limits?.turnsPerDay ?? DEFAULT_TURNS_PER_DAY;
     if (limit === undefined || this.stopIsOn()) return;
     const zone = this.config.timeZone ?? hostZone();
     const turns = limit === 1 ? "turn" : "turns";
@@ -1948,7 +1950,7 @@ class Runtime implements Entity {
       lines.push(`Body note: nature.md could not be read (${nature.problem}), so the default nature is in use.`);
     }
     lines.push(`Your mood: ${this.state.mood ?? "not set"}.`);
-    const limit = this.config.limits?.turnsPerDay;
+    const limit = this.config.limits?.turnsPerDay ?? DEFAULT_TURNS_PER_DAY;
     if (limit !== undefined) lines.push(`Turns today: ${this.turnsToday(nowMs)} of ${limit}.`);
     lines.push(...this.tokenLines(nowMs));
     if (this.state.proposals.length > 0) {
@@ -2298,7 +2300,11 @@ class Runtime implements Entity {
             required: ["why"],
           },
         },
-        (args, context) => this.scheduleWake(args, context),
+        async (args, context) => {
+          // A1: a refused wake never holds the turn open (see Receipt.letsTurnEnd).
+          const receipt = await this.scheduleWake(args, context);
+          return receipt.ok ? receipt : { ...receipt, letsTurnEnd: true };
+        },
       ),
       make(
         {
@@ -2884,10 +2890,21 @@ class Runtime implements Entity {
       );
     }
 
-    // The chain limit: a run of turns woken only by her own wakes holds a new wake to HOLD_MS from now, and the receipt says so.
+    // The hold: a wake set in a turn her own wake woke is held to WAKE_HOLD_MS from now, and spaced WAKE_HOLD_MS from
+    // every other wake set from this thread, so her own wakes wake at most one turn per WAKE_HOLD_MS from it.
     const run = this.state.selfWakeRun ?? 0;
-    const held = run >= WAKE_CHAIN_LIMIT && atMs < this.nowMs() + WAKE_CHAIN_HOLD_MS;
-    if (held) atMs = this.nowMs() + WAKE_CHAIN_HOLD_MS;
+    const wanted = atMs;
+    if (run > 0) {
+      atMs = Math.max(atMs, this.nowMs() + WAKE_HOLD_MS);
+      const others = this.state.wakes
+        .filter((item) => item.scheduledIn === context.thread)
+        .map((item) => item.atMs)
+        .sort((x, y) => x - y);
+      for (const other of others) {
+        if (Math.abs(other - atMs) < WAKE_HOLD_MS) atMs = other + WAKE_HOLD_MS;
+      }
+    }
+    const held = atMs !== wanted;
 
     const zone = this.config.timeZone;
     const wake: Wake = { id: randomUUID().slice(0, 8), atMs, why: why.value, scheduledIn: context.thread };
@@ -2901,7 +2918,7 @@ class Runtime implements Entity {
     this.armWake(wake);
     const rhythm = wake.repeat === undefined || wake.clock === undefined ? "" : `, ${wake.repeat} at ${wake.clock}`;
     const hold = held
-      ? `, held to at least ${WAKE_CHAIN_HOLD_MS / 60_000} minutes from now because you have woken yourself ${run} times in a row with nothing from outside`
+      ? `, held to ${WAKE_HOLD_MS / 60_000} minutes from now and from your other wakes set here, because your own wake woke this turn`
       : "";
     return {
       ok: true,

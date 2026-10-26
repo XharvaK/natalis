@@ -277,6 +277,11 @@ export type Receipt = {
   /** Present when the body refused or held the act; the reason is plain words. */
   refused?: { reason: string; code: string };
   /**
+   * Set on a refusal that must not hold the turn open: end_turn in the same reply still ends the turn. A refused wake is
+   * one (A1, 2026-10-26): with a full wake list, every turn would otherwise run to its ceiling.
+   */
+  letsTurnEnd?: boolean;
+  /**
    * Pictures the model should see on its next call, once. The loop sends them and never writes them to the record
    * or back into the tool message.
    */

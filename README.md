@@ -52,6 +52,7 @@ Tests: `npm test`. Type check: `npm run typecheck`.
 - **Its own memory.** Everything it lives goes into one append-only river; its notebook is plain text under git. It
   forgets honestly and never invents.
 - **Inner time.** It can wake itself (once, daily or weekly) and writes first only when it has a reason and permission.
+  A wake set in a turn its own wake woke is held to at least 15 minutes, and 15 minutes from its other wakes set there.
 - **A presence.** It lives where you put it: the terminal, Discord, or The Sims 4.
 - **Your own model.** You bring the key. Nothing goes to a service you did not choose.
 
@@ -105,7 +106,7 @@ name `owner` still works; give one, not both), `holds`, `limits`, `rhythm` and `
 - `name` and `timeZone`: the Lar's name and its IANA zone (e.g. `"Europe/Istanbul"`). Times it sees are in that zone.
 - `effort`: `low`, `medium`, `high` or `xhigh`, sent to the model as its `effortParam` says.
 - `ceiling`: the loop limits per turn, `maxModelCalls` (default 24) and `maxToolCalls` (default 48).
-- `limits.turnsPerDay`: optional cap on turns per day. No cap unless written.
+- `limits.turnsPerDay`: cap on turns per day. 288 (one per 5 minutes on average) unless written.
 - `rhythm`: local clock times (`"HH:MM"`) for daily wakes given once on the first start. Left out or `[]`, none.
 
 - `model`: the main model. `baseUrl` (http or https), `model` (its name), `contextTokens`, and optionally `apiKeyEnv`

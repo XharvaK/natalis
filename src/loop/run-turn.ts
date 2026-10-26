@@ -406,7 +406,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
         }
         if (call.name !== END_TURN) {
           const receipt = await runCall(call);
-          if (!receipt.ok) earlierRefused = true;
+          if (!receipt.ok && receipt.letsTurnEnd !== true) earlierRefused = true;
           continue;
         }
         if (earlierRefused) {
