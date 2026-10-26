@@ -8,6 +8,7 @@
 //   notebook/     the Lar's notebook: plain text, versioned with git
 //   state.json    cursors per thread, open asks, scheduled wakes, mood, written atomically after each change
 
+import { CLI_WORLD_ID } from "../worlds/cli.js";
 import { createEventBus, observeRiver, type EventType, type Hook } from "../river/events.js";
 import type { Purpose } from "../river/purpose.js";
 import { randomUUID } from "node:crypto";
@@ -245,7 +246,7 @@ export type OpenEntityOptions = {
   turnDeadlineMs?: number;
   /** Dry run: every turn runs reads and stubs writes (see run-turn). For evals; never set on a live Lar. */
   dryRun?: boolean;
-  /** Why this Lar runs: live (default), eval or replay. An eval Lar is not held to the daily limit; a replay is, for fidelity. */
+  /** Why this Lar runs: live (default), eval or replay. Every purpose keeps the daily limit (NIT-4). An eval Lar may have only the terminal world. */
   purpose?: Purpose;
   /** W-2: asked when a body rhythm wake fires; "skip" lets it pass with a note and no turn. Never asked about her own wakes. */
   wakePrecheck?: WakePrecheck;
@@ -280,6 +281,10 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
     throw new Error("retryDelaysMs must be a non-empty list of waits in milliseconds, 0 or more.");
   }
 
+  // NIT-4: an eval Lar runs on the terminal only, so a live Lar cannot be opened as an eval by mistake.
+  if (options.purpose === "eval" && worlds.some((world) => world.id !== CLI_WORLD_ID)) {
+    throw new Error("An eval Lar may have only the terminal world.");
+  }
   mkdirSync(dir, { recursive: true });
   const statePath = join(dir, STATE_FILE);
   // Credentials never enter memory or a model request: the river, notebook and model are guarded at the boundary.
@@ -1025,7 +1030,7 @@ class Runtime implements Entity {
       this.releaseLimited();
       for (const thread of [...this.due]) {
         if (this.running.has(thread)) continue;
-        if (this.purpose !== "eval" && !this.limitExempt(thread) && this.limitReached()) {
+        if (!this.limitExempt(thread) && this.limitReached()) {
           this.holdForLimit(thread);
           continue;
         }
@@ -1074,7 +1079,7 @@ class Runtime implements Entity {
     const cut = this.cutBefore(thread, seen, recent);
     const shown = new Set<number>([...recent, ...fresh].map((row) => row.seq));
     const done = this.doneBeforeCut(thread, seen);
-    if (this.purpose !== "eval" && !this.limitExempt(thread)) this.countTurn(nowMs);
+    if (!this.limitExempt(thread)) this.countTurn(nowMs);
     // A world with a model of its own runs its turns on that model. A place is named for its world ("domus:...").
     const world = this.worldFor(thread)?.id ?? "";
     const worldModel = this.worldModels[world];
