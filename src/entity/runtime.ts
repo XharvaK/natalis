@@ -236,6 +236,8 @@ export type OpenEntityOptions = {
   quotaRetry?: QuotaRetryTuning;
   /** How long a turn's model calls may run before the turn's watchdog stops them. Defaults to 20 min. */
   turnDeadlineMs?: number;
+  /** Dry run: every turn runs reads and stubs writes (see run-turn). For evals; never set on a live Lar. */
+  dryRun?: boolean;
   /** How often the stop file is looked at while the entity runs. Defaults to 2 s. */
   stopPollMs?: number;
 };
@@ -316,6 +318,7 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
     retryDelaysMs,
     ...(options.quotaRetry === undefined ? {} : { quotaRetry: options.quotaRetry }),
     ...(options.turnDeadlineMs === undefined ? {} : { turnDeadlineMs: options.turnDeadlineMs }),
+    ...(options.dryRun === true ? { dryRun: true } : {}),
     stopPollMs,
     statePath,
     dir,
@@ -596,6 +599,7 @@ type RuntimeInit = {
   scanner: SecretScanner;
   retryDelaysMs: number[];
   quotaRetry?: QuotaRetryTuning;
+  dryRun?: boolean;
   turnDeadlineMs?: number;
   stopPollMs: number;
   statePath: string;
@@ -624,6 +628,7 @@ class Runtime implements Entity {
   private readonly quotaRetry: QuotaRetryTuning | undefined;
   /** How long a turn's model calls may run in all before the turn's watchdog stops them. */
   private readonly turnDeadlineMs: number;
+  private readonly dryRun: boolean;
   private readonly stopPollMs: number;
   private readonly statePath: string;
   private readonly dir: string;
@@ -727,6 +732,7 @@ class Runtime implements Entity {
     this.delays = init.retryDelaysMs;
     this.quotaRetry = init.quotaRetry;
     this.turnDeadlineMs = init.turnDeadlineMs ?? TURN_DEADLINE_MS;
+    this.dryRun = init.dryRun === true;
     this.stopPollMs = init.stopPollMs;
     this.statePath = init.statePath;
     this.dir = init.dir;
@@ -1111,6 +1117,7 @@ class Runtime implements Entity {
       model: withWitness(watchdog.model, this.witness, this.threadKind(thread), { cacheMarks: this.config.model.cacheMarks === true }),
       tools: this.toolsFor(thread),
       closingTools: CLOSING_TOOLS,
+      ...(this.dryRun ? { dryRun: true } : {}),
       arrivals: () => this.arrivedSince(thread, snapshot),
       system: laid.system,
       systemLayout: laid.systemLayout,

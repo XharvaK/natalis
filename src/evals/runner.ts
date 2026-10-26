@@ -30,7 +30,8 @@ export const EVAL_CONFIG: EntityConfig = {
   rhythm: [],
 };
 
-export type RunOptions = { makeModel: () => ModelPort; config?: EntityConfig };
+/** dryRun stubs every write tool (say too, so reply checks see no says); the CLI world delivers nowhere either way. */
+export type RunOptions = { makeModel: () => ModelPort; config?: EntityConfig; dryRun?: boolean };
 
 export async function runEvalCase(def: EvalCase, options: RunOptions): Promise<CaseResult> {
   const iterations: IterationResult[] = [];
@@ -42,7 +43,7 @@ export async function runEvalCase(def: EvalCase, options: RunOptions): Promise<C
       const dir = join(root, "lar");
       mkdirSync(dir);
       const cli = createCliWorld({ onSay: () => {} });
-      const entity = await openEntity({ dir, config: options.config ?? EVAL_CONFIG, model: options.makeModel(), worlds: [cli] });
+      const entity = await openEntity({ dir, config: options.config ?? EVAL_CONFIG, model: options.makeModel(), worlds: [cli], ...(options.dryRun === true ? { dryRun: true } : {}) });
       await entity.start();
       for (const text of def.events) {
         cli.send(text);

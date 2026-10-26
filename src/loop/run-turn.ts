@@ -3,6 +3,7 @@
 // end_turn, when the ceiling is reached, when the model fails, or when the signal aborts.
 // Every step is written to the river, so the turn can be read back later.
 
+import { effectOf } from "../tools/effects.js";
 import { createHash } from "node:crypto";
 import {
   ModelError,
@@ -30,6 +31,9 @@ import {
 import { MalformedToolBlock } from "../model/emulated-tools.js";
 
 export const END_TURN = "end_turn";
+
+/** How many runs a read tool gets when it throws: the first and two retries. */
+const READ_RUNS = 3;
 /** How much of a receipt's data JSON the river keeps, and a shortened result shows. The SHA-256 of all of it is kept beside the start. */
 const RECEIPT_KEPT_BYTES = 2048;
 /** A result is worth shortening only when it is this much larger than what a shortened one keeps. */
@@ -108,6 +112,8 @@ export type RunTurnInput = {
    * end_turn, so the Lar can keep a note of what it was doing. Left out or empty, there is no closing call.
    */
   closingTools?: readonly string[];
+  /** Dry run: read tools run, every other tool (end_turn aside) gets a stub receipt marked stubbed and is not run. */
+  dryRun?: boolean;
   /**
    * What came in from outside since the turn began, as lines for the model, or undefined when nothing did. Asked before
    * each model call and shown on that call only, so a message that arrives mid-turn is seen in this turn.
@@ -181,14 +187,26 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
         refused: { code: "unknown_tool", reason: `The tools you can call are: ${names}.` },
       };
     }
+    const effect = tool === endTurnTool ? "read" : effectOf(tool.spec);
+    if (input.dryRun === true && effect !== "read") {
+      return { ok: true, summary: `Dry run: ${call.name} was not run.`, data: { stubbed: true } };
+    }
     const deadline = input.deadline;
     const toolSignal = deadline === undefined ? signal : signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
     const context: ToolContext = { thread, turnId, nowMs: nowMs(), river, notebook, ...(toolSignal === undefined ? {} : { signal: toolSignal }) };
-    try {
-      return await raceDeadline(tool.run(parsed.value, context), deadline, tool.settles === true);
-    } catch (err) {
-      const message = messageOf(err);
-      return { ok: false, summary: `The tool failed: ${message}`, refused: { code: "tool_error", reason: message } };
+    // A read (or idempotent) tool that throws is run again, up to READ_RUNS runs in all, unless the turn is stopping.
+    // Each retry is noted in the river. A write runs once.
+    const runs = effect === "write" ? 1 : READ_RUNS;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await raceDeadline(tool.run(parsed.value, context), deadline, tool.settles === true);
+      } catch (err) {
+        const message = messageOf(err);
+        if (attempt >= runs || toolSignal?.aborted === true) {
+          return { ok: false, summary: `The tool failed: ${message}`, refused: { code: "tool_error", reason: message } };
+        }
+        write({ kind: "note", source: "body", text: `${call.name} failed (${message}); trying again.`, data: { retryOf: call.name, attempt, turnId, callId: call.id } });
+      }
     }
   };
 
@@ -207,6 +225,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
         tool: call.name,
         ok: receipt.ok,
         ...(receipt.refused === undefined ? {} : { refused: receipt.refused }),
+        ...(receipt.data?.["stubbed"] === true ? { stubbed: true } : {}),
         turnId,
         callId: call.id,
         ...keptData(receipt.data),
