@@ -1056,6 +1056,58 @@ describe("what the Lar sends and what it is shown", () => {
     expect(JSON.parse(readFileSync(path, "utf8"))).not.toHaveProperty("selfWakeRun");
   });
 
+  it("SHOULD-A: a wake she sets with the rhythm's words is still spaced; only the body's own rhythm is exempt", async () => {
+    await withClock(async (advance) => {
+      const why = "Your daily rhythm.";
+      const model = new ScriptedModel([
+        reply({
+          toolCalls: [
+            call("schedule_wake", { in_minutes: 1, why }),
+            call("schedule_wake", { in_minutes: 2, why }),
+            call("schedule_wake", { in_minutes: 3, why }),
+            call("end_turn"),
+          ],
+        }),
+      ]);
+      const { entity, cli } = await open(model, { stopPollMs: 1e9, config: { ...CONFIG, rhythm: [] } });
+      await entity.start();
+      cli.send("Set three.");
+      await entity.idle();
+      const times = (readStateFile().wakes as Array<{ atMs: number }>).map((wake) => wake.atMs).sort((x, y) => x - y);
+      expect(times).toHaveLength(3);
+      expect(times[1]! - times[0]!).toBeGreaterThanOrEqual(15 * 60_000);
+      expect(times[2]! - times[1]!).toBeGreaterThanOrEqual(15 * 60_000);
+      expect((readStateFile().wakes as Array<Record<string, unknown>>).some((wake) => wake["rhythm"] !== undefined)).toBe(false);
+      await advance(0);
+    });
+  });
+
+  it("SHOULD-B: daily wakes are spaced by their time of day, not only by their next occurrence", async () => {
+    await withClock(async (advance) => {
+      vi.setSystemTime(Date.parse("2026-10-11T10:00:00Z"));
+      const model = new ScriptedModel([
+        reply({
+          toolCalls: [
+            call("schedule_wake", { at_iso: "2026-10-11T11:00:00Z", why: "a", repeat: "daily" }),
+            call("schedule_wake", { at_iso: "2026-10-12T11:05:00Z", why: "b", repeat: "daily" }),
+            call("schedule_wake", { at_iso: "2026-10-14T11:10:00Z", why: "c" }),
+            call("end_turn"),
+          ],
+        }),
+      ]);
+      const { entity, cli } = await open(model, { stopPollMs: 1e9, config: { ...CONFIG, rhythm: [] } });
+      await entity.start();
+      cli.send("Set them.");
+      await entity.idle();
+      const day = 24 * 60 * 60_000;
+      const ofDay = (readStateFile().wakes as Array<{ atMs: number }>).map((wake) => wake.atMs % day).sort((x, y) => x - y);
+      expect(ofDay).toHaveLength(3);
+      expect(ofDay[1]! - ofDay[0]!).toBeGreaterThanOrEqual(15 * 60_000);
+      expect(ofDay[2]! - ofDay[1]!).toBeGreaterThanOrEqual(15 * 60_000);
+      await advance(0);
+    });
+  });
+
   it("SHOULD-1: spaces every wake she sets 15 minutes from her other wakes, whatever turn set it, without holding the first", async () => {
     await withClock(async (advance) => {
       const model = new ScriptedModel([
