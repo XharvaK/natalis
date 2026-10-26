@@ -4,6 +4,7 @@
 
 import { NotebookError, type Notebook, type Receipt, type Tool, type ToolContext } from "../contracts.js";
 import { protectedNoteReason } from "../entity/commitments.js";
+import { notebookPathOf } from "../notebook/git-notebook.js";
 
 const READ_LIMIT = 20_000;
 const RECALL_DEFAULT = 10;
@@ -83,8 +84,8 @@ const writeNote: Tool = {
     if (!text.ok) return text.receipt;
     const why = requireText(args, "why", "The reason");
     if (!why.ok) return why.receipt;
-    const existing = context.notebook.read(path.value);
-    const full = capRefusal(path.value, existing, text.value.length);
+    const existing = context.notebook.read(notebookPathOf(path.value) ?? path.value);
+    const full = capRefusal(path.value, existing, text.value);
     if (full !== undefined) return full;
     if (existing === null && args["new_note"] !== true) {
       const near = nearbyNotes(context.notebook, path.value, text.value);
@@ -130,9 +131,12 @@ const editNote: Tool = {
     if (!replace.ok) return replace.receipt;
     const why = requireText(args, "why", "The reason");
     if (!why.ok) return why.receipt;
-    const current = CORE_NOTE_CAPS[path.value] === undefined ? null : context.notebook.read(path.value);
+    const variant = capSpellingRefusal(path.value);
+    if (variant !== undefined) return variant;
+    const current = capOf(path.value) === undefined ? null : context.notebook.read(notebookPathOf(path.value) ?? path.value);
     if (current !== null && current.includes(find.value)) {
-      const full = capRefusal(path.value, current, current.length - find.value.length + replace.value.length);
+      const at = current.indexOf(find.value);
+      const full = capRefusal(path.value, current, current.slice(0, at) + replace.value + current.slice(at + find.value.length));
       if (full !== undefined) return full;
     }
     return guarded(
@@ -171,10 +175,11 @@ const appendNote: Tool = {
     if (!text.ok) return text.receipt;
     const why = requireText(args, "why", "The reason");
     if (!why.ok) return why.receipt;
-    if (CORE_NOTE_CAPS[path.value] !== undefined) {
-      const current = context.notebook.read(path.value);
-      // An append may add one line break before the text.
-      const full = capRefusal(path.value, current, (current?.length ?? 0) + text.value.length + 1);
+    if (capOf(path.value) !== undefined) {
+      const current = context.notebook.read(notebookPathOf(path.value) ?? path.value) ?? "";
+      // The notebook adds one line break before the text when the note does not end with one.
+      const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
+      const full = capRefusal(path.value, current, current + separator + text.value);
       if (full !== undefined) return full;
     }
     return guarded(async () => {
@@ -408,7 +413,7 @@ export function nearbyNotes(notebook: Notebook, path: string, text: string): str
   if (words.size === 0) return [];
   const near: string[] = [];
   for (const entry of notebook.list()) {
-    if (entry.path === path || entry.path.startsWith("trash/") || stemOf(entry.path) === "README") continue;
+    if (entry.path === (notebookPathOf(path) ?? path) || entry.path.startsWith("trash/") || stemOf(entry.path) === "README") continue;
     const theirs = new Set([...wordsOf(stemOf(entry.path)), ...wordsOf(entry.firstLine)]);
     if ([...words].some((word) => theirs.has(word))) near.push(entry.path);
     if (near.length >= NEARBY_LIMIT) break;
@@ -422,9 +427,35 @@ export function nearbyNotes(notebook: Notebook, path: string, text: string): str
  */
 export const CORE_NOTE_CAPS: Readonly<Record<string, number>> = { "self/character.md": 8000 };
 
-function capRefusal(path: string, before: string | null, after: number): Receipt | undefined {
-  const cap = CORE_NOTE_CAPS[path];
-  if (cap === undefined || after <= cap || after <= (before?.length ?? 0)) return undefined;
+/** Characters as Unicode code points: an emoji or an accented letter counts as one, whatever its bytes. */
+export function charCount(text: string): number {
+  let n = 0;
+  for (const _ of text) n += 1;
+  return n;
+}
+
+/** The cap for a path under any spelling the notebook accepts ("./self/", "self//", any case), or undefined. */
+function capOf(path: string): number | undefined {
+  const key = (notebookPathOf(path) ?? path).toLowerCase();
+  return Object.hasOwn(CORE_NOTE_CAPS, key) ? CORE_NOTE_CAPS[key] : undefined;
+}
+
+/** A case variant of a capped path is another file on some hosts and the same file on others: refused, never guessed. */
+function capSpellingRefusal(path: string): Receipt | undefined {
+  const cap = capOf(path);
+  if (cap === undefined) return undefined;
+  const canonical = (notebookPathOf(path) ?? path).toLowerCase();
+  if (notebookPathOf(path) === canonical) return undefined;
+  return refuse("core_note_full", `Write ${canonical} with that exact spelling; nothing was changed.`, `${canonical} is capped at ${cap} characters and must be named exactly.`);
+}
+
+function capRefusal(path: string, before: string | null, next: string): Receipt | undefined {
+  const cap = capOf(path);
+  if (cap === undefined) return undefined;
+  const variant = capSpellingRefusal(path);
+  if (variant !== undefined) return variant;
+  const after = charCount(next);
+  if (after <= cap || after <= charCount(before ?? "")) return undefined;
   return refuse(
     "core_note_full",
     `${path} would be ${after} characters, over its cap of ${cap}, so nothing was changed.`,

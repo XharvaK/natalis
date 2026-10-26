@@ -54,6 +54,15 @@ function normalizePath(input: unknown, allowRoot = false): string {
   return parts.join("/");
 }
 
+/** The notebook's own spelling of a path ("./self//x.md" is "self/x.md"), or undefined when the notebook would refuse it. */
+export function notebookPathOf(input: string): string | undefined {
+  try {
+    return normalizePath(input);
+  } catch {
+    return undefined;
+  }
+}
+
 function toAbsolute(root: string, rel: string): string {
   return join(root, ...rel.split("/"));
 }
