@@ -19,6 +19,7 @@ import { verbTools } from "./verbs.js";
 import { type GameContext } from "./tool-context.js";
 import { isStopOn } from "../../entity/stop.js";
 import { expireDue, pendingCounts, recentActsBoard, syncActs, type ThreadNote, withdrawUndone, withholdForStop } from "./acts.js";
+import { withoutRefused } from "./refused.js";
 import { choicesSignature, optionsOf, renderView, unchangedLookLine, viewBrief } from "./options.js";
 import {
   checkSnapshot, expireSnapshots, gameSnapshotTool, openSnapshots, SNAPSHOT_PICTURE_NAME, SNAPSHOT_STATUS, settleFailed,
@@ -402,15 +403,19 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
         portrait: parsed.normalized.portrait, hasDay: parsed.normalized.day !== undefined,
       });
       const counts = listCountLine(requireDb(), attachmentSession(parsed.fields.attachment));
+      // An act the game refused twice in this session is not offered again (refused.ts).
+      const shown = parsed.options === undefined
+        ? parsed
+        : { ...parsed, options: withoutRefused(requireDb(), parsed.fields.attachment, optionsOf(parsed.options)) };
       deliver(unchanged === undefined
-        ? observationEvent(parsed, attachmentAt(now), attention, undefined, counts)
-        : unchangedLookEvent(parsed, thread, unchanged, attention.wake));
-      choicesShown.set(thread, choicesSignature(optionsOf(parsed.options ?? [])));
+        ? observationEvent(shown, attachmentAt(now), attention, undefined, counts)
+        : unchangedLookEvent(shown, thread, unchanged, attention.wake));
+      choicesShown.set(thread, choicesSignature(optionsOf(shown.options ?? [])));
       // A look view answers the looks asked for this helper session, from any thread: each thread that asked hears it too.
       if (parsed.percepts.some((item) => item.kind === "look")) {
         for (const asker of takeLookAskers(requireDb(), attachmentSession(parsed.fields.attachment), now)) {
           if (asker === thread) continue;
-          deliver(observationEvent(parsed, attachmentAt(now), { wake: true }, asker, counts));
+          deliver(observationEvent(shown, attachmentAt(now), { wake: true }, asker, counts));
         }
       }
     }

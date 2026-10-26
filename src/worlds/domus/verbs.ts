@@ -10,6 +10,7 @@ import { actRequestedMeanwhile, lastSaveAt, requestVerb, SLOT_HELD_REFUSAL, save
 import { seenItem } from "./catalog.js";
 import { findListed, listedSession, readList, REF_PATTERN } from "./lists.js";
 import { findOption, optionsOf } from "./options.js";
+import { withoutRefused } from "./refused.js";
 import { gameThreadNow, isAttachedView, newestObservation } from "./store.js";
 import { type GameContext, gameGate, refused, staleRef } from "./tool-context.js";
 
@@ -55,7 +56,7 @@ function viewOf(db: DatabaseSync, attached: string): View | undefined {
   const thread = gameThreadNow(db, attached);
   const newest = thread === undefined ? undefined : newestObservation(db, thread);
   if (!newest || !isAttachedView(newest.attachment, attached)) return undefined;
-  return { observationId: newest.observationId, options: optionsOf(newest.payload.options) };
+  return { observationId: newest.observationId, options: withoutRefused(db, newest.attachment, optionsOf(newest.payload.options)) };
 }
 
 const NO_VIEW = "The newest view of the game does not show this choice, so you cannot name it now. Name a thing by its thing ref, or wait for the game's view.";
