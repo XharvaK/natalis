@@ -2990,6 +2990,32 @@ describe("a world with a model of its own", () => {
   });
 });
 
+describe("turn purpose on the Lar", () => {
+  async function oneRoomTurn(extra: Partial<OpenEntityOptions>) {
+    const room = emitter("fake");
+    const { entity } = await open(new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]), { stopPollMs: 1e9, ...extra }, [room.world]);
+    await entity.start();
+    room.emit({ place: "fake:room", text: "Hello." });
+    await entity.idle();
+    const turns = allRows(entity).filter((row) => row.kind === "turn");
+    await entity.stop();
+    return { turns, count: (readStateFile() as unknown as { turns?: { count: number } }).turns?.count ?? 0 };
+  }
+
+  it("an eval Lar does not count its turns against the daily limit, and stamps eval on its turn rows", async () => {
+    const { turns, count } = await oneRoomTurn({ purpose: "eval" });
+    expect(turns.length).toBeGreaterThan(0);
+    expect(turns.every((row) => row.data?.["purpose"] === "eval")).toBe(true);
+    expect(count).toBe(0);
+  });
+
+  it("a live Lar counts its room turn, and its rows read as live", async () => {
+    const { turns, count } = await oneRoomTurn({});
+    expect(count).toBe(1);
+    expect(turns.every((row) => row.data?.["purpose"] === undefined || row.data?.["purpose"] === "live")).toBe(true);
+  });
+});
+
 describe("the daily rhythm", () => {
   const NOW = Date.parse("2026-10-11T10:00:00Z");
   type RhythmWake = { id: string; atMs: number; why: string; scheduledIn: string; repeat?: string; clock?: string };
