@@ -399,8 +399,17 @@ function authorOf(context: ToolContext): string {
 /** The refusal for a note only the body may change, or undefined when the Lar may change it. */
 const NEARBY_LIMIT = 5;
 
+/** Common words that say nothing about what a note is about (NIT-2). */
+const COMMON_WORDS: ReadonlySet<string> = new Set([
+  "about", "after", "again", "also", "back", "been", "before", "being", "come", "could", "does", "done", "down", "each",
+  "even", "from", "have", "here", "into", "just", "know", "like", "made", "make", "many", "more", "most", "much", "must",
+  "need", "note", "notes", "only", "other", "over", "said", "same", "some", "such", "than", "that", "their", "them", "then",
+  "there", "these", "they", "thing", "things", "this", "those", "time", "very", "want", "were", "what", "when", "where",
+  "which", "while", "will", "with", "would", "your", "today",
+]);
+
 function wordsOf(text: string): Set<string> {
-  return new Set([...text.toLowerCase().matchAll(/\p{L}{4,}/gu)].map((m) => m[0]));
+  return new Set([...text.toLowerCase().matchAll(/\p{L}{4,}/gu)].map((m) => m[0]).filter((w) => !COMMON_WORDS.has(w)));
 }
 
 function stemOf(path: string): string {
