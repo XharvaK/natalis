@@ -3,7 +3,7 @@
 // one did not (mainError), so the loop can write both into the river. Only a service failure moves the call to the
 // backup: a caller's abort, a refused key or a refused request is final and is never sent to another model.
 
-import { ModelError, type ChatMessage, type ModelPort, type ModelRequest, type ModelResponse } from "../contracts.js";
+import { ModelError, type ChatMessage, type QuotaWindow, type ModelPort, type ModelRequest, type ModelResponse } from "../contracts.js";
 
 /** The line that stands in for a picture the backup model cannot see. */
 export const PICTURE_STAND_IN = "[A picture was here; the backup model cannot see it.]";
@@ -42,7 +42,7 @@ export type BackupOptions = {
  */
 export function withBackup(options: BackupOptions): ModelPort {
   /** The turns whose main model failed, each with that failure, said once more on each call it sends to the backup. */
-  const held = new Map<string, string>();
+  const held = new Map<string, { message: string; quota?: QuotaWindow }>();
   return {
     info: options.primary.info,
     routing: () => ({
@@ -55,7 +55,12 @@ export function withBackup(options: BackupOptions): ModelPort {
       let mainError: ModelError;
       const earlier = request.turnId === undefined ? undefined : held.get(request.turnId);
       if (earlier !== undefined) {
-        mainError = new ModelError(`it failed earlier in this turn (${earlier}), so this call went to the backup`, "unavailable", 0);
+        mainError = new ModelError(
+          `it failed earlier in this turn (${earlier.message}), so this call went to the backup`,
+          "unavailable",
+          0,
+          earlier.quota,
+        );
       } else {
         try {
           return await options.primary.complete(request, signal);
@@ -63,7 +68,7 @@ export function withBackup(options: BackupOptions): ModelPort {
           if (!isServiceFailure(err) || signal?.aborted) throw err;
           mainError = err;
           if (request.turnId !== undefined) {
-            held.set(request.turnId, err.message);
+            held.set(request.turnId, err.quota === undefined ? { message: err.message } : { message: err.message, quota: err.quota });
             // Only the newest turns are kept: an older turn has ended long ago.
             for (const turnId of held.keys()) {
               if (held.size <= HELD_TURNS) break;
@@ -80,6 +85,7 @@ export function withBackup(options: BackupOptions): ModelPort {
             `${mainError.message}. The backup model (${options.backupName}) was not tried: this request is about ${estimate} tokens, more than its ${options.backupContextTokens}-token context.`,
             mainError.kind,
             mainError.attempts,
+            mainError.quota,
           );
         }
       }
@@ -92,6 +98,7 @@ export function withBackup(options: BackupOptions): ModelPort {
             `${backupErr.message}. The main model failed first: ${mainError.message}`,
             backupErr.kind,
             backupErr.attempts,
+            bothResets(mainError.quota, backupErr.quota),
           );
         }
         throw backupErr;
@@ -103,6 +110,18 @@ export function withBackup(options: BackupOptions): ModelPort {
       return { ...answer, servedBy: answer.servedBy ?? options.backupName, mainError: why };
     },
   };
+}
+
+/**
+ * The window to wait for when both models are out: the earlier reset, since the next turn may be served by either. When
+ * either reset is unknown, no reset is given (that model could come back at any time), but a named limit is kept.
+ */
+export function bothResets(main: QuotaWindow | undefined, backup: QuotaWindow | undefined): QuotaWindow | undefined {
+  const limit = backup?.limit ?? main?.limit;
+  const resetAtMs =
+    main?.resetAtMs !== undefined && backup?.resetAtMs !== undefined ? Math.min(main.resetAtMs, backup.resetAtMs) : undefined;
+  if (limit === undefined && resetAtMs === undefined) return undefined;
+  return { ...(limit === undefined ? {} : { limit }), ...(resetAtMs === undefined ? {} : { resetAtMs }) };
 }
 
 function isServiceFailure(err: unknown): err is ModelError {

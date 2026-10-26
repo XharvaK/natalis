@@ -952,3 +952,23 @@ describe("a streamed reply", () => {
     expect(responses.calls[0]?.body).not.toHaveProperty("stream");
   });
 });
+
+describe("quota windows on a 429", () => {
+  it("names the limit from OpenCode's GoUsageLimitError metadata and the reset from Retry-After", async () => {
+    const body = { type: "error", error: { type: "GoUsageLimitError", message: "Go usage limit exceeded" }, metadata: { limitName: "weekly" } };
+    const { port } = harness([status(429, body, { "retry-after": "14102" })]);
+    const before = Date.now();
+    const err = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+    expect(err.kind).toBe("out_of_credit");
+    expect(err.quota?.limit).toBe("weekly");
+    expect(err.quota?.resetAtMs).toBeGreaterThanOrEqual(before + 14_102_000);
+    expect(err.quota?.resetAtMs).toBeLessThan(Date.now() + 14_102_000 + 1);
+  });
+
+  it("reads a 5-hour limit from the message words when there is no metadata, and no reset without Retry-After", async () => {
+    const { port } = harness([status(429, { error: { message: "5-hour usage limit exceeded" } })]);
+    const err = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+    expect(err.kind).toBe("out_of_credit");
+    expect(err.quota).toEqual({ limit: "5-hour" });
+  });
+});

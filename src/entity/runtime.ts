@@ -17,7 +17,8 @@ import { TURN_DEADLINE_MS, withTurnDeadline } from "../model/turn-deadline.js";
 import { whenText } from "./when.js";
 import { openNotebook, seedNotebook } from "../notebook/index.js";
 import { FORGOTTEN_LINE, lineHoldsWords, queryWords } from "../notebook/forget.js";
-import { ModelError, type ModelErrorKind } from "../contracts.js";
+import { ModelError, type ModelErrorKind, type QuotaWindow } from "../contracts.js";
+import { planRetry, type QuotaRetryTuning } from "./retry-plan.js";
 import { openRiver } from "../river/index.js";
 import { createWitness, withWitness, type CacheWitness } from "../model/witness.js";
 import { openLedger, type Ledger, type LedgerRow, type ThreadKind } from "../river/ledger.js";
@@ -223,6 +224,8 @@ export type OpenEntityOptions = {
   scanner?: SecretScanner;
   /** Waits before a failed turn is tried again. The last one repeats. Defaults to 30 s, 1, 2, 5, 10 min. */
   retryDelaysMs?: number[];
+  /** Waits for a spent quota: reset margin and jitter (3 min, up to 1 min), backoff when the reset is unknown (10 min to 2 h). */
+  quotaRetry?: QuotaRetryTuning;
   /** How long a turn's model calls may run before the turn's watchdog stops them. Defaults to 20 min. */
   turnDeadlineMs?: number;
   /** How often the stop file is looked at while the entity runs. Defaults to 2 s. */
@@ -303,6 +306,7 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
     nowMs,
     scanner,
     retryDelaysMs,
+    ...(options.quotaRetry === undefined ? {} : { quotaRetry: options.quotaRetry }),
     ...(options.turnDeadlineMs === undefined ? {} : { turnDeadlineMs: options.turnDeadlineMs }),
     stopPollMs,
     statePath,
@@ -580,6 +584,7 @@ type RuntimeInit = {
   nowMs: () => number;
   scanner: SecretScanner;
   retryDelaysMs: number[];
+  quotaRetry?: QuotaRetryTuning;
   turnDeadlineMs?: number;
   stopPollMs: number;
   statePath: string;
@@ -605,6 +610,7 @@ class Runtime implements Entity {
   private readonly nowMs: () => number;
   private readonly scanner: SecretScanner;
   private readonly delays: number[];
+  private readonly quotaRetry: QuotaRetryTuning | undefined;
   /** How long a turn's model calls may run in all before the turn's watchdog stops them. */
   private readonly turnDeadlineMs: number;
   private readonly stopPollMs: number;
@@ -622,6 +628,8 @@ class Runtime implements Entity {
   private readonly witness: CacheWitness;
   /** Failed turns in a row, over every thread. A turn that gets an answer clears it. */
   private failedRun = 0;
+  /** Per thread: failed turns in a row that were a spent quota with no known reset (drives the quota backoff). */
+  private readonly quotaBackoff = new Map<string, number>();
   private readonly ceiling: Ceiling;
   private readonly tools: Tool[];
   /** The names of each world's own tools, so a resting world's can be left out of other threads' turns. */
@@ -704,6 +712,7 @@ class Runtime implements Entity {
     this.nowMs = init.nowMs;
     this.scanner = init.scanner;
     this.delays = init.retryDelaysMs;
+    this.quotaRetry = init.quotaRetry;
     this.turnDeadlineMs = init.turnDeadlineMs ?? TURN_DEADLINE_MS;
     this.stopPollMs = init.stopPollMs;
     this.statePath = init.statePath;
@@ -1117,11 +1126,12 @@ class Runtime implements Entity {
       // The cursor stays too, so the retry takes the same events. The owner's asks are not touched.
       const message = result.error ?? "unknown error";
       const oversize = isOversized(message) ? `${sizes}, the new messages and recent lines ${event.length} characters` : undefined;
-      this.failTurn(thread, message, true, turnId, oversize, result.errorKind);
+      this.failTurn(thread, message, true, turnId, oversize, result.errorKind, result.quota);
       return;
     }
     this.failures.delete(thread);
     this.oversized.delete(thread);
+    this.quotaBackoff.delete(thread);
     this.outageNoticed = false;
     this.failedRun = 0;
     const cursor = this.threadState(thread);
@@ -1181,6 +1191,7 @@ class Runtime implements Entity {
     turnId?: string,
     oversize?: string,
     kind?: ModelErrorKind,
+    quota?: QuotaWindow,
   ): void {
     if (this.stopping) return;
     const failed = this.failures.get(thread) ?? 0;
@@ -1188,7 +1199,15 @@ class Runtime implements Entity {
     const rejections = oversize === undefined ? 0 : (this.oversized.get(thread) ?? 0) + 1;
     if (oversize !== undefined) this.oversized.set(thread, rejections);
     const giveUp = oversize !== undefined && rejections >= OVERSIZE_TRIES;
-    const delay = this.delays[Math.min(failed, this.delays.length - 1)] ?? 0;
+    const unknownQuotaFails = this.quotaBackoff.get(thread) ?? 0;
+    const plan = planRetry({ delays: this.delays, failed, kind: fromModel ? kind : undefined, quota, unknownQuotaFails, nowMs: this.nowMs(), ...(this.quotaRetry === undefined ? {} : { tuning: this.quotaRetry }) });
+    if (plan.basis === "quota_backoff") this.quotaBackoff.set(thread, unknownQuotaFails + 1);
+    else this.quotaBackoff.delete(thread);
+    const delay = plan.delayMs;
+    if (!giveUp) {
+      const at = this.nowMs() + delay;
+      console.error(`[natalis] turn retry: ${plan.reason}; next try at ${this.stampFormat.format(at)} ${this.config.timeZone ?? "local"} (in ${Math.round(delay / 60_000)} min)`);
+    }
     const seconds = Math.ceil(delay / 1000);
     const cause = fromModel ? "Your turn failed (model error)" : "Your turn failed";
     const text =

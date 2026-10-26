@@ -10,6 +10,7 @@ import {
   type ChatMessage,
   type ImagePart,
   type ModelErrorKind,
+  type QuotaWindow,
   type ModelPort,
   type ModelRequest,
   type ModelResponse,
@@ -146,6 +147,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
   let endedBy: TurnEndReason | undefined;
   let error: string | undefined;
   let errorKind: ModelErrorKind | undefined;
+  let quota: QuotaWindow | undefined;
   let thrown: { error: unknown } | undefined;
   // The backup model answers for one turn at most; the river says so once, not once per call.
   let backupNoted = false;
@@ -354,6 +356,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
         endedBy = "model_error";
         error = messageOf(err);
         errorKind = err instanceof ModelError ? err.kind : undefined;
+        quota = err instanceof ModelError ? err.quota : undefined;
         write({
           kind: "note",
           source: "body",
@@ -454,6 +457,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
     backupUsed: backupNoted,
     ...(error === undefined ? {} : { error }),
     ...(errorKind === undefined ? {} : { errorKind }),
+    ...(quota === undefined ? {} : { quota }),
   };
   return { result, messages };
 }

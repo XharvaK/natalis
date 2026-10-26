@@ -770,7 +770,7 @@ function brokeModel(): ModelPort & { calls: number } {
 describe("an outage", () => {
   it("tells the summoner once when the model is out of credit, however many retries follow", async () => {
     const model = brokeModel();
-    const { entity, cli, said } = await open(model, { retryDelaysMs: [1] });
+    const { entity, cli, said } = await open(model, { retryDelaysMs: [1], quotaRetry: { backoffStartMs: 1, backoffCapMs: 1 } });
     await entity.start();
     cli.send("Hello?");
     await waitFor(() => said.some((item) => item.text.includes("could not get an answer")));
@@ -781,6 +781,25 @@ describe("an outage", () => {
     expect(notices[0]?.place).toBe("cli:summoner");
     expect(notices[0]?.text.startsWith(SUMMONER_PREFIX)).toBe(true);
     expect(notices[0]?.text).toContain("out of credit");
+  });
+});
+
+describe("a spent quota with a named reset", () => {
+  it("schedules the retry at the provider's reset plus the margin, not on the 10-minute schedule", async () => {
+    const now = Date.UTC(2026, 9, 25, 20, 4, 58);
+    const resetAtMs = now + 14_102_000;
+    const model: ModelPort = {
+      info: { id: "scripted:weekly", contextTokens: 32_000, nativeTools: true },
+      async complete(): Promise<ModelResponse> {
+        throw new ModelError("Go usage limit exceeded (HTTP 429)", "out_of_credit", 1, { limit: "weekly", resetAtMs });
+      },
+    };
+    const { entity, cli } = await open(model, { nowMs: () => now, quotaRetry: { marginMs: 180_000, jitterMs: 0 } });
+    await entity.start();
+    cli.send("Hello?");
+    await waitFor(() => allRows(entity).some((row) => row.kind === "note" && row.data?.["retryInMs"] !== undefined));
+    const note = allRows(entity).find((row) => row.kind === "note" && row.data?.["retryInMs"] !== undefined);
+    expect(note?.data?.["retryInMs"]).toBe(14_102_000 + 180_000);
   });
 });
 

@@ -148,11 +148,18 @@ export type ModelErrorKind =
   | "malformed"
   | "aborted";
 
+/**
+ * What a provider said about a spent quota: which limit (e.g. "5-hour", "weekly", "monthly"), when it is expected to
+ * reset (epoch ms, from Retry-After), or both. Either may be missing.
+ */
+export type QuotaWindow = { limit?: string; resetAtMs?: number };
+
 export class ModelError extends Error {
   constructor(
     message: string,
     readonly kind: ModelErrorKind,
     readonly attempts: number,
+    readonly quota?: QuotaWindow,
   ) {
     super(message);
     this.name = "ModelError";
@@ -307,6 +314,8 @@ export type TurnResult = {
   error?: string;
   /** The kind of model failure when the turn ended on one. */
   errorKind?: ModelErrorKind;
+  /** The quota window the failing provider named, when the turn ended on a spent quota or rate limit. */
+  quota?: QuotaWindow;
   /** The model port's id, and the effort asked for, as the turn's end row records them. */
   model: string;
   effort?: NonNullable<ModelRequest["effort"]>;

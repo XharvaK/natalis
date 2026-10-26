@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ModelError, type ModelPort, type ModelRequest, type ModelResponse } from "../contracts.js";
-import { PICTURE_STAND_IN, estimateTokens, withBackup, withoutPictures } from "./backup.js";
+import { PICTURE_STAND_IN, bothResets, estimateTokens, withBackup, withoutPictures } from "./backup.js";
 
 /** A port that answers with the given result each time it is asked, and counts its calls. */
 function port(name: string, result: ModelResponse | Error): ModelPort & { requests: ModelRequest[] } {
@@ -381,5 +381,21 @@ describe("the backup's routing", () => {
     });
     expect(model.routing?.()).toEqual({ onBackup: false, backup: "backup-model" });
     expect(model.routing?.()).not.toHaveProperty("backupEffort");
+  });
+});
+
+describe("quota windows through the backup", () => {
+  it("when both models are out, the error carries the earlier of the two resets", async () => {
+    const main = port("main", new ModelError("main out", "out_of_credit", 1, { limit: "weekly", resetAtMs: 5_000 }));
+    const spare = port("spare", new ModelError("spare out", "out_of_credit", 1, { limit: "weekly", resetAtMs: 3_000 }));
+    const model = withBackup({ primary: main, backup: spare, backupName: "spare", backupSeesPictures: true });
+    const err = await model.complete({ messages: [{ role: "user", content: "hi" }] }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ModelError);
+    expect((err as ModelError).quota).toEqual({ limit: "weekly", resetAtMs: 3_000 });
+  });
+
+  it("gives no reset when one model's reset is unknown", () => {
+    expect(bothResets({ resetAtMs: 1 }, { limit: "monthly" })).toEqual({ limit: "monthly" });
+    expect(bothResets(undefined, undefined)).toBeUndefined();
   });
 });

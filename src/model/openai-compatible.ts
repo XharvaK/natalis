@@ -4,7 +4,7 @@
 // failure into a ModelError that never shows the key.
 
 import { randomBytes } from "node:crypto";
-import { ModelError } from "../contracts.js";
+import { ModelError, type QuotaWindow } from "../contracts.js";
 import { markedTextParts, markPlan } from "./cache-marks.js";
 import { buildResponsesBody, parseResponsesReply, REASONING_ITEMS } from "./responses-wire.js";
 import type {
@@ -266,12 +266,12 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
           // takes it. A short one, or none, waits as before (the backoff stays capped at BACKOFF_CAP_MS).
           if (sent.retryAfterMs !== undefined && sent.retryAfterMs > RETRY_AFTER_MAX_MS) {
             log(`model retry: ${provider} ${options.model} HTTP ${sent.status}, attempt ${attempt}/${maxAttempts}, retry-after ${sent.retryAfterMs} ms is over ${RETRY_AFTER_MAX_MS} ms, not retried`);
-            throw httpError(sent.status, sent.text, attempt, safe);
+            throw httpError(sent.status, sent.text, attempt, safe, sent.retryAfterMs, now());
           }
           await retryWait(sent.retryAfterMs ?? backoffMs(attempt), attempt, `HTTP ${sent.status}`);
           continue;
         }
-        throw httpError(sent.status, sent.text, attempt, safe);
+        throw httpError(sent.status, sent.text, attempt, safe, sent.retryAfterMs, now());
       }
     },
   };
@@ -586,6 +586,8 @@ function httpError(
   text: string,
   attempt: number,
   safe: (text: string) => string,
+  retryAfterMs?: number,
+  nowMs: number = Date.now(),
 ): ModelError {
   if (status === 401 || status === 403) {
     return new ModelError(`model service refused the credentials (HTTP ${status})`, "auth", attempt);
@@ -593,13 +595,19 @@ function httpError(
   if (isOutOfCredit(status, text)) {
     const detail = providerMessage(text);
     const suffix = detail ? `: ${safe(detail)}` : "";
-    return new ModelError(`model service is out of credit or over its quota (HTTP ${status})${suffix}`, "out_of_credit", attempt);
+    return new ModelError(
+      `model service is out of credit or over its quota (HTTP ${status})${suffix}`,
+      "out_of_credit",
+      attempt,
+      quotaWindow(text, retryAfterMs, nowMs),
+    );
   }
   if (status === 429) {
     return new ModelError(
       `model service is rate limiting this key (HTTP 429) after ${attempt} attempts`,
       "rate_limit",
       attempt,
+      quotaWindow(text, retryAfterMs, nowMs),
     );
   }
   const kind: ModelErrorKind =
@@ -610,6 +618,36 @@ function httpError(
   const detail = providerMessage(text);
   const suffix = detail ? `: ${safe(detail)}` : "";
   return new ModelError(`model service rejected the request (HTTP ${status})${suffix}`, kind, attempt);
+}
+
+/**
+ * Which limit a quota or rate-limit reply names, and when it resets. The limit comes from the body's metadata.limitName
+ * (OpenCode's GoUsageLimitError) or from words in its message ("5-hour", "weekly", "monthly", "daily"); the reset comes
+ * from Retry-After. Undefined when the reply says neither.
+ */
+export function quotaWindow(text: string, retryAfterMs: number | undefined, nowMs: number): QuotaWindow | undefined {
+  let limit: string | undefined;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (isRecord(parsed) && isRecord(parsed.metadata) && typeof parsed.metadata.limitName === "string") {
+      limit = normalLimit(parsed.metadata.limitName);
+    }
+  } catch {
+    // Not JSON: the words are looked at below.
+  }
+  limit ??= normalLimit(text);
+  const window: QuotaWindow = {};
+  if (limit !== undefined) window.limit = limit;
+  if (retryAfterMs !== undefined) window.resetAtMs = nowMs + retryAfterMs;
+  return Object.keys(window).length === 0 ? undefined : window;
+}
+
+function normalLimit(text: string): string | undefined {
+  if (/\b(5[- ]?h(our)?s?|five[- ]hour)\b/i.test(text)) return "5-hour";
+  if (/\bweekly\b|\bweek\b/i.test(text)) return "weekly";
+  if (/\bmonthly\b|\bmonth\b/i.test(text)) return "monthly";
+  if (/\bdaily\b|\bday\b/i.test(text)) return "daily";
+  return undefined;
 }
 
 function providerMessage(text: string): string {
