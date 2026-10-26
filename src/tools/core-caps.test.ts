@@ -43,4 +43,25 @@ describe("size caps on core self notes", () => {
     expect((await run("edit_note", { path: "self/character.md", find: "MARK ", replace: "y", why: "trim" })).ok).toBe(true);
     expect((await run("write_note", { path: "self/character.md", text: "short", why: "trim" })).ok).toBe(true);
   });
+
+  it("SHOULD-1: caps the note under any spelling of its path (./self/, self//, case)", async () => {
+    for (const spelling of ["./self/character.md", "self//character.md", "self/./character.md", "Self/Character.md"]) {
+      const { notebook, run } = await fixture();
+      await notebook.write("self/character.md", "a".repeat(CAP - 5), "f", "self");
+      expect((await run("append_note", { path: spelling, text: "bbbbbbbbbb", why: "t" })).refused?.code).toBe("core_note_full");
+      expect((await run("write_note", { path: spelling, text: "a".repeat(CAP + 1), why: "t" })).refused?.code).toBe("core_note_full");
+      expect((await run("edit_note", { path: spelling, find: "aaaaa", replace: "c".repeat(20), why: "t" })).refused?.code).toBe("core_note_full");
+      expect(notebook.read("self/character.md")?.length).toBe(CAP - 5);
+    }
+  });
+
+  it("counts characters as Unicode code points, not bytes or UTF-16 units", async () => {
+    const { notebook, run } = await fixture();
+    // An emoji is 1 code point, 2 UTF-16 units, 4 bytes; an accented letter is 1 code point, 2 bytes.
+    const full = "\u{1F600}".repeat(CAP / 2) + "\u00e9".repeat(CAP / 2);
+    expect((await run("write_note", { path: "self/character.md", text: full, why: "t" })).ok).toBe(true);
+    expect([...(notebook.read("self/character.md") ?? "")].length).toBe(CAP);
+    expect((await run("append_note", { path: "self/character.md", text: "\u{1F600}", why: "t" })).refused?.code).toBe("core_note_full");
+    expect((await run("write_note", { path: "self/character.md", text: "\u{1F600}".repeat(CAP + 1), why: "t" })).refused?.code).toBe("core_note_full");
+  });
 });
