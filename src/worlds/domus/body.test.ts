@@ -127,6 +127,13 @@ describe("her body now", () => {
     expect(lines).toContain("Talking to you: someone (greet).");
   });
 
+  it("C2: says the senses are unavailable when the helper could not read her needs, and nothing when it could", () => {
+    expect(bodyLines({ ...BUSY, senses_unavailable: ["needs"] })).toContain(
+      "Senses unavailable: your needs could not be read from the game just now, so they are not shown. Do not guess them.",
+    );
+    expect(bodyLines(BUSY).some((line) => line.startsWith("Senses unavailable"))).toBe(false);
+  });
+
   it("says whose each open window is, and whether it is held for her", () => {
     const lines = bodyLines(BUSY);
     expect(lines).toContain("Open for you: Pick a recipe (held for you). Choose one.");
