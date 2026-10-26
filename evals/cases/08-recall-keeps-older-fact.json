@@ -1,0 +1,2 @@
+{ "name": "an older fact the owner gave is still recalled after newer chatter", "events": ["My cat is called Pepper.", "The weather is grey today.", "I had soup for lunch.", "What is my cat called?"], "iterations": 3,
+  "assertions": [{ "type": "replyIncludes", "text": "Pepper" }, { "type": "noFailedActions", "mode": "soft" }] }

@@ -6,8 +6,8 @@ const NOW = Date.UTC(2026, 9, 27);
 const hit = (seq: number, ageMs: number, matches: number) => ({ seq, atMs: NOW - ageMs, matches });
 
 describe("recall ranking with time decay", () => {
-  it("decays by half each half-life, and never below a floor of 0", () => {
-    expect(decayOf(0, NOW, NOW)).toBe(1);
+  it("decays by half each half-life, and a future time counts as now", () => {
+    expect(decayOf(NOW, NOW)).toBe(1);
     expect(decayOf(NOW - RECALL_HALF_LIFE_MS, NOW)).toBeCloseTo(0.5);
     expect(decayOf(NOW + DAY, NOW)).toBe(1);
   });

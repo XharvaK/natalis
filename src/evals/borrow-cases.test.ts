@@ -52,4 +52,13 @@ describe("OSS-borrow eval cases", () => {
     const third = JSON.stringify(model?.requests[2]?.messages ?? []);
     expect(third).toContain("triggered notes");
   });
+
+  it("item 1: the older fact case passes when the reply names it", async () => {
+    const def = { ...byFile("an older fact the owner gave is still recalled after newer chatter"), iterations: 1 };
+    const end = reply({ toolCalls: [call("end_turn")] });
+    const result = await runEvalCase(def, {
+      makeModel: () => new ScriptedModel([end, end, end, reply({ toolCalls: [call("say", { place: "cli:summoner", text: "Your cat is Pepper." })] }), end]),
+    });
+    expect(result.verdict).toBe("passed");
+  });
 });

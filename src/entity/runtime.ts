@@ -8,6 +8,7 @@
 //   notebook/     the Lar's notebook: plain text, versioned with git
 //   state.json    cursors per thread, open asks, scheduled wakes, mood, written atomically after each change
 
+import { rankRecall } from "../context/recall-rank.js";
 import { parseTriggers, triggeredText } from "../context/triggers.js";
 import { SAY_CHECKS } from "./say-checks.js";
 import { policyFor, policyRefusal } from "./tool-policy.js";
@@ -2158,8 +2159,8 @@ class Runtime implements Entity {
         else found.set(hit.row.seq, { row: hit.row, score: 1 });
       }
     }
-    return [...found.values()]
-      .sort((a, b) => b.score - a.score || b.row.seq - a.row.seq)
+    const candidates = [...found.values()].map(({ row, score }) => ({ row, seq: row.seq, atMs: row.atMs, matches: score }));
+    return rankRecall(candidates, this.nowMs())
       .slice(0, RECALL_LIMIT)
       .map(({ row }) => `[${this.stamp(row.atMs)} ${row.thread} ${who(row)}] ${shownRow(row)}`)
       .join("\n");
