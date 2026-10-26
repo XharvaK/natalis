@@ -126,21 +126,28 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
   await entity.stop();
   out("Stopped.");
   // If a handle is left open the event loop never drains and systemd kills us after 300 s; exit after a short grace.
-  armExitFailsafe(0);
+  armExitFailsafe(EXIT_NOT_DRAINED);
   return 0;
 }
 
 /** After this long past "Stopped.", the process exits even if something still holds the event loop. */
 export const EXIT_GRACE_MS = 10_000;
 
-/** An unref'd timer that exits with `code` after `graceMs`; it never keeps the process alive by itself. */
+/** The exit code when the failsafe had to end the process: not 0, so a stop that left a handle open shows as failed. */
+export const EXIT_NOT_DRAINED = 3;
+
+/**
+ * An unref'd timer that exits with `code` after `graceMs`; it never keeps the process alive by itself. Its line starts with
+ * <4>, the journal's warning level.
+ */
 export function armExitFailsafe(
   code: number,
   graceMs: number = EXIT_GRACE_MS,
   exit: (code: number) => void = (c) => process.exit(c),
+  warn: (line: string) => void = (line) => console.error(line),
 ): NodeJS.Timeout {
   const timer = setTimeout(() => {
-    console.error(`[natalis] the event loop did not drain ${graceMs} ms after stopping; exiting`);
+    warn(`<4>[natalis] warning: the event loop did not drain ${graceMs} ms after stopping; exiting with ${code}`);
     exit(code);
   }, graceMs);
   timer.unref();

@@ -106,6 +106,9 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
   // Without a stream nothing can be heard before the whole reply, so a silence limit that was set bounds each attempt
   // (P1-3, 2026-10-26: the muse backup on the responses protocol could hold a turn for its full 15 min attempt).
   const silenceCapsAttempt = !streaming && options.idleTimeoutMs !== undefined && idleTimeoutMs < timeoutMs;
+  // S-C (Auditor recheck 2026-10-26): without a stream a slow reply looks like silence, so the cap is a first guess only.
+  // After one cut the next try (in this call, or the next call when this one cannot retry) gets the full timeoutMs.
+  let uncapNext = false;
   const callDeadlineMs = options.callDeadlineMs ?? timeoutMs + DEADLINE_SLACK_MS;
   const log = options.log ?? ((line: string) => console.error(`[natalis] ${line}`));
   const provider = (() => {
@@ -130,16 +133,16 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
 
   const newId = (): string => `${idPrefix}_${randomBytes(6).toString("hex")}`;
 
-  const send = async (body: string, signal: AbortSignal | undefined, limitMs: number): Promise<Sent> => {
+  const send = async (body: string, signal: AbortSignal | undefined, limitMs: number, capped: boolean): Promise<Sent> => {
     if (signal?.aborted) return { type: "aborted" };
     const fetchFn = options.fetch ?? globalThis.fetch;
     const controller = new AbortController();
     const timer = { timedOut: false, silent: false };
     const onCallerAbort = (): void => controller.abort();
     signal?.addEventListener("abort", onCallerAbort, { once: true });
-    const attemptMs = silenceCapsAttempt ? idleTimeoutMs : timeoutMs;
+    const attemptMs = capped ? idleTimeoutMs : timeoutMs;
     const timeout = setTimeout(() => {
-      if (silenceCapsAttempt && attemptMs <= limitMs) timer.silent = true;
+      if (capped && attemptMs <= limitMs) timer.silent = true;
       else timer.timedOut = true;
       controller.abort();
     }, Math.max(1, Math.min(attemptMs, limitMs)));
@@ -234,12 +237,19 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
         if (signal?.aborted) throw new ModelError("request aborted by caller", "aborted", attempt);
         const started = now();
         if (started >= deadlineAt) throw overDeadline(attempt - 1);
-        const sent = await send(body, signal, deadlineAt - started);
+        const capped = silenceCapsAttempt && !uncapNext;
+        const sent = await send(body, signal, deadlineAt - started, capped);
+        if (sent.type === "reply") uncapNext = false;
 
         if (sent.type === "aborted") throw new ModelError("request aborted by caller", "aborted", attempt);
         if (sent.type === "timeout") {
           if (now() >= deadlineAt) throw overDeadline(attempt);
           throw new ModelError(`no reply from the model service within ${timeoutMs} ms`, "timeout", attempt);
+        }
+        if (sent.type === "silent" && capped) {
+          uncapNext = true;
+          log(`model retry: ${provider} ${options.model} attempt cap without a stream (${idleTimeoutMs} ms) cut attempt ${attempt}; the next try gets the full ${timeoutMs} ms`);
+          if (attempt < maxAttempts && now() < deadlineAt) continue;
         }
         if (sent.type === "silent") {
           throw new ModelError(`the model service sent nothing for ${idleTimeoutMs} ms`, "timeout", attempt);
@@ -587,7 +597,7 @@ function isOutOfCredit(status: number, text: string): boolean {
  * and subscription-quota errors, CommandCode's credit errors). Such a limit lasts hours, not seconds, so it is final.
  */
 const OUT_OF_CREDIT_429 =
-  /insufficient[_ ]quota|quota|credit|billing|usage[_ ]?limit|exceeded[^"]{0,40}limit|UsageLimitError|subscription/i;
+  /insufficient[_ ]quota|quota|credit|billing|usage[_ ]?limit|exceeded[^"]{0,40}(?:usage|quota|credit|spend)[^"]{0,10}limit|UsageLimitError|subscription/i;
 
 /** A body whose metadata names its limit (OpenCode's limitName): a named, hours-scale limit, not a burst rate limit. */
 function namesLimit(text: string): boolean {

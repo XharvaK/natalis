@@ -350,3 +350,25 @@ describe("plan_event's limits: a day up to 99 days ahead, and up to 64 guests (Q
     expect(properties.start?.properties).toEqual({ day_offset: { type: "integer", minimum: 0, maximum: 99 }, time: { type: "string" } });
   });
 });
+
+describe("a choice ref to an object the game refused twice (S-D, verbs viewOf)", () => {
+  function rejected(objectId: string, guid64: string, atMs: number, n: number): void {
+    const id = `rej${n}`;
+    db.prepare(`INSERT INTO acts (act_id, turn_id, thread, attachment, observation_id, option_ref, object_id, guid64, label, state,
+      requested_at_ms, expires_at_ms, updated_at_ms, for_summoner) VALUES (?, 't', ?, ?, NULL, 'a1', ?, ?, 'x', 'rejected', ?, ?, ?, 0)`)
+      .run(id, THREAD, HELPER, objectId, guid64, atMs, atMs + 1, atMs);
+    db.prepare("INSERT INTO act_events (act_id, phase, at_ms, received_at_ms, detail_json) VALUES (?, 'rejected', ?, ?, ?)")
+      .run(id, atMs, atMs, JSON.stringify({ code: "GAME_REFUSED", by: "probe" }));
+  }
+
+  it("is not a choice while hidden, and is again after 30 min", async () => {
+    const bed = [{ object: "Bed", object_id: "77", room: "Bedroom", near: true, acts: [{ ref: "a1", guid64: "901", text: "Sleep" }] }];
+    seedView(bed);
+    rejected("77", "901", clock - 2000, 1);
+    rejected("77", "901", clock - 1000, 2);
+    expect(await call("game_move", { thing: "a1", place: { in: "Bedroom" } }, "t-h1")).toMatchObject({ ok: false });
+    clock += 31 * 60_000;
+    seedView(bed);
+    expect(await call("game_move", { thing: "a1", place: { in: "Bedroom" }, knowingly: true }, "t-h2")).toMatchObject({ ok: true });
+  });
+});

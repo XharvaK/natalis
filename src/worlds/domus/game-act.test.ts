@@ -431,3 +431,28 @@ describe("game_act: her answers and her words (W12: A8, S1)", () => {
     expect(acts()).toHaveLength(1);
   });
 });
+
+describe("game_act: an act the game refused twice (S-D)", () => {
+  function rejected(objectId: string, guid64: string, atMs: number): void {
+    const id = `rej${++seq}`;
+    db.prepare(`INSERT INTO acts (act_id, turn_id, thread, attachment, observation_id, option_ref, object_id, guid64, label, state,
+      requested_at_ms, expires_at_ms, updated_at_ms, for_summoner) VALUES (?, 't', ?, ?, NULL, 'a1', ?, ?, 'x', 'rejected', ?, ?, ?, 0)`)
+      .run(id, THREAD, HELPER, objectId, guid64, atMs, atMs + 1, atMs);
+    db.prepare("INSERT INTO act_events (act_id, phase, at_ms, received_at_ms, detail_json) VALUES (?, 'rejected', ?, ?, ?)")
+      .run(id, atMs, atMs, JSON.stringify({ code: "NO_INTERACTION", by: "probe" }));
+  }
+
+  it("answers refused_before for the hidden ref, still takes the others, and offers it again after 30 min", async () => {
+    view(VIEW);
+    rejected("obj-kettle", "111", T0 - 1000);
+    rejected("obj-kettle", "111", T0 - 500);
+    const receipt = await run({ option: "a1" });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "refused_before" } });
+    expect(receipt.summary).toMatch(/30 minutes/);
+    expect(acts().filter((row) => row.state !== "rejected")).toEqual([]);
+    expect(await run({ option: "a2" })).toMatchObject({ ok: true });
+    open = { ...open, nowMs: () => T0 + 31 * 60_000 };
+    view(VIEW, T0 + 31 * 60_000 - 1000);
+    expect(await run({ option: "a1", knowingly: true })).toMatchObject({ ok: true });
+  });
+});

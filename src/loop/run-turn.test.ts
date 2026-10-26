@@ -960,4 +960,35 @@ describe("runTurn round 6: the turn deadline covers tools", () => {
     expect(Date.now() - started).toBeLessThan(150);
     expect((result as { endedBy: string }).endedBy).toBe("model_error");
   });
+
+  it("S-A: a settling tool (a local notebook write) is let finish after the deadline, and its real receipt is kept", async () => {
+    const { withTurnDeadline } = await import("../model/turn-deadline.js");
+    let wrote = false;
+    const append: Tool = {
+      spec: { name: "append_slow", description: "Appends late.", parameters: { type: "object", properties: {} } },
+      settles: true,
+      run: () => new Promise<Receipt>((resolve) => setTimeout(() => { wrote = true; resolve({ ok: true, summary: "Appended." }); }, 50)),
+    };
+    const { input, river } = await setup({ steps: [reply({ toolCalls: [call("append_slow", {}, "c1")] }), reply({ toolCalls: [call(END_TURN, { note: "x" }, "c2")] })], tools: [append] });
+    const dog = withTurnDeadline(input.model, 20, () => {});
+    await runTurn({ ...input, model: dog.model, deadline: dog.signal } as RunTurnInput).finally(() => dog.done());
+    expect(wrote).toBe(true);
+    const receipt = river.read({ thread: THREAD }).find((r) => r.kind === "receipt" && r.data?.["callId"] === "c1");
+    expect(receipt?.data?.["ok"]).toBe(true);
+  });
+
+  it("S-A: any other tool still running at the deadline gets an outcome-unknown receipt, not a failure", async () => {
+    const { withTurnDeadline } = await import("../model/turn-deadline.js");
+    const post: Tool = {
+      spec: { name: "post_slow", description: "Posts late.", parameters: { type: "object", properties: {} } },
+      run: () => new Promise<Receipt>(() => {}),
+    };
+    const { input, river } = await setup({ steps: [reply({ toolCalls: [call("post_slow", {}, "c1")] }), reply({ toolCalls: [call(END_TURN, { note: "x" }, "c2")] })], tools: [post] });
+    const dog = withTurnDeadline(input.model, 20, () => {});
+    await runTurn({ ...input, model: dog.model, deadline: dog.signal } as RunTurnInput).finally(() => dog.done());
+    const receipt = river.read({ thread: THREAD }).find((r) => r.kind === "receipt" && r.data?.["callId"] === "c1");
+    expect(receipt?.data?.["refused"]).toMatchObject({ code: "outcome_unknown" });
+    expect(receipt?.text).toContain("may still finish");
+  });
 });
+

@@ -915,6 +915,27 @@ describe("a streamed reply", () => {
     expect(Date.now() - started).toBeLessThan(5_000);
   });
 
+  it("S-C: after a silence cut without a stream, the next try gets the full attempt limit, so a slow reply ends", async () => {
+    // Every answer takes 60 ms; the silence cap is 30 ms. Before S-C every try was cut and the call never succeeded.
+    const body = () => ok({ object: "response", status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "slow but fine" }] }] });
+    let calls = 0;
+    const slowFetch: typeof fetch = (_url, init) => {
+      calls += 1;
+      return new Promise<Response>((resolve, reject) => {
+        const timer = setTimeout(() => resolve(body()), 60);
+        init?.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new DOMException("aborted", "AbortError")); }, { once: true });
+      });
+    };
+    const lines: string[] = [];
+    const { port } = harness([], { api: "responses", idleTimeoutMs: 30, timeoutMs: 5_000, maxAttempts: 3, fetch: slowFetch, log: (l) => lines.push(l) });
+
+    const reply = await port.complete(asks([{ role: "user", content: "hi" }]));
+
+    expect(reply.content).toBe("slow but fine");
+    expect(calls).toBe(2);
+    expect(lines.some((l) => l.includes("attempt cap without a stream"))).toBe(true);
+  });
+
   it("without a stream and no silence limit set, only the attempt limit applies", async () => {
     const { port } = harness(["hang"], { api: "responses", timeoutMs: 40, maxAttempts: 1 });
 
@@ -1000,6 +1021,21 @@ describe("AU-HANG round 6", () => {
     expect(err.kind).toBe("rate_limit");
     const plan = planRetry({ delays: [30_000, 600_000], failed: 0, kind: err.kind, quota: err.quota, unknownQuotaFails: 0, nowMs: Date.now() });
     expect(plan.basis).toBe("schedule");
+  });
+
+  it("S-B: 'You have exceeded the rate limit for this model' is a rate limit on the normal schedule", async () => {
+    const body = { error: { message: "You have exceeded the rate limit for this model" } };
+    const { port } = harness([status(429, body), status(429, body), status(429, body), status(429, body), status(429, body), status(429, body)]);
+    const err = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+    expect(err.kind).toBe("rate_limit");
+    const plan = planRetry({ delays: [30_000, 600_000], failed: 0, kind: err.kind, quota: err.quota, unknownQuotaFails: 0, nowMs: Date.now() });
+    expect(plan.basis).toBe("schedule");
+  });
+
+  it("S-B: 'exceeded your usage limit' is out of credit", async () => {
+    const { port } = harness([status(429, { error: { message: "You have exceeded your usage limit" } })]);
+    const err = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+    expect(err.kind).toBe("out_of_credit");
   });
 
   it("S2: a 429 naming metadata.limitName is still out of credit", async () => {

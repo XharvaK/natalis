@@ -219,6 +219,9 @@ export function parseModel(value: unknown): ModelConfig {
   if (model.api === "responses" && model.stream === true) {
     throw new Error("model.stream is for the chat protocol only; leave it out when model.api is \"responses\".");
   }
+  // The main model sets idleTimeoutMs only with a stream. A backup without a stream inherits it as a first guess only: the
+  // first try is cut at idleTimeoutMs, and after one cut the next try gets the full timeoutMs (openai-compatible S-C), since
+  // without a stream a silence cannot be told from a long answer.
   if (model.idleTimeoutMs !== undefined && model.stream !== true) {
     throw new Error("model.idleTimeoutMs only works with model.stream true: without a stream, a silence cannot be told from a long answer.");
   }

@@ -185,7 +185,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
     const toolSignal = deadline === undefined ? signal : signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
     const context: ToolContext = { thread, turnId, nowMs: nowMs(), river, notebook, ...(toolSignal === undefined ? {} : { signal: toolSignal }) };
     try {
-      return await raceDeadline(tool.run(parsed.value, context), deadline);
+      return await raceDeadline(tool.run(parsed.value, context), deadline, tool.settles === true);
     } catch (err) {
       const message = messageOf(err);
       return { ok: false, summary: `The tool failed: ${message}`, refused: { code: "tool_error", reason: message } };
@@ -618,25 +618,41 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** The tool's result, or a failed receipt as soon as the turn's deadline aborts (the tool itself may keep running). */
-function raceDeadline(run: Promise<Receipt>, deadline: AbortSignal | undefined): Promise<Receipt> {
+/** How long a settling tool (a local notebook write) may still run after the deadline before its outcome is unknown. */
+export const SETTLE_CAP_MS = 10_000;
+
+/**
+ * The tool's result. When the turn's deadline aborts first: a settling tool is let finish (up to SETTLE_CAP_MS) and its
+ * real receipt is kept; any other tool gets an "outcome unknown" receipt at once, since it may still finish (a web POST
+ * whose socket is open), so the retry's "Already done" list tells her to check before doing it again.
+ */
+function raceDeadline(run: Promise<Receipt>, deadline: AbortSignal | undefined, settles = false): Promise<Receipt> {
   if (deadline === undefined) return run;
-  const stopped: Receipt = {
+  const unknown: Receipt = {
     ok: false,
-    summary: "The tool was stopped: the turn ran past its time limit.",
-    refused: { code: "tool_error", reason: "turn deadline" },
+    summary: "The turn ran past its time limit while this tool was still running, so it may still finish. Its outcome is unknown: check before doing it again.",
+    refused: { code: "outcome_unknown", reason: "turn deadline" },
   };
-  if (deadline.aborted) return Promise.resolve(stopped);
   return new Promise<Receipt>((resolve, reject) => {
-    const onAbort = (): void => resolve(stopped);
-    deadline.addEventListener("abort", onAbort, { once: true });
+    let cap: ReturnType<typeof setTimeout> | undefined;
+    const onAbort = (): void => {
+      if (!settles) {
+        resolve(unknown);
+        return;
+      }
+      cap = setTimeout(() => resolve(unknown), SETTLE_CAP_MS);
+    };
+    if (deadline.aborted) onAbort();
+    else deadline.addEventListener("abort", onAbort, { once: true });
     run.then(
       (receipt) => {
         deadline.removeEventListener("abort", onAbort);
+        clearTimeout(cap);
         resolve(receipt);
       },
       (err: unknown) => {
         deadline.removeEventListener("abort", onAbort);
+        clearTimeout(cap);
         reject(err);
       },
     );

@@ -38,7 +38,10 @@ export type ModelConfig = {
    * backup can answer. timeoutMs still bounds the whole call. Default false.
    */
   stream?: boolean;
-  /** With stream on: the longest silence before a call fails as a timeout. Default 120000. */
+  /**
+   * With stream on: the longest silence before a call fails as a timeout. Default 120000. A backup without a stream that
+   * inherits it uses it to cap its first try only; after a cut the next try gets the full timeoutMs.
+   */
   idleTimeoutMs?: number;
 };
 

@@ -30,3 +30,16 @@ describe("after Stopped., round 6", () => {
     expect(timer.hasRef()).toBe(false);
   });
 });
+
+describe("after Stopped., round 7 (N-C)", () => {
+  it("a loop that did not drain exits non-zero, with a warning", async () => {
+    const { armExitFailsafe, EXIT_NOT_DRAINED } = await import("./run.js");
+    expect(EXIT_NOT_DRAINED).not.toBe(0);
+    const codes: number[] = [];
+    const warnings: string[] = [];
+    armExitFailsafe(EXIT_NOT_DRAINED, 10, (code) => codes.push(code), (line) => warnings.push(line));
+    await new Promise((r) => setTimeout(r, 40));
+    expect(codes).toEqual([EXIT_NOT_DRAINED]);
+    expect(warnings).toEqual([expect.stringMatching(/^<4>\[natalis\] warning: the event loop did not drain 10 ms after stopping/)]);
+  });
+});

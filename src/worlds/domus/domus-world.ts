@@ -403,10 +403,10 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
         portrait: parsed.normalized.portrait, hasDay: parsed.normalized.day !== undefined,
       });
       const counts = listCountLine(requireDb(), attachmentSession(parsed.fields.attachment));
-      // An act the game refused twice in this session is not offered again (refused.ts).
+      // An act the game refused twice in this session is not offered again for 30 min (refused.ts).
       const shown = parsed.options === undefined
         ? parsed
-        : { ...parsed, options: withoutRefused(requireDb(), parsed.fields.attachment, optionsOf(parsed.options)) };
+        : { ...parsed, options: withoutRefused(requireDb(), parsed.fields.attachment, optionsOf(parsed.options), now) };
       deliver(unchanged === undefined
         ? observationEvent(shown, attachmentAt(now), attention, undefined, counts)
         : unchangedLookEvent(shown, thread, unchanged, attention.wake));

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planRetry, QUOTA_BACKOFF_CAP_MS, RESET_MARGIN_MS } from "./retry-plan.js";
+import { planRetry, QUOTA_BACKOFF_CAP_MS, RESET_MARGIN_MS, SHORT_RESET_PAD_MS } from "./retry-plan.js";
 
 const DELAYS = [30_000, 60_000, 120_000, 300_000, 600_000];
 const NOW = Date.UTC(2026, 9, 25, 20, 4, 58);
@@ -14,9 +14,9 @@ describe("planRetry", () => {
     expect(plan.reason).toContain("weekly limit");
   });
 
-  it("uses the reset for a rate limit too, and a reset already past waits only the margin", () => {
-    const plan = planRetry({ ...base, kind: "rate_limit", quota: { resetAtMs: NOW - 5_000 }, random: () => 0 });
-    expect(plan).toMatchObject({ basis: "reset", delayMs: RESET_MARGIN_MS });
+  it("uses the reset for a rate limit too, past the margin, when the reset is longer than the margin", () => {
+    const plan = planRetry({ ...base, kind: "rate_limit", quota: { resetAtMs: NOW + 10 * 60_000 }, random: () => 0 });
+    expect(plan).toMatchObject({ basis: "reset", delayMs: 10 * 60_000 + RESET_MARGIN_MS });
   });
 
   it("backs off 10, 20, 40, 80 min then every 2 h when a quota is spent and its reset is unknown", () => {
@@ -39,5 +39,24 @@ describe("planRetry round 6", () => {
   });
   it("N1: a reset beyond the Date range does not throw", () => {
     expect(() => planRetry({ ...base, kind: "out_of_credit", quota: { resetAtMs: 9e15 } })).not.toThrow();
+  });
+});
+
+describe("planRetry round 7: a short plain rate-limit reset", () => {
+  it("waits max(reset + 5 s, the schedule step), with no margin and no jitter", () => {
+    expect(SHORT_RESET_PAD_MS).toBe(5_000);
+    const first = planRetry({ ...base, failed: 0, kind: "rate_limit", quota: { resetAtMs: NOW + 50_000 }, random: () => 0.9 });
+    expect(first).toMatchObject({ basis: "reset", delayMs: 55_000 });
+    const scheduleWins = planRetry({ ...base, failed: 0, kind: "rate_limit", quota: { resetAtMs: NOW + 10_000 }, random: () => 0.9 });
+    expect(scheduleWins).toMatchObject({ delayMs: 30_000 });
+    const past = planRetry({ ...base, failed: 1, kind: "rate_limit", quota: { resetAtMs: NOW - 5_000 }, random: () => 0.9 });
+    expect(past.delayMs).toBe(60_000);
+  });
+
+  it("keeps the margin and jitter for a quota or a named limit, even with a short reset", () => {
+    const quota = planRetry({ ...base, kind: "out_of_credit", quota: { resetAtMs: NOW + 50_000 }, random: () => 0.5 });
+    expect(quota.delayMs).toBe(50_000 + RESET_MARGIN_MS + 30_000);
+    const named = planRetry({ ...base, kind: "rate_limit", quota: { limit: "5-hour", resetAtMs: NOW + 50_000 }, random: () => 0.5 });
+    expect(named.delayMs).toBe(50_000 + RESET_MARGIN_MS + 30_000);
   });
 });

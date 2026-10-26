@@ -16,6 +16,7 @@ type Args = Record<string, unknown>;
 type Checked<T> = { ok: true; value: T } | { ok: false; receipt: Receipt };
 
 export function notebookTools(): Tool[] {
+  // Notebook calls are local and short: after a turn deadline they are let finish, so a retry never repeats a write.
   return [
     readNote,
     writeNote,
@@ -25,7 +26,7 @@ export function notebookTools(): Tool[] {
     trashNote,
     recall,
     forget,
-  ];
+  ].map((tool) => ({ ...tool, settles: true }));
 }
 
 const readNote: Tool = {

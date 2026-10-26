@@ -52,11 +52,11 @@ function isRecord(value: unknown): value is Args {
 }
 
 /** The newest view of the game, when it is the attached session's; undefined when none is (a ref to a choice then cannot be used). */
-function viewOf(db: DatabaseSync, attached: string): View | undefined {
+function viewOf(db: DatabaseSync, attached: string, nowMs: number): View | undefined {
   const thread = gameThreadNow(db, attached);
   const newest = thread === undefined ? undefined : newestObservation(db, thread);
   if (!newest || !isAttachedView(newest.attachment, attached)) return undefined;
-  return { observationId: newest.observationId, options: withoutRefused(db, newest.attachment, optionsOf(newest.payload.options)) };
+  return { observationId: newest.observationId, options: withoutRefused(db, newest.attachment, optionsOf(newest.payload.options), nowMs) };
 }
 
 const NO_VIEW = "The newest view of the game does not show this choice, so you cannot name it now. Name a thing by its thing ref, or wait for the game's view.";
@@ -340,7 +340,7 @@ function runVerb(open: () => GameContext, def: VerbDef, args: Args, context: Too
   if (gate) return gate;
   const attached = game.attachedSession(game.nowMs()) as string;
   const nowMs = game.nowMs();
-  const view = viewOf(game.db, attached);
+  const view = viewOf(game.db, attached, nowMs);
   const planned = def.plan({ db: game.db, listed: listedSession(game.db, attached), view, args, nowMs, ownerMs: game.ownerMs() });
   if (isReceipt(planned)) return planned;
   if (args.knowingly !== true) {

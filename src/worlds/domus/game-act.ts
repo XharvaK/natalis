@@ -7,7 +7,7 @@ import type { Receipt, Tool, ToolContext } from "../../contracts.js";
 import { answerFor, isAnswerClaim, type AnswerClaim, type Found } from "./answers.js";
 import { actRequestedMeanwhile, PLAN_MORE, requestAct, SLOT_HELD_REFUSAL } from "./acts.js";
 import { findOption, labelOf, optionsOf, refsOf } from "./options.js";
-import { HIDE_AFTER_REFUSALS, withoutRefused } from "./refused.js";
+import { HIDE_AFTER_REFUSALS, HIDE_FOR_MS, withoutRefused } from "./refused.js";
 import { findListed, listedSession } from "./lists.js";
 import { gameThreadNow, isAttachedView, newestObservation, STALE_VIEW_CODE, STALE_VIEW_REASON } from "./store.js";
 import { probeAtLeast, staleRef } from "./tool-context.js";
@@ -177,11 +177,11 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
   // The refs come from a view of a helper session that is no longer attached: that game restarted, and its new view has not come.
   if (!isAttachedView(newest.attachment, attached)) return refused(STALE_VIEW_CODE, STALE_VIEW_REASON);
   const offered = optionsOf(newest.payload.options);
-  const options = withoutRefused(game.db, newest.attachment, offered);
+  const options = withoutRefused(game.db, newest.attachment, offered, game.nowMs());
   const refs = refsOf(options);
   const first = findOption(options, option);
   if (!first && findOption(offered, option)) {
-    return refused("refused_before", `The game refused ${option} ${HIDE_AFTER_REFUSALS} times in this game session, so it is not offered again until the game starts a new one. ${refsSentence(refs)}`);
+    return refused("refused_before", `The game refused ${option} ${HIDE_AFTER_REFUSALS} times lately in this game session, so it is not offered again for ${HIDE_FOR_MS / 60_000} minutes after the last refusal, or until the game starts a new session. ${refsSentence(refs)}`);
   }
   if (!first) {
     return refused("unknown_option", `${option} is not a choice in the newest view of this game. ${refsSentence(refs)}`);

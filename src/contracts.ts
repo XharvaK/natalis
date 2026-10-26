@@ -290,6 +290,11 @@ export type ToolContext = {
 
 export interface Tool {
   readonly spec: ToolSpec;
+  /**
+   * A short local write (the notebook): after the turn's deadline aborts, the loop lets it finish (up to a cap) and keeps
+   * its real receipt, so a retry never writes it twice. Any other tool still running then gets an "outcome unknown" receipt.
+   */
+  readonly settles?: boolean;
   /** `args` is already JSON-parsed; the tool validates its own fields and refuses with a receipt. */
   run(args: Record<string, unknown>, context: ToolContext): Promise<Receipt>;
 }
