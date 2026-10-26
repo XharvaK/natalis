@@ -69,6 +69,7 @@ const writeNote: Tool = {
         path: { type: "string", description: "Path of the note inside your notebook." },
         text: { type: "string", description: "The whole text of the note." },
         why: { type: "string", description: "Why you are writing it, in one short line." },
+        new_note: { type: "boolean", description: "True to make a new note even though similar notes exist." },
       },
       required: ["path", "text", "why"],
     },
@@ -82,8 +83,19 @@ const writeNote: Tool = {
     if (!text.ok) return text.receipt;
     const why = requireText(args, "why", "The reason");
     if (!why.ok) return why.receipt;
-    const full = capRefusal(path.value, context.notebook.read(path.value), text.value.length);
+    const existing = context.notebook.read(path.value);
+    const full = capRefusal(path.value, existing, text.value.length);
     if (full !== undefined) return full;
+    if (existing === null && args["new_note"] !== true) {
+      const near = nearbyNotes(context.notebook, path.value, text.value);
+      if (near.length > 0) {
+        return refuse(
+          "nearby_notes",
+          `Similar notes exist, so nothing was written yet: ${near.join(", ")}.`,
+          `Before making ${path.value}, see these notes that look near it: ${near.join(", ")}. Update one of them, or write again with new_note: true to make the new note.`,
+        );
+      }
+    }
     return guarded(async () => {
       await context.notebook.write(path.value, text.value, why.value, authorOf(context));
       return { ok: true, summary: `Wrote ${path.value}.`, data: { path: path.value, chars: text.value.length } };
@@ -380,6 +392,30 @@ function authorOf(context: ToolContext): string {
 }
 
 /** The refusal for a note only the body may change, or undefined when the Lar may change it. */
+const NEARBY_LIMIT = 5;
+
+function wordsOf(text: string): Set<string> {
+  return new Set([...text.toLowerCase().matchAll(/\p{L}{4,}/gu)].map((m) => m[0]));
+}
+
+function stemOf(path: string): string {
+  return (path.split("/").pop() ?? path).replace(/\.[^.]*$/, "");
+}
+
+/** Notes that share a word (4+ letters) with a new note's file name or first line. Not README files, not trash. */
+export function nearbyNotes(notebook: Notebook, path: string, text: string): string[] {
+  const words = new Set([...wordsOf(stemOf(path)), ...wordsOf(text.split("\n")[0] ?? "")]);
+  if (words.size === 0) return [];
+  const near: string[] = [];
+  for (const entry of notebook.list()) {
+    if (entry.path === path || entry.path.startsWith("trash/") || stemOf(entry.path) === "README") continue;
+    const theirs = new Set([...wordsOf(stemOf(entry.path)), ...wordsOf(entry.firstLine)]);
+    if ([...words].some((word) => theirs.has(word))) near.push(entry.path);
+    if (near.length >= NEARBY_LIMIT) break;
+  }
+  return near;
+}
+
 /**
  * Size caps on the core self notes that are always in her context. A change that would make one longer than its cap is
  * refused; a change that leaves it no longer is allowed, so a note already over the cap can still be trimmed.

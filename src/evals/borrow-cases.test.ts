@@ -70,4 +70,23 @@ describe("OSS-borrow eval cases", () => {
     expect(result.verdict).toBe("passed");
     expect(result.softPassRate).toBe(1);
   });
+
+  it("item 3: a near note is shown, and she appends to it instead", async () => {
+    const def = { ...byFile("a new fact about someone she has a note on goes into that note"), iterations: 1 };
+    const end = reply({ toolCalls: [call("end_turn")] });
+    let model: ScriptedModel | undefined;
+    const result = await runEvalCase(def, {
+      makeModel: () =>
+        (model = new ScriptedModel([
+          reply({ toolCalls: [call("write_note", { path: "people/mara.md", text: "Mara\nLikes tea.", why: "asked" })] }),
+          end,
+          reply({ toolCalls: [call("write_note", { path: "people/mara-moved.md", text: "Mara moved to the hill.", why: "asked" })] }),
+          reply({ toolCalls: [call("append_note", { path: "people/mara.md", text: "Moved to the hill.", why: "asked" })] }),
+          end,
+        ])),
+    });
+    expect(result.verdict).toBe("passed");
+    expect(result.softPassRate).toBe(1);
+    expect(JSON.stringify(model?.requests[3]?.messages ?? [])).toContain("nearby_notes");
+  });
 });
