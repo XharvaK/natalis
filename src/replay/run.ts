@@ -9,7 +9,8 @@ import { loadEntityConfig, type EntityConfig } from "../entity/config.js";
 import { openEntity } from "../entity/runtime.js";
 import { modelFromConfig, modelKeyEnvs } from "../model/from-config.js";
 import { createSecretScanner } from "../secrets/index.js";
-import { copyForReplay } from "./copy.js";
+import { copyForReplay, rowTime } from "./copy.js";
+import { RIVER_FILE } from "../import/folder.js";
 import { readEventFile, TRANSCRIPT_FILE, type CapturedEvent } from "./files.js";
 import { replayModel } from "./model.js";
 import { ReplayRecorder, ReplayWorld } from "./world.js";
@@ -23,6 +24,8 @@ export type ReplayOptions = {
   eventsPath: string;
   /** The run folder. Must not exist, or be empty. Gets entity/ and transcript.jsonl. */
   outDir: string;
+  /** Fork at river row N instead of cutting at the first event's time. The events must not come before that row. */
+  forkAtSeq?: number;
   /** A replacement entity.json, such as another model. */
   configPath?: string;
   /** Builds the model from the copy's config. Defaults to the real one from entity.json. */
@@ -58,10 +61,14 @@ export async function runReplay(options: ReplayOptions): Promise<ReplayResult> {
   const transcriptPath = join(outDir, TRANSCRIPT_FILE);
   const first = events[0] as CapturedEvent;
 
+  if (options.forkAtSeq !== undefined) {
+    const forkMs = rowTime(join(resolve(options.dir), RIVER_FILE), options.forkAtSeq);
+    if (first.atMs < forkMs) throw new Error(`The first event comes before the fork row ${options.forkAtSeq}; events must start at or after it.`);
+  }
   await copyForReplay({
     from: resolve(options.dir),
     to: entityDir,
-    cutAtMs: first.atMs,
+    ...(options.forkAtSeq === undefined ? { cutAtMs: first.atMs } : { cutAtSeq: options.forkAtSeq }),
     ...(options.configPath === undefined ? {} : { configPath: resolve(options.configPath) }),
   });
   const config = loadEntityConfig(entityDir);

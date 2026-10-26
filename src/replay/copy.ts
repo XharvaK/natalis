@@ -15,8 +15,13 @@ export type CopyOptions = {
   from: string;
   /** The new folder. Must not exist, or be empty. */
   to: string;
-  /** The replay's first event time. The copy keeps only what came before it. */
-  cutAtMs: number;
+  /** The replay's first event time. The copy keeps only what came before it. Give this or cutAtSeq, not both. */
+  cutAtMs?: number;
+  /**
+   * Fork at river row N: the copy keeps the rows before seq N, and the notebook and state are cut at row N's time.
+   * Only the copy changes; this is a replay, never a pause of the live Lar.
+   */
+  cutAtSeq?: number;
   /** A replacement entity.json. Validated; the original is not copied. */
   configPath?: string;
 };
@@ -33,6 +38,9 @@ export async function copyForReplay(options: CopyOptions): Promise<CopyResult> {
   if (replacement === undefined && !existsSync(join(from, ENTITY_FILE))) {
     throw new Error(`No ${ENTITY_FILE} in ${from}. Give --config with a model block to replay it.`);
   }
+  if (options.cutAtMs !== undefined && options.cutAtSeq !== undefined) throw new Error("Give a cut time or a fork row, not both.");
+  const cutAtMs = options.cutAtSeq === undefined ? options.cutAtMs : rowTime(join(from, RIVER_FILE), options.cutAtSeq);
+  if (cutAtMs === undefined) throw new Error("Give a cut time or a fork row.");
   prepareEmpty(options.to);
 
   // The river: a consistent copy through SQLite, never a file copy of a database that may be live.
@@ -43,13 +51,13 @@ export async function copyForReplay(options: CopyOptions): Promise<CopyResult> {
   } finally {
     source.close();
   }
-  const lastSeq = cutRiver(target, options.cutAtMs);
+  const lastSeq = options.cutAtSeq === undefined ? cutRiver(target, cutAtMs) : cutRiverAtSeq(target, options.cutAtSeq);
 
   // The notebook: a clone, reset to the last commit made before the cut.
-  const notebookCommit = await cloneNotebookAt(join(from, NOTEBOOK_DIR), join(options.to, NOTEBOOK_DIR), options.cutAtMs);
+  const notebookCommit = await cloneNotebookAt(join(from, NOTEBOOK_DIR), join(options.to, NOTEBOOK_DIR), cutAtMs);
 
   // The state file: cursors and asks cannot point past the cut.
-  writeState(join(from, STATE_FILE), join(options.to, STATE_FILE), target, lastSeq, options.cutAtMs);
+  writeState(join(from, STATE_FILE), join(options.to, STATE_FILE), target, lastSeq, cutAtMs);
 
   // The config: the original, or the replacement the replay was given.
   const configText =
@@ -59,16 +67,37 @@ export async function copyForReplay(options: CopyOptions): Promise<CopyResult> {
   return notebookCommit === undefined ? { lastSeq } : { lastSeq, notebookCommit };
 }
 
+/** The time of river row `seq` in a river file, read only. Throws when there is no such row. */
+export function rowTime(file: string, seq: number): number {
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const row = Number.isInteger(seq) && seq > 0 ? (db.prepare("SELECT at_ms FROM rows WHERE seq = ?").get(seq) as { at_ms: number } | undefined) : undefined;
+    if (row === undefined) throw new Error(`The river has no row ${seq} to fork at.`);
+    return Number(row.at_ms);
+  } finally {
+    db.close();
+  }
+}
+
+/** Removes river rows with seq N or later from the copy and returns the new last seq. */
+export function cutRiverAtSeq(file: string, seq: number): number {
+  return cutRiverWhere(file, "seq >= ?", seq);
+}
+
 /** Removes river rows at or after `cutAtMs` from the copy and returns the new last seq. Then vacuums the freed pages. */
 export function cutRiver(file: string, cutAtMs: number): number {
+  return cutRiverWhere(file, "at_ms >= ?", cutAtMs);
+}
+
+function cutRiverWhere(file: string, where: string, value: number): number {
   const db = new DatabaseSync(file);
   try {
     db.exec("PRAGMA secure_delete = ON");
     const hasFts = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'river_fts'").get() !== undefined;
     db.exec("BEGIN IMMEDIATE");
     try {
-      if (hasFts) db.prepare("DELETE FROM river_fts WHERE rowid IN (SELECT seq FROM rows WHERE at_ms >= ?)").run(cutAtMs);
-      db.prepare("DELETE FROM rows WHERE at_ms >= ?").run(cutAtMs);
+      if (hasFts) db.prepare(`DELETE FROM river_fts WHERE rowid IN (SELECT seq FROM rows WHERE ${where})`).run(value);
+      db.prepare(`DELETE FROM rows WHERE ${where}`).run(value);
       db.exec("COMMIT");
     } catch (err) {
       db.exec("ROLLBACK");
