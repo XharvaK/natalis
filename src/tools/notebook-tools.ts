@@ -20,9 +20,9 @@ export function notebookTools(): Tool[] {
   // Notebook calls are local and short: after a turn deadline they are let finish, so a retry never repeats a write.
   return [
     readNote,
-    writeNote,
-    editNote,
-    appendNote,
+    capLocked(writeNote),
+    capLocked(editNote),
+    capLocked(appendNote),
     listNotes,
     trashNote,
     recall,
@@ -438,6 +438,23 @@ export function charCount(text: string): number {
 function capOf(path: string): number | undefined {
   const key = (notebookPathOf(path) ?? path).toLowerCase();
   return Object.hasOwn(CORE_NOTE_CAPS, key) ? CORE_NOTE_CAPS[key] : undefined;
+}
+
+// One change at a time to a capped note: the size check and the write it allows run as one step, so two turns cannot
+// both pass the check against the same length (NIT-1). Other paths are not held.
+let capTail: Promise<unknown> = Promise.resolve();
+
+function capLocked(tool: Tool): Tool {
+  return {
+    spec: tool.spec,
+    run(args, context) {
+      const path = typeof args["path"] === "string" ? args["path"].trim() : "";
+      if (capOf(path) === undefined) return tool.run(args, context);
+      const run = capTail.then(() => tool.run(args, context));
+      capTail = run.catch(() => undefined);
+      return run;
+    },
+  };
 }
 
 /** A case variant of a capped path is another file on some hosts and the same file on others: refused, never guessed. */
