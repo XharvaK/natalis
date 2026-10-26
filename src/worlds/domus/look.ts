@@ -22,6 +22,8 @@ export function gameLookTool(open: () => LookContext): Tool {
   return {
     spec: {
       name: "game_look",
+      // SHOULD-1: a request to the game (look_asks, owed look), safe to repeat: retried, stubbed in a dry run.
+      effect: "idempotent",
       // Q-j (the User, 2026-10-12): the summoner's stop refuses acts, not reads; this one only reads the game.
       safeWhenStopped: true,
       description:

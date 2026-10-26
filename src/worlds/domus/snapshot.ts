@@ -171,6 +171,8 @@ export function gameSnapshotTool(open: () => SnapshotContext): Tool {
   return {
     spec: {
       name: "game_snapshot",
+      // SHOULD-1: a request for a picture, one open at a time, safe to repeat: retried, stubbed in a dry run.
+      effect: "idempotent",
       // Q-j (the User, 2026-10-12): the summoner's stop refuses acts, not reads; this one only reads the game.
       safeWhenStopped: true,
       description:

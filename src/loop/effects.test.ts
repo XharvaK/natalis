@@ -69,9 +69,9 @@ describe("tool effects", () => {
 
 describe("dry run", () => {
   it("runs reads, stubs writes with a typed receipt marked stubbed, and still ends the turn", async () => {
-    const read = counting("peek", "read");
+    const read = counting("recall", undefined);
     const write = counting("poke", undefined);
-    const { result, rows } = await turn([read.tool, write.tool], ["peek", "poke"], { dryRun: true });
+    const { result, rows } = await turn([read.tool, write.tool], ["recall", "poke"], { dryRun: true });
     expect(read.runs()).toBe(1);
     expect(write.runs()).toBe(0);
     expect(result.endedBy).toBe("end_turn");
@@ -90,11 +90,11 @@ describe("dry run", () => {
 
 describe("read retry", () => {
   it("retries a read that throws, up to 3 runs, and notes each retry in the river", async () => {
-    const read = counting("peek", "read", 2);
-    const { result, rows } = await turn([read.tool], ["peek"]);
+    const read = counting("recall", undefined, 2);
+    const { result, rows } = await turn([read.tool], ["recall"]);
     expect(read.runs()).toBe(3);
-    expect(result.receipts.find((r) => r.tool === "peek")?.receipt.ok).toBe(true);
-    expect(rows.filter((r) => r.kind === "note" && r.data?.["retryOf"] === "peek")).toHaveLength(2);
+    expect(result.receipts.find((r) => r.tool === "recall")?.receipt.ok).toBe(true);
+    expect(rows.filter((r) => r.kind === "note" && r.data?.["retryOf"] === "recall")).toHaveLength(2);
   });
 
   it("never retries a write", async () => {
@@ -105,10 +105,10 @@ describe("read retry", () => {
   });
 
   it("gives up after 3 runs of a read that keeps failing", async () => {
-    const read = counting("peek", "read", 9);
-    const { result } = await turn([read.tool], ["peek"]);
+    const read = counting("recall", undefined, 9);
+    const { result } = await turn([read.tool], ["recall"]);
     expect(read.runs()).toBe(3);
-    expect(result.receipts.find((r) => r.tool === "peek")?.receipt.refused?.code).toBe("tool_error");
+    expect(result.receipts.find((r) => r.tool === "recall")?.receipt.refused?.code).toBe("tool_error");
   });
 });
 

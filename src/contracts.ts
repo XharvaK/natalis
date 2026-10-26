@@ -56,10 +56,11 @@ export type JsonSchema = Record<string, unknown>;
  * sent to the model; the runtime strips it from the spec it shows.
  */
 /**
- * `effect` is body-only too: "read" changes nothing outside the body's own bookkeeping, so a dry run runs it and a
- * transient failure is retried; "write" (the default when nothing is declared) is stubbed in a dry run and never
- * retried; "idempotent" may be retried but is still stubbed in a dry run. Model adapters send only name, description
- * and parameters.
+ * `effect` is body-only too. "read": changes nothing outside the body's own idempotent bookkeeping and asks nothing of
+ * any world; a dry run runs it and a transient failure is retried. Only tools on the read list (tools/effects.ts) are
+ * reads; a self-declared read off that list counts as a write. "idempotent": a request that is safe to repeat (for
+ * example asking the game for a look or a picture); retried, but stubbed in a dry run. "write" (the default when nothing
+ * is declared): stubbed in a dry run, never retried. Model adapters send only name, description and parameters.
  */
 export type ToolEffect = "read" | "write" | "idempotent";
 
@@ -289,6 +290,8 @@ export type Receipt = {
    * one (A1, 2026-10-26): with a full wake list, every turn would otherwise run to its ceiling.
    */
   letsTurnEnd?: boolean;
+  /** Body-only: a refusal from a transient failure. A read or idempotent tool's retryable refusal is retried like a throw. */
+  retryable?: boolean;
   /**
    * Pictures the model should see on its next call, once. The loop sends them and never writes them to the record
    * or back into the tool message.
