@@ -2990,6 +2990,27 @@ describe("a world with a model of its own", () => {
   });
 });
 
+describe("hooks on the Lar", () => {
+  it("H: a hook sees the turn start and end after they are recorded, and a throwing hook does not stop the turn", async () => {
+    const types: string[] = [];
+    const { entity, cli } = await open(new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]), {
+      hooks: [
+        { type: "*", hook: () => { throw new Error("bad hook"); } },
+        { type: "*", hook: (event) => { types.push(event.type); } },
+      ],
+    });
+    await entity.start();
+    cli.send("Hello.");
+    await entity.idle();
+    const ended = allRows(entity).some((row) => row.kind === "turn" && row.data?.["phase"] === "end" && row.data?.["endedBy"] === "end_turn");
+    await entity.stop();
+    expect(ended).toBe(true);
+    expect(types).toContain("turn.started");
+    expect(types).toContain("turn.completed");
+    expect(types).toContain("tool.called");
+  });
+});
+
 describe("smart wakes", () => {
   it("W-1: keeps an until text with the wake and shows it when the wake fires", async () => {
     await withClock(async (advance) => {
