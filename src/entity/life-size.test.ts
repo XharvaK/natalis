@@ -23,16 +23,17 @@ async function startWithLife(config: EntityConfig, life: string) {
   const entity = await openEntity({ dir: join(root, "lar"), config, model, worlds: [cli] });
   await entity.notebook.write("self/life.md", life, "test", "self");
   const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  let notes;
   try {
     await entity.start();
     cli.send("Hello.");
     await entity.idle();
+    notes = entity.river.read({ limit: 100_000 }).filter((r) => r.kind === "note" && r.data?.["bodyNote"] === "life_size");
   } finally {
     await entity.stop();
   }
   const lines = log.mock.calls.map((c) => String(c[0]));
   log.mockRestore();
-  const notes = entity.river.read({ limit: 100_000 }).filter((r) => r.kind === "note" && r.data?.["bodyNote"] === "life_size");
   return { lines, notes, entity, model };
 }
 

@@ -89,7 +89,7 @@ import {
 } from "./summoner.js";
 import { isStopOn, readStop } from "./stop.js";
 import { clockOf, firstDailyOccurrence, localMinuteOf, instantOfLocal, isWakeRepeat, nextOccurrence, parseAtIso, parseClock, WAKE_LIMIT, type WakeRepeat } from "./wake-schedule.js";
-import { DEFAULT_RHYTHM } from "./config.js";
+import { DEFAULT_LIFE_WARN_CHARS, DEFAULT_RHYTHM } from "./config.js";
 
 export const STATE_FILE = "state.json";
 /** The welcome notice the host may write into the entity's folder. Sent once, in the summoner's place. */
@@ -876,6 +876,7 @@ class Runtime implements Entity {
     this.tagLegacyRhythm();
     this.seedRhythm();
     this.noteStart();
+    this.warnLifeSize(true);
     this.stampAlive(true);
     for (const wake of this.state.wakes) this.armWake(wake);
     try {
@@ -1424,6 +1425,25 @@ class Runtime implements Entity {
     this.river.append({ thread: "self", kind: "note", source: "body", text, data: { bodyNote: "start" }, atMs: now });
   }
 
+  /**
+   * NIT-5: a size warning for self/life.md, which is uncapped and always in context. Past limits.lifeWarnChars (code
+   * points) the body writes one river note per run and, at start, one log line. The note is never trimmed or cut.
+   */
+  private lifeWarned = false;
+  private warnLifeSize(starting: boolean): void {
+    if (this.lifeWarned) return;
+    const text = this.notebook.read(LIFE_PATH);
+    if (text === null) return;
+    let chars = 0;
+    for (const _ of text) chars += 1;
+    const limit = this.config.limits?.lifeWarnChars ?? DEFAULT_LIFE_WARN_CHARS;
+    if (chars <= limit) return;
+    this.lifeWarned = true;
+    const line = `${LIFE_PATH} is ${chars} characters, past the warning size of ${limit}. It is always in context and is not cut; a very long one crowds out other sections.`;
+    this.river.append({ thread: "self", kind: "note", source: "body", text: line, data: { bodyNote: "life_size", chars, limit }, atMs: this.nowMs() });
+    if (starting) console.log(`natalis: ${line}`);
+  }
+
   /** Stamps the time the body knew it was running, at start and then every ALIVE_STAMP_MS; a start also marks it not stopped. */
   private stampAlive(starting: boolean): void {
     const now = this.nowMs();
@@ -1871,6 +1891,7 @@ class Runtime implements Entity {
     snapshot: number,
     thinking: Thinking,
   ): { system: LayoutPart[]; tail: LayoutPart[]; sizes: string } {
+    this.warnLifeSize(false);
     const wakes = this.state.wakes.map((wake) => ({ id: wake.id, atMs: wake.atMs, why: wake.why, repeat: wake.repeat, clock: wake.clock, scheduledIn: wake.scheduledIn }));
     // The slow sections stay the same from turn to turn, so they are the system text, and the provider can reuse them.
     // The nature is the default unless the Lar's folder has a nature.md: its text replaces the default, and an empty one leaves the section out.
