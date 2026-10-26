@@ -55,7 +55,15 @@ export type JsonSchema = Record<string, unknown>;
  * `safeWhenStopped` is body-only: it lets a world tool run while the owner's emergency stop is on. It is never
  * sent to the model; the runtime strips it from the spec it shows.
  */
-export type ToolSpec = { name: string; description: string; parameters: JsonSchema; safeWhenStopped?: boolean };
+/**
+ * `effect` is body-only too: "read" changes nothing outside the body's own bookkeeping, so a dry run runs it and a
+ * transient failure is retried; "write" (the default when nothing is declared) is stubbed in a dry run and never
+ * retried; "idempotent" may be retried but is still stubbed in a dry run. Model adapters send only name, description
+ * and parameters.
+ */
+export type ToolEffect = "read" | "write" | "idempotent";
+
+export type ToolSpec = { name: string; description: string; parameters: JsonSchema; safeWhenStopped?: boolean; effect?: ToolEffect };
 
 export type ModelRequest = {
   messages: ChatMessage[];
