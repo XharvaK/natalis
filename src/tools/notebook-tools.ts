@@ -417,10 +417,10 @@ export function nearbyNotes(notebook: Notebook, path: string, text: string): str
 }
 
 /**
- * Size caps on the core self notes that are always in her context. A change that would make one longer than its cap is
+ * Size cap on the core self note that is always in her context: character.md only (life.md has no cap, by the Owner's ruling). A change that would make one longer than its cap is
  * refused; a change that leaves it no longer is allowed, so a note already over the cap can still be trimmed.
  */
-export const CORE_NOTE_CAPS: Readonly<Record<string, number>> = { "self/character.md": 8000, "self/life.md": 8000 };
+export const CORE_NOTE_CAPS: Readonly<Record<string, number>> = { "self/character.md": 8000 };
 
 function capRefusal(path: string, before: string | null, after: number): Receipt | undefined {
   const cap = CORE_NOTE_CAPS[path];
