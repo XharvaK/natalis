@@ -119,6 +119,10 @@ name `owner` still works; give one, not both), `holds`, `limits`, `rhythm` and `
   headers the service asks for, such as a workspace id, a session id or a user agent; never the key, which always comes
   from `apiKeyEnv`. `effortMap` maps the entity's efforts to the values this model takes, e.g. `{ "xhigh": "max" }`;
   an effort it does not name goes as it is.
+  `incremental` (chat only, false by default) asks for the reply piece by piece, so a model that goes silent is noticed:
+  when nothing arrives for `idleTimeoutMs` (default 120000, and only allowed with `incremental` true) the call fails as a
+  timeout and the backup can answer. `timeoutMs` still bounds the whole call. A backup takes the main model's setting
+  unless it sets its own. The key's older name is still read; when both are given, `incremental` wins.
 - `model.fallback`: an optional backup model, on the same service and key unless it names its own. It answers only when the main model cannot: a rate
   limit, out of credit or over its quota (HTTP 402, or a 429 that names an insufficient quota), an unavailable or
   unreachable service, or no reply in time. A refused key or request is never sent to it. Its

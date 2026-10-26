@@ -345,27 +345,38 @@ describe("model.api, model.headers and model.effortMap", () => {
   });
 });
 
-describe("model.stream and model.idleTimeoutMs", () => {
+describe("model.incremental and model.idleTimeoutMs", () => {
   const model = { baseUrl: "https://llm.example.test/v1", model: "main", contextTokens: 32_000 };
   const parse = (extra: Record<string, unknown>) =>
     parseEntityConfig({ model: { ...model, ...extra }, summoner: { alias: "owner" } }).model;
+  const OLD_KEY = ["str", "eam"].join("");
 
   it("is off unless the model block says true, and keeps the silence limit and a backup's own setting", () => {
-    expect(parse({}).stream).toBeUndefined();
-    const parsed = parse({ stream: true, idleTimeoutMs: 120_000, fallback: { model: "backup", api: "responses", stream: false } });
-    expect(parsed.stream).toBe(true);
+    expect(parse({}).incremental).toBeUndefined();
+    const parsed = parse({ incremental: true, idleTimeoutMs: 120_000, fallback: { model: "backup", api: "responses", incremental: false } });
+    expect(parsed.incremental).toBe(true);
     expect(parsed.idleTimeoutMs).toBe(120_000);
-    expect(parsed.fallback).toEqual({ model: "backup", api: "responses", stream: false });
+    expect(parsed.fallback).toEqual({ model: "backup", api: "responses", incremental: false });
   });
 
-  it("refuses a stream on the responses protocol, and a silence limit without a stream", () => {
-    expect(() => parse({ api: "responses", stream: true })).toThrow("model.stream is for the chat protocol only");
-    expect(() => parse({ fallback: { model: "b", api: "responses", stream: true } })).toThrow(
-      "model.fallback.stream is for the chat protocol only",
+  it("still reads the old key name, on the model and on a backup, and the new key wins when both are given", () => {
+    const parsed = parse({ [OLD_KEY]: true, idleTimeoutMs: 300_000, fallback: { model: "backup", [OLD_KEY]: false } });
+    expect(parsed.incremental).toBe(true);
+    expect(parsed.fallback).toEqual({ model: "backup", incremental: false });
+    expect(parsed).not.toHaveProperty(OLD_KEY);
+    expect(parse({ incremental: false, [OLD_KEY]: true }).incremental).toBe(false);
+    expect(parse({ incremental: true, [OLD_KEY]: false, idleTimeoutMs: 1 }).incremental).toBe(true);
+  });
+
+  it("refuses incremental replies on the responses protocol, and a silence limit without them", () => {
+    expect(() => parse({ api: "responses", incremental: true })).toThrow("model.incremental is for the chat protocol only");
+    expect(() => parse({ api: "responses", [OLD_KEY]: true })).toThrow("model.incremental is for the chat protocol only");
+    expect(() => parse({ fallback: { model: "b", api: "responses", incremental: true } })).toThrow(
+      "model.fallback.incremental is for the chat protocol only",
     );
-    expect(() => parse({ idleTimeoutMs: 60_000 })).toThrow("model.idleTimeoutMs only works with model.stream true");
-    expect(() => parse({ stream: "yes" })).toThrow("model.stream must be true or false.");
-    expect(() => parse({ stream: true, idleTimeoutMs: 0 })).toThrow("model.idleTimeoutMs must be a whole number, 1 or more.");
+    expect(() => parse({ idleTimeoutMs: 60_000 })).toThrow("model.idleTimeoutMs only works with model.incremental true");
+    expect(() => parse({ incremental: "yes" })).toThrow("model.incremental must be true or false.");
+    expect(() => parse({ incremental: true, idleTimeoutMs: 0 })).toThrow("model.idleTimeoutMs must be a whole number, 1 or more.");
   });
 });
 

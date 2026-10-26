@@ -189,7 +189,7 @@ export function parseModel(value: unknown): ModelConfig {
   onlyKeys(
     block,
     ["baseUrl", "model", "apiKeyEnv", "contextTokens", "nativeTools", "effortParam", "timeoutMs", "vision", "cacheMarks", "fallback", "price",
-      "api", "headers", "effortMap", "stream", "idleTimeoutMs"],
+      "api", "headers", "effortMap", "incremental", "stream", "idleTimeoutMs"],
     "model",
   );
 
@@ -211,19 +211,20 @@ export function parseModel(value: unknown): ModelConfig {
   if (block["api"] !== undefined) model.api = apiOf(block["api"], "model.api");
   if (block["headers"] !== undefined) model.headers = headersOf(block["headers"], "model.headers");
   if (block["effortMap"] !== undefined) model.effortMap = effortMapOf(block["effortMap"], "model.effortMap");
-  if (block["stream"] !== undefined) model.stream = flagOf(block["stream"], "model.stream");
+  const incremental = incrementalOf(block, "model");
+  if (incremental !== undefined) model.incremental = incremental;
   if (block["idleTimeoutMs"] !== undefined) model.idleTimeoutMs = positiveInt(block["idleTimeoutMs"], "model.idleTimeoutMs");
   if (model.api === "responses" && model.cacheMarks === true) {
     throw new Error("model.cacheMarks is for the chat protocol only; leave it out when model.api is \"responses\".");
   }
-  if (model.api === "responses" && model.stream === true) {
-    throw new Error("model.stream is for the chat protocol only; leave it out when model.api is \"responses\".");
+  if (model.api === "responses" && model.incremental === true) {
+    throw new Error("model.incremental is for the chat protocol only; leave it out when model.api is \"responses\".");
   }
-  // The main model sets idleTimeoutMs only with a stream. A backup without a stream inherits it as a first guess only: the
-  // first try is cut at idleTimeoutMs, and after one cut the next try gets the full timeoutMs (openai-compatible S-C), since
-  // without a stream a silence cannot be told from a long answer.
-  if (model.idleTimeoutMs !== undefined && model.stream !== true) {
-    throw new Error("model.idleTimeoutMs only works with model.stream true: without a stream, a silence cannot be told from a long answer.");
+  // The main model sets idleTimeoutMs only with incremental replies. A backup without them inherits it as a first guess only:
+  // the first try is cut at idleTimeoutMs, and after one cut the next try gets the full timeoutMs (openai-compatible S-C),
+  // since without incremental replies a silence cannot be told from a long answer.
+  if (model.idleTimeoutMs !== undefined && model.incremental !== true) {
+    throw new Error("model.idleTimeoutMs only works with model.incremental true: without incremental replies, a silence cannot be told from a long answer.");
   }
   return model;
 }
@@ -237,7 +238,7 @@ function parseFallback(value: unknown, where: string): FallbackModelConfig {
   onlyKeys(
     block,
     ["model", "effortParam", "vision", "cacheMarks", "effort", "contextTokens", "price", "api", "effortMap",
-      "baseUrl", "apiKeyEnv", "headers", "stream", "fallback"],
+      "baseUrl", "apiKeyEnv", "headers", "incremental", "stream", "fallback"],
     where,
   );
   const fallback: FallbackModelConfig = { model: textOf(block["model"], `${where}.model`) };
@@ -255,15 +256,26 @@ function parseFallback(value: unknown, where: string): FallbackModelConfig {
   if (block["baseUrl"] !== undefined) fallback.baseUrl = baseUrlOf(block["baseUrl"], `${where}.baseUrl`);
   if (block["apiKeyEnv"] !== undefined) fallback.apiKeyEnv = keyEnvOf(block["apiKeyEnv"], `${where}.apiKeyEnv`);
   if (block["headers"] !== undefined) fallback.headers = headersOf(block["headers"], `${where}.headers`);
-  if (block["stream"] !== undefined) fallback.stream = flagOf(block["stream"], `${where}.stream`);
+  const incremental = incrementalOf(block, where);
+  if (incremental !== undefined) fallback.incremental = incremental;
   if (fallback.api === "responses" && fallback.cacheMarks === true) {
     throw new Error(`${where}.cacheMarks is for the chat protocol only; leave it out when ${where}.api is "responses".`);
   }
-  if (fallback.api === "responses" && fallback.stream === true) {
-    throw new Error(`${where}.stream is for the chat protocol only; leave it out when ${where}.api is "responses".`);
+  if (fallback.api === "responses" && fallback.incremental === true) {
+    throw new Error(`${where}.incremental is for the chat protocol only; leave it out when ${where}.api is "responses".`);
   }
   if (block["fallback"] !== undefined) fallback.fallback = parseFallback(block["fallback"], `${where}.fallback`);
   return fallback;
+}
+
+/**
+ * The incremental replies flag. "incremental" is the key; the old key from before the rename is still read so existing
+ * entity.json files keep working, and when both are given "incremental" wins.
+ */
+function incrementalOf(block: Record<string, unknown>, where: string): boolean | undefined {
+  if (block["incremental"] !== undefined) return flagOf(block["incremental"], `${where}.incremental`);
+  if (block["stream"] !== undefined) return flagOf(block["stream"], `${where}.incremental`);
+  return undefined;
 }
 
 function baseUrlOf(value: unknown, where: string): string {

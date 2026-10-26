@@ -34,12 +34,12 @@ export type ModelConfig = {
   /** Wire values for the entity's efforts when this model's levels differ, e.g. { "xhigh": "max" }. This model's only. */
   effortMap?: EffortMap;
   /**
-   * Ask for replies as a stream (chat protocol only), so a model that goes silent is noticed after idleTimeoutMs and its
-   * backup can answer. timeoutMs still bounds the whole call. Default false.
+   * Ask for replies piece by piece (chat protocol only), so a model that goes silent is noticed after idleTimeoutMs and its
+   * backup can answer. timeoutMs still bounds the whole call. Default false. The old key name is still read (config.ts).
    */
-  stream?: boolean;
+  incremental?: boolean;
   /**
-   * With stream on: the longest silence before a call fails as a timeout. Default 120000. A backup without a stream that
+   * With incremental on: the longest silence before a call fails as a timeout. Default 120000. A backup without it that
    * inherits it uses it to cap its first try only; after a cut the next try gets the full timeoutMs.
    */
   idleTimeoutMs?: number;
@@ -79,8 +79,8 @@ export type FallbackModelConfig = {
   apiKeyEnv?: string;
   /** The backup's request headers. With no baseUrl of its own, left out means the headers of the model above it. */
   headers?: Record<string, string>;
-  /** Streaming for the backup. Left out, the setting of the model above it (a responses model never streams). */
-  stream?: boolean;
+  /** Incremental replies for the backup. Left out, the setting of the model above it (never on the responses protocol). */
+  incremental?: boolean;
   /** A backup for this backup, tried when it cannot answer either. Its settings fall back to this backup's. */
   fallback?: FallbackModelConfig;
 };
@@ -111,7 +111,7 @@ export function modelFromConfig(
     api: config.api,
     headers: config.headers,
     effortMap: config.effortMap,
-    stream: config.stream,
+    stream: config.incremental,
     idleTimeoutMs: config.idleTimeoutMs,
   };
   const primary = withEmulated(createOpenAICompatiblePort(connection), config);
@@ -154,7 +154,7 @@ function backupConfig(above: ModelConfig, backup: FallbackModelConfig): ModelCon
   const api = backup.api ?? above.api;
   const cacheMarks = backup.cacheMarks ?? above.cacheMarks;
   const effortParam = backup.effortParam === undefined ? above.effortParam : backup.effortParam;
-  const stream = backup.stream ?? above.stream;
+  const incremental = backup.incremental ?? above.incremental;
   return {
     baseUrl: backup.baseUrl ?? above.baseUrl,
     model: backup.model,
@@ -165,7 +165,7 @@ function backupConfig(above: ModelConfig, backup: FallbackModelConfig): ModelCon
     ...(effortParam === undefined ? {} : { effortParam }),
     ...(above.timeoutMs === undefined ? {} : { timeoutMs: above.timeoutMs }),
     ...(above.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: above.idleTimeoutMs }),
-    ...(stream === undefined ? {} : { stream }),
+    ...(incremental === undefined ? {} : { incremental }),
     ...(cacheMarks === undefined ? {} : { cacheMarks }),
     ...(api === undefined ? {} : { api }),
     ...(backup.effortMap === undefined ? {} : { effortMap: backup.effortMap }),

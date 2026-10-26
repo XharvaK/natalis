@@ -398,10 +398,10 @@ describe("streaming down a chain of backups", () => {
   }
   const env = { [KEY_VAR]: KEY };
 
-  it("gives a chat backup the main model's stream, and never asks a responses backup for one", async () => {
+  it("gives a chat backup the main model's incremental setting, and never asks a responses backup for it", async () => {
     const sent = bodies(["test-model", "second"]);
     const port = modelFromConfig(
-      { ...config, stream: true, fallback: { model: "second", fallback: { model: "third", api: "responses" } } },
+      { ...config, incremental: true, fallback: { model: "second", fallback: { model: "third", api: "responses" } } },
       env,
     );
 
@@ -413,9 +413,9 @@ describe("streaming down a chain of backups", () => {
     expect(of("third")).not.toHaveProperty("stream");
   });
 
-  it("lets a backup turn the stream off for itself", async () => {
+  it("lets a backup turn incremental replies off for itself", async () => {
     const sent = bodies(["test-model"]);
-    const port = modelFromConfig({ ...config, stream: true, fallback: { model: "second", stream: false } }, env);
+    const port = modelFromConfig({ ...config, incremental: true, fallback: { model: "second", incremental: false } }, env);
 
     await port.complete(ask);
 
