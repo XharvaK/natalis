@@ -934,58 +934,96 @@ describe("what the Lar sends and what it is shown", () => {
     });
   });
 
-  it("refuses a self-wake of less than a minute, says why, and keeps no wake", async () => {
-    // The refused wake reopens the turn: end_turn's receipt says so, and the next reply sees it and ends the turn.
+  it("refuses a self-wake of less than a minute, says why, keeps no wake, and lets end_turn close the turn", async () => {
+    // A1 (Owner 2026-10-26): a refused schedule_wake does not hold end_turn open, so a full wake list cannot keep a turn
+    // running to its ceiling.
     const model = new ScriptedModel([
       reply({ toolCalls: [call("schedule_wake", { in_minutes: 0.5, why: "soon" }), call("end_turn")] }),
-      reply({ toolCalls: [call("end_turn")] }),
     ]);
     const { entity, cli } = await open(model);
     await entity.start();
     cli.send("Hello.");
     await entity.idle();
 
+    expect(model.requests).toHaveLength(1);
     const receipt = allRows(entity).find((row) => row.kind === "receipt" && row.data?.["tool"] === "schedule_wake");
     expect(receipt?.data).toMatchObject({ ok: false, refused: { code: "bad_arguments" } });
     expect(String((receipt?.data?.["refused"] as { reason: string } | undefined)?.reason)).toContain("1 minute");
+    const ending = allRows(entity).find((row) => row.kind === "receipt" && row.data?.["tool"] === "end_turn");
+    expect(ending?.data).toMatchObject({ ok: true });
     expect(readStateFile().wakes).toHaveLength(0);
   });
 
-  it("holds a self-wake to 15 minutes after 6 turns in a row woken only by her own wakes, and resets on a message", async () => {
+  it("holds every wake set in a turn her own wake woke to 15 minutes, and a message lets a quick wake through again", async () => {
     await withClock(async (advance) => {
       const again = (): ScriptStep => reply({ toolCalls: [call("schedule_wake", { in_minutes: 1, why: "again" }), call("end_turn")] });
-      const model = new ScriptedModel([again(), again(), again(), again(), again(), again(), again(), again(), again(), again()]);
+      const model = new ScriptedModel([again(), again(), again(), again()]);
       const { entity, cli } = await open(model, { stopPollMs: 1e9 });
       await entity.start();
       cli.send("Start a run of self-wakes.");
       await entity.idle();
-      // Six quick turns, each woken by the wake the turn before set one minute after itself.
-      for (let turn = 0; turn < 6; turn++) {
-        await advance(60_000);
-        await entity.idle();
-      }
-      expect(model.requests).toHaveLength(7);
+      // The wake set in the summoner's turn is a quick one.
+      await advance(60_000);
+      await entity.idle();
+      expect(model.requests).toHaveLength(2);
       const wakeReceipts = () => allRows(entity).filter((row) => row.kind === "receipt" && row.data?.["tool"] === "schedule_wake");
-      expect(wakeReceipts()).toHaveLength(7);
-      expect(wakeReceipts()[6]?.text).toContain("15 minutes");
-      expect(wakeReceipts()[5]?.text).not.toContain("15 minutes");
+      expect(wakeReceipts()[0]?.text).not.toContain("15 minutes");
+      expect(wakeReceipts()[1]?.text).toContain("15 minutes");
 
-      // The seventh wake is held: nothing fires for 14 minutes, and it fires at 15.
+      // The wake set in the self-woken turn is held: nothing fires for 14 minutes, and it fires at 15.
       await advance(14 * 60_000);
       await entity.idle();
-      expect(model.requests).toHaveLength(7);
+      expect(model.requests).toHaveLength(2);
       await advance(60_000);
       await entity.idle();
-      expect(model.requests).toHaveLength(8);
+      expect(model.requests).toHaveLength(3);
 
-      // A message from the summoner resets the run: the next wake is a quick one again.
+      // A message from the summoner: the wake set in its turn is a quick one again.
       cli.send("A new message.");
       await entity.idle();
-      expect(model.requests).toHaveLength(9);
+      expect(model.requests).toHaveLength(4);
+      expect(wakeReceipts()[3]?.text).not.toContain("15 minutes");
+    });
+  });
+
+  it("spaces the wakes a self-woken turn fans out 15 minutes apart, so her own wakes wake at most one turn per 15 minutes", async () => {
+    await withClock(async (advance) => {
+      const fan = reply({
+        toolCalls: [
+          call("schedule_wake", { in_minutes: 20, why: "a" }),
+          call("schedule_wake", { in_minutes: 21, why: "b" }),
+          call("schedule_wake", { in_minutes: 22, why: "c" }),
+          call("end_turn"),
+        ],
+      });
+      const model = new ScriptedModel([
+        reply({ toolCalls: [call("schedule_wake", { in_minutes: 1, why: "start" }), call("end_turn")] }),
+        fan,
+      ]);
+      const { entity, cli } = await open(model, { stopPollMs: 1e9 });
+      await entity.start();
+      cli.send("Go.");
+      await entity.idle();
       await advance(60_000);
       await entity.idle();
-      expect(model.requests).toHaveLength(10);
+      expect(model.requests).toHaveLength(2);
+
+      const times = (readStateFile().wakes as Array<{ atMs: number }>).map((wake) => wake.atMs).sort((x, y) => x - y);
+      expect(times).toHaveLength(3);
+      expect(times[1]! - times[0]!).toBeGreaterThanOrEqual(15 * 60_000);
+      expect(times[2]! - times[1]!).toBeGreaterThanOrEqual(15 * 60_000);
+      const spaced = allRows(entity).filter((row) => row.kind === "receipt" && row.data?.["tool"] === "schedule_wake" && row.text.includes("15 minutes"));
+      expect(spaced.length).toBeGreaterThanOrEqual(2);
     });
+  });
+
+  it("has a daily turn limit of 288 when entity.json sets none", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    cli.send("Hello.");
+    await entity.idle();
+    expect(userTextOf(model.requests[0])).toContain("Turns today: 1 of 288.");
   });
 
   it("shows the day's tokens on the now board, and the cost at the configured price", async () => {
