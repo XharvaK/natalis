@@ -8,6 +8,7 @@
 //   notebook/     the Lar's notebook: plain text, versioned with git
 //   state.json    cursors per thread, open asks, scheduled wakes, mood, written atomically after each change
 
+import { SAY_CHECKS } from "./say-checks.js";
 import { policyFor, policyRefusal } from "./tool-policy.js";
 import { CLI_WORLD_ID } from "../worlds/cli.js";
 import { createEventBus, observeRiver, type EventType, type Hook } from "../river/events.js";
@@ -2480,7 +2481,7 @@ class Runtime implements Entity {
   /**
    * The checks run in this order, and the first one that holds the words ends the say with a receipt: the emergency
    * stop (outward places only), secrets, the privacy list (outward places only), the world, and the honesty check (only
-   * when entity.json sets holds.honesty to true).
+   * when entity.json sets holds.honesty to true), then the extra checks in say-checks.ts (each only when holds.<name> is true).
    * Holds are checks on bytes, lists and the model's yes or no; the body never rewrites the words.
    */
   private async say(args: Args, context: ToolContext): Promise<Receipt> {
@@ -2518,6 +2519,8 @@ class Runtime implements Entity {
       const held = await this.honestyHold(text.value, context.thread);
       if (held !== undefined) return held;
     }
+    const extra = this.extraSayHold(text.value);
+    if (extra !== undefined) return extra;
     // The check may have taken a while, and the stop can turn on in that time: it is checked again before the words go.
     if (!ownerPlace && this.stopIsOn()) return refuse("stopped", STOPPED_TEXT, STOPPED_TEXT);
     // One say at a time per place: a caller that had to wait sees the claim the first one left, in the check below.
@@ -2875,6 +2878,22 @@ class Runtime implements Entity {
         reason: `This says "${verdict.claim}", but your record says "${verdict.record}". Nothing was sent. Rewrite it, or say it again with knowingly: true to send it as it is.`,
       },
     };
+  }
+
+  /** The extra say checks entity.json switches on (holds.<name>: true), in slot order. The first that holds ends the say. */
+  private extraSayHold(text: string): Receipt | undefined {
+    const holds = (this.config.holds ?? {}) as Record<string, boolean | undefined>;
+    for (const check of SAY_CHECKS) {
+      if (holds[check.name] !== true) continue;
+      const why = check.check(text, { summonerAlias: this.config.owner.alias, bodyPrefix: SUMMONER_PREFIX });
+      if (why === undefined) continue;
+      return refuse(
+        `held_${check.name}`,
+        `I held that back: ${why}, so nothing was sent.`,
+        `The ${check.name} check held this because ${why}. Nothing was sent. Say it in your own voice, as yourself.`,
+      );
+    }
+    return undefined;
   }
 
   /** The life record's text, or undefined when it is still the stub or empty. */

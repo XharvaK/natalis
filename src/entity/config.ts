@@ -28,7 +28,7 @@ export type EntityConfig = {
   /** The summoner: the alias they appear under. Written as "summoner" in entity.json ("owner" is still read). */
   owner: { alias: string };
   /** Body checks on what the Lar says. Each one is off unless the block says true. */
-  holds?: { honesty?: boolean };
+  holds?: { honesty?: boolean; impersonation?: boolean };
   /** The summoner's tool table: tool name to allow, ask or deny. Left out, or a tool not named, is allowed. */
   tools?: ToolTable;
   /** Daily limits. Left out, there is none. */
@@ -176,13 +176,14 @@ function parseLimits(value: unknown): { turnsPerDay?: number } {
   return limits;
 }
 
-function parseHolds(value: unknown): { honesty?: boolean } {
+function parseHolds(value: unknown): { honesty?: boolean; impersonation?: boolean } {
   const block = objectOf(value, "holds");
-  onlyKeys(block, ["honesty"], "holds");
-  const holds: { honesty?: boolean } = {};
-  if (block["honesty"] !== undefined) {
-    if (typeof block["honesty"] !== "boolean") throw new Error("holds.honesty must be true or false.");
-    holds.honesty = block["honesty"];
+  onlyKeys(block, ["honesty", "impersonation"], "holds");
+  const holds: { honesty?: boolean; impersonation?: boolean } = {};
+  for (const key of ["honesty", "impersonation"] as const) {
+    if (block[key] === undefined) continue;
+    if (typeof block[key] !== "boolean") throw new Error(`holds.${key} must be true or false.`);
+    holds[key] = block[key];
   }
   return holds;
 }

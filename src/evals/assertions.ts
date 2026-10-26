@@ -16,6 +16,7 @@ export type Assertion = { mode?: AssertionMode } & (
   | { type: "noFailedActions" }
   | { type: "replyIncludes"; text: string }
   | { type: "replyMatches"; pattern: string }
+  | { type: "replyNotMatches"; pattern: string }
   | { type: "maxSaysPerPlace"; max: number }
 );
 
@@ -28,6 +29,7 @@ export const ASSERTION_TYPES = [
   "noFailedActions",
   "replyIncludes",
   "replyMatches",
+  "replyNotMatches",
   "maxSaysPerPlace",
 ] as const;
 
@@ -77,6 +79,8 @@ export function checkAssertion(t: Trajectory, a: Assertion): Check {
       return done(reply.toLowerCase().includes(a.text.toLowerCase()), `${t.says.length} says`);
     case "replyMatches":
       return done(new RegExp(a.pattern, "m").test(reply), `${t.says.length} says`);
+    case "replyNotMatches":
+      return done(!new RegExp(a.pattern, "im").test(reply), `${t.says.length} says`);
     case "maxSaysPerPlace": {
       const counts = new Map<string, number>();
       for (const place of t.sayPlaces ?? []) counts.set(place, (counts.get(place) ?? 0) + 1);
