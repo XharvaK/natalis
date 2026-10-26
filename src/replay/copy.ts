@@ -41,6 +41,7 @@ export async function copyForReplay(options: CopyOptions): Promise<CopyResult> {
   if (options.cutAtMs !== undefined && options.cutAtSeq !== undefined) throw new Error("Give a cut time or a fork row, not both.");
   const cutAtMs = options.cutAtSeq === undefined ? options.cutAtMs : rowTime(join(from, RIVER_FILE), options.cutAtSeq);
   if (cutAtMs === undefined) throw new Error("Give a cut time or a fork row.");
+  if (options.cutAtSeq !== undefined) refuseLaterRows(join(from, RIVER_FILE), options.cutAtSeq, cutAtMs);
   prepareEmpty(options.to);
 
   // The river: a consistent copy through SQLite, never a file copy of a database that may be live.
@@ -74,6 +75,22 @@ export function rowTime(file: string, seq: number): number {
     const row = Number.isInteger(seq) && seq > 0 ? (db.prepare("SELECT at_ms FROM rows WHERE seq = ?").get(seq) as { at_ms: number } | undefined) : undefined;
     if (row === undefined) throw new Error(`The river has no row ${seq} to fork at.`);
     return Number(row.at_ms);
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * A fork keeps the rows before seq N and cuts the notebook at row N's time. A kept row dated after that time (imported
+ * or out of order) would sit in the copy beside a notebook from before it, so the fork is refused (NIT-3).
+ */
+function refuseLaterRows(file: string, seq: number, cutAtMs: number): void {
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const row = db.prepare("SELECT COUNT(*) AS n, MIN(seq) AS first FROM rows WHERE seq < ? AND at_ms > ?").get(seq, cutAtMs) as { n: number; first: number | null };
+    if (Number(row.n) > 0) {
+      throw new Error(`${row.n} row(s) before row ${seq} are dated after it (first: row ${row.first}), so a fork there would mix times. Fork at another row.`);
+    }
   } finally {
     db.close();
   }
