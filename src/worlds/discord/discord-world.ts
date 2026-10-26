@@ -634,7 +634,8 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     try {
       messages = await client.history(target.channelId, limit);
     } catch (error) {
-      return refused("history_failed", cleanError(error), `Could not read ${place}.`);
+      // NIT-1: marked retryable, so the turn loop retries it like a thrown read.
+      return { ...refused("history_failed", cleanError(error), `Could not read ${place}.`), retryable: true };
     }
     const lines = [...messages].reverse().map((message) => {
       const body = [

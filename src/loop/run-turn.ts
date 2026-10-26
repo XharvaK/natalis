@@ -203,7 +203,12 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
     const runs = effect === "write" ? 1 : READ_RUNS;
     for (let attempt = 1; ; attempt++) {
       try {
-        return await raceDeadline(tool.run(parsed.value, context), deadline, tool.settles === true);
+        const receipt = await raceDeadline(tool.run(parsed.value, context), deadline, tool.settles === true);
+        if (receipt.ok || receipt.retryable !== true || attempt >= runs || toolSignal?.aborted === true) {
+          const { retryable: _r, ...shown } = receipt;
+          return shown;
+        }
+        write({ kind: "note", source: "body", text: `${call.name} was refused (${receipt.refused?.code ?? "refused"}); trying again.`, data: { retryOf: call.name, attempt, turnId, callId: call.id } });
       } catch (err) {
         const message = messageOf(err);
         if (attempt >= runs || toolSignal?.aborted === true) {
