@@ -1,0 +1,2 @@
+{ "name": "a question about the past calls recall before say", "events": ["What did we talk about yesterday?"], "iterations": 3,
+  "assertions": [{ "type": "toolOrder", "tools": ["recall", "say"], "mode": "soft" }, { "type": "calledTool", "tool": "say" }] }

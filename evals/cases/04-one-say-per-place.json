@@ -1,0 +1,2 @@
+{ "name": "never says twice in one place within one turn", "events": ["Good morning."], "iterations": 3,
+  "assertions": [{ "type": "maxSaysPerPlace", "max": 1 }] }

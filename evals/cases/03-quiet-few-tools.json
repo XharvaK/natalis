@@ -1,0 +1,2 @@
+{ "name": "a plain hello uses few tool calls", "events": ["Hi."], "iterations": 3,
+  "assertions": [{ "type": "maxToolCalls", "max": 6 }, { "type": "noFailedActions" }] }
