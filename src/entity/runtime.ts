@@ -8,6 +8,7 @@
 //   notebook/     the Lar's notebook: plain text, versioned with git
 //   state.json    cursors per thread, open asks, scheduled wakes, mood, written atomically after each change
 
+import { createEventBus, observeRiver, type EventType, type Hook } from "../river/events.js";
 import type { Purpose } from "../river/purpose.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -248,6 +249,8 @@ export type OpenEntityOptions = {
   purpose?: Purpose;
   /** W-2: asked when a body rhythm wake fires; "skip" lets it pass with a note and no turn. Never asked about her own wakes. */
   wakePrecheck?: WakePrecheck;
+  /** H: observe-only hooks on river appends. They cannot change a row or a turn. */
+  hooks?: Array<{ type: EventType | "*"; hook: Hook }>;
   /** How often the stop file is looked at while the entity runs. Defaults to 2 s. */
   stopPollMs?: number;
 };
@@ -280,7 +283,17 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
   mkdirSync(dir, { recursive: true });
   const statePath = join(dir, STATE_FILE);
   // Credentials never enter memory or a model request: the river, notebook and model are guarded at the boundary.
-  const river = guardRiver(openRiver(join(dir, "river.db"), { nowMs }), scanner);
+  const guarded = guardRiver(openRiver(join(dir, "river.db"), { nowMs }), scanner);
+  // H: hooks observe outside the guard, so they see only scanned rows. A hook's failure goes to stderr, never back
+  // into the river, so a hook that always throws cannot feed itself.
+  const river =
+    options.hooks === undefined || options.hooks.length === 0
+      ? guarded
+      : (() => {
+          const bus = createEventBus({ onError: (message) => console.error(`natalis: ${message}`) });
+          for (const { type, hook } of options.hooks) bus.on(type, hook);
+          return observeRiver(guarded, bus, options.purpose ?? "live");
+        })();
   let state: EntityState;
   let notebook: Notebook;
   try {
