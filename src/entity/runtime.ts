@@ -2920,6 +2920,14 @@ class Runtime implements Entity {
     const mine = repeat !== undefined && isWakeRepeat(repeat) ? repeat : undefined;
     const tooClose = (at: number) => others.some((other) => wakeGap(at, mine, other.atMs, other.repeat) < WAKE_HOLD_MS);
     for (let step = 0; step < 7 * 24 * 60 && tooClose(atMs); step++) atMs += 60_000;
+    // N2: when no minute in the search keeps the spacing, nothing is saved and the receipt says so.
+    if (tooClose(atMs)) {
+      return {
+        ok: false,
+        summary: `No wake was set: there is no room ${WAKE_HOLD_MS / 60_000} minutes from your other wakes. Cancel one with cancel_wake to make room.`,
+        refused: { code: "no_room", reason: "no time keeps the spacing from her other wakes" },
+      };
+    }
     const held = atMs !== wanted;
 
     const zone = this.config.timeZone;
