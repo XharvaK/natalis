@@ -1,42 +1,64 @@
 # Natalis
 
-Natalis lets you give life to a digital entity: one with its own identity, memory, inner time and a place to be, running on
-the model you choose.
+Natalis gives life to a digital entity, called a Lar: one with its own identity, memory, inner time and a place to be,
+running on the model you choose. The model is the mind; the host is the body.
 
-This repository is at the start. The core is being built.
+Natalis runs today. It has a terminal chat, a Discord world, a Sims 4 world (Domus), backups, import and replay. Expect
+rough edges.
 
-## What a Natalis entity is
+## Quickstart
+
+Needs Node 22.13 or newer and a key for any OpenAI-compatible service (or a local server that needs no key).
+
+```sh
+git clone <repository url> natalis
+cd natalis
+npm ci
+npm run build
+```
+
+Make a Lar's folder. Flags you leave out are written as `FILL-ME`, and a Lar with a blank left does not start:
+
+```sh
+node dist/bin/natalis.js new --dir ~/lares/iris --summoner <your alias> \
+  --name Iris --time-zone Europe/Istanbul \
+  --base-url https://<service>/v1 --model <model name> --key-env IRIS_MODEL_KEY --context-tokens 128000
+```
+
+This writes `entity.json` and `DESIGN.md`, a form for designing the Lar (its nature, privacy list, contacts and welcome).
+Fill in the form and copy each answer into the file it names. Then check the folder; it writes nothing and prints no
+secrets:
+
+```sh
+node dist/bin/natalis.js check --dir ~/lares/iris
+```
+
+Put the key in the environment variable you named, never in a file in the repository, and talk to the Lar:
+
+```sh
+export IRIS_MODEL_KEY=...        # your key
+node dist/bin/natalis.js chat --dir ~/lares/iris
+```
+
+The Lar is born on its first start. To keep it living in Discord, add `discord.json` beside `entity.json` and use
+`natalis run --dir ~/lares/iris`. To run it as a systemd user service with daily backups, see
+[deploy/README.md](deploy/README.md). To stop all outward acts at once: `natalis stop --dir ~/lares/iris`.
+
+Tests: `npm test`. Type check: `npm run typecheck`.
+
+## What a Lar is
 
 - **Its own identity.** Values, interests and a voice that change only through experience it can trace.
-- **Its own memory.** What it remembers is stored; what it recalls is retrieved. It forgets honestly and never invents.
-- **Inner time.** It thinks between conversations and writes first only when it has a reason and permission.
-- **A presence.** It lives where you put it, starting with Discord.
+- **Its own memory.** Everything it lives goes into one append-only river; its notebook is plain text under git. It
+  forgets honestly and never invents.
+- **Inner time.** It can wake itself (once, daily or weekly) and writes first only when it has a reason and permission.
+- **A presence.** It lives where you put it: the terminal, Discord, or The Sims 4.
 - **Your own model.** You bring the key. Nothing goes to a service you did not choose.
 
-A persona card is not an entity. Natalis is for building the whole thing.
-
-## Chosen at birth
-
-When you create an entity, you pick a preset (Companion, Character, Colleague or Blank) and then change any switch you like:
-how honest it is about itself, how independent, whom it may write to first, whether you can read its inner journal, and its
-budgets. A short floor is not switchable: it always says it is an AI, points people to real help in a crisis, is for adults,
-keeps secrets out of its memory, treats outside text as data, and never uses feelings as leverage.
-
-The draft is in [docs/charter.md](docs/charter.md).
-
-## Plan
-
-The model is the mind; the host is the body. Natalis keeps only what no better model replaces (storage, secrets by
-reference, the creator's stop, forget and privacy list, the irreversible-act line, a loop ceiling, the floor duties) and
-leaves every judgment to the entity: what it notices, when it thinks, what it says and remembers.
-
-1. Core: one append-only river of everything the entity lives, its own notebook in plain text, and a tool loop over any
-   OpenAI-compatible model or local server.
-2. Discord as the first world, with parallel threads that share one self and a live board of what each is doing.
-3. An importer and a replay test, so an existing entity can move in and be shown to be at least as good.
-4. A sandbox of its own (shell, network, installs) and the web, with secrets it can use but never see.
-5. More worlds as plugins, starting with The Sims 4.
-6. Reflection while it sleeps, and a weekly review of the changes it proposes to itself.
+When you design a Lar you choose how honest it is about itself, how independent, whom it may write to first, whether you
+can read its inner journal, and its budgets. A short floor is not switchable: it always says it is an AI, points people
+to real help in a crisis, is for adults, keeps secrets out of its memory, treats outside text as data, and never uses
+feelings as leverage. The draft is in [docs/charter.md](docs/charter.md).
 
 ## Commands
 
@@ -50,11 +72,12 @@ Each takes `--dir <entity folder>` (the Lar's own folder) unless noted.
   welcome.md and the world files) and name what is wrong. It writes nothing; it never prints ids, tokens or private terms.
 - `chat`: talk with a Lar in the terminal.
 - `run`: keep a Lar living in its worlds (Discord) until it is stopped.
-- `stop`: the summoner's emergency stop; pauses outward acts. `--off` lifts it.
+- `stop`: the summoner's emergency stop; pauses outward acts (`--reason "<text>"` optional). It writes a file named
+  `STOP` in the Lar's folder. `--off` lifts it.
 - `forget`: erase river rows, or with `--query` every place the words live (note lines, the notebook's git history,
   trash/, files in the home that hold them, and the shelf's pictures that forgotten rows name), with a reason. It prints
   counts only. Older backups still hold the old text until they rotate out.
-- `ledger`: the turn ledger for a Lar (`natalis ledger <folder> [--days N]`, one day by default): counts only, one row per
+- `ledger`: the turn ledger for a Lar (`natalis ledger <folder> [--days N] [--cache]`, one day by default): counts only, one row per
   turn kept in the river's file, with no message text.
 - `import`: bring a seed bundle into a new Lar; prints the plan unless `--apply` is given.
 - `capture`: write one time window of a Lar's river for a replay.
@@ -68,12 +91,22 @@ Each takes `--dir <entity folder>` (the Lar's own folder) unless noted.
   `--key-env <NAME>`). The key is read from that environment variable and is never a flag value.
 - `proposals`: the weekly digest of what the Lar wrote under `proposals/` in its notebook (`--since <YYYY-MM-DD>`,
   seven days ago by default). It only reads the notebook's history, and every value the body holds is redacted.
+- `vault`: list the names in the Lar's vault and the host each is bound to, never the values. With
+  `--keep <name> --host <host> [--replace]` it keeps one value you type on standard input; it is never a flag value and is
+  never printed.
 
 To run a Lar as a service on a host, see [deploy/README.md](deploy/README.md).
 
 ## entity.json
 
-The file in the Lar's folder. Its blocks:
+The file in the Lar's folder. Top-level keys: `name`, `timeZone`, `model`, `effort`, `ceiling`, `summoner` (the older
+name `owner` still works; give one, not both), `holds`, `limits`, `rhythm` and `worldModels`.
+
+- `name` and `timeZone`: the Lar's name and its IANA zone (e.g. `"Europe/Istanbul"`). Times it sees are in that zone.
+- `effort`: `low`, `medium`, `high` or `xhigh`, sent to the model as its `effortParam` says.
+- `ceiling`: the loop limits per turn, `maxModelCalls` (default 24) and `maxToolCalls` (default 48).
+- `limits.turnsPerDay`: optional cap on turns per day. No cap unless written.
+- `rhythm`: local clock times (`"HH:MM"`) for daily wakes given once on the first start. Left out or `[]`, none.
 
 - `model`: the main model. `baseUrl` (http or https), `model` (its name), `contextTokens`, and optionally `apiKeyEnv`
   (the name of the environment variable holding the key, never the key), `nativeTools`, `effortParam`
@@ -111,6 +144,17 @@ The file in the Lar's folder. Its blocks:
   contradict the Lar's own life record. It is **off** unless `"holds": { "honesty": true }` is written.
 
 Unknown fields are refused, and each error names the field that is wrong.
+
+## When the model fails
+
+- Each request has a time limit (`timeoutMs`, default 180 s) and is tried up to 4 times, with short waits between.
+- A rate limit whose Retry-After is over 60 s is not waited out: the call fails at once so the backup can answer.
+  A spent quota or credit (HTTP 402, or a 429 that names a quota or usage limit) is not retried in the call either.
+- Once the main model fails in a turn, the rest of that turn goes to the backup. The next turn tries the main model first.
+- A whole turn may run 20 minutes; past that its model call is stopped and the turn ends as a model error.
+- A failed turn is tried again after 30 s, 1, 2 and 5 min, then every 10 min. When every model is out of quota and the
+  provider named when it resets, the Lar waits until then plus about 3 min; when it did not, it backs off from 10 min to
+  every 2 h. Each scheduled retry writes one `turn retry:` line to the log.
 
 ## License
 
