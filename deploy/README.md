@@ -64,10 +64,11 @@ its turns, on the same address and key, with the main model as its backup:
 entity.json. The honesty check (a second model call on each reply) is off unless the entity sets
 `"holds": { "honesty": true }`.
 
-On the chat protocol, `"stream": true` in the `model` block has the reply sent as it is written, and
-`"idleTimeoutMs": 120000` then ends a call when the model service sends nothing for that long, so a silent model
-goes to the backup in two minutes instead of waiting out `timeoutMs`. A backup on the chat protocol streams when the
-main model does, unless it says `"stream": false`; a backup on the responses protocol never streams.
+On the chat protocol, `"incremental": true` in the `model` block has the reply sent piece by piece as it is written,
+and `"idleTimeoutMs": 120000` then ends a call when the model service sends nothing for that long, so a silent model
+goes to the backup in two minutes instead of waiting out `timeoutMs`. A backup on the chat protocol does the same when
+the main model does, unless it says `"incremental": false`; a backup on the responses protocol never does. The key's
+older name is still read; when both are given, `incremental` wins.
 
 The `ceiling` block at the top level caps one turn: `"ceiling": { "maxModelCalls": 64, "maxToolCalls": 128 }`. Near the
 cap the Lar sees how many calls are left, and at the cap it gets one last call to keep a note. With
