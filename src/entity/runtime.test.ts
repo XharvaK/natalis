@@ -1002,7 +1002,8 @@ describe("what the Lar sends and what it is shown", () => {
       cli.send("A new message.");
       await entity.idle();
       expect(model.requests).toHaveLength(4);
-      expect(wakeReceipts()[3]?.text).not.toContain("15 minutes");
+      // SHOULD-1: it is not held from now, only spaced from her pending wake.
+      expect(wakeReceipts()[3]?.text).not.toContain("because your own wake woke this turn");
     });
   });
 
@@ -1038,6 +1039,21 @@ describe("what the Lar sends and what it is shown", () => {
       expect(wakeReceipts).toHaveLength(2);
       expect(wakeReceipts[1]?.text).toContain("15 minutes");
     });
+  });
+
+  it("loads a state file that still has the old selfWakeRun count, and does not keep it", async () => {
+    const first = await open(new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]));
+    await first.entity.start();
+    first.cli.send("Hello.");
+    await first.entity.idle();
+    await first.entity.stop();
+    const path = join(dir, "state.json");
+    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), selfWakeRun: 3 }), "utf8");
+    const again = await open(new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]));
+    await again.entity.start();
+    again.cli.send("Again.");
+    await again.entity.idle();
+    expect(JSON.parse(readFileSync(path, "utf8"))).not.toHaveProperty("selfWakeRun");
   });
 
   it("SHOULD-1: spaces every wake she sets 15 minutes from her other wakes, whatever turn set it, without holding the first", async () => {

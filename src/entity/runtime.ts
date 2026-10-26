@@ -373,8 +373,6 @@ type EntityState = {
    * notice for it. The episode ends when the list reads again.
    */
   privacyDamage?: { told: boolean };
-  /** Turns in a row woken only by her own wakes, with nothing from outside or the summoner between them. */
-  selfWakeRun?: number;
   /** Failed turns in a row, over every thread (the failure alert's count). Kept here so a restart does not reset it. */
   failedRun?: number;
   /** Set once the summoner was told of the current outage. Kept here so a restart during an outage does not tell again. */
@@ -539,11 +537,7 @@ function checkState(value: unknown): EntityState {
     if (typeof stoppedCleanly !== "boolean") bad("stoppedCleanly");
     state.stoppedCleanly = stoppedCleanly as boolean;
   }
-  const selfWakeRun = root["selfWakeRun"];
-  if (selfWakeRun !== undefined) {
-    if (typeof selfWakeRun !== "number" || !Number.isSafeInteger(selfWakeRun) || selfWakeRun < 0) bad("selfWakeRun");
-    state.selfWakeRun = selfWakeRun as number;
-  }
+  // "selfWakeRun" (before 2026-10-26) is no longer kept; an old state file with it still loads and drops it.
   const failedRun = root["failedRun"];
   if (failedRun !== undefined) {
     if (typeof failedRun !== "number" || !Number.isSafeInteger(failedRun) || failedRun < 0) bad("failedRun");
@@ -919,8 +913,6 @@ class Runtime implements Entity {
     const atMs = event.atMs ?? this.nowMs();
     const thread = event.thread ?? event.place;
     const actor = event.actor ?? (event.source === "owner" ? this.config.owner.alias : undefined);
-    // Words from outside or from the summoner end a run of turns woken only by her own wakes.
-    if (event.source === "owner" || event.source === "outside") this.state.selfWakeRun = 0;
     // Every thread with an event gets a cursor entry, so a restart knows where its events begin.
     this.threadState(thread);
     // A new event is a new chance for a thread the model kept rejecting as too large.
@@ -983,9 +975,9 @@ class Runtime implements Entity {
       this.releaseLimited();
       for (const thread of [...this.due]) {
         if (this.running.has(thread)) continue;
-        if (this.limitReached()) {
-          this.holdForLimit();
-          break;
+        if (!this.limitExempt(thread) && this.limitReached()) {
+          this.holdForLimit(thread);
+          continue;
         }
         this.due.delete(thread);
         this.cancelRetry(thread);
@@ -995,6 +987,8 @@ class Runtime implements Entity {
         });
         this.running.set(thread, run);
       }
+      // The summoner may first become known after a thread was held; the notice is once a day either way.
+      if (this.limited.size > 0) this.noticeLimit();
     }
     this.resolveIdle();
   }
@@ -1020,7 +1014,6 @@ class Runtime implements Entity {
       .read({ thread, kinds: ["event"], sinceSeq: seen, untilSeq: snapshot, limit: ALL_ROWS })
       .filter((row) => !this.hiddenHere(row, thread));
     if (fresh.length === 0) return;
-    this.noteWakeRun(fresh);
     // SHOULD-2 (Auditor, 2026-10-26): whether this turn was woken by her own wake is decided from its own rows and kept
     // for this turn; other threads' events cannot change it. Turns of one thread run one at a time.
     this.wokenByOwnWake.set(thread, fresh.some(isWakeRow) && !fresh.some(isOutsideRow));
@@ -1031,7 +1024,7 @@ class Runtime implements Entity {
     const cut = this.cutBefore(thread, seen, recent);
     const shown = new Set<number>([...recent, ...fresh].map((row) => row.seq));
     const done = this.doneBeforeCut(thread, seen);
-    this.countTurn(nowMs);
+    if (!this.limitExempt(thread)) this.countTurn(nowMs);
     // A world with a model of its own runs its turns on that model. A place is named for its world ("domus:...").
     const world = this.worldFor(thread)?.id ?? "";
     const worldModel = this.worldModels[world];
@@ -1335,16 +1328,6 @@ class Runtime implements Entity {
     });
   }
 
-  /**
-   * Counts the turns in a row woken only by the Lar's own wakes. A turn that its own wakes woke, and nothing from outside
-   * or the summoner, adds one; any other turn starts the count again at zero. A retried turn counts again, which only
-   * makes the limit come sooner for a turn that keeps failing.
-   */
-  private noteWakeRun(fresh: RiverRow[]): void {
-    const woken = fresh.some(isWakeRow) && !fresh.some(isOutsideRow);
-    this.state.selfWakeRun = woken ? (this.state.selfWakeRun ?? 0) + 1 : 0;
-  }
-
   private cancelRetry(thread: string): void {
     const timer = this.retries.get(thread);
     if (timer !== undefined) {
@@ -1513,14 +1496,18 @@ class Runtime implements Entity {
     this.limited.clear();
   }
 
-  /** Holds every queued thread that is not running until the next local day, and tells the summoner once a day. */
-  private holdForLimit(): void {
-    const waiting = [...this.due].filter((thread) => !this.running.has(thread));
-    if (waiting.length === 0) return;
-    for (const thread of waiting) {
-      this.due.delete(thread);
-      this.limited.add(thread);
-    }
+  /**
+   * SHOULD-3 (Owner 2026-10-26): the summoner's own places and the game never wait for the daily limit and do not count
+   * toward it. The per-turn ceiling still bounds each of their turns.
+   */
+  private limitExempt(thread: string): boolean {
+    return this.isOwnerPlace(thread) || this.worldFor(thread)?.id === "domus";
+  }
+
+  /** Holds one queued thread until the next local day, and tells the summoner once a day. */
+  private holdForLimit(thread: string): void {
+    this.due.delete(thread);
+    this.limited.add(thread);
     this.noticeLimit();
     this.armLimitTimer();
   }
@@ -1536,22 +1523,19 @@ class Runtime implements Entity {
     }, msUntilNextDay(this.nowMs(), this.config.timeZone));
   }
 
-  /** Each place with a waiting summoner message is told once a day that the Lar will see it after midnight. */
+  /** The summoner's own place is told once a day that her other turns wait (its own messages never do). */
   private noticeLimit(): void {
-    // Only the summoner's own places are told, and no notice goes out while the emergency stop is on.
+    // No notice goes out while the emergency stop is on.
     if (this.stopIsOn()) return;
     const day = this.dayOf(this.nowMs());
     const notices = this.state.limitNotices;
     const current: { day: string; places: string[] } =
       notices !== undefined && notices.day === day ? notices : { day, places: [] };
-    const told = new Set(current.places);
-    const places = [...new Set(this.state.asks.map((ask) => ask.place))].filter(
-      (place) => this.isOwnerPlace(place) && !told.has(place),
-    );
-    if (places.length === 0) return;
-    this.state.limitNotices = { day, places: [...current.places, ...places] };
+    const place = this.state.summonerPlace;
+    if (place === undefined || current.places.includes(place)) return;
+    this.state.limitNotices = { day, places: [...current.places, place] };
     this.saveState();
-    for (const place of places) this.queueOutbox(() => this.sayLimit(place));
+    this.queueOutbox(() => this.sayLimit(place));
   }
 
   private async sayLimit(place: string): Promise<void> {
@@ -1561,7 +1545,7 @@ class Runtime implements Entity {
     const turns = limit === 1 ? "turn" : "turns";
     await this.sayTo(
       place,
-      `${SUMMONER_PREFIX}Your Lar has reached today's limit of ${limit} ${turns} and will see this after midnight (${zone}).`,
+      `${SUMMONER_PREFIX}Your Lar has reached today's limit of ${limit} ${turns} for wakes, contacts and rooms; those wait until after midnight (${zone}). Your own messages and the game still reach it.`,
     );
   }
 
@@ -1667,7 +1651,6 @@ class Runtime implements Entity {
         this.state.proposals = next;
       },
       record: (text) => {
-        this.state.selfWakeRun = 0;
         this.river.append({
           thread: "self",
           kind: "event",
@@ -2895,18 +2878,17 @@ class Runtime implements Entity {
       );
     }
 
-    // The hold: a wake set in a turn her own wake woke is held to WAKE_HOLD_MS from now, and spaced WAKE_HOLD_MS from
-    // every other wake set from this thread, so her own wakes wake at most one turn per WAKE_HOLD_MS from it.
+    // The hold (Owner 2026-10-26): a wake set in a turn her own wake woke is held to WAKE_HOLD_MS from now. Every wake
+    // she sets, from any turn, is spaced WAKE_HOLD_MS from all her other scheduled wakes (they all fire into "self").
+    // The daily rhythm is the body's, not hers, and game events are not wakes, so neither is counted.
     const wanted = atMs;
-    if (this.wokenByOwnWake.get(context.thread) === true) {
-      atMs = Math.max(atMs, this.nowMs() + WAKE_HOLD_MS);
-      const others = this.state.wakes
-        .filter((item) => item.scheduledIn === context.thread)
-        .map((item) => item.atMs)
-        .sort((x, y) => x - y);
-      for (const other of others) {
-        if (Math.abs(other - atMs) < WAKE_HOLD_MS) atMs = other + WAKE_HOLD_MS;
-      }
+    if (this.wokenByOwnWake.get(context.thread) === true) atMs = Math.max(atMs, this.nowMs() + WAKE_HOLD_MS);
+    const others = this.state.wakes
+      .filter((item) => item.why !== RHYTHM_WHY)
+      .map((item) => item.atMs)
+      .sort((x, y) => x - y);
+    for (const other of others) {
+      if (Math.abs(other - atMs) < WAKE_HOLD_MS) atMs = other + WAKE_HOLD_MS;
     }
     const held = atMs !== wanted;
 
@@ -2922,7 +2904,7 @@ class Runtime implements Entity {
     this.armWake(wake);
     const rhythm = wake.repeat === undefined || wake.clock === undefined ? "" : `, ${wake.repeat} at ${wake.clock}`;
     const hold = held
-      ? `, held to ${WAKE_HOLD_MS / 60_000} minutes from now and from your other wakes set here, because your own wake woke this turn`
+      ? `, moved to keep ${WAKE_HOLD_MS / 60_000} minutes from your other wakes${this.wokenByOwnWake.get(context.thread) === true ? " and from now, because your own wake woke this turn" : ""}`
       : "";
     return {
       ok: true,
