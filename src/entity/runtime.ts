@@ -363,6 +363,8 @@ type EntityState = {
   actsSeenSeq: number;
   /** Set once the body has given the Lar its daily rhythm of wakes (its first start). Never given again. */
   rhythmGiven?: boolean;
+  /** N1: set once the rhythm wakes carry the rhythm flag (seeded with it, or tagged by the one-time migration). */
+  rhythmTagged?: boolean;
   /** The last time the body knew it was running: stamped at start, every ALIVE_STAMP_MS while running, and at a stop. */
   aliveMs?: number;
   /** True when the body last ended with a stop of its own; false while it runs, so a crash leaves it false. */
@@ -528,6 +530,11 @@ function checkState(value: unknown): EntityState {
   if (rhythmGiven !== undefined) {
     if (typeof rhythmGiven !== "boolean") bad("rhythmGiven");
     state.rhythmGiven = rhythmGiven as boolean;
+  }
+  const rhythmTagged = root["rhythmTagged"];
+  if (rhythmTagged !== undefined) {
+    if (typeof rhythmTagged !== "boolean") bad("rhythmTagged");
+    state.rhythmTagged = rhythmTagged as boolean;
   }
   const aliveMs = root["aliveMs"];
   if (aliveMs !== undefined) {
@@ -813,6 +820,7 @@ class Runtime implements Entity {
       this.stampAlive(false);
     }, this.stopPollMs);
     this.privacyNow();
+    this.tagLegacyRhythm();
     this.seedRhythm();
     this.noteStart();
     this.stampAlive(true);
@@ -1385,6 +1393,25 @@ class Runtime implements Entity {
    * them cancelled; a Lar whose state predates the flag gets them on its next start. Wakes past the limit are not made,
    * and a body note says how many.
    */
+  /**
+   * N1: a Lar given its rhythm before the rhythm flag existed holds rhythm wakes without it. Once, when the state has no
+   * marker, the wakes that match the body's own rhythm exactly (its why, in "self", daily, at a configured time) are
+   * tagged. After the marker nothing is tagged again, so a wake she later sets with the same words stays counted.
+   */
+  private tagLegacyRhythm(): void {
+    if (this.state.rhythmTagged === true) return;
+    if (this.state.rhythmGiven === true) {
+      const times = new Set(this.config.rhythm ?? DEFAULT_RHYTHM);
+      for (const wake of this.state.wakes) {
+        if (wake.why === RHYTHM_WHY && wake.scheduledIn === "self" && wake.repeat === "daily" && wake.clock !== undefined && times.has(wake.clock)) {
+          wake.rhythm = true;
+        }
+      }
+      this.state.rhythmTagged = true;
+      this.saveState();
+    }
+  }
+
   private seedRhythm(): void {
     if (this.state.rhythmGiven === true) return;
     const times = this.config.rhythm ?? DEFAULT_RHYTHM;
@@ -1415,6 +1442,7 @@ class Runtime implements Entity {
       });
     }
     this.state.rhythmGiven = true;
+    this.state.rhythmTagged = true;
     this.saveState();
   }
 
