@@ -52,8 +52,11 @@ export function planRetry(input: RetryInput): RetryPlan {
   const margin = input.tuning?.marginMs ?? RESET_MARGIN_MS;
   // A plain rate limit (not a quota, no named limit) resets in seconds: the 3-min margin and jitter would only add delay.
   if (kind === "rate_limit" && !named && quota?.resetAtMs !== undefined && quota.resetAtMs - nowMs < margin) {
-    const delayMs = Math.max(Math.max(0, quota.resetAtMs - nowMs) + SHORT_RESET_PAD_MS, scheduleMs);
-    return { delayMs, basis: "reset", reason: `rate_limit${limit}, short provider reset, waiting ${delayMs} ms` };
+    const resetMs = Math.max(0, quota.resetAtMs - nowMs) + SHORT_RESET_PAD_MS;
+    if (scheduleMs >= resetMs) {
+      return { delayMs: scheduleMs, basis: "schedule", reason: `rate_limit, short provider reset, normal schedule step ${input.failed + 1}` };
+    }
+    return { delayMs: resetMs, basis: "reset", reason: `rate_limit, short provider reset, waiting ${resetMs} ms` };
   }
   if (quotaKind && quota?.resetAtMs !== undefined) {
     const jitter = Math.floor((input.random ?? Math.random)() * (input.tuning?.jitterMs ?? RESET_JITTER_MS));

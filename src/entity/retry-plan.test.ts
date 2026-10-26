@@ -48,7 +48,7 @@ describe("planRetry round 7: a short plain rate-limit reset", () => {
     const first = planRetry({ ...base, failed: 0, kind: "rate_limit", quota: { resetAtMs: NOW + 50_000 }, random: () => 0.9 });
     expect(first).toMatchObject({ basis: "reset", delayMs: 55_000 });
     const scheduleWins = planRetry({ ...base, failed: 0, kind: "rate_limit", quota: { resetAtMs: NOW + 10_000 }, random: () => 0.9 });
-    expect(scheduleWins).toMatchObject({ delayMs: 30_000 });
+    expect(scheduleWins).toMatchObject({ basis: "schedule", delayMs: 30_000 });
     const past = planRetry({ ...base, failed: 1, kind: "rate_limit", quota: { resetAtMs: NOW - 5_000 }, random: () => 0.9 });
     expect(past.delayMs).toBe(60_000);
   });
