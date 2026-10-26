@@ -252,6 +252,8 @@ function flagLines(portrait: Record_): string[] {
     // C2 (Owner 2026-10-26): the helper could not read her needs and/or moodlets; she is told, not shown them empty.
     [sensesWord(portrait.senses_unavailable) !== undefined,
       `Senses unavailable: your ${sensesWord(portrait.senses_unavailable)} could not be read from the game just now, so they are not shown. Do not guess them.`],
+    [Array.isArray(portrait.senses_partial) && portrait.senses_partial.includes("moodlets"),
+      "Senses partial: some of your moodlets could not be read from the game just now, so the list may be incomplete."],
     [portrait.building === true, "Build mode is on."],
     [portrait.fire_on_lot === true, "A fire is burning on the lot."],
     [portrait.user_plays_another === true, "Your summoner is playing another Sim of the household, so your acts are refused for now."],
