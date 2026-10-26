@@ -3115,11 +3115,20 @@ describe("turn purpose on the Lar", () => {
     return { turns, count: (readStateFile() as unknown as { turns?: { count: number } }).turns?.count ?? 0 };
   }
 
-  it("an eval Lar does not count its turns against the daily limit, and stamps eval on its turn rows", async () => {
-    const { turns, count } = await oneRoomTurn({ purpose: "eval" });
+  it("NIT-4: refuses to open an eval Lar with any world but the terminal, so eval cannot lift a live Lar's limit", async () => {
+    const room = emitter("fake");
+    await expect(open(new ScriptedModel([]), { purpose: "eval" }, [room.world])).rejects.toThrow(/eval/);
+  });
+
+  it("an eval Lar stamps eval on its turn rows", async () => {
+    const { entity, cli } = await open(new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]), { purpose: "eval" });
+    await entity.start();
+    cli.send("Hello.");
+    await entity.idle();
+    const turns = allRows(entity).filter((row) => row.kind === "turn");
+    await entity.stop();
     expect(turns.length).toBeGreaterThan(0);
     expect(turns.every((row) => row.data?.["purpose"] === "eval")).toBe(true);
-    expect(count).toBe(0);
   });
 
   it("a live Lar counts its room turn, and its rows read as live", async () => {

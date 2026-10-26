@@ -42,6 +42,7 @@ type Fake = {
   /** Pictures sent with a message: the channel, the name Discord gets, and the size. */
   uploads: Array<{ channelId: string; name: string; bytes: number }>;
   history: PlatformMessage[];
+  historyFailures?: number;
   /** Per send: null succeeds, an Error fails that call. Consumed in order. */
   sendScript: Array<Error | null>;
   loginError: Error | null;
@@ -100,6 +101,10 @@ function fakeClient(): Fake {
       fake.reactions.push({ channelId, messageId, emoji });
     },
     async history(channelId, limit) {
+      if (fake.historyFailures !== undefined && fake.historyFailures > 0) {
+        fake.historyFailures -= 1;
+        throw new Error("socket hang up");
+      }
       return fake.history.filter((message) => message.channelId === channelId).slice(0, limit);
     },
   };
@@ -581,6 +586,13 @@ describe("tools", () => {
     fake.reactError = new Error("Unknown Emoji");
     const receipt = await toolNamed(world, "react").run({ place: "discord:room:general", message_ref: "m1", emoji: "👍" });
     expect(receipt).toMatchObject({ ok: false, refused: { code: "react_failed", reason: "react_failed: Unknown Emoji" } });
+  });
+
+  it("NIT-1: a failed history read refuses with history_failed marked retryable", async () => {
+    const { world, fake } = await startWorld();
+    fake.historyFailures = 1;
+    const receipt = await toolNamed(world, "read_history").run({ place: "discord:room:general", limit: 5 });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "history_failed" }, retryable: true });
   });
 
   it("reads recent history oldest first, with aliases and refs", async () => {

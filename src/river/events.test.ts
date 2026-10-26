@@ -97,9 +97,31 @@ describe("JSONL exporter", () => {
       const river = observeRiver(new MemoryRiver({ nowMs: () => NOW }), bus, "eval");
       river.append({ thread: "dm:owner", kind: "say", source: "self", text: "private words", data: { x: "private data" } });
       const line = JSON.parse(readFileSync(path, "utf8").trim());
-      expect(Object.keys(line).sort()).toEqual(["atMs", "purpose", "seq", "thread", "type"]);
+      expect(Object.keys(line).sort()).toEqual(["atMs", "purpose", "seq", "type"]);
       expect(line.purpose).toBe("eval");
       expect(readFileSync(path, "utf8")).not.toContain("private");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("JSONL exporter threads (NIT-3)", () => {
+  it("omits thread names by default and hashes them on request, never the raw name", () => {
+    const dir = mkdtempSync(join(tmpdir(), "natalis-events-"));
+    try {
+      const plain = join(dir, "a.jsonl");
+      const hashed = join(dir, "b.jsonl");
+      const bus = createEventBus({ onError: () => {} });
+      bus.on("*", jsonlExporter(plain));
+      bus.on("*", jsonlExporter(hashed, { threads: "hash" }));
+      const river = observeRiver(new MemoryRiver({ nowMs: () => NOW }), bus, "live");
+      river.append({ thread: "discord:dm:mara", kind: "say", source: "self", text: "x" });
+      expect(readFileSync(plain, "utf8")).not.toContain("mara");
+      expect(JSON.parse(readFileSync(plain, "utf8"))).not.toHaveProperty("thread");
+      const line = JSON.parse(readFileSync(hashed, "utf8"));
+      expect(line.thread).toMatch(/^[0-9a-f]{12}$/);
+      expect(readFileSync(hashed, "utf8")).not.toContain("mara");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
