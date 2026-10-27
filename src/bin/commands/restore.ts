@@ -1,14 +1,17 @@
 // `natalis restore --from <backup folder> --dir <new entity folder>`: rebuilds a Lar from one backup. The backup's
-// manifest and every hash are checked before anything is written. The target folder must be missing or empty. The
-// notebook is cloned from its bundle, and the river and notebook are checked against the manifest before the new
-// folder is put in place. A restored Lar keeps the emergency stop the backup had (its state file says so), and gets a
-// note in its river with the backup's time. The env file that holds its keys is not
-// in the backup and is kept on the host beside the folder.
+// manifest and every hash are checked before anything is written. The target folder must be missing or empty, except
+// that it may hold today's grants.db: permissions are never restored from a backup, so a restore keeps the file that
+// holds the Owner's current grants and refusals, drops its unused once grants, and logs each drop. The notebook is
+// cloned from its bundle, and the river and notebook are checked against the manifest before the new folder is put in
+// place. A restored Lar keeps the emergency stop the backup had (its state file says so), and gets a note in its river
+// with the backup's time. The env file that holds its keys is not in the backup and is kept on the host beside the
+// folder.
 
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import { FOLDER_HASH_KEY, folderHash } from "../../entity/copy-guard.js";
+import { GRANTS_FILE, grantsPath, openGrants } from "../../entity/grants.js";
 import { acquireLarLock, LAR_LOCK_DATABASE_FILE, LAR_LOCK_INFO_FILE, type LarLock } from "../../entity/lar-lock.js";
 import { STATE_FILE } from "../../entity/runtime.js";
 import { writeStop } from "../../entity/stop.js";
@@ -115,6 +118,21 @@ export async function restoreEntity(options: RestoreOptions): Promise<RestoreRes
       // The checked folder moves into the locked Lar folder. Nothing is visible to a second process halfway.
       for (const entry of readdirSync(stage)) renameSync(join(stage, entry), join(dir, entry));
       rmdirSync(stage);
+      // Today's grants.db is never overwritten: a target may hold it, and a target without one starts empty. An
+      // unused once grant was given for a call that the restore did not keep, so it is dropped and logged.
+      const keptGrants = existsSync(grantsPath(dir));
+      const grants = openGrants(dir);
+      let dropped = 0;
+      try {
+        dropped = grants.dropUnusedOnce(Date.now()).length;
+      } finally {
+        grants.close();
+      }
+      say(
+        keptGrants
+          ? `Kept today's grants.db: dropped ${dropped} unused once grant(s).`
+          : "Started an empty grants.db: every ask tool asks again.",
+      );
       recordRestoredFolder(dir);
       noteRestore(dir, manifest.createdAt, stopWasOn);
       if (stopWasOn) say("Your summoner's emergency stop was on in the backup, so it is on in the restore.");
@@ -125,9 +143,13 @@ export async function restoreEntity(options: RestoreOptions): Promise<RestoreRes
     }
   } catch (err) {
     rmSync(stage, { recursive: true, force: true, maxRetries: 5 });
-    // The target was empty before this restore, so only what this attempt wrote is removed.
+    // The target was empty before this restore, except for a kept grants.db, so only what this attempt wrote is
+    // removed. The kept grants.db is today's permissions and is never deleted by a failed restore.
     if (existed) {
-      for (const entry of readdirSync(dir)) rmSync(join(dir, entry), { recursive: true, force: true });
+      for (const entry of readdirSync(dir)) {
+        if (entry === GRANTS_FILE || entry === `${GRANTS_FILE}-journal`) continue;
+        rmSync(join(dir, entry), { recursive: true, force: true });
+      }
     } else {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -180,14 +202,20 @@ function noteRestore(dir: string, createdAt: string, stopWasOn: boolean): void {
 }
 
 /**
- * The target must not exist yet, or exist as an empty folder. Anything else is refused, so nothing is overwritten.
- * The lock's own files are not the target's contents: they are a holder's, and a held lock is refused by acquiring.
+ * The target must not exist yet, or be empty except perhaps for today's grants.db. Anything else is refused, so no
+ * note, river or configuration is overwritten. The lock's own files are not the target's contents: they are a
+ * holder's, and a held lock is refused by acquiring.
  */
 function checkTarget(dir: string): void {
   if (!existsSync(dir)) return;
   if (!statSync(dir).isDirectory()) throw new Error(`${dir} is not a folder. Choose a new folder for the restore.`);
   const entries = readdirSync(dir).filter(
-    (name) => name !== LAR_LOCK_DATABASE_FILE && name !== `${LAR_LOCK_DATABASE_FILE}-journal` && name !== LAR_LOCK_INFO_FILE,
+    (name) =>
+      name !== LAR_LOCK_DATABASE_FILE &&
+      name !== `${LAR_LOCK_DATABASE_FILE}-journal` &&
+      name !== LAR_LOCK_INFO_FILE &&
+      name !== GRANTS_FILE &&
+      name !== `${GRANTS_FILE}-journal`,
   );
   if (entries.length > 0) throw new Error(`${dir} is not empty. Choose a new folder: a restore never overwrites.`);
 }

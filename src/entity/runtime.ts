@@ -32,6 +32,7 @@ import { createWitness, withWitness, type CacheWitness } from "../model/witness.
 import { openLedger, type Ledger, type LedgerRow, type ThreadKind } from "../river/ledger.js";
 import {
   ANYWHERE,
+  CLEARED_SCOPE,
   READBACK_ITEMS_MAX,
   READBACK_TTL_MS,
   REQUEST_TTL_MS,
@@ -44,6 +45,9 @@ import {
 } from "./grants.js";
 import {
   ANSWER_KINDS,
+  closedRequestEventText,
+  closedWithoutAnswerLine,
+  droppedOnceEventText,
   notStoredLine,
   outcomeEventText,
   outcomeLine,
@@ -864,6 +868,8 @@ class Runtime implements Entity {
   private limitTimer: ReturnType<typeof setTimeout> | undefined;
   /** Looks at the stop file while the entity runs, so a stop turned on by hand reaches the worlds within one poll. */
   private stopPoll: ReturnType<typeof setInterval> | undefined;
+  /** The twenty-four-hour close that is running, so two callers never post the same close lines twice. */
+  private expirySweep: Promise<void> | undefined;
   /**
    * Words the body says to the summoner, one job after another: the welcome notice, command answers and limit
    * notices. A turn waits for this chain, so the welcome notice always comes before anything the Lar says.
@@ -961,7 +967,15 @@ class Runtime implements Entity {
       count: (query) => river.count(query),
       search: (text, options) => river.search(text, options),
       forget: (match, by, reason) => {
+        const forgotten = new Set(this.forgottenSeqsIn(river, match));
         const erased = river.forget(match, by, reason);
+        if (erased > 0) {
+          // The tombstone names exactly what the river erased, including words the pre-read may have folded away.
+          const tomb = river.read({ kinds: ["tombstone"], newestFirst: true, limit: 1 })[0];
+          const seqs = tomb?.data?.["seqs"];
+          if (Array.isArray(seqs)) for (const seq of seqs) if (typeof seq === "number") forgotten.add(seq);
+          this.grants.clearForgottenRequests([...forgotten], this.nowMs());
+        }
         if (match.text !== undefined) {
           this.forgetInState(match.text);
           const words = queryWords(match.text);
@@ -991,6 +1005,21 @@ class Runtime implements Entity {
     return count;
   }
 
+  /** The river rows a forget would erase: the rows it names, and the rows whose text or data holds every word. */
+  private forgottenSeqsIn(river: River, match: { seqs?: number[]; text?: string }): number[] {
+    const found = new Set<number>(match.seqs ?? []);
+    if (match.text === undefined) return [...found];
+    const words = queryWords(match.text);
+    if (words.length === 0) return [...found];
+    for (const row of river.read({ limit: ALL_ROWS })) {
+      if (row.kind === "tombstone") continue;
+      const inText = lineHoldsWords(row.text ?? "", words);
+      const inData = row.data !== undefined && lineHoldsWords(JSON.stringify(row.data), words);
+      if (inText || inData) found.add(row.seq);
+    }
+    return [...found];
+  }
+
   // --- lifecycle --------------------------------------------------------------------------------
 
   async start(): Promise<void> {
@@ -1002,6 +1031,7 @@ class Runtime implements Entity {
       this.stopIsOn();
       this.privacyNow();
       this.stampAlive(false);
+      this.queueOutbox(() => this.closeExpiredPermissions());
     }, this.stopPollMs);
     this.privacyNow();
     this.tagLegacyRhythm();
@@ -1019,6 +1049,9 @@ class Runtime implements Entity {
       await this.stop();
       throw err;
     }
+    // A request or an unused once grant older than a day is closed now, before any turn can use it.
+    this.queueOutbox(() => this.closeExpiredPermissions());
+    await this.outbox;
     this.resumeUnseen();
   }
 
@@ -1103,6 +1136,8 @@ class Runtime implements Entity {
   private intake(event: WorldEvent): void {
     // Once the river is closed there is nowhere to write an event; the worlds have been told to stop by then.
     if (this.closed) return;
+    // Each event is a natural point to close what passed its day, so a quiet Lar still says why a request closed.
+    if (!this.stopping) this.queueOutbox(() => this.closeExpiredPermissions());
     if (typeof event.world !== "string" || event.world === "") throw new TypeError("A world event needs its world id.");
     if (typeof event.place !== "string" || event.place.trim() === "") {
       throw new TypeError(`World ${event.world} sent an event with no place.`);
@@ -3470,6 +3505,7 @@ class Runtime implements Entity {
         const scope = scopeFor(name, args);
         let decision = decided.get(context);
         if (decision === undefined) {
+          await this.closeExpiredPermissions();
           decision = this.grants.check({ tool: name, scope, argsHmac: this.grants.hmac(args), nowMs: this.nowMs() });
           decided.set(context, decision);
         }
@@ -3660,6 +3696,12 @@ class Runtime implements Entity {
         receipt: refuse("request_expired", `Request ${raw} closed without an answer after a day.`, `request ${raw} is expired`),
       };
     }
+    if (request.status === "cleared") {
+      return {
+        ok: false,
+        receipt: refuse("request_cleared", `Request ${raw} was cleared when its words were forgotten.`, `request ${raw} is cleared`),
+      };
+    }
     if (request.status !== "open") {
       return {
         ok: false,
@@ -3667,6 +3709,68 @@ class Runtime implements Entity {
       };
     }
     return { ok: true, value: request };
+  }
+
+  /**
+   * Closes requests and unused once grants that passed their day. One line goes to the summoner's place for each
+   * request, and one body event goes to the asking thread for each request and each dropped once grant. A close is
+   * logged in grant_log by the store. The guard means two callers wait on the same sweep instead of posting twice.
+   */
+  private closeExpiredPermissions(): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    this.expirySweep ??= this.runExpirySweep().finally(() => {
+      this.expirySweep = undefined;
+    });
+    return this.expirySweep;
+  }
+
+  private async runExpirySweep(): Promise<void> {
+    if (this.closed) return;
+    const closed = this.grants.closeExpired(this.nowMs());
+    for (const request of closed.requests) {
+      if (request.scopeKey === CLEARED_SCOPE) continue;
+      const text = closedWithoutAnswerLine(request.tool, request.scopeKey);
+      const sent = await this.sayTo(request.place, text);
+      if (sent.ok) {
+        this.river.append({
+          thread: request.place,
+          kind: "say",
+          source: "body",
+          place: request.place,
+          text,
+          data: { permissionClosed: "expired", request: request.id, tool: request.tool, scope: request.scopeKey },
+          atMs: this.nowMs(),
+        });
+      }
+      this.notePermissionClosed(request.askingThread, closedRequestEventText(request.tool, request.scopeKey), {
+        permissionClosed: "expired",
+        request: request.id,
+        tool: request.tool,
+        scope: request.scopeKey,
+      });
+    }
+    for (const grant of closed.onceGrants) {
+      if (grant.scope === CLEARED_SCOPE) continue;
+      const request = grant.requestSeq === undefined ? undefined : this.grants.getRequest(grant.requestSeq);
+      const thread = request?.askingThread ?? this.state.summonerPlace;
+      if (thread === undefined) continue;
+      this.notePermissionClosed(thread, droppedOnceEventText(grant.tool, grant.scope), {
+        permissionClosed: "dropped",
+        grant: grant.id,
+        request: request?.id,
+        tool: grant.tool,
+        scope: grant.scope,
+      });
+    }
+  }
+
+  /** One body event in a thread, so she knows a request or a once grant closed. It wakes the thread like an outcome. */
+  private notePermissionClosed(thread: string, text: string, data: Record<string, unknown>): void {
+    this.river.append({ thread, kind: "event", source: "body", place: thread, text, data, atMs: this.nowMs() });
+    if (this.started) {
+      this.due.add(thread);
+      this.pump();
+    }
   }
 
   /** One answer, with the once/always/never/no choice and the read-back when the paper requires one. */
@@ -3894,7 +3998,12 @@ class Runtime implements Entity {
     const nowMs = this.nowMs();
     const standing = this.grants
       .listGrants()
-      .filter((grant) => grant.revokedAt === undefined && (grant.kind === "always" || grant.kind === "never"));
+      .filter(
+        (grant) =>
+          grant.revokedAt === undefined &&
+          grant.scope !== CLEARED_SCOPE &&
+          (grant.kind === "always" || grant.kind === "never"),
+      );
     const requests = this.openRequestsNow(nowMs);
     const readback = this.grants.openReadback(nowMs);
     const lines: string[] = [];

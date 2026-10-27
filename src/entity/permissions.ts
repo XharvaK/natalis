@@ -65,6 +65,16 @@ export function closedWithoutAnswerLine(tool: string, scope: string): string {
   return `${SUMMONER_PREFIX}Closed without an answer: ${tool} ${scopePhrase(scope)}.`;
 }
 
+/** The row in the asking thread when a request closed with no answer after a day. */
+export function closedRequestEventText(tool: string, scope: string): string {
+  return `Your request for ${tool} ${scopePhrase(scope)} closed without an answer after a day.`;
+}
+
+/** The row in the asking thread when an unused once grant closed after a day. */
+export function droppedOnceEventText(tool: string, scope: string): string {
+  return `Your summoner's once on ${tool} ${scopePhrase(scope)} closed unused after a day.`;
+}
+
 /**
  * The event row written in the asking thread after an outcome, so that thread knows whether the call may run. The
  * once line is paper §5.4 item 7; a no and a never write the same kind of row.

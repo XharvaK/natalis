@@ -9,6 +9,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ENTITY_FILE } from "../../entity/config.js";
+import { grantsPath, openGrants } from "../../entity/grants.js";
 import { acquireLarLock, LarLockBusy } from "../../entity/lar-lock.js";
 import { forgetInStateFile, STATE_FILE } from "../../entity/runtime.js";
 import { MEDIA_FOLDER, openShelf } from "../../media/shelf.js";
@@ -105,16 +106,38 @@ export async function runForget(request: ForgetRequest): Promise<ForgetCounts> {
   try {
     let rows: number;
     let pictureIds: string[];
+    let forgottenSeqs: number[];
     const river = openRiver(join(dir, "river.db"));
     try {
-      // The pictures the rows name are read before the rows lose their words.
-      pictureIds = picturesNamedBy(river.read({ limit: ALL_ROWS }), request, words);
+      // The pictures and the permission requests the rows name are read before the rows lose their words.
+      const named = namedByForgottenRows(river.read({ limit: ALL_ROWS }), request, words);
+      pictureIds = named.pictures;
+      forgottenSeqs = named.seqs;
       rows =
         request.seqs !== undefined
           ? river.forget({ seqs: request.seqs }, "owner", request.reason)
           : river.forget({ text: request.query ?? "" }, "owner", request.reason);
+      // The tombstone names exactly what the river erased, including words the pre-read may have folded away.
+      if (rows > 0) {
+        const tomb = river.read({ kinds: ["tombstone"], newestFirst: true, limit: 1 })[0];
+        const seqs = tomb?.data?.["seqs"];
+        if (Array.isArray(seqs)) {
+          for (const seq of seqs) if (typeof seq === "number" && !forgottenSeqs.includes(seq)) forgottenSeqs.push(seq);
+        }
+      }
     } finally {
       river.close();
+    }
+
+    // A request message that was forgotten takes its args hash and scope with it, so the grant asks again. Opening
+    // grants.db here is skipped when this Lar never used permissions, so a forget does not create one.
+    if (forgottenSeqs.length > 0 && existsSync(grantsPath(dir))) {
+      const grants = openGrants(dir);
+      try {
+        grants.clearForgottenRequests(forgottenSeqs, Date.now());
+      } finally {
+        grants.close();
+      }
     }
 
     let lines = 0;
@@ -158,23 +181,29 @@ export async function runForget(request: ForgetRequest): Promise<ForgetCounts> {
 }
 
 /**
- * The picture ids the matched rows name: in their data (`pictures`) or in their text (`[picture m-...: name]`). A row
- * matches when it holds every word in its text or in its data, or when its seq is one of the seqs.
+ * What the matched rows name: the picture ids in their data (`pictures`) or text (`[picture m-...: name]`), and their
+ * seqs. A row matches when it holds every word in its text or in its data, or when its seq is one of the seqs.
  */
-function picturesNamedBy(rows: RiverRow[], request: ForgetRequest, words: readonly string[]): string[] {
-  const seqs = request.seqs === undefined ? undefined : new Set(request.seqs);
-  const ids = new Set<string>();
+function namedByForgottenRows(
+  rows: RiverRow[],
+  request: ForgetRequest,
+  words: readonly string[],
+): { pictures: string[]; seqs: number[] } {
+  const namedSeqs = request.seqs === undefined ? undefined : new Set(request.seqs);
+  const pictures = new Set<string>();
+  const seqs: number[] = [];
   for (const row of rows) {
     const matched =
-      seqs !== undefined
-        ? seqs.has(row.seq)
+      namedSeqs !== undefined
+        ? namedSeqs.has(row.seq)
         : lineHoldsWords(row.text ?? "", words) || (row.data !== undefined && lineHoldsWords(JSON.stringify(row.data), words));
     if (!matched) continue;
+    seqs.push(row.seq);
     const named = row.data?.["pictures"];
-    if (Array.isArray(named)) for (const id of named) if (typeof id === "string") ids.add(id);
-    for (const match of (row.text ?? "").matchAll(PICTURE_ID)) ids.add(match[0]);
+    if (Array.isArray(named)) for (const id of named) if (typeof id === "string") pictures.add(id);
+    for (const match of (row.text ?? "").matchAll(PICTURE_ID)) pictures.add(match[0]);
   }
-  return [...ids];
+  return { pictures: [...pictures], seqs };
 }
 
 /** Removes the named pictures from the shelf. Returns how many were there and are gone now. */

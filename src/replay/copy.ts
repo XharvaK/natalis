@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rename
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseEntityConfig, ENTITY_FILE } from "../entity/config.js";
+import { openGrants } from "../entity/grants.js";
 import { STATE_FILE } from "../entity/runtime.js";
 import { NOTEBOOK_DIR, RIVER_FILE } from "../import/folder.js";
 
@@ -64,6 +65,10 @@ export async function copyForReplay(options: CopyOptions): Promise<CopyResult> {
   const configText =
     replacement === undefined ? readFileSync(join(from, ENTITY_FILE), "utf8") : `${JSON.stringify(replacement, null, 2)}\n`;
   writeFileSync(join(options.to, ENTITY_FILE), configText, "utf8");
+
+  // A replay copy starts with an empty grants.db, so no standing grant or refusal from the source carries over and
+  // every ask tool asks or refuses there. Its HMAC key is new too, because the key is never copied.
+  openGrants(options.to).close();
 
   return notebookCommit === undefined ? { lastSeq } : { lastSeq, notebookCommit };
 }

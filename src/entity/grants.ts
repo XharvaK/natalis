@@ -23,8 +23,11 @@ export const WHOLE_TOOL = "whole tool";
 export const GRANT_KINDS = ["once", "always", "never"] as const;
 export type GrantKind = (typeof GRANT_KINDS)[number];
 
-export const GRANT_EVENTS = ["asked", "granted", "refused", "used", "revoked", "dropped"] as const;
+export const GRANT_EVENTS = ["asked", "granted", "refused", "used", "revoked", "dropped", "cleared by forget"] as const;
 export type GrantEvent = (typeof GRANT_EVENTS)[number];
+
+/** A forgotten request's scope, and its grant's scope: neither matches a real call, so the tool asks again. */
+export const CLEARED_SCOPE = "cleared";
 
 /** A read-back may hold at most five requests, so one "yes to all" costs one message. */
 export const READBACK_ITEMS_MAX = 5;
@@ -65,6 +68,9 @@ export type GrantRow = {
   lastUsedAt?: number;
   revokedAt?: number;
 };
+
+/** What one twenty-four-hour sweep closed: the requests it expired and the unused once grants it dropped. */
+export type ExpiredClose = { requests: RequestRow[]; onceGrants: GrantRow[] };
 
 /** One request inside a read-back: the request id, the kind it would store, and the exact scope. */
 export type ReadbackItem = { requestId: number; kind: GrantKind; scope: string };
@@ -132,8 +138,20 @@ export type Grants = {
   confirmReadback(input: ConfirmReadbackInput): ConfirmedReadback | undefined;
   /** Closes a read-back that the Owner did not agree to. The requests inside it stay waiting. */
   declineReadback(id: number, nowMs: number): boolean;
-  /** Marks requests older than twenty-four hours expired. Returns how many changed. */
+  /** Closes what passed its day, requests and unused once grants. Returns how many requests changed. */
   expireRequests(nowMs: number): number;
+  /**
+   * Closes open requests and unused once grants older than twenty-four hours in one transaction, and logs each dropped
+   * once grant. Returns only what this sweep changed, so a caller posts one close line per request and one row per drop.
+   */
+  closeExpired(nowMs: number): ExpiredClose;
+  /** Drops every unused once grant, for a restore: the calls they were given for did not survive. Logs each drop. */
+  dropUnusedOnce(nowMs: number): GrantRow[];
+  /**
+   * Clears the hash and scope of every request whose posted river row was forgotten, and of the grants that answered
+   * it. A cleared grant no longer matches a call, so the next call asks again. Logs "cleared by forget" per grant.
+   */
+  clearForgottenRequests(seqs: readonly number[], nowMs: number): number;
   openRequests(): RequestRow[];
   getRequest(id: number): RequestRow | undefined;
   listGrants(): GrantRow[];
@@ -266,8 +284,9 @@ export function openGrants(dir: string, options: { key?: Buffer } = {}): Grants 
   const selectAlways = db.prepare(
     `SELECT * FROM grants WHERE tool = ? AND kind = 'always' AND revoked_at IS NULL AND ${SCOPE_MATCH} ORDER BY id DESC LIMIT 1`,
   );
+  // An unused once grant closes after a day (Q-D), even when no sweep has run yet.
   const selectOnce = db.prepare(
-    "SELECT * FROM grants WHERE tool = ? AND kind = 'once' AND used_at IS NULL AND revoked_at IS NULL AND args_hash = ? ORDER BY id LIMIT 1",
+    "SELECT * FROM grants WHERE tool = ? AND kind = 'once' AND used_at IS NULL AND revoked_at IS NULL AND created_at > ? AND args_hash = ? ORDER BY id LIMIT 1",
   );
   const useAlways = db.prepare("UPDATE grants SET last_used_at = ? WHERE id = ? AND revoked_at IS NULL");
   const useOnce = db.prepare(
@@ -289,6 +308,21 @@ export function openGrants(dir: string, options: { key?: Buffer } = {}): Grants 
   const expireRequestRows = db.prepare(
     "UPDATE requests SET status = 'expired', closed_at = ? WHERE status = 'open' AND created_at <= ?",
   );
+  const selectExpiredRequests = db.prepare(
+    "SELECT * FROM requests WHERE status = 'open' AND created_at <= ? ORDER BY id",
+  );
+  const selectExpiredOnce = db.prepare(
+    "SELECT * FROM grants WHERE kind = 'once' AND used_at IS NULL AND revoked_at IS NULL AND created_at <= ? ORDER BY id",
+  );
+  const selectUnusedOnce = db.prepare(
+    "SELECT * FROM grants WHERE kind = 'once' AND used_at IS NULL AND revoked_at IS NULL ORDER BY id",
+  );
+  const selectAllRequests = db.prepare("SELECT * FROM requests ORDER BY id");
+  const selectGrantsByRequest = db.prepare("SELECT * FROM grants WHERE request_seq = ? ORDER BY id");
+  const clearRequest = db.prepare(
+    "UPDATE requests SET scope_key = ?, args_hmac = ?, status = 'cleared', closed_at = ? WHERE id = ?",
+  );
+  const clearGrant = db.prepare("UPDATE grants SET scope = ?, args_hash = NULL WHERE id = ?");
   const insertReadback = db.prepare(
     "INSERT INTO readbacks (items, posted_seq, status, created_at) VALUES (?, 0, 'open', ?)",
   );
@@ -303,6 +337,23 @@ export function openGrants(dir: string, options: { key?: Buffer } = {}): Grants 
 
   const ensureOpen = (): void => {
     if (closed) throw new Error("grants.db is closed");
+  };
+
+  /** The one twenty-four-hour close, shared by the sweep and by the older expireRequests call. */
+  const closeExpiredNow = (nowMs: number): ExpiredClose => {
+    ensureOpen();
+    return transaction(db, () => {
+      const cutoff = nowMs - REQUEST_TTL_MS;
+      const requests = (selectExpiredRequests.all(cutoff) as unknown as RequestRecord[]).map(requestFromRecord);
+      const onceGrants = (selectExpiredOnce.all(cutoff) as unknown as GrantRecord[]).map(grantFromRecord);
+      if (requests.length === 0 && onceGrants.length === 0) return { requests: [], onceGrants: [] };
+      expireRequestRows.run(nowMs, cutoff);
+      for (const grant of onceGrants) {
+        const result = revokeGrant.run(nowMs, grant.id);
+        if (Number(result.changes) === 1) insertLog.run(nowMs, grant.id, "dropped");
+      }
+      return { requests, onceGrants };
+    });
   };
 
   return {
@@ -326,7 +377,7 @@ export function openGrants(dir: string, options: { key?: Buffer } = {}): Grants 
           return { outcome: "allow", grantId: id, scope: always.scope, kind: "always" };
         });
       }
-      const once = selectOnce.get(input.tool, input.argsHmac) as GrantRecord | undefined;
+      const once = selectOnce.get(input.tool, input.nowMs - REQUEST_TTL_MS, input.argsHmac) as GrantRecord | undefined;
       if (once !== undefined) {
         const id = Number(once.id);
         return transaction(db, () => {
@@ -520,10 +571,41 @@ export function openGrants(dir: string, options: { key?: Buffer } = {}): Grants 
       });
     },
     expireRequests(nowMs: number): number {
+      return closeExpiredNow(nowMs).requests.length;
+    },
+    closeExpired(nowMs: number): ExpiredClose {
+      return closeExpiredNow(nowMs);
+    },
+    dropUnusedOnce(nowMs: number): GrantRow[] {
       ensureOpen();
       return transaction(db, () => {
-        const result = expireRequestRows.run(nowMs, nowMs - REQUEST_TTL_MS);
-        return Number(result.changes);
+        const rows = (selectUnusedOnce.all() as unknown as GrantRecord[]).map(grantFromRecord);
+        for (const grant of rows) {
+          const result = revokeGrant.run(nowMs, grant.id);
+          if (Number(result.changes) === 1) insertLog.run(nowMs, grant.id, "dropped");
+        }
+        return rows;
+      });
+    },
+    clearForgottenRequests(seqs: readonly number[], nowMs: number): number {
+      ensureOpen();
+      const wanted = new Set(seqs.filter((seq) => Number.isSafeInteger(seq) && seq > 0));
+      if (wanted.size === 0) return 0;
+      return transaction(db, () => {
+        let cleared = 0;
+        for (const request of selectAllRequests.all() as unknown as RequestRecord[]) {
+          if (!wanted.has(Number(request.posted_seq))) continue;
+          if (request.scope_key === CLEARED_SCOPE && request.args_hmac === "") continue;
+          const changed = clearRequest.run(CLEARED_SCOPE, "", nowMs, request.id);
+          if (Number(changed.changes) !== 1) continue;
+          cleared += 1;
+          for (const grant of selectGrantsByRequest.all(request.id) as unknown as GrantRecord[]) {
+            if (grant.scope === CLEARED_SCOPE && grant.args_hash === null) continue;
+            const result = clearGrant.run(CLEARED_SCOPE, grant.id);
+            if (Number(result.changes) === 1) insertLog.run(nowMs, Number(grant.id), "cleared by forget");
+          }
+        }
+        return cleared;
       });
     },
     openRequests(): RequestRow[] {
