@@ -27,6 +27,8 @@ import {
 import { createSecretScanner } from "../secrets/index.js";
 import { ScriptedModel, call, reply, type ScriptStep } from "../testing/scripted-model.js";
 import { createCliWorld, type CliWorld } from "../worlds/cli.js";
+import { createDiscordWorld, type PlatformClient } from "../worlds/discord/discord-world.js";
+import { effectOf } from "../tools/effects.js";
 import type { EntityConfig } from "./config.js";
 import { SUMMONER_PREFIX } from "./summoner.js";
 import { readCallLedger, readLedger } from "../river/ledger.js";
@@ -4093,6 +4095,40 @@ describe("a resting world's tools", () => {
 
     expect(names(model.requests[0])).toContain("poke");
     expect(userTextOf(model.requests[0])).not.toContain("Its tools are left out of this turn");
+  });
+});
+
+describe("NIT-A: the effect table over the runtime's tools", () => {
+  it("classifies every tool toolsFor offers, including each world's own specs", async () => {
+    const discord = createDiscordWorld({
+      token: ["fake", "discord", "token"].join("-"),
+      ownerUserId: "owner-1",
+      rooms: [],
+      aliasesPath: join(dir, "aliases.json"),
+      client: {} as PlatformClient,
+    });
+    const { entity } = await open(new ScriptedModel([]), {}, [discord]);
+    // toolsFor is private; the table test reads the same list a turn would be offered.
+    const tools = (entity as unknown as { toolsFor(thread: string): Tool[] }).toolsFor("dm:owner");
+    const keyOf = (spec: { name: string; world?: string }): string => `${spec.world ?? "no-world"}/${spec.name}`;
+    expect(Object.fromEntries(tools.map((tool) => [keyOf(tool.spec), effectOf(tool.spec)]))).toEqual({
+      "body/read_note": "read",
+      "body/list_notes": "read",
+      "body/recall": "read",
+      "body/write_note": "write",
+      "body/edit_note": "write",
+      "body/append_note": "write",
+      "body/trash_note": "write",
+      "body/forget": "write",
+      "discord/react": "write",
+      "discord/read_history": "read",
+      "body/say": "write",
+      "body/schedule_wake": "write",
+      "body/cancel_wake": "write",
+      "body/set_mood": "write",
+      "body/let_go": "write",
+      "body/propose_commitment": "write",
+    });
   });
 });
 
