@@ -348,3 +348,70 @@ describe("facts: forget and privacy", () => {
     }
   });
 });
+
+describe("facts: cited rows through the runtime", () => {
+  it("stores a fact citing a row shown here and refuses one citing a row hidden here", async () => {
+    const runtimeDir = join(root, "runtime-visibility");
+    let visibleSeq = 0;
+    let hiddenSeq = 0;
+    const model = new ScriptedModel([
+      () =>
+        reply({
+          toolCalls: [
+            call("record_fact", { text: "Mara keeps her skiff at the east quay.", seqs: [visibleSeq] }, "fact-visible"),
+            call("record_fact", { text: "A fact that must not leave its thread.", seqs: [hiddenSeq] }, "fact-hidden"),
+          ],
+        }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const entity = await openEntity({
+      dir: runtimeDir,
+      config: CONFIG,
+      model,
+      worlds: [createCliWorld({ onSay: () => {} })],
+    });
+    opened.push(entity);
+    try {
+      visibleSeq = entity.river.append({
+        thread: "discord:room:quay",
+        kind: "event",
+        source: "outside",
+        actor: "mara",
+        text: "Mara rows the skiff to the east quay.",
+      }).seq;
+      hiddenSeq = entity.river.append({
+        thread: "self",
+        kind: "event",
+        source: "body",
+        text: "An act of the summoner, kept to the summoner's place.",
+        data: { summonerAct: true },
+      }).seq;
+      entity.river.append({
+        thread: "discord:room:quay",
+        kind: "event",
+        source: "outside",
+        actor: "mara",
+        text: "Would you remember that?",
+      });
+
+      await (entity as unknown as { takeTurn(thread: string): Promise<void> }).takeTurn("discord:room:quay");
+
+      const receipts = entity.river
+        .read({ thread: "discord:room:quay", kinds: ["receipt"], limit: 100 })
+        .filter((row) => row.data?.["tool"] === "record_fact");
+      expect(receipts.find((row) => row.data?.["callId"] === "fact-visible")?.data?.["ok"]).toBe(true);
+      expect(receipts.find((row) => row.data?.["callId"] === "fact-hidden")?.data?.["refused"]).toMatchObject({
+        code: "not_visible",
+      });
+
+      const runtimeFacts = openFacts(join(runtimeDir, "river.db"));
+      try {
+        expect(runtimeFacts.current().map((fact) => fact.text)).toEqual(["Mara keeps her skiff at the east quay."]);
+      } finally {
+        runtimeFacts.close();
+      }
+    } finally {
+      await entity.stop();
+    }
+  });
+});
