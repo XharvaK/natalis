@@ -18,7 +18,7 @@ export type FactsToolOptions = {
 };
 
 export function factsTools(facts: FactStore, options: FactsToolOptions): Tool[] {
-  return [recordFact(facts, options), closeFact(facts)].map((tool) => ({ ...tool, settles: true }));
+  return [recordFact(facts, options), closeFact(facts, options)].map((tool) => ({ ...tool, settles: true }));
 }
 
 const recordFact = (facts: FactStore, options: FactsToolOptions): Tool => ({
@@ -76,7 +76,7 @@ const recordFact = (facts: FactStore, options: FactsToolOptions): Tool => ({
   },
 });
 
-const closeFact = (facts: FactStore): Tool => ({
+const closeFact = (facts: FactStore, options: FactsToolOptions): Tool => ({
   spec: {
     name: "close_fact",
     description:
@@ -93,7 +93,13 @@ const closeFact = (facts: FactStore): Tool => ({
     const id = requireId(args["id"]);
     if (!id.ok) return id.receipt;
     const existing = facts.get(id.value);
-    if (existing === undefined || existing.closed) {
+    // A private fact is not hers to close from an outward thread. Say what a missing id gets, so the refusal never
+    // tells whether the id exists.
+    if (
+      existing === undefined ||
+      existing.closed ||
+      (existing.private && !options.privateView(context.thread))
+    ) {
       return refuse("not_found", `There is no open fact ${id.value}, so nothing was closed.`, `no open fact ${id.value}`);
     }
     if (existing.forgotten) {

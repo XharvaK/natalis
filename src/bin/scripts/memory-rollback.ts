@@ -1,18 +1,18 @@
 // `natalis memory-rollback --dir <entity folder> [--scan <folder>]`: the code-only rollback of the memory stores.
 // It takes the Lar lock, completes every pending forget cascade (or refuses and changes nothing), refuses a table no
 // known store owns, completes/drains pending work and empties every other derived table in one transaction, rebuilds
-// the file and truncates its WAL, then deletes grants.db and the per-Lar HMAC key and lists the backups and replay
-// copies made while the new code ran.
+// the file and truncates its WAL, then deletes grants.db and the per-Lar HMAC key and lists the backups, sealed packages
+// and replay copies made while the new code ran.
 // It never touches rows, river_fts, the ledger tables, user_version, the notebook, or any backup by itself.
 
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, readdirSync, rmSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { grantsPath } from "../../entity/grants.js";
 import { acquireLarLock, LarLockBusy } from "../../entity/lar-lock.js";
 import { threadHashKeyPath } from "../../river/thread-key.js";
-import { BASE_061AF27_RIVER_DB, SQLITE_STAT_TABLES } from "../../river/base-tables.js";
+import { BASE_061AF27_RIVER_DB, isBaseRiverTable, SQLITE_STAT_TABLES } from "../../river/base-tables.js";
 import {
   derivedTableNames,
   derivedTablesToEmpty,
@@ -22,6 +22,7 @@ import {
   pendingCascadeCount,
   type OutsideCascade,
 } from "../../river/derived.js";
+import { SEAL_EXTENSION } from "../commands/backup-seal.js";
 import { parseFlags, UsageError } from "../commands/shared.js";
 
 export const MEMORY_ROLLBACK_USAGE = "Usage: natalis memory-rollback --dir <entity folder> [--scan <folder>]";
@@ -47,8 +48,10 @@ export type MemoryRollbackResult = {
   derived: Array<{ table: string; erased: number }>;
   /** Pending forget cascades completed before the clear. */
   pendingDrained: number;
-  /** Backup and replay copy river.db files made while the new code ran, for the operator to delete or scrub. */
+  /** Backup and replay copies made while the new code ran, for the operator to delete or scrub. */
   scrub: string[];
+  /** The sealed packages among scrub: their contents cannot be read here, so every one under the roots is listed. */
+  sealed: string[];
   grantsDeleted: boolean;
   keyDeleted: boolean;
   /** Unchanged by this script; read so the caller can check it. */
@@ -56,7 +59,10 @@ export type MemoryRollbackResult = {
   wal: { busy: number; log: number; checkpointed: number };
 };
 
-/** The rollback itself. Throws on anything it refuses; nothing in river.db is changed before a refusal. */
+/**
+ * The rollback itself. Throws on anything it refuses. A refusal before the derived DELETE changes nothing; a refusal
+ * after it (the WAL checkpoint) leaves the derived tables empty, so the rollback is partly done and a rerun finishes it.
+ */
 export async function runMemoryRollback(options: MemoryRollbackOptions): Promise<MemoryRollbackResult> {
   const dir = resolve(options.dir);
   const riverFile = join(dir, "river.db");
@@ -121,10 +127,12 @@ export async function runMemoryRollback(options: MemoryRollbackOptions): Promise
       db.exec("VACUUM");
       const checkpoint = checkpointWal(db);
       const userVersion = userVersionOf(db);
+      const scrubbable = listScrubbable(scanRoots(dir, options.scan ?? []), riverFile);
       result = {
         derived,
         pendingDrained,
-        scrub: listScrubbable(scanRoots(dir, options.scan ?? []), riverFile),
+        scrub: scrubbable.scrub,
+        sealed: scrubbable.sealed,
         grantsDeleted: false,
         keyDeleted: false,
         userVersion,
@@ -189,7 +197,11 @@ export async function memoryRollbackCommand(
       out("No backup or replay copy made while the new code ran was found.");
     } else {
       out("Delete or scrub these files: they were made while the new code ran and hold the derived tables.");
-      for (const path of result.scrub) out(path);
+      const sealed = new Set(result.sealed);
+      for (const path of result.scrub) {
+        const note = sealed.has(path) ? " (sealed: holds derived tables, delete or re-seal after scrub)" : "";
+        out(`${path}${note}`);
+      }
     }
     return 0;
   } catch (error) {
@@ -248,7 +260,7 @@ function checkpointWal(db: DatabaseSync): { busy: number; log: number; checkpoin
   const checkpointed = Number(row?.checkpointed ?? -1);
   if (busy !== 0 || log !== 0 || checkpointed !== 0) {
     throw new Error(
-      `The WAL checkpoint did not finish (busy ${busy}, log ${log}, checkpointed ${checkpointed}). A reader may still hold the river; stop it and run this again.`,
+      `The WAL checkpoint did not finish (busy ${busy}, log ${log}, checkpointed ${checkpointed}). The derived tables are already empty, so the rollback is partly done; a reader still holds the river. Stop the reader and run this again.`,
     );
   }
   return { busy, log, checkpointed };
@@ -271,10 +283,15 @@ function scanRoots(dir: string, extra: readonly string[]): string[] {
   return roots;
 }
 
-/** Backup and replay river.db files under the given folders whose schema has any derived table. */
-function listScrubbable(roots: readonly string[], ownRiver: string): string[] {
+/**
+ * Backup and replay copies under the given folders: every sealed package, and every SQLite file that looks like a river
+ * copy and has a table outside the 061af27 base set (a registered derived store or a store this build does not know).
+ * The Lar's own river is never listed. No file content is ever read into a message.
+ */
+function listScrubbable(roots: readonly string[], ownRiver: string): { scrub: string[]; sealed: string[] } {
   const own = resolve(ownRiver);
   const found = new Set<string>();
+  const sealed = new Set<string>();
   const seen = new Set<string>();
   for (const root of roots) walk(resolve(root));
 
@@ -295,26 +312,52 @@ function listScrubbable(roots: readonly string[], ownRiver: string): string[] {
         walk(path);
         continue;
       }
-      if (!entry.isFile() || entry.name !== "river.db") continue;
+      if (!entry.isFile()) continue;
       const file = resolve(path);
       if (file === own) continue;
+      if (entry.name.endsWith(SEAL_EXTENSION)) {
+        found.add(file);
+        sealed.add(file);
+        continue;
+      }
       if (hasDerivedTable(file)) found.add(file);
     }
   }
 
-  return [...found].sort();
+  return { scrub: [...found].sort(), sealed: [...sealed].sort() };
 }
 
+/** The 16 bytes every SQLite file starts with. Anything else is never opened as a database. */
+const SQLITE_HEADER = Buffer.from("SQLite format 3\0", "ascii");
+
+function hasSqliteHeader(file: string): boolean {
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, "r");
+    const header = Buffer.alloc(SQLITE_HEADER.length);
+    const read = readSync(fd, header, 0, header.length, 0);
+    return read === SQLITE_HEADER.length && header.equals(SQLITE_HEADER);
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/** True when a SQLite file is a river copy with a derived table. Other SQLite files (grants.db, the Lar lock) are skipped. */
 function hasDerivedTable(file: string): boolean {
+  if (!hasSqliteHeader(file)) return false;
   let db: DatabaseSync | undefined;
   try {
     db = new DatabaseSync(file, { readOnly: true });
-    const names = new Set(
-      (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map(
-        (row) => row.name,
-      ),
-    );
-    return derivedTableNames().some((name) => names.has(name));
+    const names = tableNames(db);
+    if (!names.includes("rows")) return false;
+    const registered = new Set(derivedTableNames());
+    return names.some((name) => {
+      if (registered.has(name)) return true;
+      if (isBaseRiverTable(name)) return false;
+      return !(SQLITE_STAT_TABLES as readonly string[]).includes(name) && !/^sqlite_stat[0-9]+$/.test(name);
+    });
   } catch {
     return false;
   } finally {

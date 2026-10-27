@@ -284,9 +284,9 @@ export function openGrants(dir: string, options: { key?: Buffer } = {}): Grants 
   const selectAlways = db.prepare(
     `SELECT * FROM grants WHERE tool = ? AND kind = 'always' AND revoked_at IS NULL AND ${SCOPE_MATCH} ORDER BY id DESC LIMIT 1`,
   );
-  // An unused once grant closes after a day (Q-D), even when no sweep has run yet.
+  // An unused once grant closes after a day (Q-D), even when no sweep has run yet. It matches one scope, like never/always.
   const selectOnce = db.prepare(
-    "SELECT * FROM grants WHERE tool = ? AND kind = 'once' AND used_at IS NULL AND revoked_at IS NULL AND created_at > ? AND args_hash = ? ORDER BY id LIMIT 1",
+    `SELECT * FROM grants WHERE tool = ? AND kind = 'once' AND used_at IS NULL AND revoked_at IS NULL AND ${SCOPE_MATCH} AND created_at > ? AND args_hash = ? ORDER BY id LIMIT 1`,
   );
   const useAlways = db.prepare("UPDATE grants SET last_used_at = ? WHERE id = ? AND revoked_at IS NULL");
   const useOnce = db.prepare(
@@ -377,7 +377,14 @@ export function openGrants(dir: string, options: { key?: Buffer } = {}): Grants 
           return { outcome: "allow", grantId: id, scope: always.scope, kind: "always" };
         });
       }
-      const once = selectOnce.get(input.tool, input.nowMs - REQUEST_TTL_MS, input.argsHmac) as GrantRecord | undefined;
+      const once = selectOnce.get(
+        input.tool,
+        input.scope,
+        ANYWHERE,
+        WHOLE_TOOL,
+        input.nowMs - REQUEST_TTL_MS,
+        input.argsHmac,
+      ) as GrantRecord | undefined;
       if (once !== undefined) {
         const id = Number(once.id);
         return transaction(db, () => {
