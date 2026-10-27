@@ -1330,8 +1330,8 @@ async function setLife(entity: Entity, text: string): Promise<void> {
 const HONEST: EntityConfig = { ...CONFIG, holds: { honesty: true } };
 
 /** The honesty check's reply, as the model would write it. */
-function honestyReply(contradicts: boolean, claim = "", record = ""): ModelResponse {
-  return reply({ content: JSON.stringify({ contradicts, claim, record }) });
+function honestyReply(contradicts: boolean, claimQuote = "", recordQuote = ""): ModelResponse {
+  return reply({ content: JSON.stringify({ contradicts, claim_quote: claimQuote, record_quote: recordQuote }) });
 }
 
 /** A modification time a little after now, so an edit is seen as a change. */
@@ -1596,9 +1596,85 @@ describe("the honesty check on the life record", () => {
     expect(refused).toMatchObject({
       refused: {
         code: "held_honesty",
-        reason: `This says "I work at the lighthouse", but your record says "I work at the bakery". Nothing was sent. Rewrite it, or say it again with knowingly: true to send it as it is.`,
+        reason: `This says "I work at the lighthouse", but your record says "I work at the bakery", with no heading above it in your record. Nothing was sent. Rewrite it, or say it again with knowingly: true to send it as it is.`,
       },
     });
+  });
+
+  it("sends the words and writes a note when a quote is not in the life record", async () => {
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I work at the lighthouse." })] }),
+      honestyReply(true, "I work at the lighthouse", "I work at the shipyard"),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli, said } = await open(model, { config: HONEST });
+    await entity.start();
+    await setLife(entity, LIFE_TEXT);
+
+    cli.send("Where do you work?");
+    await entity.idle();
+
+    expect(said).toEqual([{ place: "cli:summoner", text: "I work at the lighthouse." }]);
+    expect(noteRows(entity).map((row) => row.text)).toContain(
+      "honesty check could not run: the record quote was not found in the life record",
+    );
+    expect(receiptsShownIn(model.requests[2]).some((item) => item["refused"] !== undefined)).toBe(false);
+  });
+
+  it("quotes both sides exactly as the sources spell them, with the heading above the record quote", async () => {
+    const record = "# Life\n\n## Work\n\nI  work at the\nbakery on Quay Street.\n";
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I work at the lighthouse." })] }),
+      honestyReply(true, "I work at the lighthouse", "I work at the bakery on Quay Street"),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli, said } = await open(model, { config: HONEST });
+    await entity.start();
+    await setLife(entity, record);
+
+    cli.send("Where do you work?");
+    await entity.idle();
+
+    expect(said).toEqual([]);
+    const refused = receiptsShownIn(model.requests[2]).find((item) => item["ok"] === false);
+    expect(refused?.["refused"]).toMatchObject({
+      code: "held_honesty",
+      reason: `This says "I work at the lighthouse", but your record says "I  work at the\nbakery on Quay Street", under the heading "## Work". Nothing was sent. Rewrite it, or say it again with knowingly: true to send it as it is.`,
+    });
+  });
+
+  it("puts nothing in the held receipt except fixed words, the message and the record", async () => {
+    const canary = "a phrase the model made up";
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I work at the lighthouse." })] }),
+      reply({
+        content: JSON.stringify({
+          contradicts: true,
+          claim_quote: "I work at the lighthouse",
+          record_quote: "I work at the bakery",
+          claim: canary,
+          record: canary,
+        }),
+      }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli, said } = await open(model, { config: HONEST });
+    await entity.start();
+    await setLife(entity, LIFE_TEXT);
+
+    cli.send("Where do you work?");
+    await entity.idle();
+
+    expect(said).toEqual([]);
+    const refused = receiptsShownIn(model.requests[2]).find((item) => item["ok"] === false);
+    const reason = (refused?.["refused"] as { reason?: string } | undefined)?.reason ?? "";
+    expect(reason).toBe(
+      `This says "I work at the lighthouse", but your record says "I work at the bakery", with no heading above it in your record. Nothing was sent. Rewrite it, or say it again with knowingly: true to send it as it is.`,
+    );
+    expect(reason).not.toContain(canary);
+    for (const quote of ["I work at the lighthouse", "I work at the bakery"]) {
+      expect("I work at the lighthouse.".includes(quote) || LIFE_TEXT.includes(quote)).toBe(true);
+    }
   });
 
   it("sends a contradicting say when it is said knowingly, and skips the check for that say only", async () => {

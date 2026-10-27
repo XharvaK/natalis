@@ -1,17 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { HONESTY_SYSTEM, parseHonestyReply } from "./honesty.js";
+import {
+  checkHonestyQuotes,
+  HONESTY_SYSTEM,
+  headingAbove,
+  parseHonestyReply,
+} from "./honesty.js";
 
 describe("the honesty reply", () => {
   it("reads a plain no", () => {
-    expect(parseHonestyReply(JSON.stringify({ contradicts: false, claim: "", record: "" }))).toEqual({ contradicts: false });
+    expect(parseHonestyReply(JSON.stringify({ contradicts: false, claim_quote: "", record_quote: "" }))).toEqual({
+      contradicts: false,
+    });
   });
 
-  it("reads a yes with the claim and the record", () => {
-    const reply = JSON.stringify({ contradicts: true, claim: "I work at the lighthouse", record: "I work at the bakery" });
+  it("reads a yes with the claim quote and the record quote", () => {
+    const reply = JSON.stringify({
+      contradicts: true,
+      claim_quote: "I work at the lighthouse",
+      record_quote: "I work at the bakery",
+    });
     expect(parseHonestyReply(reply)).toEqual({
       contradicts: true,
-      claim: "I work at the lighthouse",
-      record: "I work at the bakery",
+      claim_quote: "I work at the lighthouse",
+      record_quote: "I work at the bakery",
     });
   });
 
@@ -28,28 +39,92 @@ describe("the honesty reply", () => {
   });
 
   it("names the problem when the flag is missing or not a yes or no", () => {
-    expect(parseHonestyReply(JSON.stringify({ claim: "x" }))).toEqual({ error: "the reply had no contradicts flag" });
+    expect(parseHonestyReply(JSON.stringify({ claim_quote: "x" }))).toEqual({ error: "the reply had no contradicts flag" });
     expect(parseHonestyReply(JSON.stringify({ contradicts: "yes" }))).toEqual({ error: "the reply had no contradicts flag" });
   });
 
-  it("refuses a yes that leaves out the claim or the record, rather than guessing", () => {
-    expect(parseHonestyReply(JSON.stringify({ contradicts: true, claim: "I work", record: "" }))).toEqual({
-      error: "the reply left out the claim or the record",
+  it("refuses a yes that leaves out the claim quote or the record quote, rather than guessing", () => {
+    expect(parseHonestyReply(JSON.stringify({ contradicts: true, claim_quote: "I work", record_quote: "" }))).toEqual({
+      error: "the reply left out the claim quote or the record quote",
     });
-    expect(parseHonestyReply(JSON.stringify({ contradicts: true, record: "x" }))).toEqual({
-      error: "the reply left out the claim or the record",
+    expect(parseHonestyReply(JSON.stringify({ contradicts: true, record_quote: "x" }))).toEqual({
+      error: "the reply left out the claim quote or the record quote",
+    });
+    // The old paraphrase fields do not count as quotes.
+    expect(parseHonestyReply(JSON.stringify({ contradicts: true, claim: "I work", record: "x" }))).toEqual({
+      error: "the reply left out the claim quote or the record quote",
     });
   });
 
-  it("keeps the claim and the record to one short line", () => {
-    const long = "word ".repeat(200);
-    const verdict = parseHonestyReply(JSON.stringify({ contradicts: true, claim: long, record: "a\nb" }));
-    expect(verdict).toMatchObject({ contradicts: true, record: "a b" });
-    expect((verdict as { claim: string }).claim.length).toBeLessThanOrEqual(300);
-  });
-
-  it("asks for JSON only, and says the check is about the speaker's own life", () => {
+  it("asks for exact quotes copied from the message and the record", () => {
     expect(HONESTY_SYSTEM).toContain("OWN life");
     expect(HONESTY_SYSTEM).toContain("JSON only");
+    expect(HONESTY_SYSTEM).toContain("claim_quote");
+    expect(HONESTY_SYSTEM).toContain("record_quote");
+    expect(HONESTY_SYSTEM).toContain("exact piece");
+  });
+});
+
+describe("the quotes in a yes", () => {
+  it("takes each quote only when it is in its own source, and keeps the source's own spelling", () => {
+    const message = "I  work at\nthe lighthouse.";
+    const record = "# Work\n\nI  work at the\nbakery on Quay Street.";
+    expect(checkHonestyQuotes("I work at the lighthouse", "I work at the bakery on Quay Street", message, record)).toEqual({
+      contradicts: true,
+      claim_quote: "I  work at\nthe lighthouse",
+      record_quote: "I  work at the\nbakery on Quay Street",
+    });
+  });
+
+  it("folds whitespace runs to one space, and nothing else", () => {
+    const message = 'Mara  said "hello"\nat the harbour.';
+    const record = "# Work\n\nI  work at the\nbakery.";
+
+    expect(checkHonestyQuotes('Mara said "hello" at the harbour', "I work at the bakery", message, record)).toEqual({
+      contradicts: true,
+      claim_quote: 'Mara  said "hello"\nat the harbour',
+      record_quote: "I  work at the\nbakery",
+    });
+    // Case is not folded.
+    expect(checkHonestyQuotes('mara said "hello" at the harbour', "I work at the bakery", message, record)).toEqual({
+      error: "the claim quote was not found in the message",
+    });
+    // Punctuation is not folded.
+    expect(checkHonestyQuotes('Mara said "hello" at the harbour!', "I work at the bakery", message, record)).toEqual({
+      error: "the claim quote was not found in the message",
+    });
+    expect(checkHonestyQuotes('Mara said "hello" at the harbour', "I work at the bakery,", message, record)).toEqual({
+      error: "the record quote was not found in the life record",
+    });
+    // Quote style is not folded.
+    expect(checkHonestyQuotes("Mara said “hello” at the harbour", "I work at the bakery", message, record)).toEqual({
+      error: "the claim quote was not found in the message",
+    });
+  });
+
+  it("keeps a long quote whole instead of clipping it, because the receipt shows it verbatim", () => {
+    const long = "word ".repeat(200).trim();
+    const message = `Before.\n${long}\nAfter.`;
+    expect(checkHonestyQuotes(long, "I work at the bakery", message, "I work at the bakery.")).toEqual({
+      contradicts: true,
+      claim_quote: long,
+      record_quote: "I work at the bakery",
+    });
+  });
+
+  it("names the source that did not hold the quote", () => {
+    expect(checkHonestyQuotes("I work at the lighthouse", "I work at the bakery", "I live by the harbour.", "I work at the bakery.")).toEqual({
+      error: "the claim quote was not found in the message",
+    });
+    expect(checkHonestyQuotes("I live by the harbour", "I work at the bakery", "I live by the harbour.", "I live by the sea.")).toEqual({
+      error: "the record quote was not found in the life record",
+    });
+  });
+
+  it("finds the nearest heading above a quote, and reports none when there is no heading", () => {
+    const record = "# Life\n\n## Work\n\nI work at the bakery.\n\n### Days\n\nI work on Quay Street.";
+    expect(headingAbove(record, "I work at the bakery.")).toBe("## Work");
+    expect(headingAbove(record, "I work on Quay Street.")).toBe("### Days");
+    expect(headingAbove("I live by the harbour.", "I live by the harbour.")).toBeUndefined();
   });
 });
