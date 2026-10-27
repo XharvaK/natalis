@@ -3,6 +3,7 @@
 // Then the file is compacted, so the forgotten words are not left in its bytes or its write-ahead log.
 
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { dirname } from "node:path";
 import type {
   River,
   RiverKind,
@@ -12,6 +13,16 @@ import type {
   RiverRowInput,
   RiverSource,
 } from "../contracts.js";
+import {
+  cascadeDerivedStores,
+  derivedStores,
+  drainPendingCascades,
+  ensureDerivedTables,
+  outsideCascades,
+  queuePendingCascades,
+  type DerivedStore,
+  type OutsideCascade,
+} from "./derived.js";
 
 /** A row as read back. Adds whether its text was forgotten (the contract's RiverRow has no such field). */
 export type StoredRiverRow = RiverRow & { forgotten: boolean };
@@ -44,6 +55,10 @@ export type OpenRiverOptions = {
   nowMs?: () => number;
   /** Test hook: search with LIKE even when FTS5 is available. The index is still kept up to date. */
   forceNoFts?: boolean;
+  /** The derived stores in this river; defaults to the one registered list. */
+  derivedStores?: readonly DerivedStore[];
+  /** The outside stores a forget must finish after its transaction; defaults to the one registered list. */
+  outsideCascades?: readonly OutsideCascade[];
 };
 
 export class RiverError extends Error {
@@ -98,6 +113,8 @@ export function ftsAvailable(): boolean {
 
 export function openRiver(path: string | ":memory:", options: OpenRiverOptions = {}): SqliteRiver {
   const nowMs = options.nowMs ?? (() => Date.now());
+  const stores = options.derivedStores ?? derivedStores();
+  const handlers = options.outsideCascades ?? outsideCascades();
   const db = new DatabaseSync(path);
   let closed = false;
   try {
@@ -158,6 +175,13 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
         throw error;
       }
     }
+
+    // Derived stores live in this same file, so their erase is in the forget transaction. The river's own version
+    // never changes for them: 061af27 reads version 1 and ignores tables it does not know.
+    ensureDerivedTables(db, stores);
+    // A forget may have crashed after its transaction and before an outside store confirmed. Finish it now, before
+    // the river is used; a record that cannot be completed stops the start loudly.
+    drainPendingCascades(db, path === ":memory:" ? ":memory:" : dirname(path), handlers);
 
     const useFts = fts && options.forceNoFts !== true;
     return buildRiver();
@@ -326,6 +350,8 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
             if (match.text.trim() === "") throw new RiverError("forget: text must not be blank");
           }
 
+          let derivedErased = 0;
+          let queued = 0;
           const count = inTransaction(() => {
             const targets = new Set<number>();
             const actorBlanks = new Set<number>();
@@ -358,7 +384,6 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
             }
 
             const erased = [...targets].sort((a, b) => a - b);
-            if (erased.length === 0) return 0;
             for (const seq of erased) {
               const shape = erasedShape(getRow(seq));
               eraseStmt.run(shape.text, shape.dataJson, seq);
@@ -366,6 +391,17 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
               if (ftsDelete) ftsDelete.run(seq);
             }
 
+            // Every derived store erases in the same transaction as the river. A text forget reaches a derived row
+            // through the row's own words, even when no river row matched. A store that throws rolls it all back.
+            if (erased.length > 0 || match.text !== undefined) {
+              derivedErased = cascadeDerivedStores(
+                db,
+                { seqs: erased, words: match.text === undefined ? [] : forgetWords(match.text) },
+                stores,
+              );
+            }
+
+            if (erased.length === 0) return 0;
             insertChecked({
               thread: "body",
               kind: "tombstone",
@@ -376,9 +412,14 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
               actor: undefined,
               dataJson: JSON.stringify({ count: erased.length, by, reason, seqs: erased }),
             });
+            // An outside store cannot join this transaction. Its record is written here, so a crash cannot leave the
+            // river erased with no note that the store is still waiting.
+            queued = queuePendingCascades(db, erased, checkNow(nowMs), handlers);
             return erased.length;
           });
-          if (count > 0) compact();
+          if (count > 0 || derivedErased > 0) compact();
+          // The outside stores run after the commit. A failure leaves its record for the next start (or the rollback).
+          if (queued > 0) drainPendingCascades(db, path === ":memory:" ? ":memory:" : dirname(path), handlers);
           return count;
         },
 

@@ -14,6 +14,7 @@ export function withoutPrivate(notebook: Notebook): Notebook {
     write: (...args) => notebook.write(...args),
     edit: (...args) => notebook.edit(...args),
     append: (...args) => notebook.append(...args),
+    rename: (...args) => notebook.rename(...args),
     remove: (...args) => notebook.remove(...args),
     list: (dir) => notebook.list(dir).filter((entry) => !isPrivatePath(entry.path)),
     search: (text, limit) => notebook.search(text, limit === undefined ? undefined : limit * 4).filter((hit) => !isPrivatePath(hit.path)).slice(0, limit),

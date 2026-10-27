@@ -299,6 +299,26 @@ class GitNotebook implements Notebook {
     });
   }
 
+  async rename(path: string, to: string, reason: string, author: NotebookAuthor): Promise<void> {
+    const rel = normalizePath(path);
+    const target = normalizePath(to);
+    const who = cleanAuthor(author);
+    const why = cleanReason(reason);
+    if (rel === TRASH || rel.startsWith(`${TRASH}/`) || target === TRASH || target.startsWith(`${TRASH}/`)) {
+      throw new NotebookError("Files in trash/ are kept, not renamed.", "bad_path");
+    }
+    if (rel === target) return;
+    return this.enqueue(async () => {
+      if (!isFile(toAbsolute(this.root, rel))) throw new NotebookError(`${rel} does not exist.`, "not_found");
+      if (existsSync(toAbsolute(this.root, target))) throw new NotebookError(`${target} already exists.`, "bad_path");
+      mkdirSync(dirname(toAbsolute(this.root, target)), { recursive: true });
+      await git(this.root, ["add", "--", rel]);
+      await git(this.root, ["mv", "--", rel, target]);
+      await this.commit(who, why);
+      this.firstLines.delete(rel);
+    });
+  }
+
   /** trash/<UTC date>/<original path>; a second file with the same name that day gets -2, -3, ... before its extension. */
   private trashTarget(rel: string): string {
     const day = new Date().toISOString().slice(0, 10);

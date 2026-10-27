@@ -9,7 +9,7 @@
 import { NotebookError, type Notebook, type NotebookAuthor, type NotebookEntry } from "../contracts.js";
 
 export type NotebookLogEntry = {
-  op: "write" | "edit" | "append" | "remove";
+  op: "write" | "edit" | "append" | "rename" | "remove";
   path: string;
   to?: string;
   reason: string;
@@ -76,6 +76,21 @@ export class MemoryNotebook implements Notebook {
     this.files.delete(p);
     this.files.set(target, current);
     this.record({ op: "remove", path: p, to: target, reason, author });
+  }
+
+  async rename(path: string, to: string, reason: string, author: NotebookAuthor): Promise<void> {
+    const p = checkPath(path);
+    const target = checkPath(to);
+    if (p === "trash" || p.startsWith("trash/") || target === "trash" || target.startsWith("trash/")) {
+      throw new NotebookError("Files in trash/ are kept, not renamed.", "bad_path");
+    }
+    const current = this.files.get(p);
+    if (current === undefined) throw new NotebookError(`There is no note at ${p}.`, "not_found");
+    if (p === target) return;
+    if (this.files.has(target)) throw new NotebookError(`There is already a note at ${target}.`, "bad_path");
+    this.files.delete(p);
+    this.files.set(target, current);
+    this.record({ op: "rename", path: p, to: target, reason, author });
   }
 
   list(dir?: string): NotebookEntry[] {

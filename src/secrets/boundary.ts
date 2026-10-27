@@ -59,6 +59,7 @@ export function guardNotebook(notebook: Notebook, scanner: SecretScanner): Noteb
     edit: (path, find, replace, reason, author) =>
       notebook.edit(path, find, scanner.redact(replace), scanner.redact(reason), author),
     append: (path, text, reason, author) => notebook.append(path, scanner.redact(text), scanner.redact(reason), author),
+    rename: (path, to, reason, author) => notebook.rename(path, to, scanner.redact(reason), author),
     remove: (path, reason, author) => notebook.remove(path, scanner.redact(reason), author),
     list: (dir) => notebook.list(dir),
     search: (text, limit) => notebook.search(text, limit),

@@ -11,6 +11,7 @@ import { judgeCommand } from "./judge.js";
 import { ledgerCommand } from "./ledger.js";
 import { newCommand } from "./new.js";
 import { notebookRestoreCommand } from "./notebook-restore.js";
+import { memoryRollbackCommand } from "../scripts/memory-rollback.js";
 import { probeCommand } from "./probe.js";
 import { proposalsCommand } from "./proposals.js";
 import { replayCommand } from "./replay.js";
@@ -46,6 +47,8 @@ export async function dispatchCommand(command: string | undefined, args: string[
       return newCommand(args, (line) => console.log(line), (line) => console.error(line));
     case "notebook-restore":
       return notebookRestoreCommand(args, (line) => console.log(line), (line) => console.error(line));
+    case "memory-rollback":
+      return memoryRollbackCommand(args, (line) => console.log(line), (line) => console.error(line));
     case "eval":
       return evalCommand(args);
     case "eval-permissions":

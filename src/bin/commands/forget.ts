@@ -1,10 +1,11 @@
 // `natalis forget --dir <entity folder> (--query "<words>" | --seqs 3,4,9) --reason "<line>"`: the summoner's forget.
 // The river erases the matching rows' text and data and keeps their place with a tombstone. With --query, the words
 // go from every place the Lar keeps text: every current note line that holds all the words is replaced by a marker (one
-// commit per file, with the reason); the notes in trash/ are changed the same way; the notebook's git history is rebuilt
-// without them; the files in the Lar's home that hold them are removed; the pictures the forgotten rows name leave the
-// shelf; and the game's store (domus/domus.sqlite, when there is one) loses the words too. Counts are printed, never the
-// forgotten text. Older backups still hold the old text until they rotate out.
+// commit per file, with the reason); a note whose own file name holds a word is renamed and links to it are repaired;
+// the notes in trash/ are changed the same way; the notebook's git history is rebuilt without them; the files in the
+// Lar's home that hold them are removed; the pictures the forgotten rows name leave the shelf; replay and eval copies
+// under the Lar folder are purged; and the game's store (domus/domus.sqlite, when there is one) loses the words too.
+// Counts are printed, never the forgotten text. Older backups still hold the old text until they rotate out.
 
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -17,6 +18,7 @@ import { forgetLines, lineHoldsWords, queryWords } from "../../notebook/forget.j
 import { purgeHistory } from "../../notebook/history.js";
 import { openNotebook } from "../../notebook/index.js";
 import { openRiver } from "../../river/index.js";
+import { purgeCopiesUnder } from "../../replay/copies.js";
 import type { RiverRow } from "../../contracts.js";
 import { DOMUS_DB_FILE, DOMUS_FOLDER, forgetInDomusFile } from "../../worlds/domus/store.js";
 import { flagValue } from "./args.js";
@@ -55,6 +57,12 @@ export type ForgetCounts = {
   commits: number;
   home: number;
   pictures: number;
+  /** Note files renamed because their own name held the words. */
+  renamed: number;
+  /** Note files whose links to a renamed file were repaired. */
+  linkFiles: number;
+  /** Replay or eval run folders under the Lar folder that were purged. */
+  copies: number;
 };
 
 export type ParsedForget = { ok: true; request: ForgetRequest } | { ok: false; error: string };
@@ -145,9 +153,25 @@ export async function runForget(request: ForgetRequest): Promise<ForgetCounts> {
     let trashLines = 0;
     let commits = 0;
     let home = 0;
+    let renamed = 0;
+    let linkFiles = 0;
+    let copies = 0;
     if (request.query !== undefined && existsSync(join(dir, NOTEBOOK))) {
       const notebookDir = join(dir, NOTEBOOK);
       const notebook = await openNotebook(notebookDir);
+      // A note whose own file name holds a forgotten word is renamed first, so the word does not survive in a path.
+      const renames: Array<{ from: string; to: string }> = [];
+      const occupied = new Set(notebook.list().map((item) => item.path));
+      for (const entry of notebook.list()) {
+        if (entry.path === TRASH || entry.path.startsWith(`${TRASH}/`) || entry.path === ".gitattributes") continue;
+        const to = forgottenPath(entry.path, words, occupied);
+        if (to === undefined) continue;
+        await notebook.rename(entry.path, to, request.reason, "owner");
+        occupied.delete(entry.path);
+        occupied.add(to);
+        renames.push({ from: entry.path, to });
+        renamed += 1;
+      }
       for (const entry of notebook.list()) {
         if (entry.path === TRASH || entry.path.startsWith(`${TRASH}/`) || entry.path === ".gitattributes") continue;
         const text = notebook.read(entry.path);
@@ -157,6 +181,25 @@ export async function runForget(request: ForgetRequest): Promise<ForgetCounts> {
         await notebook.write(entry.path, result.text, request.reason, "owner");
         lines += result.count;
         files += 1;
+      }
+      // Links are repaired after the line replacement, so a link that held every word is already a marker and the
+      // working tree keeps no pointer to the old name. History keeps the old name until a separate decision.
+      if (renames.length > 0) {
+        for (const entry of notebook.list()) {
+          if (entry.path === TRASH || entry.path.startsWith(`${TRASH}/`) || entry.path === ".gitattributes") continue;
+          const text = notebook.read(entry.path);
+          if (text === null) continue;
+          let next = text;
+          for (const rename of renames) {
+            next = next.split(rename.from).join(rename.to);
+            const fromBase = rename.from.slice(rename.from.lastIndexOf("/") + 1);
+            const toBase = rename.to.slice(rename.to.lastIndexOf("/") + 1);
+            if (fromBase !== rename.from) next = next.split(fromBase).join(toBase);
+          }
+          if (next === text) continue;
+          await notebook.write(entry.path, next, request.reason, "owner");
+          linkFiles += 1;
+        }
       }
       // The notes moved to trash keep their text as files, so the same line replacement goes over them.
       trashLines = forgetInFolder(join(notebookDir, TRASH), words);
@@ -174,7 +217,11 @@ export async function runForget(request: ForgetRequest): Promise<ForgetCounts> {
     // The game's store keeps the game's own words (observations, acts, answers, plan steps). It is searched when it exists.
     const gameStore = join(dir, DOMUS_FOLDER, DOMUS_DB_FILE);
     const domus = request.query !== undefined && existsSync(gameStore) ? forgetInDomusFile(dir, words) : undefined;
-    return { rows, lines, files, stateTexts, domus, trashLines, commits, home, pictures };
+    // Replay and eval copies under the Lar folder hold a clone of the river; the words go with them. Backups are not
+    // copies and are left alone: they age out as today. This runs last, so a copy that cannot be removed does not
+    // leave the note, home, state or game store half scrubbed.
+    if (request.query !== undefined) copies = purgeCopiesUnder(dir).length;
+    return { rows, lines, files, stateTexts, domus, trashLines, commits, home, pictures, renamed, linkFiles, copies };
   } finally {
     lock.release();
   }
@@ -211,6 +258,28 @@ function removePictures(mediaDir: string, ids: readonly string[]): number {
   if (ids.length === 0 || !existsSync(mediaDir)) return 0;
   const shelf = openShelf(mediaDir);
   return ids.filter((id) => shelf.forget(id)).length;
+}
+
+/** The name a renamed note gets; it holds none of the words and keeps the extension. */
+const FORGOTTEN_NOTE_NAME = "forgotten";
+
+/**
+ * Where a note moves when its own file name holds any of the words. The folder part is left alone (a forgotten folder
+ * name is a separate question); the basename becomes forgotten<ext>, with -2, -3, ... when that name is taken.
+ */
+function forgottenPath(notePath: string, words: readonly string[], occupied: ReadonlySet<string>): string | undefined {
+  const slash = notePath.lastIndexOf("/");
+  const folder = slash === -1 ? "" : notePath.slice(0, slash + 1);
+  const base = notePath.slice(slash + 1);
+  const folded = base.normalize("NFKC").toLowerCase();
+  if (!words.some((word) => folded.includes(word))) return undefined;
+  const dot = base.lastIndexOf(".");
+  const extension = dot > 0 ? base.slice(dot) : "";
+  let candidate = `${folder}${FORGOTTEN_NOTE_NAME}${extension}`;
+  for (let n = 2; occupied.has(candidate); n += 1) {
+    candidate = `${folder}${FORGOTTEN_NOTE_NAME}-${n}${extension}`;
+  }
+  return candidate;
 }
 
 /**
@@ -293,6 +362,12 @@ export async function forgetCommand(
   out(
     `Forgot ${counts.rows} river row(s), ${counts.lines} note line(s) in ${counts.files} note file(s), ${counts.stateTexts} text(s) in the state file, ${counts.trashLines} line(s) in trash/, ${counts.commits} notebook commit(s) rewritten, ${counts.home} file(s) in the home, and ${counts.pictures} picture(s) on the shelf${domus}.`,
   );
+  if (counts.renamed > 0) {
+    out(`Renamed ${counts.renamed} note file(s) whose own name held the words, and repaired links in ${counts.linkFiles} file(s).`);
+  }
+  if (counts.copies > 0) {
+    out(`Purged ${counts.copies} replay or eval copy(ies) under the Lar folder.`);
+  }
   out("If the Lar was running, stop it and run this again: a running Lar writes its own state file on its next save.");
   out("Older backups still hold the old text until they rotate out. The next backup does not contain it.");
   // SEAM2-3 (rejected as a fix, kept as words): the game's own lists are the game's, so the words may come back with them.

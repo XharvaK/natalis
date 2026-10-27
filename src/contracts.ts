@@ -272,6 +272,8 @@ export interface Notebook {
   /** Replace exactly one occurrence of `find`. Throws NotebookError("not_found" | "ambiguous") otherwise. */
   edit(path: string, find: string, replace: string, reason: string, author: NotebookAuthor): Promise<void>;
   append(path: string, text: string, reason: string, author: NotebookAuthor): Promise<void>;
+  /** Moves a note to a new path and commits it. Never goes through trash/. */
+  rename(path: string, to: string, reason: string, author: NotebookAuthor): Promise<void>;
   /** Moves the file to trash/ (recoverable). Never deletes. */
   remove(path: string, reason: string, author: NotebookAuthor): Promise<void>;
   list(dir?: string): NotebookEntry[];
