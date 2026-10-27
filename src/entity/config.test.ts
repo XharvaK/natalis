@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_CEILING, DEFAULT_RHYTHM, loadEntityConfig, parseEntityConfig } from "./config.js";
+import { DEFAULT_CEILING, DEFAULT_LIFE_VIEW_CHARS, DEFAULT_RHYTHM, loadEntityConfig, parseEntityConfig } from "./config.js";
 
 const MINIMAL = {
   name: "Iris",
@@ -187,6 +187,21 @@ describe("the reflection budget", () => {
     });
     for (const reflectBudget of [0, -1, 1.5, "6", null]) {
       expect(() => parseEntityConfig({ ...MINIMAL, limits: { reflectBudget } })).toThrow(/limits\.reflectBudget/);
+    }
+  });
+});
+
+describe("the life view size", () => {
+  it("defaults to 20,000 characters and reads limits.lifeViewChars as a whole number of at least one", () => {
+    expect(DEFAULT_LIFE_VIEW_CHARS).toBe(20_000);
+    expect(parseEntityConfig(MINIMAL).limits?.lifeViewChars).toBeUndefined();
+    expect(parseEntityConfig({ ...MINIMAL, limits: { lifeViewChars: 5_000 } }).limits).toEqual({ lifeViewChars: 5_000 });
+    expect(parseEntityConfig({ ...MINIMAL, limits: { lifeWarnChars: 40_000, lifeViewChars: 5_000 } }).limits).toEqual({
+      lifeWarnChars: 40_000,
+      lifeViewChars: 5_000,
+    });
+    for (const lifeViewChars of [0, -1, 1.5, "5000", null]) {
+      expect(() => parseEntityConfig({ ...MINIMAL, limits: { lifeViewChars } })).toThrow(/limits\.lifeViewChars/);
     }
   });
 });
