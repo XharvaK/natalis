@@ -19,12 +19,12 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { assembleSystem, droppedNote, formatDuration, layoutRequest, timeFacts, type LayoutPart } from "../context/index.js";
-import { addTokens, runTurnWithMessages } from "../loop/index.js";
+import { addTokens, runTurnWithMessages, type InFlightTool } from "../loop/index.js";
 import { TURN_DEADLINE_MS, withTurnDeadline } from "../model/turn-deadline.js";
 import { whenText } from "./when.js";
 import { openNotebook, seedNotebook } from "../notebook/index.js";
 import { FORGOTTEN_LINE, lineHoldsWords, queryWords } from "../notebook/forget.js";
-import { withoutPrivate } from "../notebook/private-view.js";
+import { isPrivatePath, withoutPrivate } from "../notebook/private-view.js";
 import { ModelError, type ModelErrorKind, type QuotaWindow } from "../contracts.js";
 import { planRetry, type QuotaRetryTuning } from "./retry-plan.js";
 import { openRiver } from "../river/index.js";
@@ -175,6 +175,25 @@ function isOutcomeUnknown(row: RiverRow): boolean {
 }
 /** The turn ends that did not finish a turn: its cursor stays, and its rows are shown as done on the next try. */
 const CUT_ENDS = new Set(["model_error", "aborted"]);
+
+/** True when every promise settled within the wait; false when the cap came first. */
+function settledWithinAll(promises: readonly Promise<unknown>[], ms: number): Promise<boolean> {
+  if (promises.length === 0) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    let decided = false;
+    const timer = setTimeout(() => {
+      if (decided) return;
+      decided = true;
+      resolve(false);
+    }, ms);
+    void Promise.allSettled(promises).then(() => {
+      if (decided) return;
+      decided = true;
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
 /** Recent here shows at least this many rows: the oldest shown row moves on only in steps of RECENT_PAGE, so it holds 30 to 39. */
 const RECENT_LIMIT = 30;
 /** Her own outward writes shown in each turn: per site, and direct messages; how far back to look; how long a line is. */
@@ -223,6 +242,12 @@ const WAKE_HOLD_MS = 15 * 60_000;
 export const DEFAULT_TURNS_PER_DAY = 288;
 /** A reflect turn's own watchdog: five minutes, short enough that thinking does not hold a thread for long. */
 export const REFLECT_DEADLINE_MS = 300_000;
+/** How long a non-live turn may wait for the mind lock before it is dropped. It doubles after each drop. */
+export const NON_LIVE_WAIT_MS = 30 * 60_000;
+/** The longest a non-live turn's drop wait grows to, and the shortest gap between two drop notes. */
+export const NON_LIVE_MAX_WAIT_MS = 24 * 60 * 60_000;
+/** How long a release waits for a pre-empted turn's in-flight tools to settle before the live turn starts. */
+export const NON_LIVE_RELEASE_MS = 30_000;
 /** The reason a rhythm wake carries. It names nothing about what the wake is for. */
 const RHYTHM_WHY = "Your daily rhythm.";
 const TIMER_LIMIT_MS = 2_147_483_647;
@@ -680,6 +705,21 @@ type RuntimeInit = {
 type SchedulerTurn = {
   purpose?: Purpose;
   deadlineMs?: number;
+  /** A release signal of the scheduler's own. A stop aborts every turn too (this.abort). */
+  signal?: AbortSignal;
+  /** Tools still running, so a pre-emption can wait for their writes to settle. */
+  inFlight?: Set<InFlightTool>;
+};
+
+/** One non-live turn the scheduler is running, and the state its release needs. */
+type NonLiveRun = {
+  thread: string;
+  controller: AbortController;
+  inFlight: Set<InFlightTool>;
+  run: Promise<void>;
+  /** True once the turn's release has finished (or the cap passed), so live turns may start again. */
+  released: boolean;
+  preempting: boolean;
 };
 
 class Runtime implements Entity {
@@ -729,6 +769,14 @@ class Runtime implements Entity {
   private readonly due = new Set<string>();
   /** The turn running now, per thread. One at a time per thread; threads run in parallel. */
   private readonly running = new Map<string, Promise<void>>();
+  /** Non-live turns waiting for the mind lock, by thread: when each was queued and its drop timer. */
+  private readonly pendingNonLive = new Map<string, { atMs: number; waitMs: number; timer: ReturnType<typeof setTimeout> }>();
+  /** The non-live turn running now. While it runs, pump starts nothing until it is released. */
+  private nonLiveRunning: NonLiveRun | undefined;
+  /** How long a pending non-live turn may wait before its drop. Doubles after each drop, up to a day. */
+  private nonLiveWaitMs = NON_LIVE_WAIT_MS;
+  /** When a drop note was last written, so a busy day writes at most one. */
+  private nonLiveNoteAtMs: number | undefined;
   /** Retries waiting after a failed turn, per thread. */
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly failures = new Map<string, number>();
@@ -973,6 +1021,9 @@ class Runtime implements Entity {
     this.wakeTimers.clear();
     for (const timer of this.retries.values()) clearTimeout(timer);
     this.retries.clear();
+    for (const pending of this.pendingNonLive.values()) clearTimeout(pending.timer);
+    this.pendingNonLive.clear();
+    this.nonLiveRunning?.controller.abort();
     if (this.limitTimer !== undefined) clearTimeout(this.limitTimer);
     this.limitTimer = undefined;
     this.abort.abort();
@@ -1052,6 +1103,8 @@ class Runtime implements Entity {
     }
     // An event that arrives during shutdown is written above, so the next start takes it; nothing is woken now.
     if (this.stopping) return;
+    // The summoner's own word pre-empts a non-live turn; the pump below starts nothing until its release finishes.
+    if (event.source === "owner") this.preemptNonLive(thread);
     if (event.wake !== false) {
       this.due.add(thread);
       this.pump();
@@ -1061,7 +1114,13 @@ class Runtime implements Entity {
   // --- scheduling -------------------------------------------------------------------------------
 
   private isIdle(): boolean {
-    return this.running.size === 0 && this.due.size === 0 && this.retries.size === 0 && this.outboxBusy === 0;
+    return (
+      this.running.size === 0 &&
+      this.due.size === 0 &&
+      this.retries.size === 0 &&
+      this.pendingNonLive.size === 0 &&
+      this.outboxBusy === 0
+    );
   }
 
   private resolveIdle(): void {
@@ -1069,28 +1128,171 @@ class Runtime implements Entity {
     for (const resolve of this.idleWaiters.splice(0)) resolve();
   }
 
-  /** Starts a turn for every due thread that is not already running. */
+  /**
+   * Starts a turn for every due thread that is not already running. While a non-live turn runs, no turn starts; once it
+   * is released, live turns start first. A non-live turn starts only when the running map is empty (L1).
+   */
   private pump(): void {
     if (this.started && !this.stopping) {
       this.releaseLimited();
-      for (const thread of [...this.due]) {
-        if (this.running.has(thread)) continue;
-        if (!this.limitExempt(thread) && this.limitReached()) {
-          this.holdForLimit(thread);
-          continue;
+      const nonLive = this.nonLiveRunning;
+      if (nonLive === undefined || nonLive.released) {
+        for (const thread of [...this.due]) {
+          if (this.running.has(thread)) continue;
+          if (!this.limitExempt(thread) && this.limitReached()) {
+            this.holdForLimit(thread);
+            continue;
+          }
+          this.due.delete(thread);
+          this.cancelRetry(thread);
+          const run = this.runThread(thread).finally(() => {
+            this.running.delete(thread);
+            this.pump();
+          });
+          this.running.set(thread, run);
         }
-        this.due.delete(thread);
-        this.cancelRetry(thread);
-        const run = this.runThread(thread).finally(() => {
-          this.running.delete(thread);
-          this.pump();
-        });
-        this.running.set(thread, run);
+        if (this.nonLiveRunning === undefined && this.running.size === 0) this.startPendingNonLive();
       }
       // The summoner may first become known after a thread was held; the notice is once a day either way.
       if (this.limited.size > 0) this.noticeLimit();
     }
     this.resolveIdle();
+  }
+
+  /**
+   * Queues one non-live (reflect) turn for a thread. The scheduler starts it only when no turn runs anywhere in this Lar.
+   * A second request while one is already waiting or running for the thread does nothing. Internal on purpose: U6's
+   * trigger is the only caller; no entity.json key and no open option reaches it.
+   */
+  private queueReflectTurn(thread: string): void {
+    if (this.stopping || this.closed) return;
+    if (this.pendingNonLive.has(thread) || this.nonLiveRunning?.thread === thread) return;
+    const waitMs = this.nonLiveWaitMs;
+    const timer = setTimeout(() => this.dropPendingNonLive(thread), waitMs);
+    this.pendingNonLive.set(thread, { atMs: this.nowMs(), waitMs, timer });
+    this.pump();
+  }
+
+  /** Starts the oldest waiting non-live turn, once nothing runs anywhere. */
+  private startPendingNonLive(): void {
+    if (this.nonLiveRunning !== undefined || this.running.size > 0) return;
+    const next = this.pendingNonLive.entries().next();
+    if (next.done === true) return;
+    const [thread, pending] = next.value;
+    clearTimeout(pending.timer);
+    this.pendingNonLive.delete(thread);
+    const state: NonLiveRun = {
+      thread,
+      controller: new AbortController(),
+      inFlight: new Set(),
+      run: Promise.resolve(),
+      released: false,
+      preempting: false,
+    };
+    this.nonLiveRunning = state;
+    const run = this.runNonLive(state);
+    state.run = run;
+    this.running.set(thread, run);
+  }
+
+  /** Never rejects: a failed non-live turn is recorded like a live one, so the scheduler stays up. */
+  private async runNonLive(state: NonLiveRun): Promise<void> {
+    try {
+      await this.outbox;
+      await this.reflectTurn(state.thread, { signal: state.controller.signal, inFlight: state.inFlight });
+    } catch (err) {
+      try {
+        this.failTurn(state.thread, messageOf(err), false);
+      } catch {
+        // The river itself is failing; there is nothing left to record it in.
+      }
+    } finally {
+      this.running.delete(state.thread);
+      if (this.nonLiveRunning === state) {
+        this.nonLiveRunning = undefined;
+        this.nonLiveWaitMs = NON_LIVE_WAIT_MS;
+      }
+      this.pump();
+    }
+  }
+
+  /**
+   * Drops a non-live turn that waited its whole window without the mind lock coming free. Its back-off doubles, up to a
+   * day; the note is written at most once a day, so a busy day cannot fill the river with drops.
+   */
+  private dropPendingNonLive(thread: string): void {
+    const pending = this.pendingNonLive.get(thread);
+    if (pending === undefined) return;
+    this.pendingNonLive.delete(thread);
+    clearTimeout(pending.timer);
+    const waited = pending.waitMs;
+    this.nonLiveWaitMs = Math.min(pending.waitMs * 2, NON_LIVE_MAX_WAIT_MS);
+    const now = this.nowMs();
+    if (this.nonLiveNoteAtMs === undefined || now - this.nonLiveNoteAtMs >= NON_LIVE_MAX_WAIT_MS) {
+      this.nonLiveNoteAtMs = now;
+      this.river.append({
+        thread,
+        kind: "note",
+        source: "body",
+        text: `A quiet turn waited ${formatDuration(waited)} while other turns ran, so it was dropped. The next one waits longer, up to a day.`,
+        data: { nonLiveDropped: true, waitedMs: waited },
+        atMs: now,
+      });
+    }
+    this.pump();
+    this.resolveIdle();
+  }
+
+  /**
+   * The summoner spoke while a non-live turn runs: release it and let the summoner's turn start. The release waits for
+   * the pre-empted turn's in-flight tools to settle, capped at NON_LIVE_RELEASE_MS. Past the cap a tool's outcome is
+   * unknown; one note names what it was changing, so the live turn knows a note may change under it.
+   */
+  private preemptNonLive(liveThread: string): void {
+    const state = this.nonLiveRunning;
+    if (state === undefined || state.released || state.preempting) return;
+    state.preempting = true;
+    state.controller.abort();
+    void this.releaseNonLive(state, liveThread);
+  }
+
+  private async releaseNonLive(state: NonLiveRun, liveThread: string): Promise<void> {
+    const waiting = [state.run, ...[...state.inFlight].map((tool) => tool.promise)];
+    const settled = await settledWithinAll(waiting, NON_LIVE_RELEASE_MS);
+    if (!settled) {
+      const stillRunning = [...state.inFlight];
+      if (stillRunning.length > 0) this.noteReleasedTools(liveThread, stillRunning);
+    }
+    state.released = true;
+    state.preempting = false;
+    this.pump();
+  }
+
+  /** One note for a released turn's tools whose outcome is unknown; a private path stays hidden outside her own threads. */
+  private noteReleasedTools(thread: string, tools: readonly InFlightTool[]): void {
+    const named = tools.map((tool) => {
+      const path = typeof tool.args["path"] === "string" ? tool.args["path"] : undefined;
+      return path === undefined ? tool.name : `${tool.name} ${this.notePathFor(thread, path)}`;
+    });
+    const path =
+      tools.length === 1 && typeof tools[0]?.args["path"] === "string"
+        ? this.notePathFor(thread, tools[0].args["path"] as string)
+        : undefined;
+    const outcome = tools.length === 1 ? "Its outcome is unknown" : "Their outcomes are unknown";
+    this.river.append({
+      thread,
+      kind: "note",
+      source: "body",
+      text: `A tool was still running when a quiet turn was released: ${named.join(", ")}. ${outcome}; that note may still change.`,
+      data: { outcomeUnknown: true, ...(path === undefined ? {} : { path }), tools: tools.map((tool) => tool.name) },
+      atMs: this.nowMs(),
+    });
+  }
+
+  /** A note path as a thread may see it: private/ is named only where the notebook is whole (see notebookFor). */
+  private notePathFor(thread: string, path: string): string {
+    const kind = this.threadKind(thread);
+    return kind === "summoner" || kind === "self" ? path : isPrivatePath(path) ? "a private note" : path;
   }
 
   /** Never rejects: a failed turn is recorded and retried, so the scheduler stays up. */
@@ -1112,8 +1314,16 @@ class Runtime implements Entity {
    * REFLECT_DEADLINE_MS instead of the Lar's own deadline. It takes the thread's waiting events like any turn, and it
    * counts toward the daily limit. Internal on purpose: not an entity.json key and not an open option.
    */
-  private async reflectTurn(thread: string): Promise<void> {
-    await this.takeTurn(thread, { purpose: "reflect", deadlineMs: REFLECT_DEADLINE_MS });
+  private async reflectTurn(
+    thread: string,
+    options: { signal?: AbortSignal; inFlight?: Set<InFlightTool> } = {},
+  ): Promise<void> {
+    await this.takeTurn(thread, {
+      purpose: "reflect",
+      deadlineMs: REFLECT_DEADLINE_MS,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(options.inFlight === undefined ? {} : { inFlight: options.inFlight }),
+    });
   }
 
   /** The internal turn runner. Its optional scheduler argument is for a reflect turn; a live turn passes none. */
@@ -1207,6 +1417,9 @@ class Runtime implements Entity {
     // A turn's purpose and watchdog are the Lar's own unless the scheduler named them for this turn.
     const purpose = schedulerTurn.purpose ?? this.purpose;
     const deadlineMs = schedulerTurn.deadlineMs ?? this.turnDeadlineMs;
+    // A scheduler turn may be released by the mind lock; a stop aborts every turn through this.abort as well.
+    const turnSignal =
+      schedulerTurn.signal === undefined ? this.abort.signal : AbortSignal.any([this.abort.signal, schedulerTurn.signal]);
     // The turn's watchdog: a model call still running after the turn's deadline fails as a timeout, so the turn ends as a
     // model error (its normal note, then the usual retry) instead of waiting forever.
     const watchdog = withTurnDeadline(turnModel, deadlineMs);
@@ -1228,8 +1441,9 @@ class Runtime implements Entity {
       ceiling: this.ceiling,
       nowMs: () => this.nowMs(),
       turnId,
-      signal: this.abort.signal,
+      signal: turnSignal,
       deadline: watchdog.signal,
+      ...(schedulerTurn.inFlight === undefined ? {} : { inFlight: schedulerTurn.inFlight }),
       ...(effort === undefined ? {} : { effort }),
     }).finally(() => {
       watchdog.done();

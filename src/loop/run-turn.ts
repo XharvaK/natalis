@@ -85,6 +85,15 @@ function reopenedReceipt(): Receipt {
   };
 }
 
+/** A tool whose own promise is still running, kept so a scheduler releasing a turn can wait for it to settle. */
+export type InFlightTool = {
+  name: string;
+  /** The call's parsed arguments, for naming the path a released write was changing. */
+  args: Record<string, unknown>;
+  /** Settles when the tool itself settles, even after the turn stopped waiting for it. */
+  promise: Promise<Receipt>;
+};
+
 export type RunTurnInput = {
   model: ModelPort;
   tools: Tool[];
@@ -122,6 +131,11 @@ export type RunTurnInput = {
    * each model call and shown on that call only, so a message that arrives mid-turn is seen in this turn.
    */
   arrivals?: () => string | undefined;
+  /**
+   * When set, every tool that starts is put here until its own promise settles. The scheduler uses it to hold the mind
+   * lock until a released turn's writes have landed (see entity/runtime.ts and raceDeadline below).
+   */
+  inFlight?: Set<InFlightTool>;
 };
 
 export type RunTurnOutput = { result: TurnResult; messages: ChatMessage[] };
@@ -203,7 +217,16 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
     const runs = effect === "write" ? 1 : READ_RUNS;
     for (let attempt = 1; ; attempt++) {
       try {
-        const receipt = await raceDeadline(tool.run(parsed.value, context), deadline, tool.settles === true);
+        const running = tool.run(parsed.value, context);
+        if (input.inFlight !== undefined) {
+          const entry: InFlightTool = { name: call.name, args: parsed.value, promise: running };
+          input.inFlight.add(entry);
+          running.then(
+            () => input.inFlight?.delete(entry),
+            () => input.inFlight?.delete(entry),
+          );
+        }
+        const receipt = await raceDeadline(running, deadline, tool.settles === true);
         if (receipt.ok || receipt.retryable !== true || attempt >= runs || toolSignal?.aborted === true) {
           const { retryable: _r, ...shown } = receipt;
           return shown;
