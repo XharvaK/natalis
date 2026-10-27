@@ -74,7 +74,7 @@ describe("tool effects", () => {
     expect(effectOf({ name: "mystery", description: "", parameters: {} })).toBe("write");
     expect(effectOf({ name: "recall", description: "", parameters: {} })).toBe("read");
     expect(effectOf({ name: "recall", description: "", parameters: {}, effect: "write" })).toBe("write");
-    expect([...READ_TOOLS].sort()).toEqual(["body/list_notes", "body/look", "body/read_note", "body/recall", "discord/read_history"]);
+    expect([...READ_TOOLS].sort()).toEqual(["body/list_notes", "body/look", "body/permissions", "body/read_note", "body/recall", "discord/read_history"]);
     for (const name of ["say", "game_act", "web_request", "write_note", "schedule_wake", "forget"]) {
       expect([...READ_TOOLS].some((key) => key.endsWith(`/${name}`))).toBe(false);
     }
