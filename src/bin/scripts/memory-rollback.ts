@@ -1,8 +1,8 @@
-// `natalis memory-rollback --dir <entity folder> [--scan <folder>]`: the code-only rollback of the memory stores.
-// It takes the Lar lock, completes every pending forget cascade (or refuses and changes nothing), refuses a table no
-// known store owns, completes/drains pending work and empties every other derived table in one transaction, rebuilds
-// the file and truncates its WAL, then deletes grants.db and the per-Lar HMAC key and lists the backups, sealed packages
-// and replay copies made while the new code ran.
+// `natalis memory-rollback --dir <entity folder> [--scan <folder>] [--ack-unscrubbed]`: the code-only rollback of the
+// memory stores. It takes the Lar lock, completes every pending forget cascade (or refuses and changes nothing),
+// refuses a table no known store owns, completes/drains pending work and empties every other derived table in one
+// transaction, rebuilds the file and truncates its WAL, then deletes grants.db and the per-Lar HMAC key and lists the
+// backups, sealed packages and replay copies made while the new code ran.
 // It never touches rows, river_fts, the ledger tables, user_version, the notebook, or any backup by itself.
 
 import { closeSync, existsSync, openSync, readSync, readdirSync, rmSync } from "node:fs";
@@ -25,7 +25,8 @@ import {
 import { SEAL_EXTENSION } from "../commands/backup-seal.js";
 import { parseFlags, UsageError } from "../commands/shared.js";
 
-export const MEMORY_ROLLBACK_USAGE = "Usage: natalis memory-rollback --dir <entity folder> [--scan <folder>]";
+export const MEMORY_ROLLBACK_USAGE =
+  "Usage: natalis memory-rollback --dir <entity folder> [--scan <folder>] [--ack-unscrubbed]";
 
 export type MemoryRollbackOptions = {
   /** The Lar's own folder. */
@@ -52,6 +53,10 @@ export type MemoryRollbackResult = {
   scrub: string[];
   /** The sealed packages among scrub: their contents cannot be read here, so every one under the roots is listed. */
   sealed: string[];
+  /** Compressed or archived files under the roots; they were not opened. */
+  notInspected: string[];
+  /** The folders this run scanned, as absolute paths. Copies elsewhere are not covered. */
+  scannedRoots: string[];
   grantsDeleted: boolean;
   keyDeleted: boolean;
   /** Unchanged by this script; read so the caller can check it. */
@@ -127,12 +132,15 @@ export async function runMemoryRollback(options: MemoryRollbackOptions): Promise
       db.exec("VACUUM");
       const checkpoint = checkpointWal(db);
       const userVersion = userVersionOf(db);
-      const scrubbable = listScrubbable(scanRoots(dir, options.scan ?? []), riverFile);
+      const scannedRoots = scanRoots(dir, options.scan ?? []);
+      const scrubbable = listScrubbable(scannedRoots, riverFile);
       result = {
         derived,
         pendingDrained,
         scrub: scrubbable.scrub,
         sealed: scrubbable.sealed,
+        notInspected: scrubbable.notInspected,
+        scannedRoots,
         grantsDeleted: false,
         keyDeleted: false,
         userVersion,
@@ -164,7 +172,7 @@ export async function memoryRollbackCommand(
 ): Promise<number> {
   let flags;
   try {
-    flags = parseFlags([...args], ["--dir", "--scan"], []);
+    flags = parseFlags([...args], ["--dir", "--scan"], ["--ack-unscrubbed"]);
   } catch (error) {
     if (error instanceof UsageError) {
       err(error.message);
@@ -199,9 +207,24 @@ export async function memoryRollbackCommand(
       out("Delete or scrub these files: they were made while the new code ran and hold the derived tables.");
       const sealed = new Set(result.sealed);
       for (const path of result.scrub) {
-        const note = sealed.has(path) ? " (sealed: holds derived tables, delete or re-seal after scrub)" : "";
+        const note = sealed.has(path) ? " (sealed: holds derived tables; unseal, scrub, re-seal, or delete)" : "";
         out(`${path}${note}`);
       }
+    }
+    for (const path of result.notInspected) {
+      out(`${path} (compressed or archived: not inspected; delete it or check it by hand)`);
+    }
+    out(
+      `Copies outside the scanned roots (${result.scannedRoots.join(", ")}) are not covered: off-host copies, other drives and seal destinations not passed with --scan.`,
+    );
+    if (result.scrub.length > 0) {
+      if (!flags.switches.has("--ack-unscrubbed")) {
+        out(
+          `ROLLBACK INCOMPLETE: ${result.scrub.length} copy(ies) still hold the derived tables. Delete or scrub them and run this again, or pass --ack-unscrubbed to accept them unscrubbed.`,
+        );
+        return 3;
+      }
+      out("The listed copies were acknowledged as not scrubbed (--ack-unscrubbed).");
     }
     return 0;
   } catch (error) {
@@ -286,12 +309,17 @@ function scanRoots(dir: string, extra: readonly string[]): string[] {
 /**
  * Backup and replay copies under the given folders: every sealed package, and every SQLite file that looks like a river
  * copy and has a table outside the 061af27 base set (a registered derived store or a store this build does not know).
- * The Lar's own river is never listed. No file content is ever read into a message.
+ * Compressed and archived files are not opened; they are returned separately for an advisory. The Lar's own river is
+ * never listed. No file content is ever read into a message.
  */
-function listScrubbable(roots: readonly string[], ownRiver: string): { scrub: string[]; sealed: string[] } {
+function listScrubbable(
+  roots: readonly string[],
+  ownRiver: string,
+): { scrub: string[]; sealed: string[]; notInspected: string[] } {
   const own = resolve(ownRiver);
   const found = new Set<string>();
   const sealed = new Set<string>();
+  const notInspected = new Set<string>();
   const seen = new Set<string>();
   for (const root of roots) walk(resolve(root));
 
@@ -315,6 +343,10 @@ function listScrubbable(roots: readonly string[], ownRiver: string): { scrub: st
       if (!entry.isFile()) continue;
       const file = resolve(path);
       if (file === own) continue;
+      if (isCompressedOrArchived(entry.name)) {
+        notInspected.add(file);
+        continue;
+      }
       if (entry.name.endsWith(SEAL_EXTENSION)) {
         found.add(file);
         sealed.add(file);
@@ -324,7 +356,15 @@ function listScrubbable(roots: readonly string[], ownRiver: string): { scrub: st
     }
   }
 
-  return { scrub: [...found].sort(), sealed: [...sealed].sort() };
+  return { scrub: [...found].sort(), sealed: [...sealed].sort(), notInspected: [...notInspected].sort() };
+}
+
+/** Archive and compression suffixes whose contents this scan does not open. */
+const COMPRESSED_EXTENSIONS = [".gz", ".tgz", ".tar", ".zip", ".xz", ".bz2", ".zst", ".7z"] as const;
+
+function isCompressedOrArchived(name: string): boolean {
+  const lower = name.toLowerCase();
+  return COMPRESSED_EXTENSIONS.some((extension) => lower.endsWith(extension));
 }
 
 /** The 16 bytes every SQLite file starts with. Anything else is never opened as a database. */
@@ -351,10 +391,11 @@ function hasDerivedTable(file: string): boolean {
   try {
     db = new DatabaseSync(file, { readOnly: true });
     const names = tableNames(db);
-    if (!names.includes("rows")) return false;
     const registered = new Set(derivedTableNames());
+    // A registered derived table is enough on its own: a derived-only export has no rows table.
+    if (names.some((name) => registered.has(name))) return true;
+    if (!names.includes("rows")) return false;
     return names.some((name) => {
-      if (registered.has(name)) return true;
       if (isBaseRiverTable(name)) return false;
       return !(SQLITE_STAT_TABLES as readonly string[]).includes(name) && !/^sqlite_stat[0-9]+$/.test(name);
     });
