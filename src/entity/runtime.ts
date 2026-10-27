@@ -221,6 +221,8 @@ const WAKE_MIN_MS = 60_000;
 const WAKE_HOLD_MS = 15 * 60_000;
 /** The daily turn limit when entity.json sets none: one turn per 5 minutes on average. */
 export const DEFAULT_TURNS_PER_DAY = 288;
+/** A reflect turn's own watchdog: five minutes, short enough that thinking does not hold a thread for long. */
+export const REFLECT_DEADLINE_MS = 300_000;
 /** The reason a rhythm wake carries. It names nothing about what the wake is for. */
 const RHYTHM_WHY = "Your daily rhythm.";
 const TIMER_LIMIT_MS = 2_147_483_647;
@@ -671,6 +673,15 @@ type RuntimeInit = {
   shelf: Shelf;
 };
 
+/**
+ * What the scheduler may set on one turn: a purpose and a watchdog of its own. Private to the runtime; no entity.json
+ * key and no open option reaches it. A reflect turn is still the real Lar's turn, so it counts where live turns count.
+ */
+type SchedulerTurn = {
+  purpose?: Purpose;
+  deadlineMs?: number;
+};
+
 class Runtime implements Entity {
   readonly river: River;
   readonly notebook: Notebook;
@@ -1096,7 +1107,17 @@ class Runtime implements Entity {
     }
   }
 
-  private async takeTurn(thread: string): Promise<void> {
+  /**
+   * One reflect turn, for the scheduler (U4): the real Lar's own turn, stamped "reflect" and watched at
+   * REFLECT_DEADLINE_MS instead of the Lar's own deadline. It takes the thread's waiting events like any turn, and it
+   * counts toward the daily limit. Internal on purpose: not an entity.json key and not an open option.
+   */
+  private async reflectTurn(thread: string): Promise<void> {
+    await this.takeTurn(thread, { purpose: "reflect", deadlineMs: REFLECT_DEADLINE_MS });
+  }
+
+  /** The internal turn runner. Its optional scheduler argument is for a reflect turn; a live turn passes none. */
+  private async takeTurn(thread: string, schedulerTurn: SchedulerTurn = {}): Promise<void> {
     const seen = this.threadState(thread).seenSeq;
     const snapshot = this.river.lastSeq();
     const fresh = this.river
@@ -1183,15 +1204,18 @@ class Runtime implements Entity {
 
     this.turnSnapshots.set(turnId, snapshot);
     this.turnStarts.set(turnId, nowMs);
-    // The turn's watchdog: a model call still running after TURN_DEADLINE_MS fails as a timeout, so the turn ends as a
+    // A turn's purpose and watchdog are the Lar's own unless the scheduler named them for this turn.
+    const purpose = schedulerTurn.purpose ?? this.purpose;
+    const deadlineMs = schedulerTurn.deadlineMs ?? this.turnDeadlineMs;
+    // The turn's watchdog: a model call still running after the turn's deadline fails as a timeout, so the turn ends as a
     // model error (its normal note, then the usual retry) instead of waiting forever.
-    const watchdog = withTurnDeadline(turnModel, this.turnDeadlineMs);
+    const watchdog = withTurnDeadline(turnModel, deadlineMs);
     const { result } = await runTurnWithMessages({
       model: withWitness(watchdog.model, this.witness, this.threadKind(thread), { cacheMarks: this.config.model.cacheMarks === true }),
       tools: this.toolsFor(thread),
       closingTools: CLOSING_TOOLS,
       ...(this.dryRun ? { dryRun: true } : {}),
-      purpose: this.purpose,
+      purpose,
       arrivals: () => this.arrivedSince(thread, snapshot),
       system: laid.system,
       systemLayout: laid.systemLayout,
