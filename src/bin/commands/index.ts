@@ -10,6 +10,7 @@ import { judgeCommand } from "./judge.js";
 import { ledgerCommand } from "./ledger.js";
 import { newCommand } from "./new.js";
 import { notebookRestoreCommand } from "./notebook-restore.js";
+import { probeCommand } from "./probe.js";
 import { proposalsCommand } from "./proposals.js";
 import { replayCommand } from "./replay.js";
 import { restoreCommand } from "./restore.js";
@@ -32,6 +33,8 @@ export async function dispatchCommand(command: string | undefined, args: string[
       return restoreCommand(args);
     case "unseal":
       return unsealCommand(args);
+    case "probe":
+      return probeCommand(args, (line) => console.log(line), (line) => console.error(line));
     case "proposals":
       return proposalsCommand(args);
     case "ledger":

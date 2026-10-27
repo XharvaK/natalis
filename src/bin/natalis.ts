@@ -15,7 +15,7 @@ import { runCommand } from "./commands/run.js";
 import { stopCommand } from "./commands/stop.js";
 
 const USAGE =
-  "Usage: natalis new|check|chat|run|stop|forget|import|capture|replay|judge|backup|restore|unseal|proposals|notebook-restore|ledger|vault --dir <entity folder>";
+  "Usage: natalis new|check|chat|run|stop|forget|import|capture|replay|judge|backup|restore|unseal|probe|proposals|notebook-restore|ledger|vault --dir <entity folder>";
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
