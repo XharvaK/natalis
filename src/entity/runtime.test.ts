@@ -1646,6 +1646,50 @@ describe("the honesty check on the life record", () => {
     });
   });
 
+  it("names both headings in file order when the record quote appears under more than one, and says so", async () => {
+    const record = "# Life\n\n## Home\n\nI live by the harbour.\n\n## Work\n\nI live by the harbour.\n";
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I live by the sea." })] }),
+      honestyReply(true, "I live by the sea", "I live by the harbour"),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli, said } = await open(model, { config: HONEST });
+    await entity.start();
+    await setLife(entity, record);
+
+    cli.send("Where do you live?");
+    await entity.idle();
+
+    expect(said).toEqual([]);
+    const refused = receiptsShownIn(model.requests[2]).find((item) => item["ok"] === false);
+    expect(refused?.["refused"]).toMatchObject({
+      code: "held_honesty",
+      reason: `This says "I live by the sea", but your record says "I live by the harbour", under the headings "## Home" and "## Work" (the same words appear in more than one place). Nothing was sent. Rewrite it, or say it again with knowingly: true to send it as it is.`,
+    });
+  });
+
+  it("names the heading once when the record quote appears twice under it", async () => {
+    const record = "# Life\n\n## Work\n\nI work at the bakery.\n\nI work at the bakery on Saturdays.\n";
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: "I work at the lighthouse." })] }),
+      honestyReply(true, "I work at the lighthouse", "I work at the bakery"),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli, said } = await open(model, { config: HONEST });
+    await entity.start();
+    await setLife(entity, record);
+
+    cli.send("Where do you work?");
+    await entity.idle();
+
+    expect(said).toEqual([]);
+    const refused = receiptsShownIn(model.requests[2]).find((item) => item["ok"] === false);
+    expect(refused?.["refused"]).toMatchObject({
+      code: "held_honesty",
+      reason: `This says "I work at the lighthouse", but your record says "I work at the bakery", under the heading "## Work". Nothing was sent. Rewrite it, or say it again with knowingly: true to send it as it is.`,
+    });
+  });
+
   it("caps a long record quote in the receipt at 1000 code points, and marks the cut", async () => {
     const claim = "I work at the lighthouse";
     // Birds are one code point each and two UTF-16 units each, so a unit-based cut would show about half as many.

@@ -4,8 +4,10 @@ import {
   checkHonestyQuotes,
   HONESTY_SYSTEM,
   headingAbove,
+  headingPhrase,
   parseHonestyReply,
   QUOTE_MAX_CHARS,
+  quoteMatches,
 } from "./honesty.js";
 
 describe("the honesty reply", () => {
@@ -128,6 +130,38 @@ describe("the quotes in a yes", () => {
     expect(headingAbove(record, "I work at the bakery.")).toBe("## Work");
     expect(headingAbove(record, "I work on Quay Street.")).toBe("### Days");
     expect(headingAbove("I live by the harbour.", "I live by the harbour.")).toBeUndefined();
+  });
+});
+
+describe("the heading named for a record quote", () => {
+  it("reports every match offset of a folded record quote, not only the first", () => {
+    const source = "## Home\n\nI live by the harbour.\n\n## Work\n\nI  live by\nthe harbour.";
+    const matches = quoteMatches(source, "I live by the harbour");
+    expect(matches).toHaveLength(2);
+    expect(matches.map((match) => source.slice(match.start, match.end))).toEqual([
+      "I live by the harbour",
+      "I  live by\nthe harbour",
+    ]);
+    expect(matches[0]?.start).toBeLessThan(matches[1]?.start ?? 0);
+  });
+
+  it("names both headings in file order when the same words appear under each, and says so", () => {
+    const record = "## Home\n\nI live by the harbour.\n\n## Work\n\nI live by the harbour.\n";
+    expect(headingPhrase(record, "I live by the harbour")).toBe(
+      'under the headings "## Home" and "## Work" (the same words appear in more than one place)',
+    );
+  });
+
+  it("names one heading once when every match sits under it", () => {
+    const record = "## Work\n\nI work at the bakery.\n\nI work at the bakery on Saturdays.\n";
+    expect(headingPhrase(record, "I work at the bakery")).toBe('under the heading "## Work"');
+  });
+
+  it("keeps the single-match and no-heading wording", () => {
+    expect(headingPhrase("## Work\n\nI work at the bakery.\n", "I work at the bakery")).toBe('under the heading "## Work"');
+    expect(headingPhrase("I live by the harbour.", "I live by the harbour")).toBe(
+      "with no heading above it in your record",
+    );
   });
 });
 
