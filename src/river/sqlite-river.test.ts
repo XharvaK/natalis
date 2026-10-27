@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { ftsAvailable, openRiver, RiverError, type SqliteRiver } from "./sqlite-river.js";
+import { derivedTextHoldsWords, type DerivedStore, type OutsideCascade } from "./derived.js";
 
 let tempDir: string;
 let opened: SqliteRiver[] = [];
@@ -502,6 +503,154 @@ describe("file-backed river", () => {
     river.close();
     expect(() => river.lastSeq()).toThrow(RiverError);
     expect(() => river.append({ thread: "self", kind: "note", source: "body" })).toThrow(RiverError);
+  });
+});
+
+describe("derived stores and forget", () => {
+  /** A derived store with one table: a row cites a river seq and holds its own text. */
+  function probeStore(options: { fail?: boolean } = {}): DerivedStore {
+    return {
+      tables: ["probe_derived"],
+      schema: [
+        "CREATE TABLE IF NOT EXISTS probe_derived (id INTEGER PRIMARY KEY AUTOINCREMENT, source_seq INTEGER, text TEXT NOT NULL)",
+      ],
+      cascade(db, forget) {
+        let erased = 0;
+        for (const seq of forget.seqs) {
+          erased += Number(db.prepare("DELETE FROM probe_derived WHERE source_seq = ?").run(seq).changes);
+        }
+        for (const row of db.prepare("SELECT id, text FROM probe_derived").all() as Array<{ id: number; text: string }>) {
+          if (!derivedTextHoldsWords(row.text, forget.words)) continue;
+          erased += Number(db.prepare("DELETE FROM probe_derived WHERE id = ?").run(row.id).changes);
+        }
+        if (options.fail === true) throw new Error("the derived store failed");
+        return erased;
+      },
+    };
+  }
+
+  function openFile(name: string, options: { derivedStores?: DerivedStore[]; outsideCascades?: OutsideCascade[] } = {}): { river: SqliteRiver; file: string } {
+    const file = path.join(tempDir, name);
+    const river = openRiver(file, { nowMs, ...options });
+    opened.push(river);
+    return { river, file };
+  }
+
+  function seedDerived(file: string, sourceSeq: number, text: string): void {
+    const db = new DatabaseSync(file);
+    try {
+      db.prepare("INSERT INTO probe_derived (source_seq, text) VALUES (?, ?)").run(sourceSeq, text);
+    } finally {
+      db.close();
+    }
+  }
+
+  function derivedRows(file: string): Array<{ source_seq: number; text: string }> {
+    const db = new DatabaseSync(file);
+    try {
+      return db.prepare("SELECT source_seq, text FROM probe_derived ORDER BY source_seq").all() as unknown as Array<{
+        source_seq: number;
+        text: string;
+      }>;
+    } finally {
+      db.close();
+    }
+  }
+
+  it("a seq forget erases every derived row citing it, same transaction", () => {
+    const { river, file } = openFile("derived-seq.db", { derivedStores: [probeStore()] });
+    river.append({ thread: "dm:owner", kind: "event", source: "owner", text: "The first source." });
+    river.append({ thread: "dm:owner", kind: "event", source: "owner", text: "The second source." });
+    seedDerived(file, 1, "cites one");
+    seedDerived(file, 2, "cites two");
+
+    expect(river.forget({ seqs: [1] }, "owner", "Owner asked")).toBe(1);
+    expect(derivedRows(file)).toEqual([{ source_seq: 2, text: "cites two" }]);
+    expect(river.read({ untilSeq: 1 })[0]).toMatchObject({ seq: 1, forgotten: true });
+
+    // A store that erases and then fails rolls the river erase back with it: one transaction.
+    const failing = openFile("derived-fail.db", { derivedStores: [probeStore({ fail: true })] });
+    failing.river.append({ thread: "dm:owner", kind: "event", source: "owner", text: "Kept when the store fails." });
+    seedDerived(failing.file, 1, "cites one");
+    expect(() => failing.river.forget({ seqs: [1] }, "owner", "Owner asked")).toThrow(/derived store failed/);
+    expect(failing.river.read({ untilSeq: 1 })[0]?.text).toBe("Kept when the store fails.");
+    expect(derivedRows(failing.file)).toEqual([{ source_seq: 1, text: "cites one" }]);
+  });
+
+  it("a text forget erases derived rows whose own text matches", () => {
+    const { river, file } = openFile("derived-text.db", { derivedStores: [probeStore()] });
+    river.append({ thread: "dm:owner", kind: "event", source: "owner", text: "The lantern is bright." });
+    // Neither row cites a forgotten river seq; both must be judged by their own words.
+    seedDerived(file, 99, "A LANTERN in the hall");
+    seedDerived(file, 98, "A quiet yard");
+
+    expect(river.forget({ text: "lantern" }, "owner", "Owner asked")).toBe(1);
+    expect(derivedRows(file)).toEqual([{ source_seq: 98, text: "A quiet yard" }]);
+  });
+
+  it("a crash between river and an outside store is completed at next start (pending-cascade record)", () => {
+    const calls: number[][] = [];
+    let fail = true;
+    const outside: OutsideCascade = {
+      store: "probe_outside",
+      run(input) {
+        calls.push([...input.seqs]);
+        if (fail) throw new Error("the outside store is not ready");
+      },
+    };
+    const { river, file } = openFile("pending.db", { outsideCascades: [outside] });
+    river.append({ thread: "dm:owner", kind: "event", source: "owner", text: "A row to forget." });
+    expect(() => river.forget({ seqs: [1] }, "owner", "Owner asked")).toThrow(/not ready/);
+    river.close();
+
+    const raw = new DatabaseSync(file);
+    try {
+      expect(raw.prepare("SELECT store, seqs_json FROM pending_cascade").all()).toEqual([
+        { store: "probe_outside", seqs_json: "[1]" },
+      ]);
+    } finally {
+      raw.close();
+    }
+
+    fail = false;
+    const reopened = openRiver(file, { nowMs, outsideCascades: [outside] });
+    opened.push(reopened);
+    // Once for the failed forget, once for the start that completed it.
+    expect(calls).toEqual([[1], [1]]);
+    const check = new DatabaseSync(file);
+    try {
+      expect(check.prepare("SELECT COUNT(*) AS n FROM pending_cascade").get()).toEqual({ n: 0 });
+    } finally {
+      check.close();
+    }
+    expect(reopened.read({ untilSeq: 1 })[0]).toMatchObject({ seq: 1, forgotten: true });
+  });
+
+  it("061af27-format check: user_version is unchanged after the new tables are created", () => {
+    const { river, file } = openFile("format.db");
+    river.append({ thread: "dm:owner", kind: "event", source: "owner", text: "A row." });
+    river.close();
+
+    const raw = new DatabaseSync(file);
+    try {
+      expect((raw.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(1);
+      const names = (raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map(
+        (row) => row.name,
+      );
+      expect(names).toContain("pending_cascade");
+    } finally {
+      raw.close();
+    }
+
+    const again = openRiver(file, { nowMs });
+    opened.push(again);
+    again.close();
+    const after = new DatabaseSync(file);
+    try {
+      expect((after.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(1);
+    } finally {
+      after.close();
+    }
   });
 });
 

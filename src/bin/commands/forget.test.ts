@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import { acquireLarLock, LAR_LOCK_BUSY_MESSAGE } from "../../entity/lar-lock.js"
 import { MEDIA_FOLDER, openShelf } from "../../media/shelf.js";
 import { openNotebook } from "../../notebook/index.js";
 import { openRiver } from "../../river/index.js";
+import { copyForReplay } from "../../replay/copy.js";
 import { admitObservation, DOMUS_DB_FILE, DOMUS_FOLDER, openDomusDb } from "../../worlds/domus/store.js";
 import { forgetCommand, parseForgetArgs, runForget } from "./forget.js";
 import { runCommand } from "./run.js";
@@ -375,5 +376,68 @@ describe("natalis forget and the Lar folder lock", () => {
     await forgetting;
     // The forget released the lock when it ended.
     acquireLarLock(dir).release();
+  });
+});
+
+describe("natalis forget, note file names and copies", () => {
+  it("a note whose file name holds the words is renamed and its links repaired", async () => {
+    const notebook = await openNotebook(join(dir, "notebook"));
+    await notebook.write("people/mara.md", "She keeps the quay.\n", "A note on her", "body");
+    await notebook.write("people/index.md", "See [her note](people/mara.md).\n", "An index", "body");
+
+    const counts = await runForget({ dir, query: "mara vale", reason: REASON });
+
+    expect(counts.renamed).toBe(1);
+    expect(counts.linkFiles).toBe(1);
+    expect(notebook.read("people/mara.md")).toBeNull();
+    expect(notebook.read("people/forgotten.md")).toBe("She keeps the quay.\n");
+    expect(notebook.read("people/index.md")).toBe("See [her note](people/forgotten.md).\n");
+    expect(notebook.list().map((entry) => entry.path).join("\n")).not.toMatch(/mara/i);
+    expect(existsSync(join(dir, "notebook", "people", "mara.md"))).toBe(false);
+  });
+
+  it("a note whose file name holds only one of the words keeps the other words out of links", async () => {
+    const notebook = await openNotebook(join(dir, "notebook"));
+    await notebook.write("people/mara.md", "She keeps the quay.\n", "A note on her", "body");
+    await notebook.write("people/index.md", "See [her note](people/mara.md) by the lamp.\n", "An index", "body");
+
+    await runForget({ dir, query: "mara vale", reason: REASON });
+
+    expect(notebook.read("people/index.md")).toBe("See [her note](people/forgotten.md) by the lamp.\n");
+  });
+
+  it("replay and eval copies under the Lar folder are purged", async () => {
+    writeFileSync(
+      join(dir, "state.json"),
+      JSON.stringify({ lastSeq: 2, threads: {}, asks: [], wakes: [], mood: null }),
+      "utf8",
+    );
+    const river = openRiver(join(dir, "river.db"));
+    river.append({ thread: "cli:owner", kind: "event", source: "owner", text: "Mara Vale was here." });
+    river.close();
+
+    const replayRun = join(dir, "runs", "replay-1");
+    await copyForReplay({ from: dir, to: join(replayRun, "entity"), cutAtMs: 0 });
+    writeFileSync(join(replayRun, "transcript.jsonl"), "{}\n", "utf8");
+
+    const evalRun = join(dir, "runs", "eval-1");
+    mkdirSync(join(evalRun, "cases"), { recursive: true });
+    writeFileSync(join(evalRun, "summary.json"), JSON.stringify({ note: "Mara Vale" }), "utf8");
+    writeFileSync(join(evalRun, "results.jsonl"), "", "utf8");
+    writeFileSync(join(evalRun, "cases", "1.json"), JSON.stringify({ text: "Mara Vale" }), "utf8");
+
+    // A backup is not a copy: it ages out as today and is never purged by a forget.
+    const backup = join(dir, "backups", "old");
+    mkdirSync(backup, { recursive: true });
+    writeFileSync(join(backup, "MANIFEST.json"), "{}", "utf8");
+    copyFileSync(join(dir, "river.db"), join(backup, "river.db"));
+
+    const counts = await runForget({ dir, query: "mara vale", reason: REASON });
+
+    expect(counts.copies).toBe(2);
+    expect(existsSync(replayRun)).toBe(false);
+    expect(existsSync(evalRun)).toBe(false);
+    expect(existsSync(join(backup, "MANIFEST.json"))).toBe(true);
+    expect(existsSync(join(backup, "river.db"))).toBe(true);
   });
 });
