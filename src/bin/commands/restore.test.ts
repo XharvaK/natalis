@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EntityConfig } from "../../entity/config.js";
+import { acquireLarLock, LAR_LOCK_BUSY_MESSAGE, LAR_LOCK_DATABASE_FILE, LAR_LOCK_INFO_FILE } from "../../entity/lar-lock.js";
 import { openEntity, type Entity } from "../../entity/runtime.js";
 import { openRiver } from "../../river/index.js";
 import { ScriptedModel } from "../../testing/scripted-model.js";
@@ -222,6 +223,28 @@ describe("natalis restore", () => {
     mkdirSync(target);
     await restoreEntity({ from: backup, dir: target, say: () => {} });
     expect(textsOf(target).slice(0, textsOf(lar).length)).toEqual(textsOf(lar));
+  }, 60_000);
+
+  it("refuses while another holder has the target's lock, then restores once it is free", async () => {
+    const lar = join(root, "iris");
+    const backup = await backupOf(lar);
+    const target = join(root, "restored", "iris");
+    mkdirSync(target, { recursive: true });
+    const lock = acquireLarLock(target);
+    await expect(restoreEntity({ from: backup, dir: target, say: () => {} })).rejects.toThrow(LAR_LOCK_BUSY_MESSAGE);
+    // The refused restore wrote nothing: only the holder's lock files are in the target.
+    const names = readdirSync(target);
+    expect(names.length).toBeGreaterThan(0);
+    expect(
+      names.every(
+        (name) => name === LAR_LOCK_DATABASE_FILE || name === `${LAR_LOCK_DATABASE_FILE}-journal` || name === LAR_LOCK_INFO_FILE,
+      ),
+    ).toBe(true);
+    lock.release();
+    await restoreEntity({ from: backup, dir: target, say: () => {} });
+    expect(existsSync(join(target, "river.db"))).toBe(true);
+    // The restore released the target's lock when it ended.
+    acquireLarLock(target).release();
   }, 60_000);
 
   it("refuses a target that is not empty, and changes nothing in it", async () => {

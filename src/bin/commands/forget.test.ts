@@ -4,11 +4,13 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { acquireLarLock, LAR_LOCK_BUSY_MESSAGE } from "../../entity/lar-lock.js";
 import { MEDIA_FOLDER, openShelf } from "../../media/shelf.js";
 import { openNotebook } from "../../notebook/index.js";
 import { openRiver } from "../../river/index.js";
 import { admitObservation, DOMUS_DB_FILE, DOMUS_FOLDER, openDomusDb } from "../../worlds/domus/store.js";
 import { forgetCommand, parseForgetArgs, runForget } from "./forget.js";
+import { runCommand } from "./run.js";
 
 // Every name and line here is invented.
 const REASON = "Owner asked to forget the lantern note";
@@ -213,5 +215,40 @@ describe("refusing a forget it cannot do", () => {
     expect(code).toBe(2);
     expect(err.join("\n")).toContain("Usage: natalis forget");
     expect(out).toEqual([]);
+  });
+});
+
+describe("natalis forget and the Lar folder lock", () => {
+  it("refuses while another holder has the lock, and forgets nothing", async () => {
+    const lock = acquireLarLock(dir);
+    try {
+      const code = await forgetCommand(["--dir", dir, "--query", "lantern yard", "--reason", REASON], (l) => out.push(l), (l) => err.push(l));
+      expect(code).toBe(1);
+      expect(err).toEqual([LAR_LOCK_BUSY_MESSAGE]);
+      expect(out).toEqual([]);
+      expect(seqsOf("Lantern Yard is by the water.")).toHaveLength(1);
+    } finally {
+      lock.release();
+    }
+  });
+
+  it("holds the lock for the whole forget, so natalis run is refused meanwhile", async () => {
+    writeFileSync(
+      join(dir, "entity.json"),
+      JSON.stringify({
+        model: { baseUrl: "https://model.example.invalid/v1", model: "test-model", contextTokens: 1000 },
+        summoner: { alias: "Mara" },
+      }),
+      "utf8",
+    );
+    const forgetting = runForget({ dir, query: "lantern yard", reason: REASON });
+    const runErr: string[] = [];
+    // runForget takes the lock before its first await, so this run sees it held by the forget.
+    const code = await runCommand(["--dir", dir], () => {}, (line) => runErr.push(line));
+    expect(code).toBe(1);
+    expect(runErr).toEqual([LAR_LOCK_BUSY_MESSAGE]);
+    await forgetting;
+    // The forget released the lock when it ended.
+    acquireLarLock(dir).release();
   });
 });

@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { acquireLarLock, LAR_LOCK_BUSY_MESSAGE } from "../../entity/lar-lock.js";
 import { keepVaultEntry, readVaultEntry } from "../../worlds/web/vault.js";
 import { vaultCommand } from "./vault.js";
 
@@ -91,5 +92,24 @@ describe("natalis vault", () => {
     expect(await run([])).toBe(2);
     expect(prompts).toEqual([]);
     expect(readVaultEntry(dir, "board_key")).toBeUndefined();
+  });
+
+  it("refuses a keep while another holder has the lock, and keeps it once the lock is free", async () => {
+    const lock = acquireLarLock(dir);
+    try {
+      expect(await run(["--dir", dir, "--keep", "board_key", "--host", "board.example.org"])).toBe(1);
+      expect(err).toEqual([LAR_LOCK_BUSY_MESSAGE]);
+      expect(prompts).toEqual([]);
+      expect(readVaultEntry(dir, "board_key")).toBeUndefined();
+      // Listing names does not write, so it still works while the lock is held.
+      out = [];
+      expect(await run(["--dir", dir])).toBe(0);
+      expect(out).toEqual(["The vault is empty."]);
+    } finally {
+      lock.release();
+    }
+    // The Lar is stopped (no lock): a keep writes as it did before.
+    expect(await run(["--dir", dir, "--keep", "board_key", "--host", "board.example.org"])).toBe(0);
+    expect(readVaultEntry(dir, "board_key")).toEqual({ host: "board.example.org", value: typed });
   });
 });

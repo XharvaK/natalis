@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { notebookRestoreCommand } from "../bin/commands/notebook-restore.js";
+import { acquireLarLock, LAR_LOCK_BUSY_MESSAGE } from "../entity/lar-lock.js";
 import { openNotebook } from "./git-notebook.js";
 import { restoreNotebookTo } from "./restore.js";
 
@@ -69,6 +70,28 @@ describe("restore the notebook to a commit", () => {
     expect(await notebookRestoreCommand(["--dir", root, "--commit", good, "--reason", "Undo"], quiet, quiet)).toBe(1);
     expect(head(dir)).toBe(before);
     // --force goes ahead.
+    expect(await notebookRestoreCommand(["--dir", root, "--commit", good, "--reason", "Undo", "--force"], quiet, quiet)).toBe(0);
+    expect(head(dir)).not.toBe(before);
+  });
+
+  it("refuses under a held lock even with --force, which still skips only the clean-stop check", async () => {
+    const { root, dir, good } = await book();
+    const before = head(dir);
+    const quiet = () => {};
+    writeFileSync(join(root, "state.json"), JSON.stringify({ stoppedCleanly: true, aliveMs: 1 }));
+    const lock = acquireLarLock(root);
+    const err: string[] = [];
+    try {
+      expect(await notebookRestoreCommand(["--dir", root, "--commit", good, "--reason", "Undo", "--force"], quiet, (l) => err.push(l))).toBe(1);
+      expect(err).toEqual([LAR_LOCK_BUSY_MESSAGE]);
+      expect(head(dir)).toBe(before);
+    } finally {
+      lock.release();
+    }
+    // With the lock free, --force still goes ahead only because it skips the clean-stop check.
+    writeFileSync(join(root, "state.json"), JSON.stringify({ stoppedCleanly: false, aliveMs: Date.now() }));
+    expect(await notebookRestoreCommand(["--dir", root, "--commit", good, "--reason", "Undo"], quiet, quiet)).toBe(1);
+    expect(head(dir)).toBe(before);
     expect(await notebookRestoreCommand(["--dir", root, "--commit", good, "--reason", "Undo", "--force"], quiet, quiet)).toBe(0);
     expect(head(dir)).not.toBe(before);
   });

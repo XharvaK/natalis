@@ -2,9 +2,11 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { importCommand } from "../bin/commands/import.js";
 import type { RiverRow } from "../contracts.js";
 import type { EntityConfig } from "../entity/config.js";
+import { acquireLarLock, LAR_LOCK_BUSY_MESSAGE } from "../entity/lar-lock.js";
 import { openEntity, STATE_FILE } from "../entity/runtime.js";
 import { openRiver } from "../river/index.js";
 import { createSecretScanner } from "../secrets/index.js";
@@ -476,6 +478,42 @@ describe("applying", () => {
     await expect(openEntity({ dir, config: CONFIG, model: new ScriptedModel([]), worlds: [] })).rejects.toThrow(
       /state\.json is missing/,
     );
+  });
+});
+
+describe("natalis import and the Lar folder lock", () => {
+  it("import --apply is refused while another holder has the lock; a dry run does not need it", async () => {
+    const target = join(root, "iris");
+    mkdirSync(target);
+    writeFileSync(join(target, "entity.json"), JSON.stringify(CONFIG));
+    const bundleDir = writeBundle();
+    const logged: string[] = [];
+    const complained: string[] = [];
+    const logSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      complained.push(args.map(String).join(" "));
+    });
+    try {
+      const lock = acquireLarLock(target);
+      try {
+        expect(await importCommand(["--dir", target, "--bundle", bundleDir, "--apply"])).toBe(1);
+        expect(complained.join("\n")).toContain(LAR_LOCK_BUSY_MESSAGE);
+        expect(existsSync(join(target, "river.db"))).toBe(false);
+        // A dry run writes nothing, so it does not need the lock.
+        expect(await importCommand(["--dir", target, "--bundle", bundleDir])).toBe(0);
+        expect(logged.join("\n")).toContain("Dry run: nothing was written");
+      } finally {
+        lock.release();
+      }
+      // With the lock free, the same apply goes ahead.
+      expect(await importCommand(["--dir", target, "--bundle", bundleDir, "--apply"])).toBe(0);
+      expect(existsSync(join(target, "river.db"))).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
   });
 });
 
