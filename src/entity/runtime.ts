@@ -11,7 +11,7 @@
 import { rankRecall } from "../context/recall-rank.js";
 import { parseTriggers, triggeredNotes } from "../context/triggers.js";
 import { SAY_CHECKS } from "./say-checks.js";
-import { policyFor, policyRefusal } from "./tool-policy.js";
+import { policyFor, policyRefusal, permissionRequestText, scopeFor, summaryFor } from "./tool-policy.js";
 import { CLI_WORLD_ID } from "../worlds/cli.js";
 import { createEventBus, observeRiver, type EventType, type Hook } from "../river/events.js";
 import { purposeOf, type Purpose } from "../river/purpose.js";
@@ -30,6 +30,7 @@ import { planRetry, type QuotaRetryTuning } from "./retry-plan.js";
 import { openRiver } from "../river/index.js";
 import { createWitness, withWitness, type CacheWitness } from "../model/witness.js";
 import { openLedger, type Ledger, type LedgerRow, type ThreadKind } from "../river/ledger.js";
+import { ANYWHERE, openGrants, type Grants } from "./grants.js";
 import { checkRiver } from "../river/integrity.js";
 import { indexedRiver, ViewIndex, viewKeyOfRow } from "../river/view-index.js";
 import { createSecretScanner, guardModel, guardNotebook, guardRiver, KNOWN_VALUE_KIND } from "../secrets/index.js";
@@ -768,6 +769,8 @@ class Runtime implements Entity {
   private readonly larRiver: River;
   /** One row per turn, beside the river's rows (no words). */
   private readonly ledger: Ledger;
+  /** What the Owner allowed or refused, and the requests posted for an ask. Beside the notebook, never in it. */
+  private readonly grants: Grants;
   /** The cache witness: one row per model call (counts and hashes only), shared by every thread. */
   private readonly witness: CacheWitness;
   /** Failed turns in a row, over every thread. A turn that gets an answer clears it. */
@@ -888,6 +891,7 @@ class Runtime implements Entity {
     this.viewIndex.build(init.river);
     this.river = indexedRiver(init.river, this.viewIndex);
     this.ledger = openLedger(join(init.dir, RIVER_LEDGER_FILE));
+    this.grants = openGrants(init.dir);
     this.witness = createWitness({ write: (row) => this.ledger.appendCall(row), now: () => this.nowMs() });
     this.larRiver = this.riverForLar(this.river);
     this.notebook = init.notebook;
@@ -1060,6 +1064,7 @@ class Runtime implements Entity {
     }
     await Promise.allSettled([...this.running.values()]);
     this.ledger.close();
+    this.grants.close();
     this.state.aliveMs = this.nowMs();
     this.state.stoppedCleanly = true;
     this.saveState();
@@ -3349,14 +3354,102 @@ class Runtime implements Entity {
     return this.worldFor(place)?.isOwnerPlace?.(place) === true;
   }
 
-  /** Every tool passes the summoner's tool table first; with no table, or the tool not in it, it runs as before. */
+  /**
+   * Every tool passes the summoner's tool table first; with no table, or the tool not in it, it runs as before.
+   * An ask tool consults grants.db at call start: a refusal wins, then a standing grant for tool and scope, then an
+   * unused once grant whose HMAC matches (marked used before the tool runs), otherwise the body posts a request.
+   */
   private gateToolTable(tool: Tool): Tool {
     const table = this.config.tools;
-    if (policyFor(table, tool.spec.name) === "allow") return tool;
+    const policy = policyFor(table, tool.spec.name);
+    if (policy === "allow") return tool;
+    const settles = tool.settles === true ? { settles: true as const } : {};
+    if (policy === "deny") {
+      return {
+        spec: tool.spec,
+        ...settles,
+        run: async (args, context) => policyRefusal(table, tool.spec.name) ?? tool.run(args, context),
+      };
+    }
+    const name = tool.spec.name;
     return {
       spec: tool.spec,
-      run: async (args, context) => policyRefusal(table, tool.spec.name) ?? tool.run(args, context),
+      ...settles,
+      run: async (args, context) => {
+        const scope = scopeFor(name, args);
+        const decision = this.grants.check({ tool: name, scope, argsHmac: this.grants.hmac(args), nowMs: this.nowMs() });
+        if (decision.outcome === "refuse") {
+          const where = decision.scope === ANYWHERE ? "anywhere" : `on ${decision.scope}`;
+          return refuse(
+            "refused_by_grant",
+            `Your summoner said no to ${name} ${where}, so nothing ran.`,
+            `a standing refusal covers ${name} ${where}`,
+          );
+        }
+        if (decision.outcome === "allow") return tool.run(args, context);
+        return this.askSummoner(name, scope, args, context);
+      },
     };
+  }
+
+  /**
+   * Posts one request in the summoner's own place and records it. A tool call that asks has not run. The message is
+   * made only from code: the tool, its scope, and the code-made summary. It is also a river row, so forget covers it.
+   */
+  private async askSummoner(tool: string, scope: string, args: Args, context: ToolContext): Promise<Receipt> {
+    const place = this.state.summonerPlace;
+    if (place === undefined) {
+      return refuse(
+        "ask_summoner",
+        `${tool} needs your summoner's yes first, so nothing was done. No place for your summoner is known yet, so no request was posted.`,
+        "no summoner place is known yet",
+      );
+    }
+    const text = this.scanner.redact(
+      permissionRequestText({ name: this.larName(), tool, scope, summary: summaryFor(tool, args) }),
+    );
+    // The welcome notice and any command answer queued before this request go first, in the same order.
+    await this.outbox;
+    const sent = await this.sayTo(place, text);
+    if (!sent.ok) {
+      return refuse(
+        "ask_not_posted",
+        `I could not ask your summoner: ${sent.summary} Nothing ran.`,
+        sent.refused?.reason ?? sent.summary,
+      );
+    }
+    const row = this.river.append({
+      thread: place,
+      kind: "say",
+      source: "body",
+      place,
+      text,
+      data: { permissionRequest: true, tool, scope },
+      atMs: this.nowMs(),
+    });
+    const requestId = this.grants.request({
+      tool,
+      scopeKey: scope,
+      argsHmac: this.grants.hmac(args),
+      postedSeq: row.seq,
+      place,
+      askingThread: context.thread,
+      nowMs: this.nowMs(),
+    });
+    return {
+      ok: false,
+      summary: `Asked your summoner in ${place}. Nothing ran; their answer reaches you there.`,
+      data: { request: requestId },
+      refused: {
+        code: "ask_summoner",
+        reason: `${tool} needs your summoner's yes. The request is posted in ${place}.`,
+      },
+    };
+  }
+
+  /** The name the Lar is known by in its own folder: the configured name, else the one it chose. */
+  private larName(): string {
+    return this.config.name ?? chosenName(this.notebook.read(NAME_NOTE)) ?? "Your Lar";
   }
 
   /**
