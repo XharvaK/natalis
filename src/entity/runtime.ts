@@ -68,7 +68,7 @@ import { dayKey, hostZone, msUntilNextDay, startOfDayMs } from "./day.js";
 import { FLOOR_TEXT } from "./floor.js";
 import { chosenName, NAME_NOTE, whoYouAre, type Thinking } from "./identity.js";
 import { readNature } from "./nature.js";
-import { HONESTY_SYSTEM, type HonestyVerdict, parseHonestyReply } from "./honesty.js";
+import { checkHonestyQuotes, headingAbove, HONESTY_SYSTEM, type HonestyVerdict, parseHonestyReply } from "./honesty.js";
 import {
   createPrivacyWatch,
   outwardHold,
@@ -2906,6 +2906,11 @@ class Runtime implements Entity {
       verdict = { error: `the model call failed (${clip(oneLine(messageOf(err)), 120)})` };
     }
 
+    // A quote is accepted only when it is a real piece of its own source. A quote the body cannot find is an error.
+    if (!("error" in verdict) && verdict.contradicts) {
+      verdict = checkHonestyQuotes(verdict.claim_quote, verdict.record_quote, text, record);
+    }
+
     if ("error" in verdict) {
       this.river.append({
         thread,
@@ -2918,12 +2923,14 @@ class Runtime implements Entity {
       return undefined;
     }
     if (!verdict.contradicts) return undefined;
+    const heading = headingAbove(record, verdict.record_quote);
+    const headingPart = heading === undefined ? "with no heading above it in your record" : `under the heading "${heading}"`;
     return {
       ok: false,
       summary: "I held that back: it says something my record contradicts, so nothing was sent.",
       refused: {
         code: "held_honesty",
-        reason: `This says "${verdict.claim}", but your record says "${verdict.record}". Nothing was sent. Rewrite it, or say it again with knowingly: true to send it as it is.`,
+        reason: `This says "${verdict.claim_quote}", but your record says "${verdict.record_quote}", ${headingPart}. Nothing was sent. Rewrite it, or say it again with knowingly: true to send it as it is.`,
       },
     };
   }
