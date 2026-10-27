@@ -36,8 +36,9 @@ export type EntityConfig = {
   /**
    * Daily limits. Left out, there is none. lifeWarnChars: when self/life.md passes this many characters (code points),
    * the body writes a river note and a startup log line; the note is never trimmed. Default DEFAULT_LIFE_WARN_CHARS.
+   * reflectBudget: the sum of her importance-mark weights that brings one quiet reflection turn; left out, none.
    */
-  limits?: { turnsPerDay?: number; lifeWarnChars?: number };
+  limits?: { turnsPerDay?: number; lifeWarnChars?: number; reflectBudget?: number };
   /** Local clock times ("HH:MM") the Lar gets a daily wake at, once, on its first start. Left out or [], none. */
   rhythm?: string[];
   /**
@@ -173,12 +174,13 @@ function parseRhythm(value: unknown): string[] {
   return times;
 }
 
-function parseLimits(value: unknown): { turnsPerDay?: number; lifeWarnChars?: number } {
+function parseLimits(value: unknown): { turnsPerDay?: number; lifeWarnChars?: number; reflectBudget?: number } {
   const block = objectOf(value, "limits");
-  onlyKeys(block, ["turnsPerDay", "lifeWarnChars"], "limits");
-  const limits: { turnsPerDay?: number; lifeWarnChars?: number } = {};
+  onlyKeys(block, ["turnsPerDay", "lifeWarnChars", "reflectBudget"], "limits");
+  const limits: { turnsPerDay?: number; lifeWarnChars?: number; reflectBudget?: number } = {};
   if (block["lifeWarnChars"] !== undefined) limits.lifeWarnChars = positiveInt(block["lifeWarnChars"], "limits.lifeWarnChars");
   if (block["turnsPerDay"] !== undefined) limits.turnsPerDay = positiveInt(block["turnsPerDay"], "limits.turnsPerDay");
+  if (block["reflectBudget"] !== undefined) limits.reflectBudget = positiveInt(block["reflectBudget"], "limits.reflectBudget");
   return limits;
 }
 

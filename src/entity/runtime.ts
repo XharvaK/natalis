@@ -14,7 +14,7 @@ import { SAY_CHECKS } from "./say-checks.js";
 import { policyFor, policyRefusal } from "./tool-policy.js";
 import { CLI_WORLD_ID } from "../worlds/cli.js";
 import { createEventBus, observeRiver, type EventType, type Hook } from "../river/events.js";
-import type { Purpose } from "../river/purpose.js";
+import { purposeOf, type Purpose } from "../river/purpose.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -173,6 +173,11 @@ const CLOSING_TOOLS = ["write_note", "append_note", "edit_note"] as const;
  * this list. No world tool, no say, no wake, no forget and no trash_note: a reflect turn prepares memory, it does not act.
  */
 const REFLECT_TOOLS = ["read_note", "list_notes", "recall", "write_note", "edit_note", "append_note"] as const;
+/** U6: the most rows one mark may cite, the longest reason it may carry, and the line every reflection turn carries. */
+const MARK_SEQS_MAX = 20;
+const MARK_WHY_MAX = 200;
+const MARKED_LINE =
+  "You marked these as important. This is a quiet turn to think about them. Nothing here is sent anywhere. Write down what you want to keep, in your own words.";
 /** A receipt the turn deadline wrote while its tool was still running (run-turn raceDeadline). */
 function isOutcomeUnknown(row: RiverRow): boolean {
   const refused = row.data?.["refused"];
@@ -222,6 +227,10 @@ const ORDER_NOTE =
   "Each turn's message lists, in this order: the recent rows, the new rows, the current view of anything that changed, then, on a retry, what was already done, then the now board, the time, and recall. A note at the end names any part that was left out for size.";
 /** A section of the prompt, and the class that says how often it changes. Every section must declare one. */
 type Section = ContextSection & { cls: PromptPartClass };
+/** U6: one row she marked, with the newest weight she gave it. */
+type MarkedEntry = { row: RiverRow; weight: number };
+/** U6: the marked rows a reflection turn shows, and when the oldest mark in this budget window was written. */
+type MarkedWindow = { entries: MarkedEntry[]; windowStartAtMs: number };
 const RECALL_LIMIT = 8;
 const RECALL_WORDS = 4;
 const RECALL_CLIP = 300;
@@ -782,6 +791,8 @@ class Runtime implements Entity {
   private nonLiveWaitMs = NON_LIVE_WAIT_MS;
   /** When a drop note was last written, so a busy day writes at most one. */
   private nonLiveNoteAtMs: number | undefined;
+  /** When a queued reflection turn was dropped: the river seq its budget window starts after. Lost on restart; safe. */
+  private reflectDropped: { seq: number } | undefined;
   /** Retries waiting after a failed turn, per thread. */
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly failures = new Map<string, number>();
@@ -1244,8 +1255,44 @@ class Runtime implements Entity {
         atMs: now,
       });
     }
+    // U6: a dropped reflection ends its budget window too. The note above is at most once a day, so it cannot say
+    // this; the marker lives in memory only, and losing it on restart is safe (the next mark queues again).
+    this.reflectDropped = { seq: this.river.lastSeq() };
     this.pump();
     this.resolveIdle();
+  }
+
+  /**
+   * U6: after one of her marks is written, the sum of the weights marked since the last reflection ended (or was
+   * dropped) is checked against limits.reflectBudget. At or over it, one reflection turn is queued in her own thread.
+   * Absent reflectBudget means off: no reflection is ever queued.
+   */
+  private noteMarkWritten(): void {
+    const budget = this.config.limits?.reflectBudget;
+    if (budget === undefined) return;
+    const total = this.markWindow().reduce((sum, row) => sum + (markWeightOf(row) ?? 0), 0);
+    if (total < budget) return;
+    this.queueReflectTurn("self");
+  }
+
+  /** The mark rows written since the last reflection ended or was dropped: the budget window, oldest first. */
+  private markWindow(): RiverRow[] {
+    const last = this.lastReflectEnd();
+    let cutoffSeq = last?.seq ?? 0;
+    const dropped = this.reflectDropped;
+    if (dropped !== undefined && dropped.seq > cutoffSeq) cutoffSeq = dropped.seq;
+    return this.river
+      .read({ kinds: ["note"], sinceSeq: cutoffSeq, limit: ALL_ROWS })
+      .filter((row) => markWeightOf(row) !== undefined);
+  }
+
+  /** The newest reflection turn that ended, from the river. Its seq starts the next budget window. */
+  private lastReflectEnd(): RiverRow | undefined {
+    for (let limit = 64; ; limit *= 4) {
+      const rows = this.river.read({ kinds: ["turn"], newestFirst: true, limit });
+      const found = rows.find((row) => row.data?.["phase"] === "end" && purposeOf(row) === "reflect");
+      if (found !== undefined || rows.length < limit) return found;
+    }
   }
 
   /**
@@ -1338,7 +1385,10 @@ class Runtime implements Entity {
     const fresh = this.river
       .read({ thread, kinds: ["event"], sinceSeq: seen, untilSeq: snapshot, limit: ALL_ROWS })
       .filter((row) => !this.hiddenHere(row, thread));
-    if (fresh.length === 0) return;
+    const purpose = schedulerTurn.purpose ?? this.purpose;
+    // A live turn needs something new to answer. A reflection turn is the scheduler's own: her marks are what brought
+    // it, so it runs even when no event is waiting in her self thread.
+    if (fresh.length === 0 && purpose !== "reflect") return;
     // SHOULD-2 (Auditor, 2026-10-26): whether this turn was woken by her own wake is decided from its own rows and kept
     // for this turn; other threads' events cannot change it. Turns of one thread run one at a time.
     this.wokenByOwnWake.set(thread, fresh.some(isWakeRow) && !fresh.some(isOutsideRow));
@@ -1364,7 +1414,15 @@ class Runtime implements Entity {
     const current = currentViewRows(fresh, newest);
     // A row in its own block is shown, so recall does not show it again.
     for (const { row } of current) shown.add(row.seq);
-    const { system: systemParts, tail, sizes } = this.systemText(thread, fresh, shown, nowMs, snapshot, this.thinkingOf(turnModel, mainName, effort));
+    const { system: systemParts, tail, sizes } = this.systemText(
+      thread,
+      fresh,
+      shown,
+      nowMs,
+      snapshot,
+      this.thinkingOf(turnModel, mainName, effort),
+      purpose,
+    );
     const recentLines = (rows: readonly RiverRow[]): string[] =>
       rows.map((row) => this.lineFor(row, viewKeyOf(row) !== undefined));
     // Recent here holds still for a page: its first RECENT_LIMIT rows are one part (class page), and the rows since the
@@ -1419,8 +1477,7 @@ class Runtime implements Entity {
 
     this.turnSnapshots.set(turnId, snapshot);
     this.turnStarts.set(turnId, nowMs);
-    // A turn's purpose and watchdog are the Lar's own unless the scheduler named them for this turn.
-    const purpose = schedulerTurn.purpose ?? this.purpose;
+    // The turn's watchdog is the Lar's own unless the scheduler named one for this turn.
     const deadlineMs = schedulerTurn.deadlineMs ?? this.turnDeadlineMs;
     // A scheduler turn may be released by the mind lock; a stop aborts every turn through this.abort as well.
     const turnSignal =
@@ -2165,6 +2222,7 @@ class Runtime implements Entity {
     nowMs: number,
     snapshot: number,
     thinking: Thinking,
+    purpose: Purpose,
   ): { system: LayoutPart[]; tail: LayoutPart[]; sizes: string } {
     this.warnLifeSize(false);
     const wakes = this.state.wakes.map((wake) => ({ id: wake.id, atMs: wake.atMs, why: wake.why, repeat: wake.repeat, clock: wake.clock, scheduledIn: wake.scheduledIn }));
@@ -2202,9 +2260,13 @@ class Runtime implements Entity {
     if (triggered !== "") changing.push({ name: "triggered notes", text: triggered, priority: 45, cls: "turn" });
     const recall = this.recallText(thread, fresh, shown);
     if (recall !== "") changing.push({ name: "recall", text: recall, priority: 40, cls: "turn" });
+    // U6: a reflection turn shows the rows she marked since the last reflection, whole, under the same one budget as
+    // every other optional section. Rows that do not fit are named by one pointer line, never cut or reworded.
+    const marked = purpose === "reflect" ? this.markedEntries(thread, snapshot) : undefined;
     // One budget over all of them, as before: an optional section that does not fit is dropped whole, and named.
     const all: Section[] = [...slow, ...changing];
-    const { dropped } = assembleSystem(all, this.config.model.contextTokens);
+    const fitted = marked === undefined ? undefined : this.fitMarked(all, marked);
+    const dropped = fitted === undefined ? assembleSystem(all, this.config.model.contextTokens).dropped : fitted.dropped;
     const shownNames = (sections: Section[]): Section[] => sections.filter((section) => !dropped.includes(section.name));
     const part = (section: Section): LayoutPart => ({ name: section.name, cls: section.cls, text: `## ${section.name}\n${section.text}` });
     const shownSlow = shownNames(slow);
@@ -2215,12 +2277,83 @@ class Runtime implements Entity {
       ...shownSlow.filter((section) => section.cls === "notes").map(part),
     ];
     const tail: LayoutPart[] = shownNames(changing).map(part);
+    if (fitted !== undefined && !dropped.includes(fitted.section.name)) tail.push(part(fitted.section));
     if (dropped.length > 0) tail.push({ name: "dropped note", cls: "turn", text: droppedNote(dropped) });
     return {
       system,
       tail,
-      sizes: all.map((section) => `${section.name} ${section.text.length} characters`).join(", "),
+      sizes: [...all, ...(fitted === undefined ? [] : [fitted.section])]
+        .map((section) => `${section.name} ${section.text.length} characters`)
+        .join(", "),
     };
+  }
+
+  /**
+   * U6: the marked rows a reflection turn shows. The newest mark for each cited row wins; only rows that still exist,
+   * were not forgotten, and are visible here are included. Higher weights come first, then older rows first.
+   */
+  private markedEntries(thread: string, snapshot: number): MarkedWindow | undefined {
+    const marks = this.markWindow();
+    if (marks.length === 0) return undefined;
+    const newest = new Map<number, number>();
+    for (let i = marks.length - 1; i >= 0; i--) {
+      const mark = marks[i];
+      if (mark === undefined) continue;
+      const weight = markWeightOf(mark);
+      const cites = mark.data?.["cites"];
+      if (weight === undefined || !Array.isArray(cites)) continue;
+      for (const cite of cites) {
+        if (typeof cite !== "number" || !Number.isSafeInteger(cite) || newest.has(cite)) continue;
+        newest.set(cite, weight);
+      }
+    }
+    const entries: MarkedEntry[] = [];
+    for (const [seq, weight] of newest) {
+      const [row] = this.river.read({ sinceSeq: seq - 1, untilSeq: seq, limit: 1 });
+      if (row === undefined || row.seq > snapshot || isForgotten(row) || this.hiddenHere(row, thread)) continue;
+      entries.push({ row, weight });
+    }
+    entries.sort((a, b) => b.weight - a.weight || a.row.seq - b.row.seq);
+    return { entries, windowStartAtMs: marks[0]?.atMs ?? this.nowMs() };
+  }
+
+  /**
+   * U6: fills the marked section with whole rows under the same one budget as the other optional sections. It starts
+   * whole; while it does not fit, its last row moves into the pointer line. If even the pointer line does not fit, the
+   * section is dropped whole like any other optional section and named in the dropped note.
+   */
+  private fitMarked(all: Section[], marked: MarkedWindow): { section: Section; dropped: string[] } {
+    const name = `marked since ${this.stamp(marked.windowStartAtMs).slice(0, 10)}`;
+    let shown = marked.entries.length;
+    let section = this.markedSection(name, marked.entries, shown);
+    let dropped = assembleSystem([...all, section], this.config.model.contextTokens).dropped;
+    while (dropped.includes(name) && shown > 0) {
+      shown -= 1;
+      section = this.markedSection(name, marked.entries, shown);
+      dropped = assembleSystem([...all, section], this.config.model.contextTokens).dropped;
+    }
+    return { section, dropped };
+  }
+
+  private markedSection(name: string, entries: readonly MarkedEntry[], shown: number): Section {
+    const kept = entries.slice(0, shown);
+    const omitted = entries.slice(shown);
+    return {
+      name,
+      priority: 95,
+      cls: "turn",
+      text: [
+        MARKED_LINE,
+        ...kept.map((entry) => this.markedLine(entry.row)),
+        ...(omitted.length === 0 ? [] : [markedPointer(omitted)]),
+      ].join("\n"),
+    };
+  }
+
+  /** One marked row, whole: its seq, when and where it is from, who said it, and its text exactly as it is kept. */
+  private markedLine(row: RiverRow): string {
+    const outside = row.source === "outside" ? " (outside)" : "";
+    return `[seq ${row.seq}, ${this.stamp(row.atMs)} ${row.thread} ${who(row)}${outside}] ${row.text ?? ""}`;
   }
 
   private identityText(nowMs: number, thinking: Thinking): string {
@@ -2463,11 +2596,34 @@ class Runtime implements Entity {
         else found.set(hit.row.seq, { row: hit.row, score: 1 });
       }
     }
-    const candidates = [...found.values()].map(({ row, score }) => ({ row, seq: row.seq, atMs: row.atMs, matches: score }));
+    if (found.size === 0) return "";
+    const weights = this.markWeights();
+    const candidates = [...found.values()].map(({ row, score }) => ({
+      row,
+      seq: row.seq,
+      atMs: row.atMs,
+      matches: score,
+      weight: weights.get(row.seq) ?? 0,
+    }));
     return rankRecall(candidates, this.nowMs())
       .slice(0, RECALL_LIMIT)
       .map(({ row }) => `[${this.stamp(row.atMs)} ${row.thread} ${who(row)}] ${shownRow(row)}`)
       .join("\n");
+  }
+
+  /** U6: the newest mark weight for each cited row, over every mark in the river. An unmarked row has no entry. */
+  private markWeights(): Map<number, number> {
+    const weights = new Map<number, number>();
+    for (const row of this.river.read({ kinds: ["note"], newestFirst: true, limit: ALL_ROWS })) {
+      const weight = markWeightOf(row);
+      const cites = row.data?.["cites"];
+      if (weight === undefined || !Array.isArray(cites)) continue;
+      for (const cite of cites) {
+        if (typeof cite !== "number" || !Number.isSafeInteger(cite) || weights.has(cite)) continue;
+        weights.set(cite, weight);
+      }
+    }
+    return weights;
   }
 
   /**
@@ -2670,6 +2826,33 @@ class Runtime implements Entity {
       run: async (args, context) => run(args, context),
     });
     return [
+      make(
+        {
+          name: "mark",
+          description:
+            "Mark one or more rows in your river as important to you. Give 1 to 20 row numbers (seqs) and a weight from 1 (a little) to 3 (very). Marked rows count more in recall, and enough weight brings a quiet turn to think them over. Say why in one short line if you want.",
+          parameters: {
+            type: "object",
+            properties: {
+              seqs: {
+                type: "array",
+                items: { type: "integer", minimum: 1 },
+                minItems: 1,
+                maxItems: MARK_SEQS_MAX,
+                description: `The row numbers to mark, from 1 to ${MARK_SEQS_MAX} of them.`,
+              },
+              weight: { type: "integer", enum: [1, 2, 3], description: "1 for a little, 2 for much, 3 for very much." },
+              why: {
+                type: "string",
+                maxLength: MARK_WHY_MAX,
+                description: `Optional. Why it matters, in one short line. At most ${MARK_WHY_MAX} characters.`,
+              },
+            },
+            required: ["seqs", "weight"],
+          },
+        },
+        (args, context) => this.mark(args, context),
+      ),
       make(
         {
           name: "say",
@@ -3448,6 +3631,54 @@ class Runtime implements Entity {
     return { ok: true, summary: `Let go of the open question in ${place.value}.`, data: { cleared } };
   }
 
+  /**
+   * U6: one importance mark. It cites existing rows she can see here and are not forgotten, then writes one plain
+   * "note" row in this thread. Re-marking writes another row; the newest mark for a row is the one recall uses.
+   */
+  private mark(args: Args, context: ToolContext): Receipt {
+    const seqs = requireMarkSeqs(args["seqs"]);
+    if (!seqs.ok) return seqs.receipt;
+    const weight = args["weight"];
+    if (weight !== 1 && weight !== 2 && weight !== 3) {
+      return refuse("bad_arguments", "The weight must be 1, 2 or 3.", "weight is not 1, 2 or 3");
+    }
+    const why = optionalMarkWhy(args["why"]);
+    if (!why.ok) return why.receipt;
+
+    for (const seq of seqs.value) {
+      const [row] = this.river.read({ sinceSeq: seq - 1, untilSeq: seq, limit: 1 });
+      if (row === undefined) {
+        return refuse("not_found", `There is no row ${seq}, so nothing was marked.`, `no river row ${seq}`);
+      }
+      if (isForgotten(row)) {
+        return refuse("forgotten", `Row ${seq} was forgotten, so it cannot be marked.`, `river row ${seq} is forgotten`);
+      }
+      if (this.hiddenHere(row, context.thread)) {
+        return refuse(
+          "not_visible",
+          `Row ${seq} is not shown in this thread, so it cannot be marked here.`,
+          `river row ${seq} is hidden from this thread`,
+        );
+      }
+    }
+
+    this.river.append({
+      thread: context.thread,
+      kind: "note",
+      source: "self",
+      text: why.value,
+      data: { mark: weight, cites: seqs.value },
+      atMs: this.nowMs(),
+    });
+    this.noteMarkWritten();
+    const count = seqs.value.length === 1 ? "1 row" : `${seqs.value.length} rows`;
+    return {
+      ok: true,
+      summary: `Marked ${count} as important, weight ${weight}.`,
+      data: { mark: weight, cites: seqs.value },
+    };
+  }
+
   // --- helpers ----------------------------------------------------------------------------------
 
   /** The worlds that cannot act now, other than the thread's own world: their tools are left out of this turn. */
@@ -3583,6 +3814,25 @@ function who(row: RiverRow): string {
   return row.actor ?? row.source;
 }
 
+/** U6: the weight a mark row carries, or undefined for every other note. */
+function markWeightOf(row: RiverRow): 1 | 2 | 3 | undefined {
+  const mark = row.data?.["mark"];
+  return mark === 1 || mark === 2 || mark === 3 ? mark : undefined;
+}
+
+/** U6: the one line that names marked rows the reflection section could not fit, whole and unrewritten. */
+function markedPointer(entries: readonly MarkedEntry[]): string {
+  return `${entries.length} more marked rows: seqs ${entries.map((entry) => entry.row.seq).join(", ")} (recall with seqs opens them)`;
+}
+
+/** True when a row was erased by forget, or is the tombstone that marks an erased place. */
+function isForgotten(row: RiverRow): boolean {
+  if (row.kind === "tombstone") return true;
+  const forgotten = (row as { forgotten?: unknown }).forgotten;
+  if (typeof forgotten === "boolean") return forgotten;
+  return row.text === undefined && row.data === undefined;
+}
+
 /**
  * SHOULD-B: how far apart two wakes fire, over their period when either repeats (daily wins over weekly). N3: the
  * period is compared in local wall-clock minutes in the Lar's zone, so a daylight-saving change keeps the gap.
@@ -3641,6 +3891,49 @@ function requireText(args: Args, key: string, label: string): Checked<string> {
     return { ok: false, receipt: refuse("bad_arguments", `${label} is missing or empty.`, `${key} must be non-empty text`) };
   }
   return { ok: true, value: raw.trim() };
+}
+
+/** U6: the row numbers one mark cites: 1 to MARK_SEQS_MAX whole numbers, each 1 or more. */
+function requireMarkSeqs(raw: unknown): Checked<number[]> {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return { ok: false, receipt: refuse("bad_arguments", `Give 1 to ${MARK_SEQS_MAX} row numbers to mark.`, "seqs must be a non-empty list") };
+  }
+  if (raw.length > MARK_SEQS_MAX) {
+    return {
+      ok: false,
+      receipt: refuse("bad_arguments", `Give at most ${MARK_SEQS_MAX} row numbers at once.`, "seqs is longer than the limit"),
+    };
+  }
+  const seqs: number[] = [];
+  for (const item of raw) {
+    if (typeof item !== "number" || !Number.isSafeInteger(item) || item < 1) {
+      return {
+        ok: false,
+        receipt: refuse("bad_arguments", "Row numbers must be whole numbers, starting at 1.", "seqs must be positive integers"),
+      };
+    }
+    seqs.push(item);
+  }
+  return { ok: true, value: seqs };
+}
+
+/** U6: her optional reason for a mark, at most MARK_WHY_MAX characters; absent or empty is kept as "". */
+function optionalMarkWhy(raw: unknown): Checked<string> {
+  if (raw === undefined) return { ok: true, value: "" };
+  if (typeof raw !== "string") {
+    return {
+      ok: false,
+      receipt: refuse("bad_arguments", `why must be text of at most ${MARK_WHY_MAX} characters.`, "why is not text"),
+    };
+  }
+  const value = raw.trim();
+  if (Array.from(value).length > MARK_WHY_MAX) {
+    return {
+      ok: false,
+      receipt: refuse("bad_arguments", `Keep why to ${MARK_WHY_MAX} characters.`, "why is too long"),
+    };
+  }
+  return { ok: true, value };
 }
 
 function optionalText(args: Args, key: string, label: string): Checked<string | undefined> {
