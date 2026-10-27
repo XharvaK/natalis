@@ -8,11 +8,16 @@ import { LINK_RELATIONS, type LinkRelation, type LinkStore } from "../river/link
 type Args = Record<string, unknown>;
 type Checked<T> = { ok: true; value: T } | { ok: false; receipt: Receipt };
 
-export function linksTools(links: LinkStore): Tool[] {
-  return [linkNotes(links)].map((tool) => ({ ...tool, settles: true }));
+export type LinksToolOptions = {
+  /** True when this thread sees private/ (her own thread or the summoner's place), mirroring notebookFor. */
+  privateView(thread: string): boolean;
+};
+
+export function linksTools(links: LinkStore, options: LinksToolOptions): Tool[] {
+  return [linkNotes(links, options)].map((tool) => ({ ...tool, settles: true }));
 }
 
-const linkNotes = (links: LinkStore): Tool => ({
+const linkNotes = (links: LinkStore, options: LinksToolOptions): Tool => ({
   spec: {
     name: "link_notes",
     description:
@@ -62,6 +67,7 @@ const linkNotes = (links: LinkStore): Tool => ({
       to: to.value,
       relation: relation.value,
       reason: why.value,
+      private: options.privateView(context.thread),
       seq: context.river.lastSeq(),
       atMs: context.nowMs,
       author: "self",

@@ -22,6 +22,7 @@ const LINKS_SCHEMA = `CREATE TABLE IF NOT EXISTS ${LINKS_TABLE} (
   to_note TEXT,
   relation TEXT CHECK (relation IS NULL OR relation IN ('supports', 'contradicts', 'supersedes', 'elaborates')),
   reason TEXT,
+  private INTEGER NOT NULL DEFAULT 0,
   seq INTEGER NOT NULL,
   author TEXT NOT NULL CHECK (author IN ('self', 'body')),
   forgotten INTEGER NOT NULL DEFAULT 0,
@@ -42,6 +43,7 @@ export type LinkRecord = {
   to: string;
   relation: LinkRelation;
   reason: string;
+  private: boolean;
   seq: number;
   author: LinkAuthor;
 };
@@ -52,6 +54,7 @@ export type NewLink = {
   to: string;
   relation: LinkRelation;
   reason: string;
+  private: boolean;
   seq: number;
   atMs: number;
   author: LinkAuthor;
@@ -84,6 +87,7 @@ type StoredLink = {
   to_note: string | null;
   relation: string | null;
   reason: string | null;
+  private: number;
   seq: number;
   author: string;
   forgotten: number;
@@ -105,8 +109,8 @@ export function openLinks(riverPath: string): LinkStore {
   }
 
   const insert = db.prepare(
-    `INSERT INTO ${LINKS_TABLE} (at_ms, thread, from_note, to_note, relation, reason, seq, author)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO ${LINKS_TABLE} (at_ms, thread, from_note, to_note, relation, reason, private, seq, author)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const get = db.prepare(`SELECT * FROM ${LINKS_TABLE} WHERE id = ?`);
   const dropTrash = db.prepare(
@@ -148,6 +152,7 @@ export function openLinks(riverPath: string): LinkStore {
         link.to,
         link.relation,
         link.reason,
+        link.private ? 1 : 0,
         link.seq,
         link.author,
       );
@@ -253,6 +258,7 @@ function toRecord(row: StoredLink): LinkRecord {
     to: row.to_note,
     relation: row.relation as LinkRelation,
     reason: row.reason,
+    private: row.private === 1,
     seq: Number(row.seq),
     author: row.author as LinkAuthor,
   };
@@ -278,6 +284,7 @@ function checkNewLink(link: NewLink): void {
     throw new LinksError("Only she may say that one note replaces another; nothing was written.");
   }
   if (link.author !== "self") throw new LinksError("Only she can make a link; nothing was written.");
+  if (typeof link.private !== "boolean") throw new LinksError("private must be true or false");
 }
 
 function checkNote(note: unknown, name: string): asserts note is string {

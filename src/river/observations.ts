@@ -13,6 +13,7 @@ const OBSERVATIONS_SCHEMA = `CREATE TABLE IF NOT EXISTS ${OBSERVATIONS_TABLE} (
   at_ms INTEGER NOT NULL,
   thread TEXT NOT NULL,
   text TEXT,
+  private INTEGER NOT NULL DEFAULT 0,
   start_seq INTEGER,
   end_seq INTEGER,
   forgotten INTEGER NOT NULL DEFAULT 0,
@@ -28,6 +29,7 @@ export type ObservationRecord = {
   atMs: number;
   thread: string;
   text: string;
+  private: boolean;
   startSeq: number;
   endSeq: number;
 };
@@ -43,6 +45,7 @@ export type ObservationRow = {
   startSeq: number | null;
   /** Null only after a forget. */
   endSeq: number | null;
+  private: boolean;
   forgotten: boolean;
   forgottenWhy?: string;
 };
@@ -50,6 +53,7 @@ export type ObservationRow = {
 export type NewObservation = {
   thread: string;
   text: string;
+  private: boolean;
   startSeq: number;
   endSeq: number;
   atMs: number;
@@ -78,6 +82,7 @@ type StoredObservation = {
   text: string | null;
   start_seq: number | null;
   end_seq: number | null;
+  private: number;
   forgotten: number;
   forgotten_why: string | null;
 };
@@ -96,7 +101,7 @@ export function openObservations(riverPath: string): ObservationStore {
   }
 
   const insert = db.prepare(
-    `INSERT INTO ${OBSERVATIONS_TABLE} (at_ms, thread, text, start_seq, end_seq) VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO ${OBSERVATIONS_TABLE} (at_ms, thread, text, private, start_seq, end_seq) VALUES (?, ?, ?, ?, ?, ?)`,
   );
   const get = db.prepare(`SELECT * FROM ${OBSERVATIONS_TABLE} WHERE id = ?`);
   const current = db.prepare(
@@ -116,6 +121,7 @@ export function openObservations(riverPath: string): ObservationStore {
         observation.atMs,
         observation.thread,
         observation.text,
+        observation.private ? 1 : 0,
         observation.startSeq,
         observation.endSeq,
       );
@@ -218,6 +224,7 @@ function toObservationRecord(row: StoredObservation): ObservationRecord {
     text: row.text,
     startSeq: Number(row.start_seq),
     endSeq: Number(row.end_seq),
+    private: row.private === 1,
   };
 }
 
@@ -229,6 +236,7 @@ function toObservationRow(row: StoredObservation): ObservationRow {
     text: row.text,
     startSeq: row.start_seq === null ? null : Number(row.start_seq),
     endSeq: row.end_seq === null ? null : Number(row.end_seq),
+    private: row.private === 1,
     forgotten: row.forgotten === 1,
   };
   if (row.forgotten_why !== null) observation.forgottenWhy = row.forgotten_why;
@@ -249,6 +257,7 @@ function checkNewObservation(observation: NewObservation): void {
   if (typeof observation.text !== "string" || observation.text.trim() === "") {
     throw new ObservationsError("an observation needs her text");
   }
+  if (typeof observation.private !== "boolean") throw new ObservationsError("private must be true or false");
   checkSeq(observation.startSeq, "startSeq");
   checkSeq(observation.endSeq, "endSeq");
   if (observation.startSeq > observation.endSeq) {

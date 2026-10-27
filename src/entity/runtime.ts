@@ -975,10 +975,13 @@ class Runtime implements Entity {
           privateView: (thread) => this.seesPrivate(thread),
         }),
       ),
-      ...withWorld(BODY_WORLD, linksTools(this.links)),
+      ...withWorld(BODY_WORLD, linksTools(this.links, { privateView: (thread) => this.seesPrivate(thread) })),
       ...withWorld(
         BODY_WORLD,
-        observationsTools(this.observations, { visible: (row, thread) => !this.hiddenHere(row, thread) }),
+        observationsTools(this.observations, {
+          visible: (row, thread) => !this.hiddenHere(row, thread),
+          privateView: (thread) => this.seesPrivate(thread),
+        }),
       ),
       ...worldTools,
       ...withWorld(BODY_WORLD, this.builtInTools()),

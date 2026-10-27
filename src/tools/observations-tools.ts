@@ -11,6 +11,8 @@ type Checked<T> = { ok: true; value: T } | { ok: false; receipt: Receipt };
 export type ObservationsToolOptions = {
   /** True when this row is shown in this thread (the runtime's hiddenHere rule). */
   visible(row: RiverRow, thread: string): boolean;
+  /** True when this thread sees private/ (her own thread or the summoner's place), mirroring notebookFor. */
+  privateView(thread: string): boolean;
 };
 
 export function observationsTools(observations: ObservationStore, options: ObservationsToolOptions): Tool[] {
@@ -76,6 +78,7 @@ const recordObservation = (observations: ObservationStore, options: Observations
     const observation = observations.record({
       thread: context.thread,
       text: text.value,
+      private: options.privateView(context.thread),
       startSeq: start.value,
       endSeq: end.value,
       atMs: context.nowMs,
