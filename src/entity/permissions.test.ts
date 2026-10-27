@@ -364,7 +364,15 @@ describe("her tools and the checks (B4 Q2)", () => {
         expect.arrayContaining(["answer_request", "confirm_answer", "take_back", "permissions"]),
       );
     }
-    expect(names("self", "reflect")).toEqual(["read_note", "list_notes", "recall", "write_note", "edit_note", "append_note"]);
+    expect(names("self", "reflect")).toEqual([
+      "read_note",
+      "list_notes",
+      "recall",
+      "write_note",
+      "edit_note",
+      "append_note",
+      "record_observation",
+    ]);
   });
 
   it("refuses every one of the four tools outside the summoner's place", async () => {

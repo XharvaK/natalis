@@ -3489,7 +3489,7 @@ describe("per-turn purpose and deadline for the scheduler", () => {
 });
 
 describe("U5: a background (reflect) turn's tool allowlist", () => {
-  const REFLECT_TOOLS = ["read_note", "list_notes", "recall", "write_note", "edit_note", "append_note"];
+  const REFLECT_TOOLS = ["read_note", "list_notes", "recall", "write_note", "edit_note", "append_note", "record_observation"];
   const toolNames = (request: ModelRequest | undefined): string[] => (request?.tools ?? []).map((spec) => spec.name);
 
   /** Runs one reflect turn in her own thread and hands back the entity its model call was recorded on. */
@@ -3501,7 +3501,7 @@ describe("U5: a background (reflect) turn's tool allowlist", () => {
     return entity;
   }
 
-  it("reflect turn tool list equals read_note, list_notes, recall, write_note, edit_note, append_note", async () => {
+  it("reflect turn tool list equals read_note, list_notes, recall, write_note, edit_note, append_note, record_observation", async () => {
     const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
     await reflectOnce(model);
 
