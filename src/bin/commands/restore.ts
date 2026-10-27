@@ -5,9 +5,10 @@
 // note in its river with the backup's time. The env file that holds its keys is not
 // in the backup and is kept on the host beside the folder.
 
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
+import { FOLDER_HASH_KEY, folderHash } from "../../entity/copy-guard.js";
 import { STATE_FILE } from "../../entity/runtime.js";
 import { writeStop } from "../../entity/stop.js";
 import { NOTEBOOK_DIR, RIVER_FILE } from "../../import/folder.js";
@@ -90,6 +91,7 @@ export async function restoreEntity(options: RestoreOptions): Promise<RestoreRes
     if (stopWasOn) writeStop(stage);
     if (existsSync(dir)) rmdirSync(dir);
     renameSync(stage, dir);
+    recordRestoredFolder(dir);
     noteRestore(dir, manifest.createdAt, stopWasOn);
     if (stopWasOn) say("Your summoner's emergency stop was on in the backup, so it is on in the restore.");
   } catch (err) {
@@ -105,6 +107,20 @@ function stopOnIn(statePath: string): boolean {
   if (!existsSync(statePath)) return false;
   const state = JSON.parse(readFileSync(statePath, "utf8")) as { stopOn?: unknown };
   return state.stopOn === true;
+}
+
+/**
+ * A restore is an explicit copy made by this Lar's owner into a folder they chose, so it does not trip the copy
+ * guard later. The restored state records the new folder; a folder with no state gets its hash on its first start.
+ */
+function recordRestoredFolder(dir: string): void {
+  const statePath = join(dir, STATE_FILE);
+  if (!existsSync(statePath)) return;
+  const state = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>;
+  state[FOLDER_HASH_KEY] = folderHash(dir);
+  const tmp = `${statePath}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  renameSync(tmp, statePath);
 }
 
 /**

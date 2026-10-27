@@ -7,6 +7,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { World } from "../../contracts.js";
 import { loadEntityConfig } from "../../entity/config.js";
+import { CopyGuardRefused } from "../../entity/copy-guard.js";
 import { acquireLarLock, LarLockBusy, type LarLock } from "../../entity/lar-lock.js";
 import { type Entity, openEntity } from "../../entity/runtime.js";
 import { modelFromConfig, worldModelsFromConfig } from "../../model/from-config.js";
@@ -21,7 +22,7 @@ import { flagValue } from "./args.js";
 import { DISCORD_FILE, parseDiscordFile } from "./discord-file.js";
 import { heldValues, knownValueList, otherThanHelper } from "./known-values.js";
 
-export const RUN_USAGE = "Usage: natalis run --dir <entity folder>";
+export const RUN_USAGE = "Usage: natalis run --dir <entity folder> [--moved]";
 export { DISCORD_FILE, parseDiscordFile, type DiscordFile } from "./discord-file.js";
 
 /** Runs until a stop signal. Returns the exit code. */
@@ -32,6 +33,7 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
     return 2;
   }
   const dir = resolve(dirArg);
+  const moved = args.includes("--moved");
   const config = loadEntityConfig(dir);
 
   // One process per Lar folder. The lock is taken before any world or the river opens, and kept until this
@@ -122,11 +124,19 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
       return 1;
     }
 
-    const entity = await openEntity({ dir, config, model: modelFromConfig(config.model),
-      worldModels: worldModelsFromConfig(config.model, config.effort, config.worldModels),
-      worlds,
-      scanner,
-    });
+    let entity: Entity;
+    try {
+      entity = await openEntity({ dir, config, model: modelFromConfig(config.model),
+        worldModels: worldModelsFromConfig(config.model, config.effort, config.worldModels),
+        worlds,
+        scanner,
+        ...(moved ? { moved: true } : {}),
+      });
+    } catch (error) {
+      if (!(error instanceof CopyGuardRefused)) throw error;
+      err(error.message);
+      return 1;
+    }
     opened = entity;
     const stopped = new Promise<void>((resolveStopped) => {
       process.once("SIGINT", () => resolveStopped());

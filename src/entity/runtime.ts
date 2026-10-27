@@ -58,6 +58,7 @@ import type {
   WorldEvent,
 } from "../contracts.js";
 import { DEFAULT_CEILING, type EntityConfig } from "./config.js";
+import { checkCopyGuard, CopyGuardRefused, FOLDER_HASH_KEY } from "./copy-guard.js";
 import {
   COMMITMENTS_PATH,
   COMMITMENTS_STUB,
@@ -253,6 +254,8 @@ export type OpenEntityOptions = {
   dryRun?: boolean;
   /** Why this Lar runs: live (default), eval or replay. Every purpose keeps the daily limit (NIT-4). An eval Lar may have only the terminal world. */
   purpose?: Purpose;
+  /** True only for `natalis run --moved`: the owner moved this Lar's folder on purpose, so record the new place. */
+  moved?: boolean;
   /** W-2: asked when a body rhythm wake fires; "skip" lets it pass with a note and no turn. Never asked about her own wakes. */
   wakePrecheck?: WakePrecheck;
   /** H: observe-only hooks on river appends. They cannot change a row or a turn. */
@@ -292,6 +295,19 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
   }
   mkdirSync(dir, { recursive: true });
   const statePath = join(dir, STATE_FILE);
+  // State is read before anything opens. A live Lar records the folder it runs in; a different recorded folder is
+  // refused here, before a world or the river can touch the copy. Replay and eval copies never record and never refuse.
+  const stored = readState(statePath);
+  const state: EntityState = stored ?? emptyState();
+  if ((options.purpose ?? "live") === "live") {
+    const guard = checkCopyGuard({
+      dir,
+      recorded: state.folderHash,
+      ...(options.moved === true ? { moved: true } : {}),
+    });
+    if (guard.action === "record") state.folderHash = guard.folderHash;
+    else if (guard.action === "refuse" && worlds.length > 0) throw new CopyGuardRefused();
+  }
   // Credentials never enter memory or a model request: the river, notebook and model are guarded at the boundary.
   const guarded = guardRiver(openRiver(join(dir, "river.db"), { nowMs }), scanner);
   // H: hooks observe outside the guard, so they see only scanned rows. A hook's failure goes to stderr, never back
@@ -304,11 +320,8 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
           for (const { type, hook } of options.hooks) bus.on(type, hook);
           return observeRiver(guarded, bus, options.purpose ?? "live");
         })();
-  let state: EntityState;
   let notebook: Notebook;
   try {
-    const stored = readState(statePath);
-    state = stored ?? emptyState();
     if (stored === null && river.lastSeq() > 0) {
       throw new Error(
         `${STATE_FILE} is missing, but the river holds ${river.lastSeq()} rows. Not starting: restore the state file or the river.`,
@@ -403,6 +416,8 @@ type EntityState = {
   rhythmGiven?: boolean;
   /** N1: set once the rhythm wakes carry the rhythm flag (seeded with it, or tagged by the one-time migration). */
   rhythmTagged?: boolean;
+  /** The hash of the machine and folder this Lar last started from. Missing means a first start; see copy-guard.ts. */
+  folderHash?: string;
   /** The last time the body knew it was running: stamped at start, every ALIVE_STAMP_MS while running, and at a stop. */
   aliveMs?: number;
   /** True when the body last ended with a stop of its own; false while it runs, so a crash leaves it false. */
@@ -576,6 +591,11 @@ function checkState(value: unknown): EntityState {
   if (rhythmTagged !== undefined) {
     if (typeof rhythmTagged !== "boolean") bad("rhythmTagged");
     state.rhythmTagged = rhythmTagged as boolean;
+  }
+  const folderHash = root[FOLDER_HASH_KEY];
+  if (folderHash !== undefined) {
+    if (typeof folderHash !== "string" || folderHash === "") bad(FOLDER_HASH_KEY);
+    state.folderHash = folderHash as string;
   }
   const aliveMs = root["aliveMs"];
   if (aliveMs !== undefined) {
