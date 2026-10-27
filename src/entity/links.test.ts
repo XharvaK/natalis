@@ -40,7 +40,7 @@ function context(notebook: MemoryNotebook, thread = "self"): ToolContext {
 }
 
 function linkTool(): Tool {
-  const tool = linksTools(links).find((candidate) => candidate.spec.name === "link_notes");
+  const tool = linksTools(links, { privateView: () => false }).find((candidate) => candidate.spec.name === "link_notes");
   if (tool === undefined) throw new Error("no link_notes tool");
   return tool;
 }
@@ -144,6 +144,7 @@ describe("U10: links between notes", () => {
         to: "places/old-map.md",
         relation: "supersedes",
         reason: "A body-written replacement.",
+        private: false,
         seq: 1,
         atMs: NOW,
         author: "body",
@@ -231,7 +232,7 @@ describe("U10: links between notes", () => {
 
     const forgetLinks = openLinks(join(forgetDir, "river.db"));
     try {
-      const base = { thread: "self", seq: keptSeq, atMs: NOW, author: "self" as const };
+      const base = { thread: "self", seq: keptSeq, atMs: NOW, author: "self" as const, private: false };
       // This one survives the words (only one of them is in its text) and must be repaired to the new note name.
       forgetLinks.record({
         ...base,

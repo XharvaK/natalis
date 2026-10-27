@@ -48,7 +48,7 @@ afterEach(async () => {
 });
 
 function tools(): Tool[] {
-  return observationsTools(observations, { visible: () => true });
+  return observationsTools(observations, { visible: () => true, privateView: () => true });
 }
 
 function toolNamed(name: string): Tool {
@@ -244,6 +244,7 @@ describe("U11: the observation log and forget", () => {
     observations.record({
       thread: "self",
       text: "The days between the first and last lines were calm.",
+      private: true,
       startSeq: first.seq,
       endSeq: last.seq,
       atMs: NOW,
@@ -268,6 +269,7 @@ describe("U11: the observation log and forget", () => {
     observations.record({
       thread: "self",
       text: "The last line is still here.",
+      private: true,
       startSeq: middle.seq + 1,
       endSeq: last.seq,
       atMs: NOW,
@@ -291,6 +293,7 @@ describe("U11: the observation log and forget", () => {
     observations.record({
       thread: "self",
       text: "The harbour bell rang that evening.",
+      private: true,
       startSeq: first.seq,
       endSeq: last.seq,
       atMs: NOW,
@@ -333,6 +336,7 @@ describe("U11: observations only in her own thread", () => {
       runtimeObservations.record({
         thread: "self",
         text: "The harbour gate opened at dawn.",
+        private: true,
         startSeq: 1,
         endSeq: 1,
         atMs: Date.now(),
