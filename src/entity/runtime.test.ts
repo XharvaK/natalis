@@ -33,7 +33,9 @@ import type { EntityConfig } from "./config.js";
 import { SUMMONER_PREFIX } from "./summoner.js";
 import { readCallLedger, readLedger } from "../river/ledger.js";
 import { changedBeyond, CLASS_RANK, partsOfMessage, type MessagePart } from "../context/layout.js";
-import { forgetInStateFile, openEntity, OUTBOX_JOB_TIMEOUT_MS, STATE_FILE, type Entity, type OpenEntityOptions } from "./runtime.js";
+import { TURN_DEADLINE_MS } from "../model/turn-deadline.js";
+import type { Purpose } from "../river/purpose.js";
+import { forgetInStateFile, openEntity, OUTBOX_JOB_TIMEOUT_MS, REFLECT_DEADLINE_MS, STATE_FILE, type Entity, type OpenEntityOptions } from "./runtime.js";
 import { COMMITMENTS_STUB, HOUSEHOLD_PATH, OLD_COMMITMENTS_STUB } from "./commitments.js";
 import { isStopOn } from "./stop.js";
 import { PRIVACY_UNREADABLE_REASON } from "./privacy.js";
@@ -131,6 +133,21 @@ async function open(
 
 function allRows(entity: Entity): RiverRow[] {
   return entity.river.read({ limit: 100_000 });
+}
+
+/** The scheduler's private turn entry points, reached the way the toolsFor test reaches a private method. */
+type SchedulerSeam = {
+  takeTurn(thread: string, turn?: { purpose?: Purpose; deadlineMs?: number }): Promise<void>;
+  reflectTurn(thread: string): Promise<void>;
+};
+
+function schedulerOf(entity: Entity): SchedulerSeam {
+  return entity as unknown as SchedulerSeam;
+}
+
+/** An event row written straight to the river, so no world wakes a turn and the test's own turn takes it. */
+function appendEventRow(entity: Entity, thread: string, text: string): void {
+  entity.river.append({ kind: "event", thread, place: thread, source: "outside", text, atMs: Date.now() });
 }
 
 function readStateFile(): { lastSeq: number; asks: Array<{ place: string }>; wakes: unknown[]; mood: string | null } {
@@ -3286,6 +3303,97 @@ describe("turn purpose on the Lar", () => {
     const { turns, count } = await oneRoomTurn({});
     expect(count).toBe(1);
     expect(turns.every((row) => row.data?.["purpose"] === undefined || row.data?.["purpose"] === "live")).toBe(true);
+  });
+});
+
+describe("per-turn purpose and deadline for the scheduler", () => {
+  it("stamps a reflect turn's rows reflect and leaves a live turn's rows without a purpose", async () => {
+    const room = fakeWorld("fake");
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("end_turn")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity } = await open(model, { stopPollMs: 1e9 }, [room.world]);
+    await entity.start();
+
+    appendEventRow(entity, "fake:room", "Think about this on your own.");
+    await schedulerOf(entity).reflectTurn("fake:room");
+    room.push("fake:room", "Now answer me.");
+    await entity.idle();
+
+    const turns = allRows(entity).filter((row) => row.kind === "turn");
+    expect(model.requests).toHaveLength(2);
+    expect(turns).toHaveLength(4);
+    expect(turns.slice(0, 2).every((row) => row.data?.["purpose"] === "reflect")).toBe(true);
+    expect(turns.slice(2).every((row) => row.data?.["purpose"] === undefined)).toBe(true);
+  });
+
+  it("counts a reflect turn toward the daily limit", async () => {
+    const room = fakeWorld("fake");
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity } = await open(
+      model,
+      { stopPollMs: 1e9, config: { ...CONFIG, limits: { turnsPerDay: 1 } } },
+      [room.world],
+    );
+    await entity.start();
+
+    appendEventRow(entity, "fake:room", "Think about this on your own.");
+    await schedulerOf(entity).reflectTurn("fake:room");
+    const state = readStateFile() as unknown as { turns?: { count: number } };
+    expect(state.turns?.count).toBe(1);
+
+    // The day's one turn is spent, so the room's next message waits, as it would after a live turn.
+    room.push("fake:room", "One more thing.");
+    await entity.idle();
+    expect(model.requests).toHaveLength(1);
+  });
+
+  it("fires a reflect turn's watchdog at 300 s and keeps a live turn at 1200 s", async () => {
+    await withClock(async (advance) => {
+      const waiting: Array<() => void> = [];
+      const started = (): Promise<void> => new Promise((resolve) => waiting.push(resolve));
+      const reflectStarted = started();
+      const liveStarted = started();
+      const hanging: ModelPort = {
+        info: { id: "hanging", contextTokens: 32_000, nativeTools: true },
+        complete: (_request, signal) => {
+          waiting.shift()?.();
+          return new Promise((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(new ModelError("stopped", "aborted", 1)), { once: true });
+          });
+        },
+      };
+      const room = fakeWorld("fake");
+      const { entity } = await open(hanging, { stopPollMs: 1e9, retryDelaysMs: [1e9] }, [room.world]);
+      await entity.start();
+
+      appendEventRow(entity, "fake:room", "Think about this on your own.");
+      let reflectDone = false;
+      const reflect = schedulerOf(entity).reflectTurn("fake:room").then(() => {
+        reflectDone = true;
+      });
+      await reflectStarted;
+      await advance(REFLECT_DEADLINE_MS - 1);
+      expect(reflectDone).toBe(false);
+      await advance(1);
+      await reflect;
+
+      appendEventRow(entity, "fake:other", "Answer this in the usual way.");
+      let liveDone = false;
+      const live = schedulerOf(entity).takeTurn("fake:other").then(() => {
+        liveDone = true;
+      });
+      await liveStarted;
+      await advance(REFLECT_DEADLINE_MS);
+      expect(liveDone).toBe(false);
+      await advance(TURN_DEADLINE_MS - REFLECT_DEADLINE_MS);
+      await live;
+      expect(liveDone).toBe(true);
+
+      const ends = allRows(entity).filter((row) => row.kind === "turn" && row.data?.["phase"] === "end");
+      expect(ends.map((row) => row.data?.["endedBy"])).toEqual(["model_error", "model_error"]);
+    });
   });
 });
 
