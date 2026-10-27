@@ -30,6 +30,7 @@ import { planRetry, type QuotaRetryTuning } from "./retry-plan.js";
 import { openRiver } from "../river/index.js";
 import { factsContextText, openFacts, type FactStore } from "../river/facts.js";
 import { openLinks, type LinkStore } from "../river/links.js";
+import { observationsContextText, openObservations, type ObservationStore } from "../river/observations.js";
 import { createWitness, withWitness, type CacheWitness } from "../model/witness.js";
 import { openLedger, type Ledger, type LedgerRow, type ThreadKind } from "../river/ledger.js";
 import {
@@ -67,6 +68,7 @@ import { createSecretScanner, guardModel, guardNotebook, guardRiver, KNOWN_VALUE
 import { notebookTools } from "../tools/index.js";
 import { factsTools } from "../tools/facts-tools.js";
 import { linksTools } from "../tools/links-tools.js";
+import { observationsTools } from "../tools/observations-tools.js";
 import { BODY_WORLD, withWorld } from "../tools/effects.js";
 import { MEDIA_FOLDER, openShelf, shelfBody, type Shelf } from "../media/shelf.js";
 import type {
@@ -206,8 +208,19 @@ const CLOSING_TOOLS = ["write_note", "append_note", "edit_note"] as const;
 /**
  * U5: the only tools a background (reflect) turn may use. The loop adds end_turn to every turn itself, so it is not in
  * this list. No world tool, no say, no wake, no forget and no trash_note: a reflect turn prepares memory, it does not act.
+ * U11 adds her observation tool, which no live turn gets.
  */
-const REFLECT_TOOLS = ["read_note", "list_notes", "recall", "write_note", "edit_note", "append_note"] as const;
+const REFLECT_TOOLS = [
+  "read_note",
+  "list_notes",
+  "recall",
+  "write_note",
+  "edit_note",
+  "append_note",
+  "record_observation",
+] as const;
+/** U11: tools built for the Lar but offered only in a reflect turn; a live turn never sees them. */
+const REFLECT_ONLY_TOOLS: ReadonlySet<string> = new Set(["record_observation"]);
 /** U6: the most rows one mark may cite, the longest reason it may carry, and the line every reflection turn carries. */
 const MARK_SEQS_MAX = 20;
 const MARK_WHY_MAX = 200;
@@ -807,6 +820,8 @@ class Runtime implements Entity {
   private readonly facts: FactStore;
   /** Links between her notes, in river.db: note paths, relation, her reason and the row it came from. */
   private readonly links: LinkStore;
+  /** Her observation log, in river.db: her words and the first and last row of the span they cover. */
+  private readonly observations: ObservationStore;
   /** The cache witness: one row per model call (counts and hashes only), shared by every thread. */
   private readonly witness: CacheWitness;
   /** Failed turns in a row, over every thread. A turn that gets an answer clears it. */
@@ -932,6 +947,7 @@ class Runtime implements Entity {
     this.grants = openGrants(init.dir);
     this.facts = openFacts(join(init.dir, "river.db"));
     this.links = openLinks(join(init.dir, "river.db"));
+    this.observations = openObservations(join(init.dir, "river.db"));
     this.witness = createWitness({ write: (row) => this.ledger.appendCall(row), now: () => this.nowMs() });
     this.larRiver = this.riverForLar(this.river);
     this.notebook = init.notebook;
@@ -960,6 +976,10 @@ class Runtime implements Entity {
         }),
       ),
       ...withWorld(BODY_WORLD, linksTools(this.links)),
+      ...withWorld(
+        BODY_WORLD,
+        observationsTools(this.observations, { visible: (row, thread) => !this.hiddenHere(row, thread) }),
+      ),
       ...worldTools,
       ...withWorld(BODY_WORLD, this.builtInTools()),
     ]
@@ -1142,6 +1162,7 @@ class Runtime implements Entity {
     this.grants.close();
     this.facts.close();
     this.links.close();
+    this.observations.close();
     this.state.aliveMs = this.nowMs();
     this.state.stoppedCleanly = true;
     this.saveState();
@@ -2447,6 +2468,9 @@ class Runtime implements Entity {
     // U9: her facts, below recall and under its priority. Only the self thread and the summoner's place see them (Q9, C13).
     const facts = this.factsSection(thread, nowMs);
     if (facts !== undefined) changing.push(facts);
+    // U11: her observation log, in her own thread only. No other thread sees it, the summoner's place included.
+    const observations = this.observationsSection(thread);
+    if (observations !== undefined) changing.push(observations);
     // U6: a reflection turn shows the rows she marked since the last reflection, whole, under the same one budget as
     // every other optional section. Rows that do not fit are named by one pointer line, never cut or reworded.
     const marked = purpose === "reflect" ? this.markedEntries(thread, snapshot) : undefined;
@@ -2849,6 +2873,16 @@ class Runtime implements Entity {
     if (!this.seesPrivate(thread)) return undefined;
     const text = factsContextText(this.facts.current(), nowMs);
     return text === undefined ? undefined : { name: "facts", text, priority: 35, cls: "turn" };
+  }
+
+  /**
+   * U11: her observation log, below the facts. Only her own thread sees it: not the summoner's place and never an
+   * outward thread.
+   */
+  private observationsSection(thread: string): Section | undefined {
+    if (thread !== "self") return undefined;
+    const text = observationsContextText(this.observations.current());
+    return text === undefined ? undefined : { name: "observations", text, priority: 34, cls: "turn" };
   }
 
   /** U6: the newest mark weight for each cited row, over every mark in the river. An unmarked row has no entry. */
@@ -4610,12 +4644,13 @@ class Runtime implements Entity {
   /**
    * A turn's tools: all of them, without the tools of a world that is resting (unless the turn is in that world).
    * A reflect turn gets the built notebook tools on the allowlist and nothing else; its wrappers, such as the
-   * character.md cap, stay as they were built.
+   * character.md cap, stay as they were built. U11's observation tool is built for the Lar but offered only in a
+   * reflect turn, so a live turn never gets it (and cannot call it).
    */
   private toolsFor(thread: string, purpose: Purpose = "live"): Tool[] {
     const left = new Set(this.restingWorlds(thread).flatMap((world) => [...(this.worldToolNames.get(world.id) ?? [])]));
     const offered = left.size === 0 ? this.tools : this.tools.filter((tool) => !left.has(tool.spec.name));
-    if (purpose !== "reflect") return offered;
+    if (purpose !== "reflect") return offered.filter((tool) => !REFLECT_ONLY_TOOLS.has(tool.spec.name));
     const byName = new Map(offered.map((tool) => [tool.spec.name, tool]));
     return REFLECT_TOOLS.map((name) => {
       const tool = byName.get(name);

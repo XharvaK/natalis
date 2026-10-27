@@ -3,5 +3,6 @@ export * from "./base-tables.js";
 export * from "./derived.js";
 export * from "./facts.js";
 export * from "./links.js";
+export * from "./observations.js";
 export * from "./export.js";
 export * from "./integrity.js";

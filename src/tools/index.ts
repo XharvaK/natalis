@@ -2,3 +2,4 @@
 export * from "./notebook-tools.js";
 export * from "./facts-tools.js";
 export * from "./links-tools.js";
+export * from "./observations-tools.js";

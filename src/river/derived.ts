@@ -13,6 +13,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { BASE_061AF27_RIVER_DB } from "./base-tables.js";
 import { factsDerivedStore } from "./facts.js";
 import { linksDerivedStore } from "./links.js";
+import { observationsDerivedStore } from "./observations.js";
 
 /** What a forget erased: the river seqs, and the folded words of a text forget (empty for a seq forget). */
 export type DerivedForget = {
@@ -242,3 +243,5 @@ function tableExists(db: DatabaseSync, name: string): boolean {
 registerDerivedStore(factsDerivedStore);
 // U10: links between her notes. Registered here for the same reason.
 registerDerivedStore(linksDerivedStore);
+// U11: her own observation log. Registered here for the same reason.
+registerDerivedStore(observationsDerivedStore);
