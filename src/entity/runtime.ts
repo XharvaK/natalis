@@ -168,6 +168,11 @@ function clipArrived(line: string): string {
 }
 
 const CLOSING_TOOLS = ["write_note", "append_note", "edit_note"] as const;
+/**
+ * U5: the only tools a background (reflect) turn may use. The loop adds end_turn to every turn itself, so it is not in
+ * this list. No world tool, no say, no wake, no forget and no trash_note: a reflect turn prepares memory, it does not act.
+ */
+const REFLECT_TOOLS = ["read_note", "list_notes", "recall", "write_note", "edit_note", "append_note"] as const;
 /** A receipt the turn deadline wrote while its tool was still running (run-turn raceDeadline). */
 function isOutcomeUnknown(row: RiverRow): boolean {
   const refused = row.data?.["refused"];
@@ -1425,7 +1430,7 @@ class Runtime implements Entity {
     const watchdog = withTurnDeadline(turnModel, deadlineMs);
     const { result } = await runTurnWithMessages({
       model: withWitness(watchdog.model, this.witness, this.threadKind(thread), { cacheMarks: this.config.model.cacheMarks === true }),
-      tools: this.toolsFor(thread),
+      tools: this.toolsFor(thread, purpose),
       closingTools: CLOSING_TOOLS,
       ...(this.dryRun ? { dryRun: true } : {}),
       purpose,
@@ -3451,10 +3456,21 @@ class Runtime implements Entity {
     return this.worlds.filter((world) => world !== own && worldSaid(() => world.resting?.()) === true);
   }
 
-  /** A turn's tools: all of them, without the tools of a world that is resting (unless the turn is in that world). */
-  private toolsFor(thread: string): Tool[] {
+  /**
+   * A turn's tools: all of them, without the tools of a world that is resting (unless the turn is in that world).
+   * A reflect turn gets the built notebook tools on the allowlist and nothing else; its wrappers, such as the
+   * character.md cap, stay as they were built.
+   */
+  private toolsFor(thread: string, purpose: Purpose = "live"): Tool[] {
     const left = new Set(this.restingWorlds(thread).flatMap((world) => [...(this.worldToolNames.get(world.id) ?? [])]));
-    return left.size === 0 ? this.tools : this.tools.filter((tool) => !left.has(tool.spec.name));
+    const offered = left.size === 0 ? this.tools : this.tools.filter((tool) => !left.has(tool.spec.name));
+    if (purpose !== "reflect") return offered;
+    const byName = new Map(offered.map((tool) => [tool.spec.name, tool]));
+    return REFLECT_TOOLS.map((name) => {
+      const tool = byName.get(name);
+      if (tool === undefined) throw new Error(`The reflect tool allowlist names "${name}", but no built tool has that name.`);
+      return tool;
+    });
   }
 
   private worldFor(place: string): World | undefined {
