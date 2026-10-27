@@ -69,7 +69,7 @@ import { dayKey, hostZone, msUntilNextDay, startOfDayMs } from "./day.js";
 import { FLOOR_TEXT } from "./floor.js";
 import { chosenName, NAME_NOTE, whoYouAre, type Thinking } from "./identity.js";
 import { readNature } from "./nature.js";
-import { checkHonestyQuotes, headingAbove, HONESTY_SYSTEM, type HonestyVerdict, parseHonestyReply } from "./honesty.js";
+import { capQuote, checkHonestyQuotes, headingAbove, HONESTY_SYSTEM, type HonestyVerdict, parseHonestyReply } from "./honesty.js";
 import {
   createPrivacyWatch,
   outwardHold,
@@ -2942,7 +2942,7 @@ class Runtime implements Entity {
       summary: "I held that back: it says something my record contradicts, so nothing was sent.",
       refused: {
         code: "held_honesty",
-        reason: `This says "${verdict.claim_quote}", but your record says "${verdict.record_quote}", ${headingPart}. Nothing was sent. Rewrite it, or say it again with knowingly: true to send it as it is.`,
+        reason: `This says "${capQuote(verdict.claim_quote)}", but your record says "${capQuote(verdict.record_quote)}", ${headingPart}. Nothing was sent. Rewrite it, or say it again with knowingly: true to send it as it is.`,
       },
     };
   }

@@ -17,6 +17,21 @@ export type HonestyVerdict =
   | { contradicts: true; claim_quote: string; record_quote: string }
   | { error: string };
 
+/** The most code points a quote may take in a receipt, so one huge quote cannot bury the rest of the message. */
+export const QUOTE_MAX_CHARS = 1000;
+const QUOTE_TRUNCATED_MARKER = " […truncated]";
+
+/**
+ * A quote as a receipt shows it: whole when it fits, and its first QUOTE_MAX_CHARS code points followed by the marker
+ * when it does not. Code points are counted, so an emoji counts as one and never as two. The substring check runs
+ * on the full quote before this cap.
+ */
+export function capQuote(quote: string): string {
+  const points = [...quote];
+  if (points.length <= QUOTE_MAX_CHARS) return quote;
+  return points.slice(0, QUOTE_MAX_CHARS).join("") + QUOTE_TRUNCATED_MARKER;
+}
+
 /** Reads the model's reply. Anything that is not the agreed shape is an error, never a guess. */
 export function parseHonestyReply(content: string | null): HonestyVerdict {
   if (content === null || content.trim() === "") return { error: "the reply was empty" };

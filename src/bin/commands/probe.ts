@@ -3,9 +3,8 @@
 // The sizes, flags, counts and the ledger's cache share are enough for an operator to see how a Lar is doing
 // without opening a note, a river row or a vault value.
 
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { flagValue } from "./args.js";
@@ -63,13 +62,17 @@ export async function probeCommand(
     out(JSON.stringify(report, null, 2));
     return 0;
   } catch (error) {
-    err(`natalis: ${messageOf(error)}`);
+    err(error instanceof ProbeRefusal ? error.message : `natalis: ${messageOf(error)}`);
     return 1;
   }
 }
 
+/** The probe will not read a database whose log has unflushed frames; the message says why. */
+class ProbeRefusal extends Error {}
+
 /** Every number the probe prints, for one folder. It reads; it never writes to the folder. */
 export function probeFolder(dir: string, turns: number = DEFAULT_PROBE_TURNS): ProbeReport {
+  refuseLiveWal(dir);
   const state = readState(join(dir, STATE_FILE));
   const life = readOptionalText(join(dir, "notebook", "self", "life.md"));
   const character = readOptionalText(join(dir, "notebook", "self", "character.md"));
@@ -163,37 +166,32 @@ function listCount(value: unknown): number {
 // SQLite, opened read-only
 
 /**
+ * Refuses to read a database while its write-ahead log has frames. The probe never copies, checkpoints or locks a
+ * live database: the Lar may be writing, and a copy could see a torn page or a stale one. So the operator stops the
+ * Lar first, and the probe reads the settled files in place.
+ */
+function refuseLiveWal(dir: string): void {
+  for (const name of ["river.db", "grants.db"]) {
+    if (fileBytes(join(dir, `${name}-wal`)) > 0) {
+      throw new ProbeRefusal(
+        `${name} has an unflushed write-ahead log (the Lar may be running). ` +
+          "Stop the Lar first, then probe again; nothing was read or changed.",
+      );
+    }
+  }
+}
+
+/**
  * Runs `work` on a read-only view of one database. The folder's file is never opened for writing, never locked and
- * never checkpointed. A database with a live write-ahead log is copied beside the system's temp folder first, so
- * the rows still in that log are counted without touching the Lar's folder. The copy is removed afterwards.
+ * never checkpointed. A live write-ahead log was already refused, so the immutable open sees every row.
  */
 function withReadOnlyDb<T>(file: string, missing: T, work: (db: DatabaseSync) => T): T {
   if (!existsSync(file)) return missing;
-  const wal = `${file}-wal`;
-  const shm = `${file}-shm`;
-  if (fileBytes(wal) === 0) {
-    const db = new DatabaseSync(`${pathToFileURL(file).href}?immutable=1`, { readOnly: true });
-    try {
-      return work(db);
-    } finally {
-      db.close();
-    }
-  }
-
-  const temp = mkdtempSync(join(tmpdir(), "natalis-probe-"));
-  const copy = join(temp, basename(file));
+  const db = new DatabaseSync(`${pathToFileURL(file).href}?immutable=1`, { readOnly: true });
   try {
-    copyFileSync(file, copy);
-    if (existsSync(wal)) copyFileSync(wal, `${copy}-wal`);
-    if (existsSync(shm)) copyFileSync(shm, `${copy}-shm`);
-    const db = new DatabaseSync(copy, { readOnly: true });
-    try {
-      return work(db);
-    } finally {
-      db.close();
-    }
+    return work(db);
   } finally {
-    rmSync(temp, { recursive: true, force: true, maxRetries: 5 });
+    db.close();
   }
 }
 
