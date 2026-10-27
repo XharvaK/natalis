@@ -1427,17 +1427,24 @@ class Runtime implements Entity {
 
   /**
    * NIT-5: a size warning for self/life.md, which is uncapped and always in context. Past limits.lifeWarnChars (code
-   * points) the body writes one river note per run and, at start, one log line. The note is never trimmed or cut.
+   * points) the body writes one river note per crossing and, at start, one log line. A later turn that finds the file
+   * back under the limit re-arms it, so a new crossing in the same run warns again. The note is never trimmed or cut.
    */
   private lifeWarned = false;
   private warnLifeSize(starting: boolean): void {
-    if (this.lifeWarned) return;
     const text = this.notebook.read(LIFE_PATH);
-    if (text === null) return;
+    if (text === null) {
+      this.lifeWarned = false;
+      return;
+    }
     let chars = 0;
     for (const _ of text) chars += 1;
     const limit = this.config.limits?.lifeWarnChars ?? DEFAULT_LIFE_WARN_CHARS;
-    if (chars <= limit) return;
+    if (chars <= limit) {
+      this.lifeWarned = false;
+      return;
+    }
+    if (this.lifeWarned) return;
     this.lifeWarned = true;
     const line = `${LIFE_PATH} is ${chars} characters, past the warning size of ${limit}. It is always in context and is not cut; a very long one crowds out other sections.`;
     this.river.append({ thread: "self", kind: "note", source: "body", text: line, data: { bodyNote: "life_size", chars, limit }, atMs: this.nowMs() });
