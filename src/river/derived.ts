@@ -11,6 +11,7 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import { BASE_061AF27_RIVER_DB } from "./base-tables.js";
+import { factsDerivedStore } from "./facts.js";
 
 /** What a forget erased: the river seqs, and the folded words of a text forget (empty for a seq forget). */
 export type DerivedForget = {
@@ -235,3 +236,6 @@ function parseSeqs(json: string): number[] | undefined {
 function tableExists(db: DatabaseSync, name: string): boolean {
   return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
 }
+
+// U9: her facts. Registered here, not by a caller, so openRiver, the forget hook and the memory rollback share it.
+registerDerivedStore(factsDerivedStore);

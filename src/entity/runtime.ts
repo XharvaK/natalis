@@ -28,6 +28,7 @@ import { isPrivatePath, withoutPrivate } from "../notebook/private-view.js";
 import { ModelError, type ModelErrorKind, type QuotaWindow } from "../contracts.js";
 import { planRetry, type QuotaRetryTuning } from "./retry-plan.js";
 import { openRiver } from "../river/index.js";
+import { factsContextText, openFacts, type FactStore } from "../river/facts.js";
 import { createWitness, withWitness, type CacheWitness } from "../model/witness.js";
 import { openLedger, type Ledger, type LedgerRow, type ThreadKind } from "../river/ledger.js";
 import {
@@ -63,6 +64,7 @@ import { checkRiver } from "../river/integrity.js";
 import { indexedRiver, ViewIndex, viewKeyOfRow } from "../river/view-index.js";
 import { createSecretScanner, guardModel, guardNotebook, guardRiver, KNOWN_VALUE_KIND } from "../secrets/index.js";
 import { notebookTools } from "../tools/index.js";
+import { factsTools } from "../tools/facts-tools.js";
 import { BODY_WORLD, withWorld } from "../tools/effects.js";
 import { MEDIA_FOLDER, openShelf, shelfBody, type Shelf } from "../media/shelf.js";
 import type {
@@ -799,6 +801,8 @@ class Runtime implements Entity {
   private readonly ledger: Ledger;
   /** What the Owner allowed or refused, and the requests posted for an ask. Beside the notebook, never in it. */
   private readonly grants: Grants;
+  /** Her facts, in river.db: her words and the rows she cited. */
+  private readonly facts: FactStore;
   /** The cache witness: one row per model call (counts and hashes only), shared by every thread. */
   private readonly witness: CacheWitness;
   /** Failed turns in a row, over every thread. A turn that gets an answer clears it. */
@@ -922,6 +926,7 @@ class Runtime implements Entity {
     this.river = indexedRiver(init.river, this.viewIndex);
     this.ledger = openLedger(join(init.dir, RIVER_LEDGER_FILE));
     this.grants = openGrants(init.dir);
+    this.facts = openFacts(join(init.dir, "river.db"));
     this.witness = createWitness({ write: (row) => this.ledger.appendCall(row), now: () => this.nowMs() });
     this.larRiver = this.riverForLar(this.river);
     this.notebook = init.notebook;
@@ -942,6 +947,13 @@ class Runtime implements Entity {
     }).map((tool) => this.gateWorldTool(tool));
     this.tools = [
       ...withWorld(BODY_WORLD, notebookTools()),
+      ...withWorld(
+        BODY_WORLD,
+        factsTools(this.facts, {
+          visible: (row, thread) => this.hiddenHere(row, thread),
+          privateView: (thread) => this.seesPrivate(thread),
+        }),
+      ),
       ...worldTools,
       ...withWorld(BODY_WORLD, this.builtInTools()),
     ]
@@ -1122,6 +1134,7 @@ class Runtime implements Entity {
     await Promise.allSettled([...this.running.values()]);
     this.ledger.close();
     this.grants.close();
+    this.facts.close();
     this.state.aliveMs = this.nowMs();
     this.state.stoppedCleanly = true;
     this.saveState();
@@ -2424,6 +2437,9 @@ class Runtime implements Entity {
     if (triggered !== undefined) changing.push(triggered);
     const recall = this.recallSection(thread, fresh, shown);
     if (recall !== undefined) changing.push(recall);
+    // U9: her facts, below recall and under its priority. Only the self thread and the summoner's place see them (Q9, C13).
+    const facts = this.factsSection(thread, nowMs);
+    if (facts !== undefined) changing.push(facts);
     // U6: a reflection turn shows the rows she marked since the last reflection, whole, under the same one budget as
     // every other optional section. Rows that do not fit are named by one pointer line, never cut or reworded.
     const marked = purpose === "reflect" ? this.markedEntries(thread, snapshot) : undefined;
@@ -2725,6 +2741,12 @@ class Runtime implements Entity {
     return kind === "summoner" || kind === "self" ? this.notebook : withoutPrivate(this.notebook);
   }
 
+  /** True where the notebook is whole, so a derived row written here may hold something from private/ (C3, U12). */
+  private seesPrivate(thread: string): boolean {
+    const kind = this.threadKind(thread);
+    return kind === "summoner" || kind === "self";
+  }
+
   /** Q19: the index as whole lines, in the notebook's order, with one pointer for the lines that do not fit. */
   private indexSection(thread: string): Section {
     const entries = this.notebookFor(thread).list().filter((entry) => {
@@ -2809,6 +2831,17 @@ class Runtime implements Entity {
       pointer: recallPointer,
     };
     return { name: "recall", text: itemsText(items, items.items.length), items, priority: 40, cls: "turn" };
+  }
+
+  /**
+   * U9: her current facts, below recall (priority 35). Only the self thread and the summoner's place see them (Q9, C13);
+   * an outward thread never does, private or not. Past 90 days a fact is shown with its age, marked unreviewed, below
+   * the recent ones.
+   */
+  private factsSection(thread: string, nowMs: number): Section | undefined {
+    if (!this.seesPrivate(thread)) return undefined;
+    const text = factsContextText(this.facts.current(), nowMs);
+    return text === undefined ? undefined : { name: "facts", text, priority: 35, cls: "turn" };
   }
 
   /** U6: the newest mark weight for each cited row, over every mark in the river. An unmarked row has no entry. */
