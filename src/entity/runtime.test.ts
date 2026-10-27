@@ -5019,3 +5019,43 @@ describe("U6: her importance marks and reflection", () => {
     }
   });
 });
+
+describe("V0: recall by seqs", () => {
+  const NOW = Date.parse("2026-10-27T12:00:00Z");
+
+  it("refuses a row hidden from this thread, but opens it in the summoner's own place", async () => {
+    const room = sourceWorld("fake");
+    let hiddenSeq = 0;
+    const model = new ScriptedModel([
+      () => reply({ toolCalls: [call("recall", { seqs: [hiddenSeq] }, "recall-room")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+      () => reply({ toolCalls: [call("recall", { seqs: [hiddenSeq] }, "recall-owner")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model, { nowMs: () => NOW, stopPollMs: 1e9 }, [room.world]);
+    await entity.start();
+    hiddenSeq = entity.river.append({
+      thread: "self",
+      kind: "event",
+      source: "body",
+      text: "A summoner act kept for their own places.",
+      data: { summonerAct: true },
+      atMs: NOW,
+    }).seq;
+
+    room.push("fake:room", "Open that row.");
+    await entity.idle();
+    cli.send("Open that row here.");
+    await entity.idle();
+
+    const receipts = allRows(entity).filter((row) => row.kind === "receipt" && row.data?.["tool"] === "recall");
+    const hidden = receipts.find((row) => row.data?.["callId"] === "recall-room");
+    expect(hidden?.data?.["refused"]).toMatchObject({ code: "not_visible" });
+    expect(hidden?.text).toContain(String(hiddenSeq));
+    expect(JSON.stringify(hidden)).not.toContain("A summoner act");
+
+    const opened = receipts.find((row) => row.data?.["callId"] === "recall-owner");
+    expect(opened?.data?.["ok"]).toBe(true);
+    expect(String(opened?.data?.["dataJson"])).toContain("A summoner act kept for their own places.");
+  });
+});

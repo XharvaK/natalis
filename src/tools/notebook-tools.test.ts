@@ -310,6 +310,64 @@ describe("recall", () => {
   });
 });
 
+describe("recall by seqs", () => {
+  it("opens the named rows whole, in seq order", async () => {
+    const { run, river } = await fixture();
+    const longText = "The harbour bell rang at dawn and the boats came in. ".repeat(40).trim();
+    const first = river.append({ thread: "room:garden", kind: "event", source: "outside", actor: "mara", text: longText });
+    river.append({ thread: "dm:owner", kind: "say", source: "self", text: "Mara counted the nets." });
+    const third = river.append({ thread: "room:garden", kind: "event", source: "outside", actor: "tomas", text: "Tomas mended the sail." });
+
+    const receipt = await run("recall", { seqs: [third.seq, first.seq] });
+    const hits = receipt.data?.["hits"] as Array<Record<string, unknown>>;
+
+    expect(receipt).toMatchObject({ ok: true, summary: "Read 2 rows." });
+    expect(hits.map((hit) => hit["seq"])).toEqual([first.seq, third.seq]);
+    expect(hits[0]?.text).toBe(longText);
+    expect(hits[1]?.text).toBe("Tomas mended the sail.");
+    expect(String(hits[0]?.text).length).toBe(longText.length);
+  });
+
+  it("shows a forgotten row as forgotten, never its content", async () => {
+    const { run, river } = await fixture();
+    const secret = "The blue boat carries the seed money.";
+    const row = river.append({ thread: "dm:owner", kind: "say", source: "self", text: secret });
+    river.forget({ seqs: [row.seq] }, "self", "Not mine to keep.");
+
+    const receipt = await run("recall", { seqs: [row.seq] });
+    const hits = receipt.data?.["hits"] as Array<Record<string, unknown>>;
+
+    expect(receipt.ok).toBe(true);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({ seq: row.seq, text: "(forgotten)" });
+    expect(JSON.stringify(receipt)).not.toContain("blue boat");
+    expect(JSON.stringify(receipt)).not.toContain("seed money");
+  });
+
+  it("says a missing row does not exist", async () => {
+    const { run } = await fixture();
+
+    expect(await run("recall", { seqs: [999] })).toMatchObject({
+      ok: false,
+      summary: "There is no row 999.",
+      refused: { code: "not_found" },
+    });
+  });
+
+  it("needs words or row numbers, and keeps row numbers to 1 to 20", async () => {
+    const { run } = await fixture();
+
+    expect(await run("recall", {})).toMatchObject({ ok: false, refused: { code: "bad_arguments" } });
+    expect(await run("recall", { seqs: [] })).toMatchObject({ ok: false, refused: { code: "bad_arguments" } });
+    expect(await run("recall", { seqs: [0] })).toMatchObject({ ok: false, refused: { code: "bad_arguments" } });
+    expect(await run("recall", { seqs: [1.5] })).toMatchObject({ ok: false, refused: { code: "bad_arguments" } });
+    expect(await run("recall", { seqs: Array.from({ length: 21 }, (_, i) => i + 1) })).toMatchObject({
+      ok: false,
+      refused: { code: "bad_arguments" },
+    });
+  });
+});
+
 describe("forget", () => {
   it("erases the rows that contain some words, says how many, and leaves a tombstone", async () => {
     const { run, river } = await fixture();
