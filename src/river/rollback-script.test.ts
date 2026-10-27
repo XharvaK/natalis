@@ -395,6 +395,54 @@ describe("memory-rollback: copies made while the new code ran", () => {
     expect(result.scrub).not.toContain(join(cold, "river.db"));
     expect(result.scrub.some((path) => path === riverPath())).toBe(false);
   });
+
+  it("a sealed package and any SQLite copy holding a derived table are listed under --scan; a plain file and a base-only copy are not", async () => {
+    makeRiver();
+    seedDerived();
+
+    const scan = join(root, "copies");
+    mkdirSync(scan, { recursive: true });
+
+    const sealed = join(scan, "iris-20261027-120000.natalisbak");
+    writeFileSync(sealed, "an encrypted package, not readable here", "utf8");
+
+    const renamed = join(scan, "river-copy.db");
+    const source = new DatabaseSync(riverPath());
+    try {
+      source.exec(`VACUUM INTO '${renamed.replace(/'/g, "''")}'`);
+    } finally {
+      source.close();
+    }
+    expect(tableNames(renamed)).toContain("probe_derived");
+
+    // A table outside the 061af27 base set counts as derived even when the store is not registered here.
+    const unregistered = join(scan, "river-unregistered.db");
+    const extra = new DatabaseSync(unregistered);
+    try {
+      extra.exec("CREATE TABLE rows (seq INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT)");
+      extra.exec("CREATE TABLE mystery_holder (text TEXT)");
+    } finally {
+      extra.close();
+    }
+
+    const plain = join(scan, "notes.txt");
+    writeFileSync(plain, "A plain note, not a database.", "utf8");
+
+    const baseOnly = join(scan, "base-only.db");
+    const base = new DatabaseSync(baseOnly);
+    try {
+      base.exec("CREATE TABLE rows (seq INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT)");
+      base.exec("INSERT INTO rows (text) VALUES ('a base row')");
+    } finally {
+      base.close();
+    }
+
+    const result = await runMemoryRollback({ dir, scan: [scan] });
+    expect(result.scrub).toEqual(expect.arrayContaining([sealed, renamed, unregistered]));
+    expect(result.sealed).toContain(sealed);
+    expect(result.scrub).not.toContain(plain);
+    expect(result.scrub).not.toContain(baseOnly);
+  });
 });
 
 describe("memory-rollback command", () => {
@@ -413,6 +461,46 @@ describe("memory-rollback command", () => {
     expect(err).toEqual([]);
     expect(out.join("\n")).toContain(join(backup, "river.db"));
     expect(out.join("\n")).not.toContain(PROBE_WORD);
+  });
+
+  it("marks a sealed package in the scrub list it prints", async () => {
+    makeRiver();
+    seedDerived();
+    const scan = join(root, "packages");
+    mkdirSync(scan, { recursive: true });
+    const sealed = join(scan, "iris-20261027-120000.natalisbak");
+    writeFileSync(sealed, "sealed bytes", "utf8");
+
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await memoryRollbackCommand(["--dir", dir, "--scan", scan], (line) => out.push(line), (line) => err.push(line));
+
+    expect(code).toBe(0);
+    expect(err).toEqual([]);
+    const text = out.join("\n");
+    expect(text).toContain(sealed);
+    expect(text).toContain("sealed: holds derived tables, delete or re-seal after scrub");
+  });
+
+  it("a checkpoint refusal says the rollback is partly done and to stop the reader and run it again", async () => {
+    makeRiver();
+    seedDerived();
+    const reader = new DatabaseSync(riverPath());
+    try {
+      reader.exec("BEGIN");
+      reader.prepare("SELECT * FROM rows").all();
+      const out: string[] = [];
+      const err: string[] = [];
+      const code = await memoryRollbackCommand(["--dir", dir], (line) => out.push(line), (line) => err.push(line));
+      expect(code).toBe(1);
+      expect(out).toEqual([]);
+      const message = err.join("\n");
+      expect(message).toMatch(/partly done/i);
+      expect(message).toMatch(/stop the reader and run this again/i);
+    } finally {
+      reader.exec("COMMIT");
+      reader.close();
+    }
   });
 
   it("exits 1 while the Lar lock is held, and 2 for bad flags", async () => {

@@ -174,6 +174,34 @@ describe("grants.db (B4 Q1)", () => {
     }
   });
 
+  it("a once grant at one scope does not allow the same arguments at another scope", () => {
+    const dir = larFolder();
+    const grants = openGrants(dir);
+    try {
+      const args = { url: "https://forum.example.org/t/1", method: "POST" };
+      const id = grants.addGrant({
+        tool: "web_request",
+        scope: "forum.example.org",
+        kind: "once",
+        argsHmac: grants.hmac(args),
+        createdBy: "owner",
+        nowMs: NOW,
+      });
+      expect(grants.check({ tool: "web_request", scope: "example.net", argsHmac: grants.hmac(args), nowMs: NOW })).toEqual({
+        outcome: "ask",
+      });
+      expect(grants.listGrants().find((grant) => grant.id === id)?.usedAt).toBeUndefined();
+      expect(grants.check({ tool: "web_request", scope: "forum.example.org", argsHmac: grants.hmac(args), nowMs: NOW })).toEqual({
+        outcome: "allow",
+        grantId: id,
+        scope: "forum.example.org",
+        kind: "once",
+      });
+    } finally {
+      grants.close();
+    }
+  });
+
   it("grant_log UPDATE and DELETE fail", () => {
     const dir = larFolder();
     const grants = openGrants(dir);

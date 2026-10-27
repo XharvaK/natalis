@@ -21,6 +21,7 @@ type Taker = {
   lines: string[];
   stderr: () => string;
   done: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+  closed: Promise<void>;
 };
 
 let root: string;
@@ -52,7 +53,10 @@ function startTaker(): Taker {
   const done = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveDone) => {
     child.on("exit", (code, signal) => resolveDone({ code, signal }));
   });
-  const taker: Taker = { child, lines, stderr: () => stderr, done };
+  const closed = new Promise<void>((resolveClosed) => {
+    child.on("close", () => resolveClosed());
+  });
+  const taker: Taker = { child, lines, stderr: () => stderr, done, closed };
   started.push(taker);
   return taker;
 }
@@ -160,6 +164,8 @@ describe("the lar folder lock", () => {
     const taker = startTaker();
     expect(await until(() => taker.lines.length > 0, 10_000)).toBe(true);
     expect(taker.lines).toEqual(["BUSY LarLockBusy"]);
+    // The child writes stdout, then stderr, then exits. Wait for both pipes to close before reading stderr.
+    await taker.closed;
     expect(taker.stderr()).toContain(LAR_LOCK_BUSY_MESSAGE);
     lock.release();
   });

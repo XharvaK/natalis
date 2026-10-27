@@ -415,3 +415,97 @@ describe("facts: cited rows through the runtime", () => {
     }
   });
 });
+
+describe("facts: closing a private fact through the runtime", () => {
+  it("an outward thread gets not_found and cannot close it; the summoner's place can", async () => {
+    const runtimeDir = join(root, "runtime-close");
+    const model = new ScriptedModel([
+      reply({
+        toolCalls: [
+          call("close_fact", { id: 1 }, "close-hidden"),
+          call("close_fact", { id: 999 }, "close-missing"),
+        ],
+      }),
+      reply({ toolCalls: [call("end_turn")] }),
+      reply({ toolCalls: [call("close_fact", { id: 1 }, "close-summoner")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const entity = await openEntity({
+      dir: runtimeDir,
+      config: CONFIG,
+      model,
+      worlds: [createCliWorld({ onSay: () => {} })],
+    });
+    opened.push(entity);
+    try {
+      entity.river.append({
+        thread: "self",
+        kind: "event",
+        source: "body",
+        text: "A note for my own thread.",
+      });
+      const runtimeFacts = openFacts(join(runtimeDir, "river.db"));
+      try {
+        runtimeFacts.record({
+          thread: "self",
+          text: "The harbour gate opens at dawn.",
+          seqs: [1],
+          private: true,
+          validFromSeq: 1,
+          atMs: Date.now(),
+        });
+      } finally {
+        runtimeFacts.close();
+      }
+      entity.river.append({
+        thread: "discord:room:quay",
+        kind: "event",
+        source: "outside",
+        actor: "mara",
+        text: "A word in the room.",
+      });
+
+      await (entity as unknown as { takeTurn(thread: string): Promise<void> }).takeTurn("discord:room:quay");
+
+      const outwardReceipts = entity.river
+        .read({ thread: "discord:room:quay", kinds: ["receipt"], limit: 100 })
+        .filter((row) => row.data?.["tool"] === "close_fact");
+      const hidden = outwardReceipts.find((row) => row.data?.["callId"] === "close-hidden");
+      const missing = outwardReceipts.find((row) => row.data?.["callId"] === "close-missing");
+      expect(hidden?.data?.["ok"]).toBe(false);
+      expect(hidden?.data?.["refused"]).toMatchObject({ code: "not_found" });
+      // The same words a missing id gets for that id: the refusal does not say the fact exists.
+      expect(hidden?.text).toBe("There is no open fact 1, so nothing was closed.");
+      expect(missing?.data?.["refused"]).toMatchObject({ code: "not_found" });
+
+      const stillOpen = openFacts(join(runtimeDir, "river.db"));
+      try {
+        expect(stillOpen.current().map((fact) => fact.id)).toEqual([1]);
+      } finally {
+        stillOpen.close();
+      }
+
+      entity.river.append({
+        thread: "cli:summoner",
+        kind: "event",
+        source: "owner",
+        text: "Close that fact, please.",
+      });
+      await (entity as unknown as { takeTurn(thread: string): Promise<void> }).takeTurn("cli:summoner");
+
+      const summonerReceipts = entity.river
+        .read({ thread: "cli:summoner", kinds: ["receipt"], limit: 100 })
+        .filter((row) => row.data?.["tool"] === "close_fact");
+      expect(summonerReceipts.find((row) => row.data?.["callId"] === "close-summoner")?.data?.["ok"]).toBe(true);
+
+      const closed = openFacts(join(runtimeDir, "river.db"));
+      try {
+        expect(closed.current()).toHaveLength(0);
+      } finally {
+        closed.close();
+      }
+    } finally {
+      await entity.stop();
+    }
+  });
+});
