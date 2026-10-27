@@ -99,7 +99,7 @@ const writeNote: Tool = {
     }
     return guarded(async () => {
       await context.notebook.write(path.value, text.value, why.value, authorOf(context));
-      return { ok: true, summary: `Wrote ${path.value}.`, data: { path: path.value, chars: text.value.length } };
+      return { ok: true, summary: `Wrote ${path.value}.`, data: { path: path.value, chars: charCount(text.value) } };
     });
   },
 };
@@ -184,7 +184,7 @@ const appendNote: Tool = {
     }
     return guarded(async () => {
       await context.notebook.append(path.value, text.value, why.value, authorOf(context));
-      return { ok: true, summary: `Added to ${path.value}.`, data: { path: path.value, chars: text.value.length } };
+      return { ok: true, summary: `Added to ${path.value}.`, data: { path: path.value, chars: charCount(text.value) } };
     });
   },
 };
