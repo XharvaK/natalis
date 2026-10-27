@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -124,6 +125,37 @@ describe("JSONL exporter threads (NIT-3)", () => {
       expect(readFileSync(hashed, "utf8")).not.toContain("mara");
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("JSONL exporter thread hash key (NIT-C)", () => {
+  it("keys the hash to the Lar: two keys differ, neither is the bare sha256, and one key is stable", () => {
+    const dir = mkdtempSync(join(tmpdir(), "natalis-events-"));
+    const other = mkdtempSync(join(tmpdir(), "natalis-events-"));
+    try {
+      const thread = "discord:dm:mara";
+      const hashIn = (dataDir: string, name: string): string => {
+        const path = join(dataDir, name);
+        const bus = createEventBus({ onError: () => {} });
+        bus.on("*", jsonlExporter(path, { threads: "hash", dataDir }));
+        const river = observeRiver(new MemoryRiver({ nowMs: () => NOW }), bus, "live");
+        river.append({ thread, kind: "say", source: "self", text: "x" });
+        return JSON.parse(readFileSync(path, "utf8")).thread as string;
+      };
+      const first = hashIn(dir, "a.jsonl");
+      const again = hashIn(dir, "b.jsonl");
+      const elsewhere = hashIn(other, "a.jsonl");
+      const bare = createHash("sha256").update(thread).digest("hex").slice(0, 12);
+      expect(first).toMatch(/^[0-9a-f]{12}$/);
+      expect(again).toBe(first);
+      expect(elsewhere).not.toBe(first);
+      expect(first).not.toBe(bare);
+      expect(elsewhere).not.toBe(bare);
+      expect(readFileSync(join(dir, "a.jsonl"), "utf8")).not.toContain("mara");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(other, { recursive: true, force: true });
     }
   });
 });
