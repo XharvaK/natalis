@@ -9,7 +9,7 @@
 //   state.json    cursors per thread, open asks, scheduled wakes, mood, written atomically after each change
 
 import { rankRecall } from "../context/recall-rank.js";
-import { parseTriggers, triggeredText } from "../context/triggers.js";
+import { parseTriggers, triggeredNotes } from "../context/triggers.js";
 import { SAY_CHECKS } from "./say-checks.js";
 import { policyFor, policyRefusal } from "./tool-policy.js";
 import { CLI_WORLD_ID } from "../worlds/cli.js";
@@ -18,7 +18,7 @@ import { purposeOf, type Purpose } from "../river/purpose.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { assembleSystem, droppedNote, formatDuration, layoutRequest, timeFacts, type LayoutPart } from "../context/index.js";
+import { assembleSystem, droppedNote, formatDuration, itemsText, layoutRequest, timeFacts, type Assembled, type LayoutPart, type SectionItems } from "../context/index.js";
 import { addTokens, runTurnWithMessages, type InFlightTool } from "../loop/index.js";
 import { TURN_DEADLINE_MS, withTurnDeadline } from "../model/turn-deadline.js";
 import { whenText } from "./when.js";
@@ -226,14 +226,13 @@ function worldSaid<T>(read: () => T): T | undefined {
 const ORDER_NOTE =
   "Each turn's message lists, in this order: the recent rows, the new rows, the current view of anything that changed, then, on a retry, what was already done, then the now board, the time, and recall. A note at the end names any part that was left out for size.";
 /** A section of the prompt, and the class that says how often it changes. Every section must declare one. */
-type Section = ContextSection & { cls: PromptPartClass };
+type Section = ContextSection & { cls: PromptPartClass; items?: SectionItems };
 /** U6: one row she marked, with the newest weight she gave it. */
 type MarkedEntry = { row: RiverRow; weight: number };
 /** U6: the marked rows a reflection turn shows, and when the oldest mark in this budget window was written. */
 type MarkedWindow = { entries: MarkedEntry[]; windowStartAtMs: number };
 const RECALL_LIMIT = 8;
 const RECALL_WORDS = 4;
-const RECALL_CLIP = 300;
 /** How much of a receipt's returned data recall shows. */
 const RECEIPT_SHOW = 200;
 const MOOD_LIMIT = 200;
@@ -2241,7 +2240,7 @@ class Runtime implements Entity {
       { name: "character", text: this.noteOr("self/character.md", CHARACTER_STUB), priority: 100, core: true, cls: "notes" },
       { name: "your life", text: this.noteOr(LIFE_PATH, LIFE_STUB), priority: 100, core: true, cls: "notes" },
       { name: "privacy list", text: privacyText(this.privacyNow()), priority: 100, core: true, cls: "notes" },
-      { name: "index", text: this.indexText(thread), priority: 50, cls: "notes" },
+      this.indexSection(thread),
     ];
     // What changes every turn goes in the user message, after the new rows: the now board, the time facts, then recall.
     const changing: Section[] = [
@@ -2258,29 +2257,41 @@ class Runtime implements Entity {
         cls: "turn",
       },
     ];
-    const triggered = this.triggeredNotesText(thread, fresh);
-    if (triggered !== "") changing.push({ name: "triggered notes", text: triggered, priority: 45, cls: "turn" });
-    const recall = this.recallText(thread, fresh, shown);
-    if (recall !== "") changing.push({ name: "recall", text: recall, priority: 40, cls: "turn" });
+    const triggered = this.triggeredSection(thread, fresh);
+    if (triggered !== undefined) changing.push(triggered);
+    const recall = this.recallSection(thread, fresh, shown);
+    if (recall !== undefined) changing.push(recall);
     // U6: a reflection turn shows the rows she marked since the last reflection, whole, under the same one budget as
     // every other optional section. Rows that do not fit are named by one pointer line, never cut or reworded.
     const marked = purpose === "reflect" ? this.markedEntries(thread, snapshot) : undefined;
-    // One budget over all of them, as before: an optional section that does not fit is dropped whole, and named.
+    // One budget over all of them: an optional section is filled with whole items first, then named by pointer.
     const all: Section[] = [...slow, ...changing];
     const fitted = marked === undefined ? undefined : this.fitMarked(all, marked);
-    const dropped = fitted === undefined ? assembleSystem(all, this.config.model.contextTokens).dropped : fitted.dropped;
-    const shownNames = (sections: Section[]): Section[] => sections.filter((section) => !dropped.includes(section.name));
-    const part = (section: Section): LayoutPart => ({ name: section.name, cls: section.cls, text: `## ${section.name}\n${section.text}` });
-    const shownSlow = shownNames(slow);
+    const assembled = fitted?.assembled ?? assembleSystem(all, this.config.model.contextTokens);
+    const shownText = new Map(assembled.shown.map((section) => [section.name, section.text]));
+    const part = (section: Section): LayoutPart | undefined => {
+      const text = shownText.get(section.name);
+      return text === undefined ? undefined : { name: section.name, cls: section.cls, text };
+    };
+    const partsOf = (sections: Section[]): LayoutPart[] =>
+      sections.flatMap((section) => {
+        const shownPart = part(section);
+        return shownPart === undefined ? [] : [shownPart];
+      });
     // The order note is fixed text, after the fixed sections and before the notes. It is not budgeted: it is always shown.
     const system: LayoutPart[] = [
-      ...shownSlow.filter((section) => section.cls === "fixed").map(part),
+      ...partsOf(slow.filter((section) => section.cls === "fixed")),
       { name: "order of the message", cls: "fixed", text: ORDER_NOTE },
-      ...shownSlow.filter((section) => section.cls === "notes").map(part),
+      ...partsOf(slow.filter((section) => section.cls === "notes")),
     ];
-    const tail: LayoutPart[] = shownNames(changing).map(part);
-    if (fitted !== undefined && !dropped.includes(fitted.section.name)) tail.push(part(fitted.section));
-    if (dropped.length > 0) tail.push({ name: "dropped note", cls: "turn", text: droppedNote(dropped) });
+    const tail: LayoutPart[] = partsOf(changing);
+    if (fitted !== undefined) {
+      const markedPart = part(fitted.section);
+      if (markedPart !== undefined) tail.push(markedPart);
+    }
+    if (assembled.dropped.length > 0) {
+      tail.push({ name: "dropped note", cls: "turn", text: droppedNote(assembled.dropped) });
+    }
     return {
       system,
       tail,
@@ -2324,17 +2335,17 @@ class Runtime implements Entity {
    * whole; while it does not fit, its last row moves into the pointer line. If even the pointer line does not fit, the
    * section is dropped whole like any other optional section and named in the dropped note.
    */
-  private fitMarked(all: Section[], marked: MarkedWindow): { section: Section; dropped: string[] } {
+  private fitMarked(all: Section[], marked: MarkedWindow): { section: Section; assembled: Assembled } {
     const name = `marked since ${this.stamp(marked.windowStartAtMs).slice(0, 10)}`;
     let shown = marked.entries.length;
     let section = this.markedSection(name, marked.entries, shown);
-    let dropped = assembleSystem([...all, section], this.config.model.contextTokens).dropped;
-    while (dropped.includes(name) && shown > 0) {
+    let assembled = assembleSystem([...all, section], this.config.model.contextTokens);
+    while (assembled.dropped.includes(name) && shown > 0) {
       shown -= 1;
       section = this.markedSection(name, marked.entries, shown);
-      dropped = assembleSystem([...all, section], this.config.model.contextTokens).dropped;
+      assembled = assembleSystem([...all, section], this.config.model.contextTokens);
     }
-    return { section, dropped };
+    return { section, assembled };
   }
 
   private markedSection(name: string, entries: readonly MarkedEntry[], shown: number): Section {
@@ -2551,19 +2562,30 @@ class Runtime implements Entity {
     return kind === "summoner" || kind === "self" ? this.notebook : withoutPrivate(this.notebook);
   }
 
-  private indexText(thread: string): string {
+  /** Q19: the index as whole lines, in the notebook's order, with one pointer for the lines that do not fit. */
+  private indexSection(thread: string): Section {
     const entries = this.notebookFor(thread).list().filter((entry) => {
       const base = entry.path.split("/").pop() ?? entry.path;
       return base !== "README.md" && !base.startsWith(".");
     });
-    if (entries.length === 0) return "Your notebook has no notes yet.";
-    return entries.map((entry) => `- ${entry.path}: ${entry.firstLine.trim() || "(empty)"}`).join("\n");
+    if (entries.length === 0) {
+      return { name: "index", text: "Your notebook has no notes yet.", priority: 50, cls: "notes" };
+    }
+    const items: SectionItems = {
+      items: entries.map((entry) => `- ${entry.path}: ${entry.firstLine.trim() || "(empty)"}`),
+      keys: entries.map((entry) => entry.path),
+      pointer: indexPointer,
+    };
+    return { name: "index", text: itemsText(items, items.items.length), items, priority: 50, cls: "notes" };
   }
 
-  /** Notes with a "triggers:" first line whose words appear in the fresh rows (not views), loaded under one budget. */
-  private triggeredNotesText(thread: string, fresh: RiverRow[]): string {
+  /**
+   * Q19: notes with a "triggers:" first line whose words appear in the fresh rows (not views), most matched words
+   * first, each whole, under the same one budget as every other optional section. The rest are named by one pointer.
+   */
+  private triggeredSection(thread: string, fresh: RiverRow[]): Section | undefined {
     const text = fresh.filter((row) => viewKeyOf(row) === undefined).map((row) => row.text ?? "").join("\n");
-    if (text.trim() === "") return "";
+    if (text.trim() === "") return undefined;
     const notebook = this.notebookFor(thread);
     const notes = notebook
       .list()
@@ -2576,10 +2598,20 @@ class Runtime implements Entity {
         const body = notebook.read(entry.path);
         return body === null ? [] : [{ path: entry.path, firstLine: entry.firstLine, text: body }];
       });
-    return triggeredText(notes, text);
+    const matched = triggeredNotes(notes, text);
+    if (matched.length === 0) return undefined;
+    const items: SectionItems = {
+      items: matched.map((note) => `### ${note.path}\n${note.text.trim()}`),
+      keys: matched.map((note) => note.path),
+      pointer: triggeredPointer,
+      lead: "Notes of yours whose trigger words came up in the new messages:",
+      sep: "\n\n",
+    };
+    return { name: "triggered notes", text: itemsText(items, items.items.length), items, priority: 45, cls: "turn" };
   }
 
-  private recallText(thread: string, fresh: RiverRow[], shown: Set<number>): string {
+  /** Q19: recall rows in recall's own score order, each whole, with a seq pointer for the rows that do not fit. */
+  private recallSection(thread: string, fresh: RiverRow[], shown: Set<number>): Section | undefined {
     // River search ANDs its terms, so each word is searched on its own and the rows that match most words win.
     const words: string[] = [];
     for (const row of fresh) {
@@ -2598,7 +2630,7 @@ class Runtime implements Entity {
         else found.set(hit.row.seq, { row: hit.row, score: 1 });
       }
     }
-    if (found.size === 0) return "";
+    if (found.size === 0) return undefined;
     const weights = this.markWeights();
     const candidates = [...found.values()].map(({ row, score }) => ({
       row,
@@ -2607,10 +2639,13 @@ class Runtime implements Entity {
       matches: score,
       weight: weights.get(row.seq) ?? 0,
     }));
-    return rankRecall(candidates, this.nowMs())
-      .slice(0, RECALL_LIMIT)
-      .map(({ row }) => `[${this.stamp(row.atMs)} ${row.thread} ${who(row)}] ${shownRow(row)}`)
-      .join("\n");
+    const ranked = rankRecall(candidates, this.nowMs()).slice(0, RECALL_LIMIT);
+    const items: SectionItems = {
+      items: ranked.map(({ row }) => `[${this.stamp(row.atMs)} ${row.thread} ${who(row)}] ${shownRow(row)}`),
+      keys: ranked.map(({ row }) => String(row.seq)),
+      pointer: recallPointer,
+    };
+    return { name: "recall", text: itemsText(items, items.items.length), items, priority: 40, cls: "turn" };
   }
 
   /** U6: the newest mark weight for each cited row, over every mark in the river. An unmarked row has no entry. */
@@ -3827,9 +3862,9 @@ function olderViewRows(rows: readonly RiverRow[], newest: ReadonlyMap<string, Ri
   return older;
 }
 
-/** A row as recall shows it: its words (a view by its brief), and for a receipt the start of what its tool returned. */
+/** A row as recall shows it: its words whole (a view by its brief), and for a receipt the start of what its tool returned. */
 function shownRow(row: RiverRow): string {
-  const text = clip(viewKeyOf(row) === undefined ? row.text ?? "" : briefOf(row), RECALL_CLIP);
+  const text = viewKeyOf(row) === undefined ? row.text ?? "" : briefOf(row);
   const returned = row.data?.["dataJson"];
   if (row.kind !== "receipt" || typeof returned !== "string" || returned === "") return text;
   return `${text} It returned: ${clip(oneLine(returned), RECEIPT_SHOW)}`;
@@ -3849,6 +3884,21 @@ function markWeightOf(row: RiverRow): 1 | 2 | 3 | undefined {
 /** U6: the one line that names marked rows the reflection section could not fit, whole and unrewritten. */
 function markedPointer(entries: readonly MarkedEntry[]): string {
   return `${entries.length} more marked rows: seqs ${entries.map((entry) => entry.row.seq).join(", ")} (recall with seqs opens them)`;
+}
+
+/** Q19: the one line that names the recall rows a turn did not show, by seq. */
+function recallPointer(keys: readonly string[]): string {
+  return `${keys.length} more recall ${keys.length === 1 ? "match" : "matches"}: seqs ${keys.join(", ")} (recall with seqs opens them)`;
+}
+
+/** Q19: the one line that names the triggered notes a turn did not show, by path. */
+function triggeredPointer(keys: readonly string[]): string {
+  return `${keys.length} ${keys.length === 1 ? "note" : "notes"} whose words came up: ${keys.join(", ")}, each with its own first line (read_note opens them)`;
+}
+
+/** Q19: the one line that names the index lines a turn did not show. */
+function indexPointer(keys: readonly string[]): string {
+  return `${keys.length} more ${keys.length === 1 ? "note" : "notes"} (list_notes shows them)`;
 }
 
 /** True when a row was erased by forget, or is the tombstone that marks an erased place. */
