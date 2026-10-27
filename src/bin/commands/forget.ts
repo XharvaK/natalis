@@ -9,6 +9,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ENTITY_FILE } from "../../entity/config.js";
+import { acquireLarLock, LarLockBusy } from "../../entity/lar-lock.js";
 import { forgetInStateFile, STATE_FILE } from "../../entity/runtime.js";
 import { MEDIA_FOLDER, openShelf } from "../../media/shelf.js";
 import { forgetLines, lineHoldsWords, queryWords } from "../../notebook/forget.js";
@@ -98,55 +99,62 @@ export async function runForget(request: ForgetRequest): Promise<ForgetCounts> {
   if (!existsSync(join(dir, "river.db"))) throw new Error(`No river.db in ${dir}; there is nothing to forget yet.`);
   const words = request.query === undefined ? [] : queryWords(request.query);
 
-  let rows: number;
-  let pictureIds: string[];
-  const river = openRiver(join(dir, "river.db"));
+  // One writer per Lar folder. The lock is taken before the river or a note is touched and held to the end, so a
+  // run or a second command cannot start in the middle of the erase.
+  const lock = acquireLarLock(dir);
   try {
-    // The pictures the rows name are read before the rows lose their words.
-    pictureIds = picturesNamedBy(river.read({ limit: ALL_ROWS }), request, words);
-    rows =
-      request.seqs !== undefined
-        ? river.forget({ seqs: request.seqs }, "owner", request.reason)
-        : river.forget({ text: request.query ?? "" }, "owner", request.reason);
-  } finally {
-    river.close();
-  }
-
-  let lines = 0;
-  let files = 0;
-  let trashLines = 0;
-  let commits = 0;
-  let home = 0;
-  if (request.query !== undefined && existsSync(join(dir, NOTEBOOK))) {
-    const notebookDir = join(dir, NOTEBOOK);
-    const notebook = await openNotebook(notebookDir);
-    for (const entry of notebook.list()) {
-      if (entry.path === TRASH || entry.path.startsWith(`${TRASH}/`) || entry.path === ".gitattributes") continue;
-      const text = notebook.read(entry.path);
-      if (text === null) continue;
-      const result = forgetLines(text, words);
-      if (result.count === 0) continue;
-      await notebook.write(entry.path, result.text, request.reason, "owner");
-      lines += result.count;
-      files += 1;
+    let rows: number;
+    let pictureIds: string[];
+    const river = openRiver(join(dir, "river.db"));
+    try {
+      // The pictures the rows name are read before the rows lose their words.
+      pictureIds = picturesNamedBy(river.read({ limit: ALL_ROWS }), request, words);
+      rows =
+        request.seqs !== undefined
+          ? river.forget({ seqs: request.seqs }, "owner", request.reason)
+          : river.forget({ text: request.query ?? "" }, "owner", request.reason);
+    } finally {
+      river.close();
     }
-    // The notes moved to trash keep their text as files, so the same line replacement goes over them.
-    trashLines = forgetInFolder(join(notebookDir, TRASH), words);
-    // The history is rebuilt last: it holds every commit above, and the working tree is made to match it.
-    commits = (await purgeHistory(notebookDir, words)).commits;
-  }
-  if (request.query !== undefined && existsSync(join(dir, HOME_TREE))) {
-    home = removeFilesWith(join(dir, HOME_TREE), words);
-  }
-  const pictures = removePictures(join(dir, MEDIA_FOLDER), pictureIds);
 
-  // The state keeps short texts too (mood, wake reasons, proposals, the last words said in a place). A running Lar
-  // writes its own state on its next save, so this part holds only when the Lar is stopped; the command says so.
-  const stateTexts = request.query === undefined ? 0 : forgetInStateFile(join(dir, STATE_FILE), request.query);
-  // The game's store keeps the game's own words (observations, acts, answers, plan steps). It is searched when it exists.
-  const gameStore = join(dir, DOMUS_FOLDER, DOMUS_DB_FILE);
-  const domus = request.query !== undefined && existsSync(gameStore) ? forgetInDomusFile(dir, words) : undefined;
-  return { rows, lines, files, stateTexts, domus, trashLines, commits, home, pictures };
+    let lines = 0;
+    let files = 0;
+    let trashLines = 0;
+    let commits = 0;
+    let home = 0;
+    if (request.query !== undefined && existsSync(join(dir, NOTEBOOK))) {
+      const notebookDir = join(dir, NOTEBOOK);
+      const notebook = await openNotebook(notebookDir);
+      for (const entry of notebook.list()) {
+        if (entry.path === TRASH || entry.path.startsWith(`${TRASH}/`) || entry.path === ".gitattributes") continue;
+        const text = notebook.read(entry.path);
+        if (text === null) continue;
+        const result = forgetLines(text, words);
+        if (result.count === 0) continue;
+        await notebook.write(entry.path, result.text, request.reason, "owner");
+        lines += result.count;
+        files += 1;
+      }
+      // The notes moved to trash keep their text as files, so the same line replacement goes over them.
+      trashLines = forgetInFolder(join(notebookDir, TRASH), words);
+      // The history is rebuilt last: it holds every commit above, and the working tree is made to match it.
+      commits = (await purgeHistory(notebookDir, words)).commits;
+    }
+    if (request.query !== undefined && existsSync(join(dir, HOME_TREE))) {
+      home = removeFilesWith(join(dir, HOME_TREE), words);
+    }
+    const pictures = removePictures(join(dir, MEDIA_FOLDER), pictureIds);
+
+    // The state keeps short texts too (mood, wake reasons, proposals, the last words said in a place). A running Lar
+    // writes its own state on its next save, so this part holds only when the Lar is stopped; the command says so.
+    const stateTexts = request.query === undefined ? 0 : forgetInStateFile(join(dir, STATE_FILE), request.query);
+    // The game's store keeps the game's own words (observations, acts, answers, plan steps). It is searched when it exists.
+    const gameStore = join(dir, DOMUS_FOLDER, DOMUS_DB_FILE);
+    const domus = request.query !== undefined && existsSync(gameStore) ? forgetInDomusFile(dir, words) : undefined;
+    return { rows, lines, files, stateTexts, domus, trashLines, commits, home, pictures };
+  } finally {
+    lock.release();
+  }
 }
 
 /**
@@ -239,7 +247,14 @@ export async function forgetCommand(
     err(FORGET_USAGE);
     return 2;
   }
-  const counts = await runForget(parsed.request);
+  let counts: ForgetCounts;
+  try {
+    counts = await runForget(parsed.request);
+  } catch (error) {
+    if (!(error instanceof LarLockBusy)) throw error;
+    err(error.message);
+    return 1;
+  }
   if (parsed.request.seqs !== undefined) {
     out(`Forgot ${counts.rows} river row(s).`);
     if (counts.pictures > 0) out(`Took ${counts.pictures} picture(s) off the shelf, which the rows named.`);

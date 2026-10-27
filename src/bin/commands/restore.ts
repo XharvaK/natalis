@@ -9,6 +9,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSy
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import { FOLDER_HASH_KEY, folderHash } from "../../entity/copy-guard.js";
+import { acquireLarLock, LAR_LOCK_DATABASE_FILE, LAR_LOCK_INFO_FILE, type LarLock } from "../../entity/lar-lock.js";
 import { STATE_FILE } from "../../entity/runtime.js";
 import { writeStop } from "../../entity/stop.js";
 import { NOTEBOOK_DIR, RIVER_FILE } from "../../import/folder.js";
@@ -37,7 +38,10 @@ export type RestoreOptions = {
 
 export type RestoreResult = { dir: string; manifest: Manifest };
 
-/** Rebuilds a Lar into `dir`. Throws a plain error on any failure and leaves no half-built folder behind. */
+/**
+ * Rebuilds a Lar into `dir`. Holds the target folder's lock for the whole run, so a second restore or a run on it is
+ * refused meanwhile. Throws a plain error on any failure and leaves no half-built folder behind.
+ */
 export async function restoreEntity(options: RestoreOptions): Promise<RestoreResult> {
   const from = resolve(options.from);
   const dir = resolve(options.dir);
@@ -49,57 +53,86 @@ export async function restoreEntity(options: RestoreOptions): Promise<RestoreRes
   say(`Checked ${manifest.files.length} files against their hashes.`);
 
   checkTarget(dir);
-  const parent = dirname(dir);
-  mkdirSync(parent, { recursive: true });
-  const stage = join(parent, `.${basename(dir)}-restore-${randomUUID().slice(0, 8)}.partial`);
-  mkdirSync(stage);
-
+  const existed = existsSync(dir);
+  // The target folder is the Lar that will exist here, so its lock is taken before anything is written. A second
+  // restore, or a run on the same folder, is refused with the lock's busy message.
+  mkdirSync(dir, { recursive: true });
+  let lock: LarLock;
   try {
-    for (const file of manifest.files) {
-      if (file.name === BUNDLE_FILE) continue;
-      const target = join(stage, file.name);
-      mkdirSync(dirname(target), { recursive: true });
-      copyFileSync(join(from, file.name), target);
-      if (file.name.startsWith(`${VAULT_TREE}/`)) {
-        chmodSync(dirname(target), 0o700);
-        chmodSync(target, 0o600);
+    lock = acquireLarLock(dir);
+  } catch (error) {
+    // A folder made only for this attempt is removed again; a holder's lock files are left where they are.
+    if (!existed) {
+      try {
+        rmdirSync(dir);
+      } catch {
+        // Another holder already put its lock files in the folder.
       }
     }
-    say(`Restored ${manifest.files.length - 1} files.`);
+    throw error;
+  }
 
-    const bundle = join(from, BUNDLE_FILE);
-    const notebook = join(stage, NOTEBOOK_DIR);
-    await git(undefined, ["clone", "--quiet", bundle, notebook]);
-    // The clone remembers the bundle as its origin. A restored notebook has no remote, so that link is removed.
-    if ((await git(notebook, ["remote"])).split("\n").includes("origin")) {
-      await git(notebook, ["remote", "remove", "origin"]);
-    }
-    const head = await git(notebook, ["rev-parse", "--verify", "HEAD"]);
-    if (head !== manifest.notebookHead) {
-      throw new Error(`The restored notebook is at ${head.slice(0, 12)}, but the manifest says ${manifest.notebookHead.slice(0, 12)}. Not keeping it.`);
-    }
-    say(`Rebuilt the notebook from its bundle at ${head.slice(0, 12)}.`);
+  const parent = dirname(dir);
+  const stage = join(parent, `.${basename(dir)}-restore-${randomUUID().slice(0, 8)}.partial`);
 
-    const seq = readRiverLastSeq(join(stage, RIVER_FILE));
-    if (seq !== manifest.riverLastSeq) {
-      throw new Error(`The restored river ends at seq ${seq}, but the manifest says ${manifest.riverLastSeq}. Not keeping it.`);
-    }
-    say(`Checked the restored river: last seq ${seq}, as the manifest says.`);
+  try {
+    try {
+      mkdirSync(stage);
+      for (const file of manifest.files) {
+        if (file.name === BUNDLE_FILE) continue;
+        const target = join(stage, file.name);
+        mkdirSync(dirname(target), { recursive: true });
+        copyFileSync(join(from, file.name), target);
+        if (file.name.startsWith(`${VAULT_TREE}/`)) {
+          chmodSync(dirname(target), 0o700);
+          chmodSync(target, 0o600);
+        }
+      }
+      say(`Restored ${manifest.files.length - 1} files.`);
 
-    // The stop file is never in a backup, so the stop is brought back from the state the backup kept: on stays on.
-    const stopWasOn = stopOnIn(join(stage, STATE_FILE));
-    if (stopWasOn) writeStop(stage);
-    if (existsSync(dir)) rmdirSync(dir);
-    renameSync(stage, dir);
-    recordRestoredFolder(dir);
-    noteRestore(dir, manifest.createdAt, stopWasOn);
-    if (stopWasOn) say("Your summoner's emergency stop was on in the backup, so it is on in the restore.");
+      const bundle = join(from, BUNDLE_FILE);
+      const notebook = join(stage, NOTEBOOK_DIR);
+      await git(undefined, ["clone", "--quiet", bundle, notebook]);
+      // The clone remembers the bundle as its origin. A restored notebook has no remote, so that link is removed.
+      if ((await git(notebook, ["remote"])).split("\n").includes("origin")) {
+        await git(notebook, ["remote", "remove", "origin"]);
+      }
+      const head = await git(notebook, ["rev-parse", "--verify", "HEAD"]);
+      if (head !== manifest.notebookHead) {
+        throw new Error(`The restored notebook is at ${head.slice(0, 12)}, but the manifest says ${manifest.notebookHead.slice(0, 12)}. Not keeping it.`);
+      }
+      say(`Rebuilt the notebook from its bundle at ${head.slice(0, 12)}.`);
+
+      const seq = readRiverLastSeq(join(stage, RIVER_FILE));
+      if (seq !== manifest.riverLastSeq) {
+        throw new Error(`The restored river ends at seq ${seq}, but the manifest says ${manifest.riverLastSeq}. Not keeping it.`);
+      }
+      say(`Checked the restored river: last seq ${seq}, as the manifest says.`);
+
+      // The stop file is never in a backup, so the stop is brought back from the state the backup kept: on stays on.
+      const stopWasOn = stopOnIn(join(stage, STATE_FILE));
+      if (stopWasOn) writeStop(stage);
+      // The checked folder moves into the locked Lar folder. Nothing is visible to a second process halfway.
+      for (const entry of readdirSync(stage)) renameSync(join(stage, entry), join(dir, entry));
+      rmdirSync(stage);
+      recordRestoredFolder(dir);
+      noteRestore(dir, manifest.createdAt, stopWasOn);
+      if (stopWasOn) say("Your summoner's emergency stop was on in the backup, so it is on in the restore.");
+      say(`Restored into ${dir}. Start it with natalis run, or with the service unit in deploy/.`);
+      return { dir, manifest };
+    } finally {
+      lock.release();
+    }
   } catch (err) {
     rmSync(stage, { recursive: true, force: true, maxRetries: 5 });
+    // The target was empty before this restore, so only what this attempt wrote is removed.
+    if (existed) {
+      for (const entry of readdirSync(dir)) rmSync(join(dir, entry), { recursive: true, force: true });
+    } else {
+      rmSync(dir, { recursive: true, force: true });
+    }
     throw err;
   }
-  say(`Restored into ${dir}. Start it with natalis run, or with the service unit in deploy/.`);
-  return { dir, manifest };
 }
 
 /** Whether the state file a backup kept has the emergency stop on. A state file that does not say so is read as off. */
@@ -146,11 +179,17 @@ function noteRestore(dir: string, createdAt: string, stopWasOn: boolean): void {
   }
 }
 
-/** The target must not exist yet, or exist as an empty folder. Anything else is refused, so nothing is overwritten. */
+/**
+ * The target must not exist yet, or exist as an empty folder. Anything else is refused, so nothing is overwritten.
+ * The lock's own files are not the target's contents: they are a holder's, and a held lock is refused by acquiring.
+ */
 function checkTarget(dir: string): void {
   if (!existsSync(dir)) return;
   if (!statSync(dir).isDirectory()) throw new Error(`${dir} is not a folder. Choose a new folder for the restore.`);
-  if (readdirSync(dir).length > 0) throw new Error(`${dir} is not empty. Choose a new folder: a restore never overwrites.`);
+  const entries = readdirSync(dir).filter(
+    (name) => name !== LAR_LOCK_DATABASE_FILE && name !== `${LAR_LOCK_DATABASE_FILE}-journal` && name !== LAR_LOCK_INFO_FILE,
+  );
+  if (entries.length > 0) throw new Error(`${dir} is not empty. Choose a new folder: a restore never overwrites.`);
 }
 
 /** `natalis restore` as the command line runs it. Returns the exit code. */

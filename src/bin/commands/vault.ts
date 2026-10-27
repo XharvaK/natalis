@@ -7,6 +7,7 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ENTITY_FILE } from "../../entity/config.js";
+import { acquireLarLock, type LarLock } from "../../entity/lar-lock.js";
 import { MIN_KNOWN_VALUE_LENGTH } from "../../secrets/scanner.js";
 import { keepVaultEntry, readVault, validVaultName } from "../../worlds/web/vault.js";
 import { flagValue, hasFlag } from "./args.js";
@@ -66,31 +67,44 @@ export async function vaultCommand(
     return 1;
   }
 
-  const value = (await readValue(`Value for ${name}, sent only to ${host} (hidden; press Enter when done): `)).trim();
-  if (value === "") {
-    err("No value was given. Nothing was kept.");
-    return 1;
-  }
-  if (/\s/.test(value) || value.length > VALUE_MAX) {
-    err(`A value is one piece of text with no spaces or line breaks, up to ${VALUE_MAX} characters. Nothing was kept.`);
-    return 1;
-  }
-  if (value.length < MIN_KNOWN_VALUE_LENGTH) {
-    err(`A value shorter than ${MIN_KNOWN_VALUE_LENGTH} characters cannot be hidden from the Lar's text, so it cannot be kept. Nothing was kept.`);
-    return 1;
-  }
-
+  // A keep is a write to the Lar's folder, so it takes the folder lock for its whole run. While the Lar runs,
+  // another process holds the lock; until the vault queue exists, that is refused with the busy message.
+  let lock: LarLock;
   try {
-    keepVaultEntry(dir, name, { host, value });
+    lock = acquireLarLock(dir);
   } catch (error) {
-    err(`The value could not be kept: ${error instanceof Error ? error.message : String(error)} Nothing was kept.`);
+    err(error instanceof Error ? error.message : String(error));
     return 1;
   }
-  out(
-    `${vault[name] !== undefined ? "Replaced" : "Kept"} the value named ${name}, for ${host}. The Lar can send it with auth {"vault": "${name}"}. ` +
-      "A running Lar learns it at its next start, so restart it: until then the value can be sent but is not yet hidden if a site shows it back.",
-  );
-  return 0;
+  try {
+    const value = (await readValue(`Value for ${name}, sent only to ${host} (hidden; press Enter when done): `)).trim();
+    if (value === "") {
+      err("No value was given. Nothing was kept.");
+      return 1;
+    }
+    if (/\s/.test(value) || value.length > VALUE_MAX) {
+      err(`A value is one piece of text with no spaces or line breaks, up to ${VALUE_MAX} characters. Nothing was kept.`);
+      return 1;
+    }
+    if (value.length < MIN_KNOWN_VALUE_LENGTH) {
+      err(`A value shorter than ${MIN_KNOWN_VALUE_LENGTH} characters cannot be hidden from the Lar's text, so it cannot be kept. Nothing was kept.`);
+      return 1;
+    }
+
+    try {
+      keepVaultEntry(dir, name, { host, value });
+    } catch (error) {
+      err(`The value could not be kept: ${error instanceof Error ? error.message : String(error)} Nothing was kept.`);
+      return 1;
+    }
+    out(
+      `${vault[name] !== undefined ? "Replaced" : "Kept"} the value named ${name}, for ${host}. The Lar can send it with auth {"vault": "${name}"}. ` +
+        "A running Lar learns it at its next start, so restart it: until then the value can be sent but is not yet hidden if a site shows it back.",
+    );
+    return 0;
+  } finally {
+    lock.release();
+  }
 }
 
 /**

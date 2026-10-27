@@ -5,6 +5,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { acquireLarLock, type LarLock } from "../../entity/lar-lock.js";
 import { STATE_FILE } from "../../entity/runtime.js";
 import { NOTEBOOK_DIR } from "../../import/folder.js";
 import { restoreNotebookTo } from "../../notebook/restore.js";
@@ -28,19 +29,31 @@ export async function notebookRestoreCommand(args: string[], out: (line: string)
     }
     throw e;
   }
-  if (!force && !stoppedCleanly(dir)) {
-    err(`${STATE_FILE} does not show a clean stop, so the Lar may be running. Stop it with natalis stop and let it end, then run this again; or give --force if you know it is down.`);
-    return 1;
-  }
+  // The lock comes first and is held for the whole restore. --force skips only the clean-stop check, never this.
+  let lock: LarLock;
   try {
-    const result = await restoreNotebookTo(join(dir, NOTEBOOK_DIR), commit, reason);
-    if (result.files === 0) out(`The notebook already matches ${result.from.slice(0, 12)}; nothing changed.`);
-    else out(`Restored ${result.files} file(s) to ${result.from.slice(0, 12)} as commit ${result.commit.slice(0, 12)}.`);
-    out("If the Lar was running, restart it so it reads its notes fresh.");
-    return 0;
+    lock = acquireLarLock(dir);
   } catch (e) {
     err(e instanceof Error ? e.message : String(e));
     return 1;
+  }
+  try {
+    if (!force && !stoppedCleanly(dir)) {
+      err(`${STATE_FILE} does not show a clean stop, so the Lar may be running. Stop it with natalis stop and let it end, then run this again; or give --force if you know it is down.`);
+      return 1;
+    }
+    try {
+      const result = await restoreNotebookTo(join(dir, NOTEBOOK_DIR), commit, reason);
+      if (result.files === 0) out(`The notebook already matches ${result.from.slice(0, 12)}; nothing changed.`);
+      else out(`Restored ${result.files} file(s) to ${result.from.slice(0, 12)} as commit ${result.commit.slice(0, 12)}.`);
+      out("If the Lar was running, restart it so it reads its notes fresh.");
+      return 0;
+    } catch (e) {
+      err(e instanceof Error ? e.message : String(e));
+      return 1;
+    }
+  } finally {
+    lock.release();
   }
 }
 
