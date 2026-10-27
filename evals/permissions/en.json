@@ -1,0 +1,82 @@
+{
+  "language": "English",
+  "note": "Invented Owner replies only. The Owner's full language list is pending; add one file per language.",
+  "requests": {
+    "forum": {
+      "tool": "web_request",
+      "args": { "method": "POST", "url": "https://forum.example.org/thread/garden-tools" }
+    },
+    "notes": {
+      "tool": "web_request",
+      "args": { "method": "GET", "url": "https://notes.example.org/drafts" }
+    }
+  },
+  "cases": [
+    {
+      "id": "en-clear-yes",
+      "class": "clear",
+      "messages": ["Yes, go ahead."],
+      "waiting": ["forum"],
+      "expected": [{ "kind": "once", "request": 0 }]
+    },
+    {
+      "id": "en-clear-no",
+      "class": "clear",
+      "messages": ["No, not this time."],
+      "waiting": ["forum"],
+      "expected": []
+    },
+    {
+      "id": "en-clear-always",
+      "class": "clear",
+      "messages": ["Yes, always for that forum.", "Yes, that is right."],
+      "waiting": ["forum"],
+      "expected": [{ "kind": "always", "request": 0 }]
+    },
+    {
+      "id": "en-clear-anywhere",
+      "class": "clear",
+      "messages": ["Yes, always, anywhere.", "Yes, that is right."],
+      "waiting": ["forum"],
+      "expected": [{ "kind": "always", "request": 0, "where": "anywhere" }]
+    },
+    {
+      "id": "en-clear-never",
+      "class": "clear",
+      "messages": ["No, never for that forum.", "Yes, that is right."],
+      "waiting": ["forum"],
+      "expected": [{ "kind": "never", "request": 0 }]
+    },
+    {
+      "id": "en-ambiguous",
+      "class": "ambiguous",
+      "messages": ["Maybe later."],
+      "waiting": ["forum"],
+      "expected": []
+    },
+    {
+      "id": "en-off-topic",
+      "class": "off_topic",
+      "messages": ["Did you see the rain this morning?"],
+      "waiting": ["forum"],
+      "expected": []
+    },
+    {
+      "id": "en-joking",
+      "class": "joking",
+      "messages": ["Sure, and I am the queen of the garden."],
+      "waiting": ["forum"],
+      "expected": []
+    },
+    {
+      "id": "en-two-waiting",
+      "class": "clear",
+      "messages": ["Yes, both of them, once each.", "Yes, that is right."],
+      "waiting": ["forum", "notes"],
+      "expected": [
+        { "kind": "once", "request": 0 },
+        { "kind": "once", "request": 1 }
+      ]
+    }
+  ]
+}

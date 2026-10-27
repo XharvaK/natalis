@@ -1,0 +1,82 @@
+{
+  "language": "Türkçe",
+  "note": "Yalnızca uydurma Sahip yanıtları. Sahibin tam dil listesi beklemede; her dil için bir dosya ekleyin.",
+  "requests": {
+    "forum": {
+      "tool": "web_request",
+      "args": { "method": "POST", "url": "https://forum.example.org/thread/garden-tools" }
+    },
+    "notes": {
+      "tool": "web_request",
+      "args": { "method": "GET", "url": "https://notes.example.org/drafts" }
+    }
+  },
+  "cases": [
+    {
+      "id": "tr-clear-yes",
+      "class": "clear",
+      "messages": ["Evet, devam et."],
+      "waiting": ["forum"],
+      "expected": [{ "kind": "once", "request": 0 }]
+    },
+    {
+      "id": "tr-clear-no",
+      "class": "clear",
+      "messages": ["Hayır, bu sefer olmasın."],
+      "waiting": ["forum"],
+      "expected": []
+    },
+    {
+      "id": "tr-clear-always",
+      "class": "clear",
+      "messages": ["Evet, o forum için her zaman.", "Evet, doğru."],
+      "waiting": ["forum"],
+      "expected": [{ "kind": "always", "request": 0 }]
+    },
+    {
+      "id": "tr-clear-anywhere",
+      "class": "clear",
+      "messages": ["Evet, her zaman, her yerde.", "Evet, doğru."],
+      "waiting": ["forum"],
+      "expected": [{ "kind": "always", "request": 0, "where": "anywhere" }]
+    },
+    {
+      "id": "tr-clear-never",
+      "class": "clear",
+      "messages": ["Hayır, o forumda asla.", "Evet, doğru."],
+      "waiting": ["forum"],
+      "expected": [{ "kind": "never", "request": 0 }]
+    },
+    {
+      "id": "tr-ambiguous",
+      "class": "ambiguous",
+      "messages": ["Belki sonra."],
+      "waiting": ["forum"],
+      "expected": []
+    },
+    {
+      "id": "tr-off-topic",
+      "class": "off_topic",
+      "messages": ["Bu sabah yağmuru gördün mü?"],
+      "waiting": ["forum"],
+      "expected": []
+    },
+    {
+      "id": "tr-joking",
+      "class": "joking",
+      "messages": ["Tabii, bahçenin kraliçesi benim."],
+      "waiting": ["forum"],
+      "expected": []
+    },
+    {
+      "id": "tr-two-waiting",
+      "class": "clear",
+      "messages": ["Evet, ikisine de, birer kez.", "Evet, doğru."],
+      "waiting": ["forum", "notes"],
+      "expected": [
+        { "kind": "once", "request": 0 },
+        { "kind": "once", "request": 1 }
+      ]
+    }
+  ]
+}
