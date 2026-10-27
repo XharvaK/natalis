@@ -7,7 +7,7 @@ import { openEntity } from "../entity/runtime.js";
 import type { EntityConfig } from "../entity/config.js";
 import { ScriptedModel, call, reply } from "../testing/scripted-model.js";
 import { createCliWorld } from "../worlds/cli.js";
-import { parseTriggers, triggeredText, TRIGGER_BUDGET_CHARS } from "./triggers.js";
+import { parseTriggers, triggeredNotes, triggeredText, TRIGGER_BUDGET_CHARS } from "./triggers.js";
 
 describe("trigger words on notes", () => {
   it("reads trigger words only from a first line that starts with triggers:", () => {
@@ -29,6 +29,19 @@ describe("trigger words on notes", () => {
     expect(out).toMatch(/not loaded.*people\/tomas\.md/);
     expect(out).not.toContain("hill");
     expect(triggeredText(notes, "harbourside")).toBe("");
+  });
+
+  it("orders the notes by how many of their words appear, ties in notebook order", () => {
+    const notes = [
+      { path: "notes/a.md", firstLine: "triggers: harbour", text: "a" },
+      { path: "notes/b.md", firstLine: "triggers: harbour, tide", text: "b" },
+      { path: "notes/c.md", firstLine: "triggers: harbour, tide, boat", text: "c" },
+      { path: "notes/d.md", firstLine: "triggers: hill", text: "d" },
+      { path: "notes/e.md", firstLine: "triggers: boat", text: "e" },
+    ];
+    const matched = triggeredNotes(notes, "The harbour tide and the boat.");
+    expect(matched.map((note) => note.path)).toEqual(["notes/c.md", "notes/b.md", "notes/a.md", "notes/e.md"]);
+    expect(matched.map((note) => note.matched)).toEqual([3, 2, 1, 1]);
   });
 });
 

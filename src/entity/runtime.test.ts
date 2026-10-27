@@ -5059,3 +5059,159 @@ describe("V0: recall by seqs", () => {
     expect(String(opened?.data?.["dataJson"])).toContain("A summoner act kept for their own places.");
   });
 });
+
+describe("V1: whole items, then pointers", () => {
+  const NOW = Date.parse("2026-10-27T12:00:00Z");
+  const DAY = 86_400_000;
+
+  /** A row in another thread, written straight to the river so no turn wakes for it. */
+  function rowIn(entity: Entity, thread: string, text: string, atMs: number): RiverRow {
+    return entity.river.append({ kind: "event", thread, place: thread, source: "outside", text, atMs });
+  }
+
+  it("shows an oversize recall section as its top rows whole plus a seq pointer line, and cuts no row", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model, { nowMs: () => NOW, stopPollMs: 1e9 });
+    await entity.start();
+
+    const topText = `quarrystone lantern ${"The keeper trims the wick at dusk. ".repeat(16).trim()}`;
+    const top = rowIn(entity, "fake:room", topText, NOW - DAY);
+    const huge = rowIn(entity, "fake:room", `quarrystone ${"x".repeat(120_000)}`, NOW - 365 * DAY);
+
+    cli.send("The quarrystone lantern is lit.");
+    await entity.idle();
+
+    const user = userTextOf(model.requests[0]);
+    expect(user).toContain("## recall");
+    expect(user).toContain(topText);
+    expect(user).toContain(topText.slice(-40));
+    expect(user).toContain(`1 more recall match: seqs ${huge.seq} (recall with seqs opens them)`);
+    expect(user).not.toContain("x".repeat(1000));
+    expect(top.seq).toBeLessThan(huge.seq);
+  });
+
+  it("shows a single recall item bigger than the room only as a pointer", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model, { nowMs: () => NOW, stopPollMs: 1e9 });
+    await entity.start();
+
+    const huge = rowIn(entity, "fake:room", `quarrystone ${"x".repeat(120_000)}`, NOW - DAY);
+    cli.send("Quarrystone.");
+    await entity.idle();
+
+    const user = userTextOf(model.requests[0]);
+    expect(user).toContain("## recall");
+    expect(user).toContain(`1 more recall match: seqs ${huge.seq} (recall with seqs opens them)`);
+    expect(user).not.toContain("x".repeat(100));
+  });
+
+  it("shows a recalled row whole, never cut", async () => {
+    const longText = `lantern ${"The keeper walks the pier at dusk. ".repeat(15).trim()}`;
+    expect(longText.length).toBeGreaterThan(300);
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model, { nowMs: () => NOW, stopPollMs: 1e9 });
+    await entity.start();
+
+    rowIn(entity, "fake:room", longText, NOW - DAY);
+    cli.send("Where is the lantern?");
+    await entity.idle();
+
+    const user = userTextOf(model.requests[0]);
+    expect(user).toContain("## recall");
+    expect(user).toContain(longText);
+    expect(user).toContain(longText.slice(-50));
+  });
+
+  it("recall with seqs opens the row a pointer names, and still refuses a row hidden from this thread", async () => {
+    const room = sourceWorld("fake");
+    let hiddenSeq = 0;
+    let pointerSeq: number | undefined;
+    const model = new ScriptedModel([
+      (request) => {
+        const match = /seqs (\d+) \(recall with seqs opens them\)/.exec(userTextOf(request));
+        if (match !== null) pointerSeq = Number(match[1]);
+        return reply({
+          toolCalls: [
+            ...(pointerSeq === undefined ? [] : [call("recall", { seqs: [pointerSeq] }, "open-pointer")]),
+            call("recall", { seqs: [hiddenSeq] }, "open-hidden"),
+          ],
+        });
+      },
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity } = await open(model, { nowMs: () => NOW, stopPollMs: 1e9 }, [room.world]);
+    await entity.start();
+
+    const huge = rowIn(entity, "cli:summoner", `quarrystone ${"x".repeat(120_000)}`, NOW - DAY);
+    hiddenSeq = entity.river.append({
+      thread: "self",
+      kind: "event",
+      source: "body",
+      text: "A summoner act kept for their own places.",
+      data: { summonerAct: true },
+      atMs: NOW,
+    }).seq;
+
+    room.push("fake:room", "Quarrystone.");
+    await entity.idle();
+
+    expect(pointerSeq).toBe(huge.seq);
+    const receipts = allRows(entity).filter((row) => row.kind === "receipt" && row.data?.["tool"] === "recall");
+    const opened = receipts.find((row) => row.data?.["callId"] === "open-pointer");
+    expect(opened?.data?.["ok"]).toBe(true);
+    expect(String(opened?.data?.["dataJson"])).toContain("quarrystone");
+
+    const hidden = receipts.find((row) => row.data?.["callId"] === "open-hidden");
+    expect(hidden?.data?.["refused"]).toMatchObject({ code: "not_visible" });
+    expect(JSON.stringify(hidden)).not.toContain("A summoner act");
+  });
+
+  it("fills an oversize trigger-word section with the best-matched note whole and names the rest by pointer", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model, { nowMs: () => NOW, stopPollMs: 1e9 });
+    await entity.notebook.write(
+      "notes/garden.md",
+      "triggers: lantern, harbour\nThe garden gate stays open all winter.",
+      "test",
+      "self",
+    );
+    await entity.notebook.write("notes/quarry.md", `triggers: quarrystone\n${"x".repeat(120_000)}`, "test", "self");
+    await entity.start();
+
+    cli.send("The lantern at the harbour and the quarrystone.");
+    await entity.idle();
+
+    const user = userTextOf(model.requests[0]);
+    expect(user).toContain("## triggered notes");
+    expect(user).toContain("The garden gate stays open all winter.");
+    expect(user).toContain(
+      "1 note whose words came up: notes/quarry.md, each with its own first line (read_note opens them)",
+    );
+    expect(user).not.toContain("x".repeat(100));
+  });
+
+  it("fills an oversize index with its first lines whole and names the rest by pointer", async () => {
+    const config: EntityConfig = {
+      ...CONFIG,
+      model: { ...CONFIG.model, contextTokens: 10_200 },
+    };
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model, { config, nowMs: () => NOW, stopPollMs: 1e9 });
+    const lines: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      const firstLine = `first line ${i} ${"x".repeat(100)}`;
+      lines.push(`- notes/n${String(i).padStart(2, "0")}.md: ${firstLine}`);
+      await entity.notebook.write(`notes/n${String(i).padStart(2, "0")}.md`, `${firstLine}\nbody`, "test", "self");
+    }
+    await entity.start();
+
+    cli.send("Hello.");
+    await entity.idle();
+
+    const system = systemTextOf(model.requests[0]);
+    expect(system).toContain("## index");
+    expect(system).toContain(lines[0]);
+    expect(system).toMatch(/\d+ more notes \(list_notes shows them\)/);
+    expect(system).not.toContain(lines[19]);
+  });
+});

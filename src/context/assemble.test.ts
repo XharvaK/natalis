@@ -142,3 +142,105 @@ describe("assembleSystem", () => {
     expect(() => assembleSystem([constitution], 1000, { charsPerToken: 0 })).toThrow(RangeError);
   });
 });
+
+describe("Q19: whole items, then pointers", () => {
+  type ItemizedSection = ContextSection & {
+    items: {
+      items: readonly string[];
+      keys: readonly string[];
+      pointer: (keys: readonly string[]) => string;
+      lead?: string;
+      sep?: string;
+    };
+  };
+
+  const recallPointer = (keys: readonly string[]): string =>
+    `${keys.length} more recall matches: seqs ${keys.join(", ")} (recall with seqs opens them)`;
+
+  function withItems(
+    name: string,
+    items: string[],
+    keys: string[],
+    pointer: (keys: readonly string[]) => string,
+    extra: { priority?: number; lead?: string; sep?: string } = {},
+  ): ItemizedSection {
+    const parts = [...(extra.lead === undefined ? [] : [extra.lead]), ...items];
+    return {
+      name,
+      text: parts.join(extra.sep ?? "\n"),
+      priority: extra.priority ?? 10,
+      items: {
+        items,
+        keys,
+        pointer,
+        ...(extra.lead === undefined ? {} : { lead: extra.lead }),
+        ...(extra.sep === undefined ? {} : { sep: extra.sep }),
+      },
+    };
+  }
+
+  it("fills an oversize section with its top items whole and names the rest by pointer", () => {
+    const items = ["alpha", "beta", "gamma", "delta"].map((word) => `${word} ${"x".repeat(100)}`);
+    const section = withItems("recall", items, ["11", "12", "13", "14"], recallPointer);
+    const pointer = recallPointer(["13", "14"]);
+    const partial = `## recall\n${items[0]}\n${items[1]}\n${pointer}`;
+
+    const out = assembleSystem([section], partial.length, exact);
+
+    expect(out.dropped).toEqual([]);
+    expect(out.shown).toEqual([{ name: "recall", text: partial }]);
+    expect(out.text).toContain(items[0]);
+    expect(out.text).toContain(items[1]);
+    expect(out.text).not.toContain(items[2]);
+    expect(out.text).not.toContain(items[3]);
+    expect(out.text).toContain(pointer);
+    expect(out.text.endsWith(pointer)).toBe(true);
+  });
+
+  it("shows an item bigger than the room only as a pointer, never cut", () => {
+    const big = "z".repeat(500);
+    const section = withItems("recall", [big], ["42"], recallPointer);
+    const pointer = recallPointer(["42"]);
+
+    const out = assembleSystem([section], `## recall\n${pointer}`.length, exact);
+
+    expect(out.dropped).toEqual([]);
+    expect(out.text).toBe(`## recall\n${pointer}`);
+    expect(out.text).not.toContain(big);
+  });
+
+  it("keeps one budget over the optional sections, in their fixed priority order", () => {
+    const items = ["a", "b", "c", "d"].map((word) => `${word} ${"x".repeat(100)}`);
+    const recall = withItems("recall", items, ["1", "2", "3", "4"], recallPointer, { priority: 20 });
+    const index: ContextSection = { name: "index", text: "i".repeat(300), priority: 10 };
+    const pointer = recallPointer(["3", "4"]);
+    const partial = `## recall\n${items[0]}\n${items[1]}\n${pointer}`;
+
+    const out = assembleSystem([recall, index], partial.length + 50, exact);
+
+    expect(out.text).toContain(items[0]);
+    expect(out.text).toContain(items[1]);
+    expect(out.text).toContain(pointer);
+    expect(out.dropped).toEqual(["index"]);
+    expect(out.text).toContain("(Not shown this turn for space: index.)");
+  });
+
+  it("keeps a lead line before the items and the pointer, and counts only the omitted items", () => {
+    const items = [`first block ${"a".repeat(100)}`, `second block ${"b".repeat(100)}`];
+    const section = withItems("triggered notes", items, ["notes/a.md", "notes/b.md"], (keys) => `${keys.length} left: ${keys.join(", ")}`, {
+      lead: "Notes of yours whose words came up:",
+      sep: "\n\n",
+    });
+
+    const whole = assembleSystem([section], 100_000, exact);
+    expect(whole.text).toBe(`## triggered notes\nNotes of yours whose words came up:\n\n${items[0]}\n\n${items[1]}`);
+    expect(whole.shown).toEqual([{ name: "triggered notes", text: whole.text }]);
+    expect(whole.dropped).toEqual([]);
+
+    const pointer = "1 left: notes/b.md";
+    const partial = `## triggered notes\nNotes of yours whose words came up:\n\n${items[0]}\n\n${pointer}`;
+    const cut = assembleSystem([section], partial.length, exact);
+    expect(cut.text).toBe(partial);
+    expect(cut.dropped).toEqual([]);
+  });
+});
