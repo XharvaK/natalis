@@ -91,7 +91,9 @@ import {
 } from "./summoner.js";
 import { isStopOn, readStop } from "./stop.js";
 import { clockOf, firstDailyOccurrence, localMinuteOf, instantOfLocal, isWakeRepeat, nextOccurrence, parseAtIso, parseClock, WAKE_LIMIT, type WakeRepeat } from "./wake-schedule.js";
-import { DEFAULT_LIFE_WARN_CHARS, DEFAULT_RHYTHM } from "./config.js";
+import { DEFAULT_LIFE_VIEW_CHARS, DEFAULT_LIFE_WARN_CHARS, DEFAULT_RHYTHM } from "./config.js";
+import { charCount, lifeView } from "./life-view.js";
+import { noteSections } from "../notebook/sections.js";
 
 export const STATE_FILE = "state.json";
 /** The welcome notice the host may write into the entity's folder. Sent once, in the summoner's place. */
@@ -978,6 +980,7 @@ class Runtime implements Entity {
     this.seedRhythm();
     this.noteStart();
     this.warnLifeSize(true);
+    this.warnLifeView();
     this.stampAlive(true);
     for (const wake of this.state.wakes) this.armWake(wake);
     try {
@@ -1418,6 +1421,7 @@ class Runtime implements Entity {
     const { system: systemParts, tail, sizes } = this.systemText(
       thread,
       fresh,
+      recent,
       shown,
       nowMs,
       snapshot,
@@ -1757,6 +1761,9 @@ class Runtime implements Entity {
    * back under the limit re-arms it, so a new crossing in the same run warns again. The note is never trimmed or cut.
    */
   private lifeWarned = false;
+  private lifeHeadsUp = false;
+  private lifeViewSwitched = false;
+  private lifeHeadingsNoted = false;
   private warnLifeSize(starting: boolean): void {
     const text = this.notebook.read(LIFE_PATH);
     if (text === null) {
@@ -1775,6 +1782,96 @@ class Runtime implements Entity {
     const line = `${LIFE_PATH} is ${chars} characters, past the warning size of ${limit}. It is always in context and is not cut; a very long one crowds out other sections.`;
     this.river.append({ thread: "self", kind: "note", source: "body", text: line, data: { bodyNote: "life_size", chars, limit }, atMs: this.nowMs() });
     if (starting) console.log(`natalis: ${line}`);
+  }
+
+  /**
+   * Q21: tells her once when the 80% heads-up is crossed, once when the view switches, once when it switches back,
+   * and once when a file over the switch has no headings to split by. Each flag re-arms below its own line, so a
+   * later crossing in the same run writes a new note. A jump straight over the switch sends the switch note only:
+   * the heads-up is for the time before the switch, not after it.
+   */
+  private warnLifeView(): void {
+    const text = this.notebook.read(LIFE_PATH);
+    if (text === null) {
+      this.lifeHeadsUp = false;
+      this.lifeViewSwitched = false;
+      this.lifeHeadingsNoted = false;
+      return;
+    }
+    const chars = charCount(text);
+    const limit = this.config.limits?.lifeWarnChars ?? DEFAULT_LIFE_WARN_CHARS;
+    const headsUpAt = Math.ceil((limit * 4) / 5);
+    const over = chars >= limit;
+    const headings = noteSections(text).length;
+    const note = (phase: string, body: string): void => {
+      this.river.append({
+        thread: "self",
+        kind: "note",
+        source: "body",
+        text: body,
+        data: { bodyNote: "life_view", phase, chars, limit },
+        atMs: this.nowMs(),
+      });
+    };
+
+    if (over) {
+      // She is already at the switched view, so a heads-up now would arrive after the change it warns about.
+      this.lifeHeadsUp = true;
+    } else if (chars < headsUpAt) {
+      this.lifeHeadsUp = false;
+    } else if (!this.lifeHeadsUp) {
+      this.lifeHeadsUp = true;
+      note(
+        "heads_up",
+        `Your life file is about ${withCommas(headsUpAt)} characters. At ${withCommas(limit)} you will see its first part and the parts that matter to each conversation, not the whole file. The first part is always shown, so put there what you always want in view.`,
+      );
+    }
+
+    if (headings === 0) {
+      if (over) {
+        if (!this.lifeHeadingsNoted) {
+          this.lifeHeadingsNoted = true;
+          note(
+            "needs_headings",
+            `Your life file is ${withCommas(chars)} characters, at or over the switch size of ${withCommas(limit)}, but it has no headings, so it is still shown whole. Add headings so it can show its first part and the parts that matter to each conversation instead of the whole file.`,
+          );
+        }
+      } else {
+        this.lifeHeadingsNoted = false;
+      }
+      // A file with no headings is shown whole, so any earlier switched view has ended.
+      this.lifeViewSwitched = false;
+      return;
+    }
+
+    this.lifeHeadingsNoted = false;
+    if (over) {
+      if (!this.lifeViewSwitched) {
+        this.lifeViewSwitched = true;
+        note(
+          "switched",
+          `Your life file is ${withCommas(chars)} characters, so you now see its first part and the parts that matter to this conversation, not the whole file. The other sections are named at the end; read_note opens any of them whole. The first part is always shown, so put there what you always want in view.`,
+        );
+      }
+    } else if (this.lifeViewSwitched) {
+      this.lifeViewSwitched = false;
+      note(
+        "back",
+        `Your life file is ${withCommas(chars)} characters, under ${withCommas(limit)}, so you see it whole again.`,
+      );
+    }
+  }
+
+  /** The part of self/life.md this turn shows (Q21): whole below the switch, or the first part, ranked sections and pointers. */
+  private lifeViewText(fresh: readonly RiverRow[], recent: readonly RiverRow[]): string {
+    const body = this.notebook.read(LIFE_PATH);
+    if (body === null || body.trim() === "") return LIFE_STUB.trim();
+    const query = [...recent, ...fresh].map((row) => this.lineFor(row)).join("\n");
+    const view = lifeView(body, query, {
+      switchChars: this.config.limits?.lifeWarnChars ?? DEFAULT_LIFE_WARN_CHARS,
+      viewChars: this.config.limits?.lifeViewChars ?? DEFAULT_LIFE_VIEW_CHARS,
+    });
+    return view.text === "" ? LIFE_STUB.trim() : view.text;
   }
 
   /** Stamps the time the body knew it was running, at start and then every ALIVE_STAMP_MS; a start also marks it not stopped. */
@@ -2219,6 +2316,7 @@ class Runtime implements Entity {
   private systemText(
     thread: string,
     fresh: RiverRow[],
+    recent: readonly RiverRow[],
     shown: Set<number>,
     nowMs: number,
     snapshot: number,
@@ -2226,6 +2324,7 @@ class Runtime implements Entity {
     purpose: Purpose,
   ): { system: LayoutPart[]; tail: LayoutPart[]; sizes: string } {
     this.warnLifeSize(false);
+    this.warnLifeView();
     const wakes = this.state.wakes.map((wake) => ({ id: wake.id, atMs: wake.atMs, why: wake.why, repeat: wake.repeat, clock: wake.clock, scheduledIn: wake.scheduledIn }));
     // The slow sections stay the same from turn to turn, so they are the system text, and the provider can reuse them.
     // The nature is the default unless the Lar's folder has a nature.md: its text replaces the default, and an empty one leaves the section out.
@@ -2238,7 +2337,7 @@ class Runtime implements Entity {
       { name: "pictures", text: pictureAbility(this.config.model.vision === true), priority: 100, core: true, cls: "fixed" },
       { name: "constitution", text: this.constitutionText(), priority: 100, core: true, cls: "notes" },
       { name: "character", text: this.noteOr("self/character.md", CHARACTER_STUB), priority: 100, core: true, cls: "notes" },
-      { name: "your life", text: this.noteOr(LIFE_PATH, LIFE_STUB), priority: 100, core: true, cls: "notes" },
+      { name: "your life", text: this.lifeViewText(fresh, recent), priority: 100, core: true, cls: "notes" },
       { name: "privacy list", text: privacyText(this.privacyNow()), priority: 100, core: true, cls: "notes" },
       this.indexSection(thread),
     ];
@@ -4020,6 +4119,11 @@ function optionalText(args: Args, key: string, label: string): Checked<string | 
 
 function oneLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
+}
+
+/** A count with commas between thousands, so a note reads "32,000" rather than "32000". */
+function withCommas(count: number): string {
+  return String(count).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
 function clip(text: string, max: number): string {

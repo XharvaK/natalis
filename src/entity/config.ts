@@ -16,6 +16,8 @@ export const DEFAULT_CEILING: Ceiling = { maxModelCalls: 24, maxToolCalls: 48 };
 /** No preset rhythm: a Lar keeps whatever wakes it sets itself. A summoner may give times in entity.json rhythm. */
 /** The life.md size (characters) past which the body warns. A warning only: nothing is cut. */
 export const DEFAULT_LIFE_WARN_CHARS = 40_000;
+/** Over the life warning size, the most characters of life.md shown in one turn. */
+export const DEFAULT_LIFE_VIEW_CHARS = 20_000;
 export const DEFAULT_RHYTHM: readonly string[] = [];
 
 export type EntityConfig = {
@@ -36,9 +38,11 @@ export type EntityConfig = {
   /**
    * Daily limits. Left out, there is none. lifeWarnChars: when self/life.md passes this many characters (code points),
    * the body writes a river note and a startup log line; the note is never trimmed. Default DEFAULT_LIFE_WARN_CHARS.
+   * lifeViewChars: at or over lifeWarnChars, the most characters of life.md a turn shows (the first part plus whole
+   * sections); the other headings are named. Default DEFAULT_LIFE_VIEW_CHARS.
    * reflectBudget: the sum of her importance-mark weights that brings one quiet reflection turn; left out, none.
    */
-  limits?: { turnsPerDay?: number; lifeWarnChars?: number; reflectBudget?: number };
+  limits?: { turnsPerDay?: number; lifeWarnChars?: number; lifeViewChars?: number; reflectBudget?: number };
   /** Local clock times ("HH:MM") the Lar gets a daily wake at, once, on its first start. Left out or [], none. */
   rhythm?: string[];
   /**
@@ -174,11 +178,12 @@ function parseRhythm(value: unknown): string[] {
   return times;
 }
 
-function parseLimits(value: unknown): { turnsPerDay?: number; lifeWarnChars?: number; reflectBudget?: number } {
+function parseLimits(value: unknown): { turnsPerDay?: number; lifeWarnChars?: number; lifeViewChars?: number; reflectBudget?: number } {
   const block = objectOf(value, "limits");
-  onlyKeys(block, ["turnsPerDay", "lifeWarnChars", "reflectBudget"], "limits");
-  const limits: { turnsPerDay?: number; lifeWarnChars?: number; reflectBudget?: number } = {};
+  onlyKeys(block, ["turnsPerDay", "lifeWarnChars", "lifeViewChars", "reflectBudget"], "limits");
+  const limits: { turnsPerDay?: number; lifeWarnChars?: number; lifeViewChars?: number; reflectBudget?: number } = {};
   if (block["lifeWarnChars"] !== undefined) limits.lifeWarnChars = positiveInt(block["lifeWarnChars"], "limits.lifeWarnChars");
+  if (block["lifeViewChars"] !== undefined) limits.lifeViewChars = positiveInt(block["lifeViewChars"], "limits.lifeViewChars");
   if (block["turnsPerDay"] !== undefined) limits.turnsPerDay = positiveInt(block["turnsPerDay"], "limits.turnsPerDay");
   if (block["reflectBudget"] !== undefined) limits.reflectBudget = positiveInt(block["reflectBudget"], "limits.reflectBudget");
   return limits;

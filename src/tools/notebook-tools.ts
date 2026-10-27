@@ -5,6 +5,7 @@
 import { NotebookError, type Notebook, type Receipt, type RiverRow, type Tool, type ToolContext } from "../contracts.js";
 import { protectedNoteReason } from "../entity/commitments.js";
 import { notebookPathOf } from "../notebook/git-notebook.js";
+import { sectionOf } from "../notebook/sections.js";
 
 const READ_LIMIT = 20_000;
 const RECALL_DEFAULT = 10;
@@ -36,19 +37,43 @@ export function notebookTools(): Tool[] {
 const readNote: Tool = {
   spec: {
     name: "read_note",
-    description: "Read one of your notes. Give the path it is kept at, for example \"people/mara.md\".",
+    description:
+      "Read one of your notes. Give the path it is kept at, for example \"people/mara.md\". Add section with a heading, such as \"## Work\", to read that whole section.",
     parameters: {
       type: "object",
-      properties: { path: { type: "string", description: "Path of the note inside your notebook." } },
+      properties: {
+        path: { type: "string", description: "Path of the note inside your notebook." },
+        section: { type: "string", description: "Optional: a heading in the note. Its whole section is returned." },
+      },
       required: ["path"],
     },
   },
   async run(args, context) {
     const path = requireText(args, "path", "The note path", { trim: true });
     if (!path.ok) return path.receipt;
+    const wanted = optionalText(args, "section", "The section heading", { trim: true });
+    if (!wanted.ok) return wanted.receipt;
+    if (wanted.value !== undefined && wanted.value === "") {
+      return refuse("bad_arguments", "The section heading cannot be empty.", "section is empty");
+    }
     return guarded(async () => {
       const body = context.notebook.read(path.value);
       if (body === null) return refuse("not_found", "There is no note at that path.");
+      if (wanted.value !== undefined) {
+        const section = sectionOf(body, wanted.value);
+        if (section === undefined) {
+          return refuse(
+            "section_not_found",
+            `There is no heading "${wanted.value}" in ${path.value}.`,
+            `the note has no heading "${wanted.value}"`,
+          );
+        }
+        return {
+          ok: true,
+          summary: `Read ${path.value}, section ${section.heading}.`,
+          data: { path: path.value, section: section.heading, text: section.text, chars: charCount(section.text), truncated: false },
+        };
+      }
       const truncated = body.length > READ_LIMIT;
       const text = truncated
         ? `${body.slice(0, READ_LIMIT)}\n\n[Truncated: the note has ${body.length} characters; the first ${READ_LIMIT} are shown.]`
