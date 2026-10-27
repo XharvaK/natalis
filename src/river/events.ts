@@ -2,10 +2,11 @@
 // gets a frozen copy, and cannot change the row or the turn. A hook that throws (or rejects) is reported to onError and
 // skipped; the append and the other hooks go on. Observe outside the secret guard, so hooks only ever see scanned rows.
 
-import { createHash } from "node:crypto";
 import { appendFileSync } from "node:fs";
+import { dirname } from "node:path";
 import type { River, RiverRow } from "../contracts.js";
 import { purposeOf, type Purpose } from "./purpose.js";
+import { createThreadHasher } from "./thread-key.js";
 
 export type EventType =
   | "turn.started"
@@ -114,12 +115,20 @@ export function observeRiver(river: River, bus: EventBus, purpose: Purpose): Riv
   };
 }
 
+/** How the JSONL exporter treats thread names: left out, or given as a short keyed hash. */
+export type JsonlExporterOptions = {
+  threads?: "omit" | "hash";
+  /** The Lar's data folder, where the thread hash key is kept. Defaults to the folder the export file is in. */
+  dataDir?: string;
+};
+
 /** H-3: a hook that appends one JSON line per event: type, seq, time, purpose, and the thread only as a hash on request. Never text or data. */
-export function jsonlExporter(path: string, options: { threads?: "omit" | "hash" } = {}): Hook {
+export function jsonlExporter(path: string, options: JsonlExporterOptions = {}): Hook {
   // NIT-3: a thread name can carry a person's alias, so it is left out by default, or given as a short hash.
-  const hash = options.threads === "hash";
+  // NIT-C: the hash is keyed to the Lar, so the same thread under another Lar's key gives another value.
+  const hash = options.threads === "hash" ? createThreadHasher(options.dataDir ?? dirname(path)) : undefined;
   return (event) => {
-    const thread = hash ? { thread: createHash("sha256").update(event.thread).digest("hex").slice(0, 12) } : {};
+    const thread = hash === undefined ? {} : { thread: hash(event.thread) };
     appendFileSync(path, JSON.stringify({ type: event.type, seq: event.seq, atMs: event.atMs, ...thread, purpose: event.purpose }) + "\n");
   };
 }
