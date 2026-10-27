@@ -30,7 +30,31 @@ import { planRetry, type QuotaRetryTuning } from "./retry-plan.js";
 import { openRiver } from "../river/index.js";
 import { createWitness, withWitness, type CacheWitness } from "../model/witness.js";
 import { openLedger, type Ledger, type LedgerRow, type ThreadKind } from "../river/ledger.js";
-import { ANYWHERE, openGrants, type Grants } from "./grants.js";
+import {
+  ANYWHERE,
+  READBACK_ITEMS_MAX,
+  READBACK_TTL_MS,
+  REQUEST_TTL_MS,
+  openGrants,
+  type GrantDecision,
+  type GrantKind,
+  type Grants,
+  type ReadbackItem,
+  type RequestRow,
+} from "./grants.js";
+import {
+  ANSWER_KINDS,
+  notStoredLine,
+  outcomeEventText,
+  outcomeLine,
+  readbackNeeded,
+  readbackText,
+  scopeForAnswer,
+  scopePhrase,
+  type AnswerKind,
+  type AnswerWhere,
+  type ReadbackItemView,
+} from "./permissions.js";
 import { checkRiver } from "../river/integrity.js";
 import { indexedRiver, ViewIndex, viewKeyOfRow } from "../river/view-index.js";
 import { createSecretScanner, guardModel, guardNotebook, guardRiver, KNOWN_VALUE_KIND } from "../secrets/index.js";
@@ -3023,6 +3047,70 @@ class Runtime implements Entity {
       ),
       make(
         {
+          name: "answer_request",
+          description:
+            "Record your summoner's answer to one permission request. Give the request id, the answer once, always, never or no, the river row of your summoner's words in owner_row, and where this_place or anywhere. A no is never read back. Once with one request waiting needs no read-back; a once with several waiting, and every always or never, is posted back to your summoner first. Nothing is stored until they agree. Only in your summoner's own place.",
+          parameters: {
+            type: "object",
+            properties: {
+              request: { type: "integer", minimum: 1, description: "The request id from the request message or permissions()." },
+              answer: { type: "string", enum: [...ANSWER_KINDS], description: "once, always, never or no." },
+              where: {
+                type: "string",
+                enum: ["this_place", "anywhere"],
+                description: "Optional. this_place keeps the request's own site or place; anywhere covers the whole tool and always needs a read-back.",
+              },
+              owner_row: { type: "integer", minimum: 1, description: "The river row of your summoner's message that answers." },
+            },
+            required: ["request", "answer", "owner_row"],
+          },
+        },
+        (args, context) => this.answerRequest(args, context),
+      ),
+      make(
+        {
+          name: "confirm_answer",
+          description:
+            "Agree or not to a read-back the body posted, in your summoner's own words. Give the read-back id as confirmation, agreed true or false, and the river row of your summoner's reply in owner_row. True stores every item exactly as the read-back said; false stores nothing. Only in your summoner's own place.",
+          parameters: {
+            type: "object",
+            properties: {
+              confirmation: { type: "integer", minimum: 1, description: "The read-back id." },
+              agreed: { type: "boolean", description: "True to agree, false to store nothing." },
+              owner_row: { type: "integer", minimum: 1, description: "The river row of your summoner's reply." },
+            },
+            required: ["confirmation", "agreed", "owner_row"],
+          },
+        },
+        (args, context) => this.confirmAnswer(args, context),
+      ),
+      make(
+        {
+          name: "take_back",
+          description:
+            "Take back one standing permission by its grant id. It needs no read-back, because it fails safe: later calls ask again. Only in your summoner's own place.",
+          parameters: {
+            type: "object",
+            properties: {
+              grant: { type: "integer", minimum: 1, description: "The grant id from permissions()." },
+              owner_row: { type: "integer", minimum: 1, description: "The river row of your summoner's words that take it back." },
+            },
+            required: ["grant", "owner_row"],
+          },
+        },
+        (args, context) => this.takeBack(args, context),
+      ),
+      make(
+        {
+          name: "permissions",
+          description:
+            "List standing permissions and refusals, open permission requests, and the open read-back. Read only. Works in your summoner's own place and in your self thread.",
+          parameters: { type: "object", properties: {} },
+        },
+        (_args, context) => this.permissionList(context),
+      ),
+      make(
+        {
           name: "schedule_wake",
           description:
             "Wake yourself later, in a thread of your own, with a reason you will read then. Give in_minutes (from now, at least 1) or at_iso (a date and time at least a minute ahead; with no zone it is in your own zone). Give repeat as daily or weekly to keep the rhythm at the same local time; leave it out for a wake that fires once.",
@@ -3372,12 +3460,19 @@ class Runtime implements Entity {
       };
     }
     const name = tool.spec.name;
+    // One decision per tool call: a read tool's up-to-three runs in one call are one use of a grant, while a second
+    // call in the same turn (a new context object) is checked again at its own start.
+    const decided = new WeakMap<ToolContext, GrantDecision>();
     return {
       spec: tool.spec,
       ...settles,
       run: async (args, context) => {
         const scope = scopeFor(name, args);
-        const decision = this.grants.check({ tool: name, scope, argsHmac: this.grants.hmac(args), nowMs: this.nowMs() });
+        let decision = decided.get(context);
+        if (decision === undefined) {
+          decision = this.grants.check({ tool: name, scope, argsHmac: this.grants.hmac(args), nowMs: this.nowMs() });
+          decided.set(context, decision);
+        }
         if (decision.outcome === "refuse") {
           const where = decision.scope === ANYWHERE ? "anywhere" : `on ${decision.scope}`;
           return refuse(
@@ -3451,6 +3546,429 @@ class Runtime implements Entity {
   private larName(): string {
     return this.config.name ?? chosenName(this.notebook.read(NAME_NOTE)) ?? "Your Lar";
   }
+
+  // --- the permission tools ---------------------------------------------------------------------
+
+  /** The summoner's place, for a tool that may only be used there. `self` is allowed for permissions alone. */
+  private answerPlace(context: ToolContext, allowSelf: boolean): Checked<string> {
+    const place = this.state.summonerPlace;
+    if (allowSelf && context.thread === "self") return { ok: true, value: place ?? "self" };
+    if (place === undefined) {
+      return {
+        ok: false,
+        receipt: refuse(
+          "not_summoner_place",
+          "I do not know your summoner's place yet, so that was not answered.",
+          "no summoner place is known yet",
+        ),
+      };
+    }
+    if (context.thread !== place) {
+      return {
+        ok: false,
+        receipt: refuse(
+          "not_summoner_place",
+          "Only your summoner's own place can answer permissions. Nothing was changed.",
+          `this turn is ${context.thread}, not your summoner's place ${place}`,
+        ),
+      };
+    }
+    return { ok: true, value: place };
+  }
+
+  /**
+   * One owner_row from paper §5.3: a river event from the Owner, in the summoner's place, not forgotten, no newer than
+   * this turn's snapshot, and after `afterSeq` when the request or read-back names one.
+   */
+  private ownerRowFor(args: Args, context: ToolContext, place: string, afterSeq?: number): Checked<RiverRow> {
+    const raw = args["owner_row"];
+    if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < 1) {
+      return {
+        ok: false,
+        receipt: refuse("bad_arguments", "owner_row must be the row number of your summoner's message.", "owner_row is not a row number"),
+      };
+    }
+    const [row] = this.river.read({ sinceSeq: raw - 1, untilSeq: raw, limit: 1 });
+    if (row === undefined || row.seq !== raw) {
+      return {
+        ok: false,
+        receipt: refuse("not_owner_row", `There is no row ${raw}, so nothing was answered.`, `no river row ${raw}`),
+      };
+    }
+    if (row.kind !== "event" || row.source !== "owner" || (row.place ?? row.thread) !== place) {
+      return {
+        ok: false,
+        receipt: refuse(
+          "not_owner_row",
+          `Row ${raw} is not a message from your summoner in ${place}, so nothing was answered.`,
+          `river row ${raw} is not an owner event in the summoner's place`,
+        ),
+      };
+    }
+    if (isForgotten(row)) {
+      return {
+        ok: false,
+        receipt: refuse("owner_row_forgotten", `Row ${raw} was forgotten, so nothing was answered.`, `river row ${raw} is forgotten`),
+      };
+    }
+    const snapshot = this.turnSnapshots.get(context.turnId) ?? this.river.lastSeq();
+    if (row.seq > snapshot) {
+      return {
+        ok: false,
+        receipt: refuse(
+          "owner_row_after_snapshot",
+          `Row ${raw} came after this turn began, so it is answered on the next turn.`,
+          `river row ${raw} is newer than this turn's snapshot ${snapshot}`,
+        ),
+      };
+    }
+    if (afterSeq !== undefined && row.seq <= afterSeq) {
+      return {
+        ok: false,
+        receipt: refuse(
+          "owner_row_before_request",
+          `Row ${raw} came before the request it answers, so nothing was answered.`,
+          `river row ${raw} is not newer than row ${afterSeq}`,
+        ),
+      };
+    }
+    return { ok: true, value: row };
+  }
+
+  /** Open requests that have not passed the twenty-four hour close (see Q3 for the close lines). */
+  private openRequestsNow(nowMs: number): RequestRow[] {
+    return this.grants.openRequests().filter((request) => request.createdAt + REQUEST_TTL_MS > nowMs);
+  }
+
+  /** One request that is still open, or the refusal that says why it cannot be answered. */
+  private openRequest(args: Args, nowMs: number): Checked<RequestRow> {
+    const raw = args["request"];
+    if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < 1) {
+      return {
+        ok: false,
+        receipt: refuse("bad_arguments", "request must be the id of a permission request.", "request is not a request id"),
+      };
+    }
+    this.grants.expireRequests(nowMs);
+    const request = this.grants.getRequest(raw);
+    if (request === undefined) {
+      return { ok: false, receipt: refuse("request_not_found", `There is no request ${raw}.`, `no request ${raw}`) };
+    }
+    if (request.status === "expired") {
+      return {
+        ok: false,
+        receipt: refuse("request_expired", `Request ${raw} closed without an answer after a day.`, `request ${raw} is expired`),
+      };
+    }
+    if (request.status !== "open") {
+      return {
+        ok: false,
+        receipt: refuse("request_not_open", `Request ${raw} was already answered, so nothing changed.`, `request ${raw} is ${request.status}`),
+      };
+    }
+    return { ok: true, value: request };
+  }
+
+  /** One answer, with the once/always/never/no choice and the read-back when the paper requires one. */
+  private async answerRequest(args: Args, context: ToolContext): Promise<Receipt> {
+    const place = this.answerPlace(context, false);
+    if (!place.ok) return place.receipt;
+    const answer = args["answer"];
+    if (typeof answer !== "string" || !(ANSWER_KINDS as readonly string[]).includes(answer)) {
+      return refuse("bad_arguments", "answer must be once, always, never or no.", "answer is not once, always, never or no");
+    }
+    const where = args["where"];
+    if (where !== undefined && where !== "this_place" && where !== "anywhere") {
+      return refuse("bad_arguments", "where must be this_place or anywhere.", "where is not this_place or anywhere");
+    }
+    const nowMs = this.nowMs();
+    const request = this.openRequest(args, nowMs);
+    if (!request.ok) return request.receipt;
+    const owner = this.ownerRowFor(args, context, place.value, request.value.postedSeq);
+    if (!owner.ok) return owner.receipt;
+
+    const kind = answer as AnswerKind;
+    if (kind === "no") {
+      if (!this.grants.declineRequest(request.value.id, nowMs)) {
+        return refuse("request_not_open", `Request ${request.value.id} was already answered.`, "the request is no longer open");
+      }
+      await this.postBodyMessage(place.value, notStoredLine(), { permissionOutcome: "no", request: request.value.id });
+      this.notePermissionOutcome(request.value, "no", request.value.scopeKey);
+      return { ok: true, summary: "Not stored.", data: { request: request.value.id, answer: "no" } };
+    }
+
+    const waiting = this.openRequestsNow(nowMs);
+    if (readbackNeeded(kind, waiting.length, where as AnswerWhere | undefined)) {
+      return this.startReadback(kind, where as AnswerWhere | undefined, request.value, waiting, place.value);
+    }
+
+    const scope = scopeForAnswer(request.value.scopeKey, where as AnswerWhere | undefined);
+    const stored = this.grants.answerRequest({
+      requestId: request.value.id,
+      kind,
+      scope,
+      createdBy: this.config.owner.alias,
+      nowMs,
+    });
+    if (stored === undefined) {
+      return refuse("request_not_open", `Request ${request.value.id} was already answered.`, "the request is no longer open");
+    }
+    const view: ReadbackItemView = {
+      requestId: request.value.id,
+      tool: stored.tool,
+      kind: stored.kind,
+      scope: stored.scope,
+    };
+    await this.postBodyMessage(place.value, outcomeLine(this.larName(), view), {
+      permissionOutcome: stored.kind,
+      request: request.value.id,
+      grant: stored.id,
+    });
+    this.notePermissionOutcome(request.value, stored.kind, stored.scope);
+    return {
+      ok: true,
+      summary: stored.kind === "once" ? `Allowed once: ${stored.tool} ${scopePhrase(stored.scope)}.` : `Stored: ${stored.kind} allow ${stored.tool} ${scopePhrase(stored.scope)}.`,
+      data: { request: request.value.id, grant: stored.id, kind: stored.kind, scope: stored.scope },
+    };
+  }
+
+  /** Posts the one read-back and records it. Nothing is stored until the Owner agrees. */
+  private async startReadback(
+    kind: GrantKind,
+    where: AnswerWhere | undefined,
+    target: RequestRow,
+    waiting: readonly RequestRow[],
+    place: string,
+  ): Promise<Receipt> {
+    if (this.grants.openReadback(this.nowMs()) !== undefined) {
+      return refuse(
+        "readback_waiting",
+        "One read-back is waiting. Tell your summoner what it says before another answer.",
+        "one read-back is waiting",
+      );
+    }
+    const selected = this.readbackRequests(target, waiting);
+    const items: ReadbackItem[] = selected.map((request) => ({
+      requestId: request.id,
+      kind,
+      scope: scopeForAnswer(request.scopeKey, where),
+    }));
+    const id = this.grants.createReadback({ items, nowMs: this.nowMs() });
+    if (id === undefined) {
+      return refuse(
+        "readback_waiting",
+        "One read-back is waiting. Tell your summoner what it says before another answer.",
+        "one read-back is waiting",
+      );
+    }
+    const views: ReadbackItemView[] = selected.map((request, index) => ({
+      requestId: request.id,
+      tool: request.tool,
+      kind,
+      scope: items[index]!.scope,
+    }));
+    const text = this.scanner.redact(readbackText(this.larName(), views));
+    const sent = await this.postBodyMessage(place, text, { permissionReadback: true, readback: id });
+    if (sent === undefined) {
+      this.grants.declineReadback(id, this.nowMs());
+      return refuse("readback_not_posted", "I could not post the read-back, so nothing is stored.", "the read-back could not be posted");
+    }
+    this.grants.setReadbackPostedSeq(id, sent.seq);
+    return {
+      ok: false,
+      summary: `Read back to your summoner in ${place}. Nothing is stored until they agree.`,
+      data: { readback: id, items },
+      refused: { code: "readback_waiting", reason: `read-back ${id} is waiting in ${place}` },
+    };
+  }
+
+  /** The target request plus the oldest other waiting requests, at most five, each named by its id. */
+  private readbackRequests(target: RequestRow, waiting: readonly RequestRow[]): RequestRow[] {
+    const ordered = [...waiting].sort((a, b) => a.id - b.id);
+    const selected = ordered.filter((request) => request.id !== target.id).slice(0, READBACK_ITEMS_MAX - 1);
+    if (ordered.length <= READBACK_ITEMS_MAX) return ordered;
+    return [target, ...selected].sort((a, b) => a.id - b.id);
+  }
+
+  /** One agree or not to a read-back. Every stored item was in the agreed read-back exactly as it said. */
+  private async confirmAnswer(args: Args, context: ToolContext): Promise<Receipt> {
+    const place = this.answerPlace(context, false);
+    if (!place.ok) return place.receipt;
+    const raw = args["confirmation"];
+    if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < 1) {
+      return refuse("bad_arguments", "confirmation must be the id of a read-back.", "confirmation is not a read-back id");
+    }
+    if (typeof args["agreed"] !== "boolean") {
+      return refuse("bad_arguments", "agreed must be true or false.", "agreed is not true or false");
+    }
+    const nowMs = this.nowMs();
+    const readback = this.grants.getReadback(raw);
+    if (readback === undefined) {
+      return refuse("readback_not_found", `There is no read-back ${raw}.`, `no read-back ${raw}`);
+    }
+    if (readback.status !== "open") {
+      return refuse("readback_closed", `Read-back ${raw} is already ${readback.status}.`, `read-back ${raw} is ${readback.status}`);
+    }
+    if (readback.createdAt + READBACK_TTL_MS <= nowMs) {
+      this.grants.confirmReadback({ id: raw, createdBy: this.config.owner.alias, nowMs });
+      return refuse("readback_expired", "That read-back closed after fifteen minutes, so nothing was stored.", "the read-back is older than fifteen minutes");
+    }
+    const owner = this.ownerRowFor(args, context, place.value, readback.postedSeq);
+    if (!owner.ok) {
+      const before = owner.receipt.refused?.code === "owner_row_before_request";
+      return before
+        ? refuse("owner_row_before_readback", `That row came before the read-back, so nothing was stored.`, `the owner row is older than read-back ${raw}`)
+        : owner.receipt;
+    }
+    if (args["agreed"] === false) {
+      if (!this.grants.declineReadback(raw, nowMs)) {
+        return refuse("readback_closed", `Read-back ${raw} is no longer open.`, "the read-back is no longer open");
+      }
+      await this.postBodyMessage(place.value, notStoredLine(), { permissionOutcome: "declined", readback: raw });
+      return { ok: true, summary: "Not stored.", data: { readback: raw, agreed: false } };
+    }
+
+    const confirmed = this.grants.confirmReadback({ id: raw, createdBy: this.config.owner.alias, nowMs });
+    if (confirmed === undefined) {
+      const again = this.grants.getReadback(raw);
+      if (again !== undefined && again.status === "expired") {
+        return refuse("readback_expired", "That read-back closed after fifteen minutes, so nothing was stored.", "the read-back is expired");
+      }
+      this.grants.declineReadback(raw, nowMs);
+      return refuse("readback_closed", `Read-back ${raw} is no longer open.`, "the read-back is no longer open");
+    }
+    const lines: string[] = [];
+    for (const grant of confirmed.grants) {
+      const request = grant.requestSeq === undefined ? undefined : this.grants.getRequest(grant.requestSeq);
+      const view: ReadbackItemView = {
+        requestId: grant.requestSeq ?? 0,
+        tool: grant.tool,
+        kind: grant.kind,
+        scope: grant.scope,
+      };
+      const line = outcomeLine(this.larName(), view);
+      lines.push(line);
+      await this.postBodyMessage(place.value, line, {
+        permissionOutcome: grant.kind,
+        request: grant.requestSeq,
+        grant: grant.id,
+        readback: raw,
+      });
+      if (request !== undefined) this.notePermissionOutcome(request, grant.kind, grant.scope);
+    }
+    return {
+      ok: true,
+      summary: lines.length === 0 ? "Not stored." : lines.map((line) => line.replace(/^\[natalis\] /, "")).join(" "),
+      data: { readback: raw, grants: confirmed.grants.map((grant) => grant.id) },
+    };
+  }
+
+  /** Takes back one standing grant by its record id. It needs no read-back, because it fails safe. */
+  private takeBack(args: Args, context: ToolContext): Receipt {
+    const place = this.answerPlace(context, false);
+    if (!place.ok) return place.receipt;
+    const raw = args["grant"];
+    if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < 1) {
+      return refuse("bad_arguments", "grant must be the id of a standing permission.", "grant is not a grant id");
+    }
+    const owner = this.ownerRowFor(args, context, place.value);
+    if (!owner.ok) return owner.receipt;
+    const grant = this.grants.listGrants().find((item) => item.id === raw);
+    if (grant === undefined || grant.revokedAt !== undefined) {
+      return refuse("grant_not_found", `There is no standing permission ${raw}.`, `grant ${raw} is missing or already taken back`);
+    }
+    if (!this.grants.revoke(raw, this.nowMs())) {
+      return refuse("grant_not_found", `There is no standing permission ${raw}.`, `grant ${raw} was already taken back`);
+    }
+    return {
+      ok: true,
+      summary: `Took back ${grant.tool} ${scopePhrase(grant.scope)}.`,
+      data: { grant: grant.id, tool: grant.tool, scope: grant.scope },
+    };
+  }
+
+  /** Read only: standing grants and refusals, open requests and the open read-back, in the summoner's place or self. */
+  private permissionList(context: ToolContext): Receipt {
+    const place = this.answerPlace(context, true);
+    if (!place.ok) return place.receipt;
+    const nowMs = this.nowMs();
+    const standing = this.grants
+      .listGrants()
+      .filter((grant) => grant.revokedAt === undefined && (grant.kind === "always" || grant.kind === "never"));
+    const requests = this.openRequestsNow(nowMs);
+    const readback = this.grants.openReadback(nowMs);
+    const lines: string[] = [];
+    lines.push("Standing permissions:");
+    if (standing.length === 0) lines.push("- none.");
+    for (const grant of standing) {
+      const used = grant.lastUsedAt === undefined ? "never used" : `last used ${this.stamp(grant.lastUsedAt)}`;
+      lines.push(
+        `- Grant ${grant.id}: ${grant.kind} allow ${grant.tool} ${scopePhrase(grant.scope)} (given ${this.stamp(grant.createdAt)}, ${used}).`,
+      );
+    }
+    lines.push("Open requests:");
+    if (requests.length === 0) lines.push("- none.");
+    for (const request of requests) {
+      lines.push(
+        `- Request ${request.id}: ${request.tool} ${scopePhrase(request.scopeKey)} (asked ${this.stamp(request.createdAt)} in ${request.askingThread}).`,
+      );
+    }
+    if (readback === undefined) {
+      lines.push("No read-back is waiting.");
+    } else {
+      const items = readback.items
+        .map((item) => {
+          const request = this.grants.getRequest(item.requestId);
+          return `${item.kind.toUpperCase()} ${request?.tool ?? "request"} ${scopePhrase(item.scope)}`;
+        })
+        .join(", ");
+      lines.push(
+        `Read-back ${readback.id} is waiting: ${items}. It closes at ${this.stamp(readback.createdAt + READBACK_TTL_MS)}.`,
+      );
+    }
+    return { ok: true, summary: lines.join("\n"), data: { grants: standing.map((grant) => grant.id), requests: requests.map((request) => request.id), readback: readback?.id ?? null } };
+  }
+
+  /** One event row in the asking thread after a permission outcome, then a turn there so she sees it. */
+  private notePermissionOutcome(request: RequestRow, kind: GrantKind | "no", scope: string): void {
+    const view: ReadbackItemView = {
+      requestId: request.id,
+      tool: request.tool,
+      kind: kind === "no" ? "once" : kind,
+      scope,
+    };
+    const text = outcomeEventText(view, kind);
+    this.river.append({
+      thread: request.askingThread,
+      kind: "event",
+      source: "body",
+      place: request.askingThread,
+      text,
+      data: { permissionOutcome: kind, request: request.id, tool: request.tool, scope },
+      atMs: this.nowMs(),
+    });
+    if (this.started) {
+      this.due.add(request.askingThread);
+      this.pump();
+    }
+  }
+
+  /** Posting one body message to the summoner's place, kept as a river row. Undefined when it did not go. */
+  private async postBodyMessage(place: string, text: string, data: Record<string, unknown>): Promise<RiverRow | undefined> {
+    await this.outbox;
+    const sent = await this.sayTo(place, text);
+    if (!sent.ok) return undefined;
+    return this.river.append({
+      thread: place,
+      kind: "say",
+      source: "body",
+      place,
+      text,
+      data,
+      atMs: this.nowMs(),
+    });
+  }
+
 
   /**
    * V0: recall by seqs opens rows by number. The notebook tool cannot see this thread's visibility rule, so a row the

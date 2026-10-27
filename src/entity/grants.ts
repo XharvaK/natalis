@@ -26,6 +26,13 @@ export type GrantKind = (typeof GRANT_KINDS)[number];
 export const GRANT_EVENTS = ["asked", "granted", "refused", "used", "revoked", "dropped"] as const;
 export type GrantEvent = (typeof GRANT_EVENTS)[number];
 
+/** A read-back may hold at most five requests, so one "yes to all" costs one message. */
+export const READBACK_ITEMS_MAX = 5;
+/** A read-back closes after fifteen minutes. */
+export const READBACK_TTL_MS = 15 * 60_000;
+/** A request that nobody answered is no longer open after twenty-four hours. */
+export const REQUEST_TTL_MS = 24 * 60 * 60_000;
+
 /** What a call-start check says: run the tool, refuse it, or post a request. */
 export type GrantDecision =
   | { outcome: "allow"; grantId: number; scope: string; kind: "once" | "always" }
@@ -58,6 +65,23 @@ export type GrantRow = {
   lastUsedAt?: number;
   revokedAt?: number;
 };
+
+/** One request inside a read-back: the request id, the kind it would store, and the exact scope. */
+export type ReadbackItem = { requestId: number; kind: GrantKind; scope: string };
+
+export type ReadbackRow = {
+  id: number;
+  items: ReadbackItem[];
+  postedSeq: number;
+  status: string;
+  createdAt: number;
+  closedAt?: number;
+};
+
+export type CreateReadbackInput = { items: ReadbackItem[]; nowMs: number };
+export type AnswerRequestInput = { requestId: number; kind: GrantKind; scope: string; createdBy: string; nowMs: number };
+export type ConfirmReadbackInput = { id: number; createdBy: string; nowMs: number };
+export type ConfirmedReadback = { readback: ReadbackRow; grants: GrantRow[] };
 
 export type CheckInput = { tool: string; scope: string; argsHmac: string; nowMs: number };
 
@@ -94,6 +118,22 @@ export type Grants = {
   addGrant(input: AddGrantInput): number;
   /** Takes back one grant. Returns false when it was already revoked or does not exist. */
   revoke(grantId: number, nowMs: number): boolean;
+  /** Stores one answer that needs no read-back. Undefined when the request is no longer open. */
+  answerRequest(input: AnswerRequestInput): GrantRow | undefined;
+  /** Closes one request as answered with a "no", storing nothing. False when it is no longer open. */
+  declineRequest(requestId: number, nowMs: number): boolean;
+  /** Creates the one open read-back. Undefined when another is already open. */
+  createReadback(input: CreateReadbackInput): number | undefined;
+  setReadbackPostedSeq(id: number, postedSeq: number): void;
+  /** The one open read-back that has not closed, if any. Read only: an expired row is left for the next write. */
+  openReadback(nowMs: number): ReadbackRow | undefined;
+  getReadback(id: number): ReadbackRow | undefined;
+  /** Stores every item of one agreed read-back in one transaction. Undefined when it is not open. */
+  confirmReadback(input: ConfirmReadbackInput): ConfirmedReadback | undefined;
+  /** Closes a read-back that the Owner did not agree to. The requests inside it stay waiting. */
+  declineReadback(id: number, nowMs: number): boolean;
+  /** Marks requests older than twenty-four hours expired. Returns how many changed. */
+  expireRequests(nowMs: number): number;
   openRequests(): RequestRow[];
   getRequest(id: number): RequestRow | undefined;
   listGrants(): GrantRow[];
@@ -185,6 +225,15 @@ type RequestRecord = {
   closed_at: number | null;
 };
 
+type ReadbackRecord = {
+  id: number;
+  items: string;
+  posted_seq: number;
+  status: string;
+  created_at: number;
+  closed_at: number | null;
+};
+
 /** The file for one Lar folder. */
 export function grantsPath(dir: string): string {
   return join(dir, GRANTS_FILE);
@@ -234,7 +283,22 @@ export function openGrants(dir: string, options: { key?: Buffer } = {}): Grants 
   const selectRequest = db.prepare("SELECT * FROM requests WHERE id = ?");
   const selectOpenRequests = db.prepare("SELECT * FROM requests WHERE status = 'open' ORDER BY id");
   const selectGrants = db.prepare("SELECT * FROM grants ORDER BY id");
+  const selectGrant = db.prepare("SELECT * FROM grants WHERE id = ?");
   const revokeGrant = db.prepare("UPDATE grants SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL");
+  const closeRequest = db.prepare("UPDATE requests SET status = ?, closed_at = ? WHERE id = ? AND status = 'open'");
+  const expireRequestRows = db.prepare(
+    "UPDATE requests SET status = 'expired', closed_at = ? WHERE status = 'open' AND created_at <= ?",
+  );
+  const insertReadback = db.prepare(
+    "INSERT INTO readbacks (items, posted_seq, status, created_at) VALUES (?, 0, 'open', ?)",
+  );
+  const selectReadback = db.prepare("SELECT * FROM readbacks WHERE id = ?");
+  const selectOpenReadback = db.prepare("SELECT * FROM readbacks WHERE status = 'open' ORDER BY id DESC LIMIT 1");
+  const setReadbackPostedSeq = db.prepare("UPDATE readbacks SET posted_seq = ? WHERE id = ?");
+  const closeReadback = db.prepare("UPDATE readbacks SET status = ?, closed_at = ? WHERE id = ? AND status = 'open'");
+  const expireReadbackRows = db.prepare(
+    "UPDATE readbacks SET status = 'expired', closed_at = ? WHERE status = 'open' AND created_at <= ?",
+  );
   let closed = false;
 
   const ensureOpen = (): void => {
@@ -327,6 +391,141 @@ export function openGrants(dir: string, options: { key?: Buffer } = {}): Grants 
         return true;
       });
     },
+    answerRequest(input: AnswerRequestInput): GrantRow | undefined {
+      ensureOpen();
+      if (!(GRANT_KINDS as readonly string[]).includes(input.kind)) throw new Error(`Unknown grant kind "${input.kind}".`);
+      if (input.createdBy.trim() === "") throw new Error("An answer needs the summoner's alias in created_by.");
+      if (input.scope.trim() === "") throw new Error("An answer needs a scope.");
+      return transaction(db, () => {
+        expireRequestRows.run(input.nowMs, input.nowMs - REQUEST_TTL_MS);
+        const request = selectRequest.get(input.requestId) as RequestRecord | undefined;
+        if (request === undefined || request.status !== "open") return undefined;
+        const event: GrantEvent = input.kind === "never" ? "refused" : "granted";
+        const result = insertGrant.run(
+          request.tool,
+          input.scope,
+          input.kind,
+          Number(request.id),
+          input.kind === "once" ? request.args_hmac : null,
+          input.nowMs,
+          input.createdBy,
+        );
+        const id = Number(result.lastInsertRowid);
+        insertLog.run(input.nowMs, id, event);
+        const closed = closeRequest.run("answered", input.nowMs, request.id);
+        if (Number(closed.changes) !== 1) throw new Error(`Request ${request.id} changed while it was answered.`);
+        const stored = selectGrant.get(id) as GrantRecord | undefined;
+        if (stored === undefined) throw new Error(`Grant ${id} was not stored.`);
+        return grantFromRecord(stored);
+      });
+    },
+    declineRequest(requestId: number, nowMs: number): boolean {
+      ensureOpen();
+      return transaction(db, () => {
+        expireRequestRows.run(nowMs, nowMs - REQUEST_TTL_MS);
+        const result = closeRequest.run("answered", nowMs, requestId);
+        return Number(result.changes) === 1;
+      });
+    },
+    createReadback(input: CreateReadbackInput): number | undefined {
+      ensureOpen();
+      if (input.items.length === 0 || input.items.length > READBACK_ITEMS_MAX) {
+        throw new Error(`A read-back holds one to ${READBACK_ITEMS_MAX} requests.`);
+      }
+      const ids = new Set<number>();
+      for (const item of input.items) {
+        if (!(GRANT_KINDS as readonly string[]).includes(item.kind)) throw new Error(`Unknown grant kind "${item.kind}".`);
+        if (item.scope.trim() === "") throw new Error("A read-back item needs a scope.");
+        if (!Number.isSafeInteger(item.requestId) || item.requestId < 1) throw new Error("A read-back item needs a request id.");
+        if (ids.has(item.requestId)) throw new Error("A read-back cannot name one request twice.");
+        ids.add(item.requestId);
+      }
+      return transaction(db, () => {
+        expireReadbackRows.run(input.nowMs, input.nowMs - READBACK_TTL_MS);
+        expireRequestRows.run(input.nowMs, input.nowMs - REQUEST_TTL_MS);
+        const open = selectOpenReadback.get() as ReadbackRecord | undefined;
+        if (open !== undefined) return undefined;
+        for (const item of input.items) {
+          const request = selectRequest.get(item.requestId) as RequestRecord | undefined;
+          if (request === undefined || request.status !== "open") return undefined;
+        }
+        const result = insertReadback.run(JSON.stringify(input.items), input.nowMs);
+        return Number(result.lastInsertRowid);
+      });
+    },
+    setReadbackPostedSeq(id: number, postedSeq: number): void {
+      ensureOpen();
+      const result = setReadbackPostedSeq.run(postedSeq, id);
+      if (Number(result.changes) !== 1) throw new Error(`Read-back ${id} was not found.`);
+    },
+    openReadback(nowMs: number): ReadbackRow | undefined {
+      ensureOpen();
+      const record = selectOpenReadback.get() as ReadbackRecord | undefined;
+      if (record === undefined) return undefined;
+      if (Number(record.created_at) + READBACK_TTL_MS <= nowMs) return undefined;
+      return readbackFromRecord(record);
+    },
+    getReadback(id: number): ReadbackRow | undefined {
+      ensureOpen();
+      const record = selectReadback.get(id) as ReadbackRecord | undefined;
+      return record === undefined ? undefined : readbackFromRecord(record);
+    },
+    confirmReadback(input: ConfirmReadbackInput): ConfirmedReadback | undefined {
+      ensureOpen();
+      if (input.createdBy.trim() === "") throw new Error("A confirmed read-back needs the summoner's alias in created_by.");
+      return transaction(db, () => {
+        expireReadbackRows.run(input.nowMs, input.nowMs - READBACK_TTL_MS);
+        expireRequestRows.run(input.nowMs, input.nowMs - REQUEST_TTL_MS);
+        const record = selectReadback.get(input.id) as ReadbackRecord | undefined;
+        if (record === undefined || record.status !== "open") return undefined;
+        const readback = readbackFromRecord(record);
+        const requests: RequestRecord[] = [];
+        for (const item of readback.items) {
+          const request = selectRequest.get(item.requestId) as RequestRecord | undefined;
+          if (request === undefined || request.status !== "open") return undefined;
+          requests.push(request);
+        }
+        const stored: GrantRow[] = [];
+        for (const [index, item] of readback.items.entries()) {
+          const request = requests[index]!;
+          const event: GrantEvent = item.kind === "never" ? "refused" : "granted";
+          const result = insertGrant.run(
+            request.tool,
+            item.scope,
+            item.kind,
+            Number(request.id),
+            item.kind === "once" ? request.args_hmac : null,
+            input.nowMs,
+            input.createdBy,
+          );
+          const id = Number(result.lastInsertRowid);
+          insertLog.run(input.nowMs, id, event);
+          const closed = closeRequest.run("answered", input.nowMs, request.id);
+          if (Number(closed.changes) !== 1) throw new Error(`Request ${request.id} changed while its read-back was agreed.`);
+          const grant = selectGrant.get(id) as GrantRecord | undefined;
+          if (grant === undefined) throw new Error(`Grant ${id} was not stored.`);
+          stored.push(grantFromRecord(grant));
+        }
+        const closed = closeReadback.run("confirmed", input.nowMs, input.id);
+        if (Number(closed.changes) !== 1) throw new Error(`Read-back ${input.id} changed while it was agreed.`);
+        return { readback, grants: stored };
+      });
+    },
+    declineReadback(id: number, nowMs: number): boolean {
+      ensureOpen();
+      return transaction(db, () => {
+        expireReadbackRows.run(nowMs, nowMs - READBACK_TTL_MS);
+        const result = closeReadback.run("declined", nowMs, id);
+        return Number(result.changes) === 1;
+      });
+    },
+    expireRequests(nowMs: number): number {
+      ensureOpen();
+      return transaction(db, () => {
+        const result = expireRequestRows.run(nowMs, nowMs - REQUEST_TTL_MS);
+        return Number(result.changes);
+      });
+    },
     openRequests(): RequestRow[] {
       ensureOpen();
       return (selectOpenRequests.all() as unknown as RequestRecord[]).map(requestFromRecord);
@@ -396,6 +595,19 @@ function requestFromRecord(record: RequestRecord): RequestRow {
     askingThread: record.asking_thread,
     createdAt: Number(record.created_at),
     status: record.status,
+  };
+  if (record.closed_at !== null) row.closedAt = Number(record.closed_at);
+  return row;
+}
+
+function readbackFromRecord(record: ReadbackRecord): ReadbackRow {
+  const items = JSON.parse(record.items) as ReadbackItem[];
+  const row: ReadbackRow = {
+    id: Number(record.id),
+    items,
+    postedSeq: Number(record.posted_seq),
+    status: record.status,
+    createdAt: Number(record.created_at),
   };
   if (record.closed_at !== null) row.closedAt = Number(record.closed_at);
   return row;
