@@ -29,6 +29,7 @@ let out: string[];
 let err: string[];
 let river: SqliteRiver | undefined;
 let ledger: ReturnType<typeof openLedger> | undefined;
+let grantsWriter: DatabaseSync | undefined;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "natalis-probe-"));
@@ -41,8 +42,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  grantsWriter?.close();
   ledger?.close();
   river?.close();
+  grantsWriter = undefined;
   ledger = undefined;
   river = undefined;
   rmSync(root, { recursive: true, force: true, maxRetries: 5 });
@@ -84,7 +87,30 @@ function fileTimes(folder: string): Map<string, number> {
   return found;
 }
 
-function makeFixture(): { life: string; character: string; walBytes: number; shmBytes: number } {
+/** Every `natalis-probe-*` entry in the system temp folder, which is where a probe copy would land. */
+function probeTemps(): string[] {
+  return readdirSync(tmpdir())
+    .filter((name) => name.startsWith("natalis-probe-"))
+    .sort();
+}
+
+function fileBytes(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
+/** Lets the writer connections go, so every row moves out of the log and into the database file. */
+function closeWriters(): void {
+  ledger?.close();
+  river?.close();
+  ledger = undefined;
+  river = undefined;
+}
+
+function makeFixture(): { life: string; character: string } {
   const life = `# Life\n\nI live near ${markers.life}.\n\n## Work\n\nI work with ${markers.lifeTwo}.\n`;
   const character = `# Character\n\nI am ${markers.character}.\n`;
   writeFileSync(join(dir, "notebook", "self", "life.md"), life, "utf8");
@@ -148,17 +174,49 @@ function makeFixture(): { life: string; character: string; walBytes: number; shm
 
   keepVaultEntry(dir, "board_key", { host: "board.example.org", value: markers.vault });
 
-  // The writer connections are held open, so the newest rows live in the write-ahead log. A probe that
-  // opens the file in place without seeing the log would count too few rows, and one that locks or
-  // checkpoints it would change the folder.
-  const walBytes = statSync(join(dir, "river.db-wal")).size;
-  const shmBytes = statSync(join(dir, "river.db-shm")).size;
-  return { life, character, walBytes, shmBytes };
+  // The writer connections are held open, so the newest rows live in the write-ahead log until they are closed.
+  return { life, character };
 }
 
 describe("natalis probe", () => {
+  it("refuses a live river write-ahead log instead of copying the database, and changes nothing", async () => {
+    makeFixture();
+    // The open writer keeps rows in the log, not in the database file yet.
+    expect(statSync(join(dir, "river.db-wal")).size).toBeGreaterThan(0);
+    const before = fileTimes(dir);
+    const tempsBefore = probeTemps();
+
+    expect(await run(["--dir", dir])).toBe(1);
+
+    expect(out).toEqual([]);
+    expect(err.join("\n")).toContain("river.db has an unflushed write-ahead log");
+    expect(err.join("\n")).toContain("Stop the Lar first, then probe again; nothing was read or changed.");
+    expect(fileTimes(dir)).toEqual(before);
+    expect(probeTemps()).toEqual(tempsBefore);
+  });
+
+  it("refuses a live grants write-ahead log instead of copying the database, and changes nothing", async () => {
+    makeFixture();
+    closeWriters();
+    grantsWriter = new DatabaseSync(join(dir, "grants.db"));
+    grantsWriter.exec("PRAGMA journal_mode = WAL");
+    grantsWriter.prepare("INSERT INTO grants (id, note) VALUES (?, ?)").run("g2", markers.grants);
+    expect(statSync(join(dir, "grants.db-wal")).size).toBeGreaterThan(0);
+    const before = fileTimes(dir);
+    const tempsBefore = probeTemps();
+
+    expect(await run(["--dir", dir])).toBe(1);
+
+    expect(out).toEqual([]);
+    expect(err.join("\n")).toContain("grants.db has an unflushed write-ahead log");
+    expect(err.join("\n")).toContain("Stop the Lar first, then probe again; nothing was read or changed.");
+    expect(fileTimes(dir)).toEqual(before);
+    expect(probeTemps()).toEqual(tempsBefore);
+  });
+
   it("prints only numbers and booleans, and none of the words in the notes, rows, life, character or vault", async () => {
     const fixture = makeFixture();
+    closeWriters();
     const before = fileTimes(dir);
 
     expect(await run(["--dir", dir])).toBe(0);
@@ -183,8 +241,8 @@ describe("natalis probe", () => {
     expect(first.river).toEqual({
       rows: 2,
       dbBytes: statSync(join(dir, "river.db")).size,
-      walBytes: fixture.walBytes,
-      shmBytes: fixture.shmBytes,
+      walBytes: fileBytes(join(dir, "river.db-wal")),
+      shmBytes: fileBytes(join(dir, "river.db-shm")),
     });
     expect(first.stoppedCleanly).toBe(true);
     expect(first.rhythmTagged).toBe(true);

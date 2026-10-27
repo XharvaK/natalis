@@ -37,6 +37,7 @@ import { forgetInStateFile, openEntity, OUTBOX_JOB_TIMEOUT_MS, STATE_FILE, type 
 import { COMMITMENTS_STUB, HOUSEHOLD_PATH, OLD_COMMITMENTS_STUB } from "./commitments.js";
 import { isStopOn } from "./stop.js";
 import { PRIVACY_UNREADABLE_REASON } from "./privacy.js";
+import { QUOTE_MAX_CHARS } from "./honesty.js";
 
 // The fake credential is built from parts at run time, so no token-shaped literal sits in the source.
 const FAKE_KEY = ["sk", "proj", "abcdefghijklmnopqrstuvwxyz0123"].join("-");
@@ -1643,6 +1644,34 @@ describe("the honesty check on the life record", () => {
       code: "held_honesty",
       reason: `This says "I work at the lighthouse", but your record says "I  work at the\nbakery on Quay Street", under the heading "## Work". Nothing was sent. Rewrite it, or say it again with knowingly: true to send it as it is.`,
     });
+  });
+
+  it("caps a long record quote in the receipt at 1000 code points, and marks the cut", async () => {
+    const claim = "I work at the lighthouse";
+    // Birds are one code point each and two UTF-16 units each, so a unit-based cut would show about half as many.
+    const longQuote = `${"🐦".repeat(600)} I keep the harbour birds ${"🌿".repeat(600)}`;
+    expect([...longQuote].length).toBeGreaterThan(QUOTE_MAX_CHARS);
+    const record = `I live in a small town by the harbour. ${longQuote}`;
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("say", { place: "cli:summoner", text: `${claim}.` })] }),
+      honestyReply(true, claim, longQuote),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli, said } = await open(model, { config: HONEST });
+    await entity.start();
+    await setLife(entity, record);
+
+    cli.send("Where do you work?");
+    await entity.idle();
+
+    expect(said).toEqual([]);
+    const refused = receiptsShownIn(model.requests[2]).find((item) => item["ok"] === false);
+    const reason = (refused?.["refused"] as { reason?: string } | undefined)?.reason ?? "";
+    const shown = [...longQuote].slice(0, QUOTE_MAX_CHARS).join("") + " […truncated]";
+    expect(reason).toBe(
+      `This says "${claim}", but your record says "${shown}", with no heading above it in your record. Nothing was sent. Rewrite it, or say it again with knowingly: true to send it as it is.`,
+    );
+    expect([...shown].length).toBe(QUOTE_MAX_CHARS + " […truncated]".length);
   });
 
   it("puts nothing in the held receipt except fixed words, the message and the record", async () => {

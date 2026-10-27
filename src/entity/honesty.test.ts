@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  capQuote,
   checkHonestyQuotes,
   HONESTY_SYSTEM,
   headingAbove,
   parseHonestyReply,
+  QUOTE_MAX_CHARS,
 } from "./honesty.js";
 
 describe("the honesty reply", () => {
@@ -126,5 +128,24 @@ describe("the quotes in a yes", () => {
     expect(headingAbove(record, "I work at the bakery.")).toBe("## Work");
     expect(headingAbove(record, "I work on Quay Street.")).toBe("### Days");
     expect(headingAbove("I live by the harbour.", "I live by the harbour.")).toBeUndefined();
+  });
+});
+
+describe("the quote cap in a receipt", () => {
+  it("leaves a short quote unchanged", () => {
+    expect(capQuote("I work at the bakery on Quay Street")).toBe("I work at the bakery on Quay Street");
+  });
+
+  it("keeps a quote of exactly the cap, with no marker", () => {
+    const exact = "🐦".repeat(QUOTE_MAX_CHARS);
+    expect(capQuote(exact)).toBe(exact);
+  });
+
+  it("shows the first 1000 code points and then the marker, counting code points and not UTF-16 units", () => {
+    const long = "🐦".repeat(QUOTE_MAX_CHARS + 500);
+    const capped = capQuote(long);
+    expect(capped).toBe([...long].slice(0, QUOTE_MAX_CHARS).join("") + " […truncated]");
+    // A UTF-16 slice would show only about half as many birds.
+    expect([...capped.slice(0, -" […truncated]".length)]).toHaveLength(QUOTE_MAX_CHARS);
   });
 });
