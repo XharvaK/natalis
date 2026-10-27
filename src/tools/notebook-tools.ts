@@ -449,9 +449,10 @@ function capOf(path: string): number | undefined {
   return Object.hasOwn(CORE_NOTE_CAPS, key) ? CORE_NOTE_CAPS[key] : undefined;
 }
 
-// One change at a time to a capped note: the size check and the write it allows run as one step, so two turns cannot
-// both pass the check against the same length (NIT-1). Other paths are not held.
-let capTail: Promise<unknown> = Promise.resolve();
+// One change at a time to a capped note in one notebook: the size check and the write it allows run as one step, so
+// two turns on the same notebook cannot both pass the check against the same length (NIT-1). Each notebook has its
+// own queue, so a write that hangs in one Lar does not hold another Lar (NIT-A). Other paths are not held.
+const capTails = new Map<string, Promise<unknown>>();
 
 function capLocked(tool: Tool): Tool {
   return {
@@ -459,8 +460,15 @@ function capLocked(tool: Tool): Tool {
     run(args, context) {
       const path = typeof args["path"] === "string" ? args["path"].trim() : "";
       if (capOf(path) === undefined) return tool.run(args, context);
-      const run = capTail.then(() => tool.run(args, context));
-      capTail = run.catch(() => undefined);
+      const key = context.notebook.root;
+      const tail = capTails.get(key) ?? Promise.resolve();
+      const run = tail.then(() => tool.run(args, context));
+      const settled = run.catch(() => undefined);
+      capTails.set(key, settled);
+      void settled.then(() => {
+        // Drop a notebook's entry once its last job has finished, so the map does not keep every notebook forever.
+        if (capTails.get(key) === settled) capTails.delete(key);
+      });
       return run;
     },
   };
