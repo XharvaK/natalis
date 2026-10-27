@@ -34,6 +34,7 @@ import { checkRiver } from "../river/integrity.js";
 import { indexedRiver, ViewIndex, viewKeyOfRow } from "../river/view-index.js";
 import { createSecretScanner, guardModel, guardNotebook, guardRiver, KNOWN_VALUE_KIND } from "../secrets/index.js";
 import { notebookTools } from "../tools/index.js";
+import { BODY_WORLD, withWorld } from "../tools/effects.js";
 import { MEDIA_FOLDER, openShelf, shelfBody, type Shelf } from "../media/shelf.js";
 import type {
   Ceiling,
@@ -807,9 +808,13 @@ class Runtime implements Entity {
     const worldTools = init.worlds.flatMap((world) => {
       const own = world.tools();
       this.worldToolNames.set(world.id, new Set(own.map((tool) => tool.spec.name)));
-      return own;
+      return withWorld(world.id, own);
     }).map((tool) => this.gateWorldTool(tool));
-    this.tools = [...notebookTools(), ...worldTools, ...this.builtInTools()].map((tool) => this.gateToolTable(tool));
+    this.tools = [
+      ...withWorld(BODY_WORLD, notebookTools()),
+      ...worldTools,
+      ...withWorld(BODY_WORLD, this.builtInTools()),
+    ].map((tool) => this.gateToolTable(tool));
     const names = new Set<string>();
     for (const tool of this.tools) {
       if (tool.spec.name === "end_turn") throw new Error('"end_turn" belongs to the loop; no tool may use that name.');

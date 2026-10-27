@@ -59,12 +59,26 @@ export type JsonSchema = Record<string, unknown>;
  * `effect` is body-only too. "read": changes nothing outside the body's own idempotent bookkeeping and asks nothing of
  * any world; a dry run runs it and a transient failure is retried. Only tools on the read list (tools/effects.ts) are
  * reads; a self-declared read off that list counts as a write. "idempotent": a request that is safe to repeat (for
- * example asking the game for a look or a picture); retried, but stubbed in a dry run. "write" (the default when nothing
- * is declared): stubbed in a dry run, never retried. Model adapters send only name, description and parameters.
+ * example asking the game for a look or a picture); retried, but stubbed in a dry run. Only tools on the idempotent
+ * list (tools/effects.ts) are idempotent; a self-declared idempotent off that list counts as a write. "write" (the
+ * default when nothing is declared): stubbed in a dry run, never retried. Model adapters send only name, description
+ * and parameters.
  */
 export type ToolEffect = "read" | "write" | "idempotent";
 
-export type ToolSpec = { name: string; description: string; parameters: JsonSchema; safeWhenStopped?: boolean; effect?: ToolEffect };
+/**
+ * `world` is body-only too: the world that offers the tool, with the body's own tools (the notebook too) saying "body".
+ * The effect table keys its lists by (world, name), so a world tool named "look" is not read just because the body's
+ * look is. Model adapters never send it.
+ */
+export type ToolSpec = {
+  name: string;
+  description: string;
+  parameters: JsonSchema;
+  safeWhenStopped?: boolean;
+  effect?: ToolEffect;
+  world?: string;
+};
 
 export type ModelRequest = {
   messages: ChatMessage[];
