@@ -78,31 +78,79 @@ export function checkHonestyQuotes(
 
 /** The quote exactly as the source spells it, or undefined when folding whitespace does not find it. */
 export function quoteInSource(source: string, quote: string): string | undefined {
-  const needle = fold(quote);
-  if (needle === "") return undefined;
-  const folded = foldWithOffsets(source);
-  const at = folded.text.indexOf(needle);
-  if (at < 0) return undefined;
-  const start = folded.starts[at];
-  const end = folded.ends[at + needle.length - 1];
-  if (start === undefined || end === undefined) return undefined;
-  return source.slice(start, end);
+  return quoteMatches(source, quote)[0]?.text;
 }
 
+export type QuoteMatch = {
+  /** Where the match starts in the source. */
+  start: number;
+  /** Where the match ends in the source, after its last character. */
+  end: number;
+  /** The match exactly as the source spells it. */
+  text: string;
+};
+
 /**
- * The nearest markdown heading line above a quote in the record, or undefined when there is none. The line is shown
- * as the record spells it, with only the spaces around it removed.
+ * Every place the folded quote appears in the source, in file order. Offsets point into the source, so a caller can
+ * look around a match without searching for the quote again.
  */
-export function headingAbove(source: string, quote: string): string | undefined {
-  const at = source.indexOf(quote);
-  if (at < 0) return undefined;
-  const lineStart = source.lastIndexOf("\n", at - 1) + 1;
+export function quoteMatches(source: string, quote: string): QuoteMatch[] {
+  const needle = fold(quote);
+  if (needle === "") return [];
+  const folded = foldWithOffsets(source);
+  const matches: QuoteMatch[] = [];
+  let at = folded.text.indexOf(needle);
+  while (at >= 0) {
+    const start = folded.starts[at];
+    const end = folded.ends[at + needle.length - 1];
+    if (start !== undefined && end !== undefined) matches.push({ start, end, text: source.slice(start, end) });
+    at = folded.text.indexOf(needle, at + 1);
+  }
+  return matches;
+}
+
+/** The nearest markdown heading line above a source offset, or undefined when there is none. */
+export function headingAt(source: string, offset: number): string | undefined {
+  const lineStart = source.lastIndexOf("\n", offset - 1) + 1;
   const lines = source.slice(0, lineStart).split(/\r?\n/);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const line = (lines[i] ?? "").trim();
     if (line.startsWith("#")) return line;
   }
   return undefined;
+}
+
+/**
+ * The nearest markdown heading line above the first place a quote appears in the record, or undefined when there is
+ * none. The line is shown as the record spells it, with only the spaces around it removed.
+ */
+export function headingAbove(source: string, quote: string): string | undefined {
+  const first = quoteMatches(source, quote)[0];
+  return first === undefined ? undefined : headingAt(source, first.start);
+}
+
+/**
+ * The words a receipt uses for where a record quote sits: the heading above it, every heading when the same words
+ * appear under more than one, or none. Headings are named once each, in the order they appear in the file.
+ */
+export function headingPhrase(source: string, quote: string): string {
+  const headings = quoteMatches(source, quote).map((match) => headingAt(source, match.start));
+  const named = headings.filter((heading): heading is string => heading !== undefined);
+  const distinct = [...new Set(named)];
+  const place =
+    distinct.length === 0
+      ? "with no heading above it in your record"
+      : distinct.length === 1
+        ? `under the heading "${distinct[0]!}"`
+        : `under the headings ${quotedList(distinct)}`;
+  const moreThanOnePlace = headings.length > 1 && (distinct.length > 1 || named.length < headings.length);
+  return moreThanOnePlace && distinct.length > 0 ? `${place} (the same words appear in more than one place)` : place;
+}
+
+function quotedList(items: readonly string[]): string {
+  const quoted = items.map((item) => `"${item}"`);
+  const last = quoted.pop() ?? "";
+  return quoted.length === 0 ? last : `${quoted.join(", ")} and ${last}`;
 }
 
 function fold(text: string): string {

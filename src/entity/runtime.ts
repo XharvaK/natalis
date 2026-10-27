@@ -69,7 +69,7 @@ import { dayKey, hostZone, msUntilNextDay, startOfDayMs } from "./day.js";
 import { FLOOR_TEXT } from "./floor.js";
 import { chosenName, NAME_NOTE, whoYouAre, type Thinking } from "./identity.js";
 import { readNature } from "./nature.js";
-import { capQuote, checkHonestyQuotes, headingAbove, HONESTY_SYSTEM, type HonestyVerdict, parseHonestyReply } from "./honesty.js";
+import { capQuote, checkHonestyQuotes, headingPhrase, HONESTY_SYSTEM, type HonestyVerdict, parseHonestyReply } from "./honesty.js";
 import {
   createPrivacyWatch,
   outwardHold,
@@ -2935,8 +2935,7 @@ class Runtime implements Entity {
       return undefined;
     }
     if (!verdict.contradicts) return undefined;
-    const heading = headingAbove(record, verdict.record_quote);
-    const headingPart = heading === undefined ? "with no heading above it in your record" : `under the heading "${heading}"`;
+    const headingPart = headingPhrase(record, verdict.record_quote);
     return {
       ok: false,
       summary: "I held that back: it says something my record contradicts, so nothing was sent.",

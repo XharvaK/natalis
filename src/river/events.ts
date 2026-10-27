@@ -115,6 +115,12 @@ export function observeRiver(river: River, bus: EventBus, purpose: Purpose): Riv
   };
 }
 
+// MUST-FIX before the exporter is wired:
+// 1. jsonlExporter must require an explicit dataDir (the Lar folder) instead of defaulting to the export file's folder.
+// 2. thread-hash.key is deliberately NOT in the plain backup list (src/bin/commands/backup-format.ts PLAIN_FILES), so
+//    a restore rotates the key and old exports stop joining; decide include-or-rotate then.
+// 3. The rollback cleanup must delete thread-hash.key.
+
 /** How the JSONL exporter treats thread names: left out, or given as a short keyed hash. */
 export type JsonlExporterOptions = {
   threads?: "omit" | "hash";

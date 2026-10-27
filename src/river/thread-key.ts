@@ -5,6 +5,12 @@ import { createHmac, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+// MUST-FIX before the exporter is wired:
+// 1. jsonlExporter must require an explicit dataDir (the Lar folder) instead of defaulting to the export file's folder.
+// 2. thread-hash.key is deliberately NOT in the plain backup list (src/bin/commands/backup-format.ts PLAIN_FILES), so
+//    a restore rotates the key and old exports stop joining; decide include-or-rotate then.
+// 3. The rollback cleanup must delete thread-hash.key.
+
 /** The key file's name, in the Lar's own folder. It is not a backup file and not a notebook note. */
 export const THREAD_HASH_KEY_FILE = "thread-hash.key";
 /** 32 random bytes, as much key as HMAC-SHA256 takes. */
