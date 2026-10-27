@@ -25,4 +25,30 @@ describe("recall ranking with time decay", () => {
     // 3 matches a year ago against 2 matches today: today's 2 * 1 = 2 vs 3 * (0.5 + 0.5 * tiny) ~ 1.5.
     expect(rankRecall([hit(1, 365 * DAY, 3), hit(2, 0, 2)], NOW).map((h) => h.seq)).toEqual([2, 1]);
   });
+
+  it("a mark raises rank; no marks leave the order unchanged", () => {
+    // No marks, or a neutral weight of zero, keeps today's order exactly: the fresher row wins.
+    const unchanged = rankRecall([hit(1, 10 * DAY, 1), hit(2, 1 * DAY, 1)], NOW).map((h) => h.seq);
+    expect(unchanged).toEqual([2, 1]);
+    expect(
+      rankRecall(
+        [
+          { ...hit(1, 10 * DAY, 1), weight: 0 },
+          { ...hit(2, 1 * DAY, 1), weight: 0 },
+        ],
+        NOW,
+      ).map((h) => h.seq),
+    ).toEqual(unchanged);
+
+    // A weight of 2 doubles the score, so the older row with the same one match now comes first.
+    expect(
+      rankRecall(
+        [
+          { ...hit(1, 10 * DAY, 1), weight: 2 },
+          { ...hit(2, 1 * DAY, 1), weight: 0 },
+        ],
+        NOW,
+      ).map((h) => h.seq),
+    ).toEqual([1, 2]);
+  });
 });

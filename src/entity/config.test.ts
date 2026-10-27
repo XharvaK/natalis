@@ -177,6 +177,20 @@ describe("the daily turn limit", () => {
   });
 });
 
+describe("the reflection budget", () => {
+  it("is off unless limits.reflectBudget is set, and refuses a value that is not a whole number of at least one", () => {
+    expect(parseEntityConfig(MINIMAL).limits?.reflectBudget).toBeUndefined();
+    expect(parseEntityConfig({ ...MINIMAL, limits: { reflectBudget: 6 } }).limits).toEqual({ reflectBudget: 6 });
+    expect(parseEntityConfig({ ...MINIMAL, limits: { turnsPerDay: 20, reflectBudget: 6 } }).limits).toEqual({
+      turnsPerDay: 20,
+      reflectBudget: 6,
+    });
+    for (const reflectBudget of [0, -1, 1.5, "6", null]) {
+      expect(() => parseEntityConfig({ ...MINIMAL, limits: { reflectBudget } })).toThrow(/limits\.reflectBudget/);
+    }
+  });
+});
+
 describe("model.vision", () => {
   const model = { baseUrl: ["http://", ["127", "0", "0", "1"].join("."), ":9/v1"].join(""), model: "seeing", contextTokens: 32_000 };
 

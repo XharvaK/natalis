@@ -34,7 +34,8 @@ import { SUMMONER_PREFIX } from "./summoner.js";
 import { readCallLedger, readLedger } from "../river/ledger.js";
 import { changedBeyond, CLASS_RANK, partsOfMessage, type MessagePart } from "../context/layout.js";
 import { TURN_DEADLINE_MS } from "../model/turn-deadline.js";
-import type { Purpose } from "../river/purpose.js";
+import { isLive, purposeOf, type Purpose } from "../river/purpose.js";
+import { viewKeyOfRow } from "../river/view-index.js";
 import { forgetInStateFile, openEntity, OUTBOX_JOB_TIMEOUT_MS, REFLECT_DEADLINE_MS, STATE_FILE, type Entity, type OpenEntityOptions } from "./runtime.js";
 import { COMMITMENTS_STUB, HOUSEHOLD_PATH, OLD_COMMITMENTS_STUB } from "./commitments.js";
 import { isStopOn } from "./stop.js";
@@ -3556,6 +3557,7 @@ describe("U5: a background (reflect) turn's tool allowlist", () => {
       "trash_note",
       "recall",
       "forget",
+      "mark",
       "say",
       "schedule_wake",
       "cancel_wake",
@@ -4718,6 +4720,7 @@ describe("NIT-A: the effect table over the runtime's tools", () => {
       "body/append_note": "write",
       "body/trash_note": "write",
       "body/forget": "write",
+      "body/mark": "write",
       "discord/react": "write",
       "discord/read_history": "read",
       "body/say": "write",
@@ -4808,5 +4811,211 @@ describe("round 8 (N1)", () => {
     await entity.idle();
     expect(model.requests).toHaveLength(3);
     expect(userTextOf(model.requests[2])).toContain("post_slow {}: outcome unknown, it may have finished after the cut: check before doing it again");
+  });
+});
+
+describe("U6: her importance marks and reflection", () => {
+  const DAY = 86_400_000;
+  const NOW = Date.parse("2026-10-27T12:00:00Z");
+  const DATE = "2026-10-27";
+  const FIXED_MARK_LINE =
+    "You marked these as important. This is a quiet turn to think about them. Nothing here is sent anywhere. Write down what you want to keep, in your own words.";
+
+  const startedTurns = (entity: Entity): RiverRow[] =>
+    allRows(entity).filter((row) => row.kind === "turn" && row.data?.["phase"] === "start");
+  const reflectTurns = (entity: Entity): RiverRow[] =>
+    startedTurns(entity).filter((row) => row.data?.["purpose"] === "reflect");
+  const markRows = (entity: Entity): RiverRow[] =>
+    allRows(entity).filter((row) => row.kind === "note" && row.data?.["mark"] !== undefined);
+  const appendAt = (entity: Entity, thread: string, text: string, atMs: number): RiverRow =>
+    entity.river.append({ kind: "event", thread, place: thread, source: "outside", text, atMs });
+
+  it("over budget queues exactly one reflect turn, under the budget none, with no budget set none", async () => {
+    const scenarios: Array<{ name: string; limits?: EntityConfig["limits"]; reflect: number }> = [
+      { name: "over", limits: { reflectBudget: 3 }, reflect: 1 },
+      { name: "under", limits: { reflectBudget: 10 }, reflect: 0 },
+      { name: "off", reflect: 0 },
+    ];
+    for (const scenario of scenarios) {
+      dir = join(root, scenario.name);
+      let entityRef: Entity | undefined;
+      // Three marks of weight 2: 6 in all. The cited row is this turn's own owner message.
+      const marks = (): ModelResponse => {
+        const seq = entityRef?.river.read({ thread: "cli:summoner", kinds: ["event"], newestFirst: true, limit: 1 })[0]?.seq ?? 1;
+        return reply({
+          toolCalls: [
+            call("mark", { seqs: [seq], weight: 2 }),
+            call("mark", { seqs: [seq], weight: 2 }),
+            call("mark", { seqs: [seq], weight: 2 }),
+          ],
+        });
+      };
+      const model = new ScriptedModel([
+        () => marks(),
+        reply({ toolCalls: [call("end_turn")] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ]);
+      const config: EntityConfig = {
+        ...CONFIG,
+        ...(scenario.limits === undefined ? {} : { limits: scenario.limits }),
+      };
+      const { entity, cli } = await open(model, { config, stopPollMs: 1e9 });
+      entityRef = entity;
+      await entity.start();
+      cli.send("Mark what matters.");
+      await entity.idle();
+
+      expect(reflectTurns(entity)).toHaveLength(scenario.reflect);
+      expect(markRows(entity)).toHaveLength(3);
+      await entity.stop();
+    }
+  });
+
+  it("mark citing a hidden or forgotten row is refused", async () => {
+    const room = sourceWorld("fake");
+    let hiddenSeq = 0;
+    let forgottenSeq = 0;
+    const missingSeq = 987_654;
+    const model = new ScriptedModel([
+      () =>
+        reply({
+          toolCalls: [
+            call("mark", { seqs: [hiddenSeq], weight: 2, why: "hidden" }),
+            call("mark", { seqs: [forgottenSeq], weight: 2, why: "forgotten" }),
+            call("mark", { seqs: [missingSeq], weight: 2, why: "missing" }),
+          ],
+        }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity } = await open(model, { stopPollMs: 1e9 }, [room.world]);
+    await entity.start();
+    // A summoner act in self is hidden from a room thread, as recall hides it there.
+    hiddenSeq = entity.river.append({
+      thread: "self",
+      kind: "event",
+      source: "body",
+      text: "A summoner act kept for their own places.",
+      data: { summonerAct: true },
+      atMs: NOW,
+    }).seq;
+    const forgotten = appendAt(entity, "fake:room", "A row that will be forgotten.", NOW - DAY);
+    entity.river.forget({ seqs: [forgotten.seq] }, "self", "The test forgets it.");
+    forgottenSeq = forgotten.seq;
+
+    room.push("fake:room", "Mark what I said.");
+    await entity.idle();
+
+    const refusals = allRows(entity).filter((row) => row.kind === "receipt" && row.data?.["tool"] === "mark");
+    expect(
+      refusals.map((row) => (row.data?.["refused"] as { code?: string } | undefined)?.code),
+    ).toEqual(["not_visible", "forgotten", "not_found"]);
+    expect(markRows(entity)).toHaveLength(0);
+  });
+
+  it("re-marking writes a new row, never edits the old one", async () => {
+    let cite = 0;
+    const model = new ScriptedModel([
+      () => reply({ toolCalls: [call("mark", { seqs: [cite], weight: 1, why: "first" })] }),
+      () => reply({ toolCalls: [call("mark", { seqs: [cite], weight: 3, why: "second" })] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model, { stopPollMs: 1e9 });
+    await entity.start();
+    cite = appendAt(entity, "cli:summoner", "A row to mark twice.", NOW).seq;
+    cli.send("Mark it twice.");
+    await entity.idle();
+
+    const rows = markRows(entity);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.seq).toBeLessThan(rows[1]?.seq ?? 0);
+    expect(rows[0]).toMatchObject({ kind: "note", source: "self", thread: "cli:summoner", text: "first" });
+    expect(rows[0]?.data).toEqual({ mark: 1, cites: [cite] });
+    expect(rows[1]).toMatchObject({ kind: "note", source: "self", thread: "cli:summoner", text: "second" });
+    expect(rows[1]?.data).toEqual({ mark: 3, cites: [cite] });
+  });
+
+  it("the reflect turn shows only verbatim marked rows and the fixed line", async () => {
+    const markedText =
+      "The garden gate at the far end of the orchard stays open all winter, and I keep thinking about it. ".repeat(8).trim();
+    const unmarkedText = "A passing gull dropped a mussel on the shed roof and flew off.";
+    let markedSeq = 0;
+    const model = new ScriptedModel([
+      () => reply({ toolCalls: [call("mark", { seqs: [markedSeq], weight: 1, why: "The gate matters." })] }),
+      reply({ toolCalls: [call("end_turn")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(
+      model,
+      { config: { ...CONFIG, limits: { reflectBudget: 1 } }, nowMs: () => NOW, stopPollMs: 1e9 },
+    );
+    await entity.start();
+    markedSeq = appendAt(entity, "fake:room", markedText, NOW - 2 * DAY).seq;
+    appendAt(entity, "fake:room", unmarkedText, NOW - 2 * DAY);
+    cli.send("Mark the garden gate.");
+    await entity.idle();
+
+    expect(model.requests.map((request) => request.thread)).toEqual(["cli:summoner", "cli:summoner", "self"]);
+    const liveText = eventTextOf(model.requests[0]);
+    const reflectText = eventTextOf(model.requests[2]);
+    expect(liveText).not.toContain("marked since");
+    expect(reflectText).toContain(`## marked since ${DATE}`);
+    expect(reflectText).toContain(markedText);
+    expect(reflectText).toContain(`[seq ${markedSeq}`);
+    expect(reflectText).not.toContain(unmarkedText);
+    expect(reflectText.split(FIXED_MARK_LINE)).toHaveLength(2);
+    expect(allRows(entity).filter((row) => row.kind === "say")).toHaveLength(0);
+  });
+
+  it("a reflect turn counts toward the daily limit", async () => {
+    const room = sourceWorld("fake");
+    let cite = 0;
+    const model = new ScriptedModel([
+      () => reply({ toolCalls: [call("mark", { seqs: [cite], weight: 1, why: "One important row." })] }),
+      reply({ toolCalls: [call("end_turn")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(
+      model,
+      { config: { ...CONFIG, limits: { turnsPerDay: 1, reflectBudget: 1 } }, stopPollMs: 1e9 },
+      [room.world],
+    );
+    await entity.start();
+    cite = appendAt(entity, "cli:summoner", "A row that matters today.", NOW).seq;
+    cli.send("Mark this one.");
+    await entity.idle();
+
+    expect(reflectTurns(entity)).toHaveLength(1);
+    const state = readStateFile() as unknown as { turns?: { count: number } };
+    expect(state.turns?.count).toBe(1);
+
+    // The day's one turn is spent, so the room's message waits for the next day.
+    room.push("fake:room", "One more thing.");
+    await entity.idle();
+    expect(model.requests).toHaveLength(3);
+  });
+
+  it("C4: a mark row is a plain note with only extra data keys, so old readers see it unchanged", async () => {
+    let cite = 0;
+    const model = new ScriptedModel([
+      () => reply({ toolCalls: [call("mark", { seqs: [cite], weight: 2, why: "Keep this." })] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model, { stopPollMs: 1e9 });
+    await entity.start();
+    cite = appendAt(entity, "cli:summoner", "A row old code can still read.", NOW).seq;
+    cli.send("Mark it.");
+    await entity.idle();
+
+    const [row] = markRows(entity);
+    expect(row).toBeDefined();
+    expect(row).toMatchObject({ kind: "note", source: "self", thread: "cli:summoner", text: "Keep this." });
+    expect(Object.keys(row?.data ?? {}).sort()).toEqual(["cites", "mark"]);
+    expect(row?.data?.["cites"]).toEqual([cite]);
+    expect(purposeOf(row as RiverRow)).toBe("live");
+    expect(isLive(row as RiverRow)).toBe(true);
+    expect(viewKeyOfRow(row as RiverRow)).toBeUndefined();
+    for (const key of ["purpose", "phase", "view", "brief", "wakeId", "summonerAct", "bodyNote", "nonLiveDropped", "outcomeUnknown", "retryOf"]) {
+      expect(row?.data?.[key]).toBeUndefined();
+    }
   });
 });
