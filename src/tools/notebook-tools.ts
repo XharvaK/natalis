@@ -5,6 +5,7 @@
 import { NotebookError, type Notebook, type Receipt, type RiverRow, type Tool, type ToolContext } from "../contracts.js";
 import { protectedNoteReason } from "../entity/commitments.js";
 import { notebookPathOf } from "../notebook/git-notebook.js";
+import type { LinkStore } from "../river/links.js";
 import { sectionOf } from "../notebook/sections.js";
 
 const READ_LIMIT = 20_000;
@@ -20,7 +21,12 @@ const FORGET_SEQS_MAX = 200;
 type Args = Record<string, unknown>;
 type Checked<T> = { ok: true; value: T } | { ok: false; receipt: Receipt };
 
-export function notebookTools(): Tool[] {
+export type NotebookToolOptions = {
+  /** When given, trashing a note also drops every saved link to or from it (U10). */
+  links?: LinkStore;
+};
+
+export function notebookTools(options: NotebookToolOptions = {}): Tool[] {
   // Notebook calls are local and short: after a turn deadline they are let finish, so a retry never repeats a write.
   return [
     readNote,
@@ -28,7 +34,7 @@ export function notebookTools(): Tool[] {
     capLocked(editNote),
     capLocked(appendNote),
     listNotes,
-    trashNote,
+    trashNote(options.links),
     recall,
     forget,
   ].map((tool) => ({ ...tool, settles: true }));
@@ -250,7 +256,7 @@ const listNotes: Tool = {
   },
 };
 
-const trashNote: Tool = {
+const trashNote = (links: LinkStore | undefined): Tool => ({
   spec: {
     name: "trash_note",
     description:
@@ -271,12 +277,20 @@ const trashNote: Tool = {
     if (held !== undefined) return held;
     const why = requireText(args, "why", "The reason");
     if (!why.ok) return why.receipt;
+    const note = notebookPathOf(path.value) ?? path.value;
     return guarded(async () => {
-      await context.notebook.remove(path.value, why.value, authorOf(context));
-      return { ok: true, summary: `Moved ${path.value} to the trash.`, data: { path: path.value } };
+      await context.notebook.remove(note, why.value, authorOf(context));
+      // A retired note keeps no authority: every saved link to or from it goes with it (U10).
+      const dropped = links === undefined ? 0 : links.dropForNote(note);
+      if (dropped === 0) return { ok: true, summary: `Moved ${note} to the trash.`, data: { path: note } };
+      return {
+        ok: true,
+        summary: `Moved ${note} to the trash and dropped ${dropped} saved link(s).`,
+        data: { path: note, linksDropped: dropped },
+      };
     });
   },
-};
+});
 
 const recall: Tool = {
   spec: {

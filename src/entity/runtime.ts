@@ -29,6 +29,7 @@ import { ModelError, type ModelErrorKind, type QuotaWindow } from "../contracts.
 import { planRetry, type QuotaRetryTuning } from "./retry-plan.js";
 import { openRiver } from "../river/index.js";
 import { factsContextText, openFacts, type FactStore } from "../river/facts.js";
+import { openLinks, type LinkStore } from "../river/links.js";
 import { createWitness, withWitness, type CacheWitness } from "../model/witness.js";
 import { openLedger, type Ledger, type LedgerRow, type ThreadKind } from "../river/ledger.js";
 import {
@@ -65,6 +66,7 @@ import { indexedRiver, ViewIndex, viewKeyOfRow } from "../river/view-index.js";
 import { createSecretScanner, guardModel, guardNotebook, guardRiver, KNOWN_VALUE_KIND } from "../secrets/index.js";
 import { notebookTools } from "../tools/index.js";
 import { factsTools } from "../tools/facts-tools.js";
+import { linksTools } from "../tools/links-tools.js";
 import { BODY_WORLD, withWorld } from "../tools/effects.js";
 import { MEDIA_FOLDER, openShelf, shelfBody, type Shelf } from "../media/shelf.js";
 import type {
@@ -803,6 +805,8 @@ class Runtime implements Entity {
   private readonly grants: Grants;
   /** Her facts, in river.db: her words and the rows she cited. */
   private readonly facts: FactStore;
+  /** Links between her notes, in river.db: note paths, relation, her reason and the row it came from. */
+  private readonly links: LinkStore;
   /** The cache witness: one row per model call (counts and hashes only), shared by every thread. */
   private readonly witness: CacheWitness;
   /** Failed turns in a row, over every thread. A turn that gets an answer clears it. */
@@ -927,6 +931,7 @@ class Runtime implements Entity {
     this.ledger = openLedger(join(init.dir, RIVER_LEDGER_FILE));
     this.grants = openGrants(init.dir);
     this.facts = openFacts(join(init.dir, "river.db"));
+    this.links = openLinks(join(init.dir, "river.db"));
     this.witness = createWitness({ write: (row) => this.ledger.appendCall(row), now: () => this.nowMs() });
     this.larRiver = this.riverForLar(this.river);
     this.notebook = init.notebook;
@@ -946,7 +951,7 @@ class Runtime implements Entity {
       return withWorld(world.id, own);
     }).map((tool) => this.gateWorldTool(tool));
     this.tools = [
-      ...withWorld(BODY_WORLD, notebookTools()),
+      ...withWorld(BODY_WORLD, notebookTools({ links: this.links })),
       ...withWorld(
         BODY_WORLD,
         factsTools(this.facts, {
@@ -954,6 +959,7 @@ class Runtime implements Entity {
           privateView: (thread) => this.seesPrivate(thread),
         }),
       ),
+      ...withWorld(BODY_WORLD, linksTools(this.links)),
       ...worldTools,
       ...withWorld(BODY_WORLD, this.builtInTools()),
     ]
@@ -1135,6 +1141,7 @@ class Runtime implements Entity {
     this.ledger.close();
     this.grants.close();
     this.facts.close();
+    this.links.close();
     this.state.aliveMs = this.nowMs();
     this.state.stoppedCleanly = true;
     this.saveState();

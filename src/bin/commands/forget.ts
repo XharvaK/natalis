@@ -18,6 +18,7 @@ import { forgetLines, lineHoldsWords, queryWords } from "../../notebook/forget.j
 import { purgeHistory } from "../../notebook/history.js";
 import { openNotebook } from "../../notebook/index.js";
 import { openRiver } from "../../river/index.js";
+import { openLinks } from "../../river/links.js";
 import { purgeCopiesUnder } from "../../replay/copies.js";
 import type { RiverRow } from "../../contracts.js";
 import { DOMUS_DB_FILE, DOMUS_FOLDER, forgetInDomusFile } from "../../worlds/domus/store.js";
@@ -61,6 +62,8 @@ export type ForgetCounts = {
   renamed: number;
   /** Note files whose links to a renamed file were repaired. */
   linkFiles: number;
+  /** Saved links repaired or dropped after a note file was renamed. */
+  linkRows: number;
   /** Replay or eval run folders under the Lar folder that were purged. */
   copies: number;
 };
@@ -155,6 +158,7 @@ export async function runForget(request: ForgetRequest): Promise<ForgetCounts> {
     let home = 0;
     let renamed = 0;
     let linkFiles = 0;
+    let linkRows = 0;
     let copies = 0;
     if (request.query !== undefined && existsSync(join(dir, NOTEBOOK))) {
       const notebookDir = join(dir, NOTEBOOK);
@@ -201,6 +205,19 @@ export async function runForget(request: ForgetRequest): Promise<ForgetCounts> {
           linkFiles += 1;
         }
       }
+      // The links she saved between notes are keyed by path too. A rename repairs each link that named the old path;
+      // a link that would point at itself or copy one that already exists is dropped, never guessed into place.
+      if (renames.length > 0) {
+        const savedLinks = openLinks(join(dir, "river.db"));
+        try {
+          for (const rename of renames) {
+            const repaired = savedLinks.repairRename(rename.from, rename.to);
+            linkRows += repaired.repaired + repaired.dropped;
+          }
+        } finally {
+          savedLinks.close();
+        }
+      }
       // The notes moved to trash keep their text as files, so the same line replacement goes over them.
       trashLines = forgetInFolder(join(notebookDir, TRASH), words);
       // The history is rebuilt last: it holds every commit above, and the working tree is made to match it.
@@ -221,7 +238,7 @@ export async function runForget(request: ForgetRequest): Promise<ForgetCounts> {
     // copies and are left alone: they age out as today. This runs last, so a copy that cannot be removed does not
     // leave the note, home, state or game store half scrubbed.
     if (request.query !== undefined) copies = purgeCopiesUnder(dir).length;
-    return { rows, lines, files, stateTexts, domus, trashLines, commits, home, pictures, renamed, linkFiles, copies };
+    return { rows, lines, files, stateTexts, domus, trashLines, commits, home, pictures, renamed, linkFiles, linkRows, copies };
   } finally {
     lock.release();
   }
@@ -364,6 +381,9 @@ export async function forgetCommand(
   );
   if (counts.renamed > 0) {
     out(`Renamed ${counts.renamed} note file(s) whose own name held the words, and repaired links in ${counts.linkFiles} file(s).`);
+  }
+  if (counts.linkRows > 0) {
+    out(`Repaired or dropped ${counts.linkRows} saved link(s) after renaming note files.`);
   }
   if (counts.copies > 0) {
     out(`Purged ${counts.copies} replay or eval copy(ies) under the Lar folder.`);
