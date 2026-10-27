@@ -287,14 +287,17 @@ function sourceWorld(id: string): { world: World; push(place: string, text: stri
   };
 }
 
-/** A tool that reports when it started and waits until the test lets it finish; it ignores the turn's abort like a slow commit. */
-function slowWriteTool(): { tool: Tool; entered(path: string): Promise<void>; finish(path: string): void } {
+/**
+ * A tool that reports when it started and waits until the test lets it finish; it ignores the turn's abort like a slow
+ * commit. Its name can be a built one, so a reflect turn (which may call only the built allowlist) can run it.
+ */
+function slowWriteTool(name = "slow_write"): { tool: Tool; entered(path: string): Promise<void>; finish(path: string): void } {
   const enteredPaths = new Set<string>();
   const enteredWaiters = new Map<string, () => void>();
   const gates = new Map<string, ReturnType<typeof deferred>>();
   const tool: Tool = {
     spec: {
-      name: "slow_write",
+      name,
       description: "Writes a note slowly.",
       parameters: {
         type: "object",
@@ -322,6 +325,14 @@ function slowWriteTool(): { tool: Tool; entered(path: string): Promise<void>; fi
       gates.get(path)?.resolve();
     },
   };
+}
+
+/** Replaces one built tool with a test's own under the same name, the only names a reflect turn may call. */
+function installBuiltTool(entity: Entity, tool: Tool): void {
+  const tools = (entity as unknown as { tools: Tool[] }).tools;
+  const index = tools.findIndex((entry) => entry.spec.name === tool.spec.name);
+  if (index < 0) throw new Error(`no built tool named ${tool.spec.name}`);
+  tools[index] = tool;
 }
 
 /** Lets queued microtasks run on a fake clock. */
@@ -3476,6 +3487,86 @@ describe("per-turn purpose and deadline for the scheduler", () => {
   });
 });
 
+describe("U5: a background (reflect) turn's tool allowlist", () => {
+  const REFLECT_TOOLS = ["read_note", "list_notes", "recall", "write_note", "edit_note", "append_note"];
+  const toolNames = (request: ModelRequest | undefined): string[] => (request?.tools ?? []).map((spec) => spec.name);
+
+  /** Runs one reflect turn in her own thread and hands back the entity its model call was recorded on. */
+  async function reflectOnce(model: ModelPort): Promise<Entity> {
+    const { entity } = await open(model, { stopPollMs: 1e9 }, [fakeWorld("fake").world]);
+    await entity.start();
+    appendEventRow(entity, "self", "Think about this on your own.");
+    await schedulerOf(entity).reflectTurn("self");
+    return entity;
+  }
+
+  it("reflect turn tool list equals read_note, list_notes, recall, write_note, edit_note, append_note", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    await reflectOnce(model);
+
+    // end_turn belongs to the loop, not to the built tool objects, so it comes after the allowlist.
+    expect(toolNames(model.requests[0])).toEqual([...REFLECT_TOOLS, "end_turn"]);
+  });
+
+  it("forget in a reflect turn returns unknown_tool", async () => {
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("forget", { query: "nothing matches these words", why: "Try it." })] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const entity = await reflectOnce(model);
+
+    const receipt = allRows(entity).find((row) => row.kind === "receipt" && row.data?.["tool"] === "forget");
+    expect(receipt?.data?.["refused"]).toMatchObject({ code: "unknown_tool" });
+  });
+
+  it("trash_note is absent", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    await reflectOnce(model);
+
+    expect(toolNames(model.requests[0])).not.toContain("trash_note");
+  });
+
+  it("character.md cap still applies in a reflect turn", async () => {
+    const model = new ScriptedModel([
+      reply({
+        toolCalls: [call("write_note", { path: "self/character.md", text: "x".repeat(8_001), why: "Try it." })],
+      }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const entity = await reflectOnce(model);
+
+    const receipt = allRows(entity).find((row) => row.kind === "receipt" && row.data?.["tool"] === "write_note");
+    expect(receipt?.data?.["refused"]).toMatchObject({ code: "core_note_full" });
+    expect(entity.notebook.read("self/character.md")).toContain("# Character");
+  });
+
+  it("a live turn's tool list is unchanged", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    cli.send("Hello, Iris.");
+    await entity.idle();
+
+    expect(toolNames(model.requests[0])).toEqual([
+      "read_note",
+      "write_note",
+      "edit_note",
+      "append_note",
+      "list_notes",
+      "trash_note",
+      "recall",
+      "forget",
+      "say",
+      "schedule_wake",
+      "cancel_wake",
+      "set_mood",
+      "let_go",
+      "propose_commitment",
+      "end_turn",
+    ]);
+  });
+});
+
 describe("L1: the mind lock in the scheduler", () => {
   const WAIT_MS = 30 * 60_000;
   const RELEASE_MS = 30_000;
@@ -3594,14 +3685,15 @@ describe("L1: the mind lock in the scheduler", () => {
 
   it("release waits for an in-flight tool to settle", async () => {
     await withClock(async (advance) => {
-      const slow = slowWriteTool();
+      // A reflect turn may call only the built allowlist, so the test's slow tool stands in for write_note.
+      const slow = slowWriteTool("write_note");
       const room = sourceWorld("fake");
-      room.world.tools = () => [slow.tool];
       const model = new ScriptedModel([
-        reply({ toolCalls: [call("slow_write", { path: "notes/plan.md" })] }),
+        reply({ toolCalls: [call("write_note", { path: "notes/plan.md", text: "The plan.", why: "Keep it." })] }),
         reply({ toolCalls: [call("end_turn")] }),
       ]);
       const { entity, cli } = await open(model, { stopPollMs: 1e9 }, [room.world]);
+      installBuiltTool(entity, slow.tool);
       await entity.start();
 
       appendEventRow(entity, "self", "Think about this on your own.");
@@ -3624,16 +3716,17 @@ describe("L1: the mind lock in the scheduler", () => {
 
   it("outcome-unknown note names the path; in a Discord thread a private path shows as 'a private note'", async () => {
     await withClock(async (advance) => {
-      const slow = slowWriteTool();
+      // A reflect turn may call only the built allowlist, so the test's slow tool stands in for write_note.
+      const slow = slowWriteTool("write_note");
       const room = sourceWorld("fake");
-      room.world.tools = () => [slow.tool];
       const model = new ScriptedModel([
-        reply({ toolCalls: [call("slow_write", { path: "notes/plan.md" })] }),
+        reply({ toolCalls: [call("write_note", { path: "notes/plan.md", text: "The plan.", why: "Keep it." })] }),
         reply({ toolCalls: [call("end_turn")] }),
-        reply({ toolCalls: [call("slow_write", { path: "private/close.md" })] }),
+        reply({ toolCalls: [call("write_note", { path: "private/close.md", text: "Close.", why: "Keep it." })] }),
         reply({ toolCalls: [call("end_turn")] }),
       ]);
       const { entity, cli } = await open(model, { stopPollMs: 1e9 }, [room.world]);
+      installBuiltTool(entity, slow.tool);
       await entity.start();
 
       // In the summoner's own place, the path is named.
