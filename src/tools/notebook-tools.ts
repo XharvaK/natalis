@@ -2,14 +2,17 @@
 // Each tool checks its own arguments and answers with a receipt in plain words. A refused act says why.
 // Notebook writes are attributed to "thread:<thread>" with the reason you gave.
 
-import { NotebookError, type Notebook, type Receipt, type Tool, type ToolContext } from "../contracts.js";
+import { NotebookError, type Notebook, type Receipt, type RiverRow, type Tool, type ToolContext } from "../contracts.js";
 import { protectedNoteReason } from "../entity/commitments.js";
 import { notebookPathOf } from "../notebook/git-notebook.js";
 
 const READ_LIMIT = 20_000;
 const RECALL_DEFAULT = 10;
 const RECALL_MAX = 20;
+const RECALL_SEQS_MAX = 20;
 const HIT_TEXT_LIMIT = 1_000;
+/** What the river says in place of a forgotten row's words. */
+const FORGOTTEN_TEXT = "(forgotten)";
 const LIST_LIMIT = 200;
 const FORGET_SEQS_MAX = 200;
 
@@ -253,11 +256,18 @@ const trashNote: Tool = {
 const recall: Tool = {
   spec: {
     name: "recall",
-    description: `Search what has happened to you (your river) and your notebook for some words. You get up to ${RECALL_MAX} matches, mixed from both.`,
+    description: `Search what has happened to you (your river) and your notebook for some words, or open rows of your river by their numbers. A search gives up to ${RECALL_MAX} matches, mixed from both; row numbers give those rows whole, in seq order.`,
     parameters: {
       type: "object",
       properties: {
-        query: { type: "string", description: "The words to look for. Not case-sensitive." },
+        query: { type: "string", description: "The words to look for. Not case-sensitive. Give this or seqs." },
+        seqs: {
+          type: "array",
+          items: { type: "integer", minimum: 1 },
+          minItems: 1,
+          maxItems: RECALL_SEQS_MAX,
+          description: `The row numbers to open whole, from 1 to ${RECALL_SEQS_MAX} of them. Give this or query.`,
+        },
         limit: {
           type: "integer",
           minimum: 1,
@@ -265,10 +275,19 @@ const recall: Tool = {
           description: `How many matches to return, from 1 to ${RECALL_MAX}. Default ${RECALL_DEFAULT}.`,
         },
       },
-      required: ["query"],
     },
   },
   async run(args, context) {
+    const hasQuery = args["query"] !== undefined;
+    const hasSeqs = args["seqs"] !== undefined;
+    if (!hasQuery && !hasSeqs) {
+      return refuse("bad_arguments", "Give some words to look for, or some row numbers to open.");
+    }
+    if (hasSeqs) {
+      const seqs = requireRecallSeqs(args["seqs"]);
+      if (!seqs.ok) return seqs.receipt;
+      return openRows(seqs.value, context);
+    }
     const query = requireText(args, "query", "The words to look for", { trim: true });
     if (!query.ok) return query.receipt;
     const limit = optionalInteger(args, "limit", RECALL_DEFAULT, 1, RECALL_MAX);
@@ -331,6 +350,33 @@ function searchNotebookWords(notebook: Notebook, query: string): Array<{ path: s
     .sort((a, b) => b.score - a.score)
     .slice(0, RECALL_MAX)
     .map((entry) => entry.hit);
+}
+
+/** V0: the named river rows, whole, in seq order. A missing row refuses the whole call. */
+async function openRows(seqs: readonly number[], context: ToolContext): Promise<Receipt> {
+  const hits: Array<Record<string, unknown>> = [];
+  for (const seq of [...new Set(seqs)].sort((a, b) => a - b)) {
+    const [row] = context.river.read({ sinceSeq: seq - 1, untilSeq: seq, limit: 1 });
+    if (row === undefined) {
+      return refuse("not_found", `There is no row ${seq}.`, `no river row ${seq}`);
+    }
+    hits.push({
+      from: "river",
+      seq: row.seq,
+      when: new Date(row.atMs).toISOString(),
+      thread: row.thread,
+      text: isForgottenRow(row) ? FORGOTTEN_TEXT : row.text ?? "",
+    });
+  }
+  return { ok: true, summary: `Read ${hits.length} ${hits.length === 1 ? "row" : "rows"}.`, data: { hits } };
+}
+
+/** True when a row was erased by forget, or is the tombstone that marks an erased place. */
+function isForgottenRow(row: RiverRow): boolean {
+  if (row.kind === "tombstone") return true;
+  const forgotten = (row as { forgotten?: unknown }).forgotten;
+  if (typeof forgotten === "boolean") return forgotten;
+  return row.text === undefined && row.data === undefined;
 }
 
 const forget: Tool = {
@@ -566,6 +612,33 @@ function optionalInteger(args: Args, key: string, fallback: number, min: number,
     };
   }
   return { ok: true, value: raw };
+}
+
+/** V0: 1 to 20 whole row numbers to open. */
+function requireRecallSeqs(raw: unknown): Checked<number[]> {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return {
+      ok: false,
+      receipt: refuse("bad_arguments", `Give 1 to ${RECALL_SEQS_MAX} row numbers to open.`, "seqs must be a non-empty list"),
+    };
+  }
+  if (raw.length > RECALL_SEQS_MAX) {
+    return {
+      ok: false,
+      receipt: refuse("bad_arguments", `Give at most ${RECALL_SEQS_MAX} row numbers at a time.`, "seqs too long"),
+    };
+  }
+  const seqs: number[] = [];
+  for (const item of raw) {
+    if (typeof item !== "number" || !Number.isInteger(item) || item < 1) {
+      return {
+        ok: false,
+        receipt: refuse("bad_arguments", "Row numbers must be whole numbers, starting at 1.", "seqs must be positive integers"),
+      };
+    }
+    seqs.push(item);
+  }
+  return { ok: true, value: seqs };
 }
 
 function requireSeqs(raw: unknown): Checked<number[]> {

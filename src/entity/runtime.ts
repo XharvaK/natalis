@@ -909,7 +909,9 @@ class Runtime implements Entity {
       ...withWorld(BODY_WORLD, notebookTools()),
       ...worldTools,
       ...withWorld(BODY_WORLD, this.builtInTools()),
-    ].map((tool) => this.gateToolTable(tool));
+    ]
+      .map((tool) => this.gateToolTable(tool))
+      .map((tool) => this.gateRecallVisibility(tool));
     const names = new Set<string>();
     for (const tool of this.tools) {
       if (tool.spec.name === "end_turn") throw new Error('"end_turn" belongs to the loop; no tool may use that name.');
@@ -3220,6 +3222,30 @@ class Runtime implements Entity {
     return {
       spec: tool.spec,
       run: async (args, context) => policyRefusal(table, tool.spec.name) ?? tool.run(args, context),
+    };
+  }
+
+  /**
+   * V0: recall by seqs opens rows by number. The notebook tool cannot see this thread's visibility rule, so a row the
+   * body hides here is refused before the tool reads it, naming only the seq and nothing the row holds.
+   */
+  private gateRecallVisibility(tool: Tool): Tool {
+    if (tool.spec.name !== "recall" || tool.spec.world !== BODY_WORLD) return tool;
+    return {
+      ...tool,
+      run: async (args, context) => {
+        const seqs = args["seqs"];
+        if (Array.isArray(seqs)) {
+          for (const seq of seqs) {
+            if (typeof seq !== "number" || !Number.isInteger(seq) || seq < 1) continue;
+            const [row] = context.river.read({ sinceSeq: seq - 1, untilSeq: seq, limit: 1 });
+            if (row !== undefined && this.hiddenHere(row, context.thread)) {
+              return refuse("not_visible", `Row ${seq} is not shown in this thread.`, `river row ${seq} is hidden from this thread`);
+            }
+          }
+        }
+        return tool.run(args, context);
+      },
     };
   }
 
