@@ -443,6 +443,27 @@ describe("memory-rollback: copies made while the new code ran", () => {
     expect(result.scrub).not.toContain(plain);
     expect(result.scrub).not.toContain(baseOnly);
   });
+
+  it("lists a SQLite copy with a registered derived table even when it has no rows table", async () => {
+    makeRiver();
+
+    const scan = join(root, "derived-only");
+    mkdirSync(scan, { recursive: true });
+    const derivedOnly = join(scan, "derived-only.db");
+    const db = new DatabaseSync(derivedOnly);
+    try {
+      db.exec(
+        "CREATE TABLE probe_derived (id INTEGER PRIMARY KEY AUTOINCREMENT, source_seq INTEGER, text TEXT NOT NULL)",
+      );
+      db.prepare("INSERT INTO probe_derived (source_seq, text) VALUES (?, ?)").run(1, `A ${PROBE_WORD} line.`);
+    } finally {
+      db.close();
+    }
+    expect(tableNames(derivedOnly)).not.toContain("rows");
+
+    const result = await runMemoryRollback({ dir, scan: [scan] });
+    expect(result.scrub).toContain(derivedOnly);
+  });
 });
 
 describe("memory-rollback command", () => {
@@ -455,7 +476,11 @@ describe("memory-rollback command", () => {
 
     const out: string[] = [];
     const err: string[] = [];
-    const code = await memoryRollbackCommand(["--dir", dir], (line) => out.push(line), (line) => err.push(line));
+    const code = await memoryRollbackCommand(
+      ["--dir", dir, "--ack-unscrubbed"],
+      (line) => out.push(line),
+      (line) => err.push(line),
+    );
 
     expect(code).toBe(0);
     expect(err).toEqual([]);
@@ -473,13 +498,101 @@ describe("memory-rollback command", () => {
 
     const out: string[] = [];
     const err: string[] = [];
-    const code = await memoryRollbackCommand(["--dir", dir, "--scan", scan], (line) => out.push(line), (line) => err.push(line));
+    const code = await memoryRollbackCommand(
+      ["--dir", dir, "--scan", scan, "--ack-unscrubbed"],
+      (line) => out.push(line),
+      (line) => err.push(line),
+    );
 
     expect(code).toBe(0);
     expect(err).toEqual([]);
     const text = out.join("\n");
     expect(text).toContain(sealed);
-    expect(text).toContain("sealed: holds derived tables, delete or re-seal after scrub");
+    expect(text).toContain("sealed: holds derived tables; unseal, scrub, re-seal, or delete");
+  });
+
+  it("an unscrubbed copy exits 3 with ROLLBACK INCOMPLETE, and --ack-unscrubbed exits 0 after acknowledging it", async () => {
+    makeRiver();
+    const scan = join(root, "unscrubbed");
+    mkdirSync(scan, { recursive: true });
+    const sealed = join(scan, "iris-20261027-120000.natalisbak");
+    writeFileSync(sealed, "sealed bytes", "utf8");
+
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await memoryRollbackCommand(
+      ["--dir", dir, "--scan", scan],
+      (line) => out.push(line),
+      (line) => err.push(line),
+    );
+
+    expect(code).toBe(3);
+    expect(err).toEqual([]);
+    expect(out.some((line) => line.startsWith("ROLLBACK INCOMPLETE"))).toBe(true);
+    expect(out.join("\n")).toContain(sealed);
+    expect(out.filter((line) => /outside the scanned roots/i.test(line))).toHaveLength(1);
+
+    const ackOut: string[] = [];
+    const ackErr: string[] = [];
+    const ackCode = await memoryRollbackCommand(
+      ["--dir", dir, "--scan", scan, "--ack-unscrubbed"],
+      (line) => ackOut.push(line),
+      (line) => ackErr.push(line),
+    );
+
+    expect(ackCode).toBe(0);
+    expect(ackErr).toEqual([]);
+    expect(ackOut.join("\n")).toMatch(/acknowledged as not scrubbed/i);
+    expect(ackOut.some((line) => line.startsWith("ROLLBACK INCOMPLETE"))).toBe(false);
+    expect(ackOut.filter((line) => /outside the scanned roots/i.test(line))).toHaveLength(1);
+  });
+
+  it("prints one line naming the scanned roots and what is not covered, even when nothing needs scrubbing", async () => {
+    makeRiver();
+    const scan = join(root, "empty-copies");
+    mkdirSync(scan, { recursive: true });
+
+    const out: string[] = [];
+    const code = await memoryRollbackCommand(["--dir", dir, "--scan", scan], (line) => out.push(line), () => {});
+
+    expect(code).toBe(0);
+    const lines = out.filter((line) => /outside the scanned roots/i.test(line));
+    expect(lines).toHaveLength(1);
+    const line = lines[0] ?? "";
+    expect(line).toContain(dir);
+    expect(line).toContain(scan);
+    expect(line).toMatch(/not covered/i);
+    expect(line).toMatch(/off-host copies/i);
+    expect(line).toMatch(/other drives/i);
+    expect(line).toMatch(/--scan/);
+  });
+
+  it("prints one advisory for each compressed or archived file and they do not change the exit code", async () => {
+    makeRiver();
+    const scan = join(root, "compressed");
+    mkdirSync(scan, { recursive: true });
+    const names = [
+      "river-copy.db.gz",
+      "river-copy.tgz",
+      "river-copy.tar",
+      "river-copy.zip",
+      "river-copy.xz",
+      "river-copy.bz2",
+      "river-copy.zst",
+      "river-copy.7z",
+    ];
+    for (const name of names) writeFileSync(join(scan, name), "compressed or archived bytes", "utf8");
+
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await memoryRollbackCommand(["--dir", dir, "--scan", scan], (line) => out.push(line), (line) => err.push(line));
+
+    expect(code).toBe(0);
+    expect(err).toEqual([]);
+    const note = "(compressed or archived: not inspected; delete it or check it by hand)";
+    const advisories = out.filter((line) => line.endsWith(note));
+    expect(advisories).toHaveLength(names.length);
+    for (const name of names) expect(advisories).toContain(`${join(scan, name)} ${note}`);
   });
 
   it("a checkpoint refusal says the rollback is partly done and to stop the reader and run it again", async () => {
