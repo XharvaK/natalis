@@ -3541,7 +3541,7 @@ describe("U5: a background (reflect) turn's tool allowlist", () => {
     expect(entity.notebook.read("self/character.md")).toContain("# Character");
   });
 
-  it("a live turn's tool list is unchanged", async () => {
+  it("a live turn's tool list adds the facts tools and keeps the rest", async () => {
     const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
     const { entity, cli } = await open(model);
     await entity.start();
@@ -3557,6 +3557,8 @@ describe("U5: a background (reflect) turn's tool allowlist", () => {
       "trash_note",
       "recall",
       "forget",
+      "record_fact",
+      "close_fact",
       "mark",
       "say",
       "answer_request",
@@ -4724,6 +4726,8 @@ describe("NIT-A: the effect table over the runtime's tools", () => {
       "body/append_note": "write",
       "body/trash_note": "write",
       "body/forget": "write",
+      "body/record_fact": "write",
+      "body/close_fact": "write",
       "body/mark": "write",
       "discord/react": "write",
       "discord/read_history": "read",
