@@ -971,7 +971,7 @@ class Runtime implements Entity {
       ...withWorld(
         BODY_WORLD,
         factsTools(this.facts, {
-          visible: (row, thread) => this.hiddenHere(row, thread),
+          visible: (row, thread) => !this.hiddenHere(row, thread),
           privateView: (thread) => this.seesPrivate(thread),
         }),
       ),
