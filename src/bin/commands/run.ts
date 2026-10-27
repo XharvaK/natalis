@@ -10,6 +10,7 @@ import { loadEntityConfig } from "../../entity/config.js";
 import { CopyGuardRefused } from "../../entity/copy-guard.js";
 import { acquireLarLock, LarLockBusy, type LarLock } from "../../entity/lar-lock.js";
 import { type Entity, openEntity } from "../../entity/runtime.js";
+import { startVaultChannel, type VaultChannel } from "../../entity/vault-queue.js";
 import { modelFromConfig, worldModelsFromConfig } from "../../model/from-config.js";
 import { createSecretScanner } from "../../secrets/index.js";
 import { createDiscordWorld } from "../../worlds/discord/index.js";
@@ -18,6 +19,7 @@ import { CONTACTS_FILE } from "../../entity/contacts.js";
 import { createDomusWorld, DOMUS_FILE, parseDomusFile } from "../../worlds/domus/index.js";
 import { bodyRefusal, createSandboxWorld, defaultBodyRoot, parseSandboxFile, SANDBOX_FILE, SANDBOX_HOME } from "../../worlds/sandbox/index.js";
 import { createWebWorld, loadWebFile, WEB_FILE } from "../../worlds/web/index.js";
+import { keepVaultEntry } from "../../worlds/web/vault.js";
 import { flagValue } from "./args.js";
 import { DISCORD_FILE, parseDiscordFile } from "./discord-file.js";
 import { heldValues, knownValueList, otherThanHelper } from "./known-values.js";
@@ -47,6 +49,7 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
     return 1;
   }
 
+  let channel: VaultChannel | undefined;
   try {
     // Every key the body holds is registered with the scanner, so none can reach the model or a say. Created before the
     // worlds, so a world can register its own secrets (the web's vault values) as it starts.
@@ -143,15 +146,40 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
       process.once("SIGTERM", () => resolveStopped());
     });
     await entity.start();
+    // While this process holds the lock, keeps come here rather than writing the folder: one writer, no stopped Lar.
+    // The handler is the same vault write a direct keep makes, plus registering the value with this process's scanner.
+    try {
+      channel = await startVaultChannel(dir, (request) => {
+        scanner.addKnownValue(request.value);
+        keepVaultEntry(dir, request.name, { host: request.host, value: request.value });
+      }, { onError: (message) => err(`The vault channel reported: ${message}`) });
+    } catch (error) {
+      err(`The vault channel could not be opened: ${error instanceof Error ? error.message : String(error)} The Lar is stopping.`);
+      await entity.stop();
+      return 1;
+    }
     out(`${config.name ?? "An unnamed Lar"} is running in: ${worlds.map((world) => world.id).join(", ")}.`);
     await stopped;
     out("Stopping…");
+    try {
+      await channel.close();
+    } catch (error) {
+      err(`The vault channel did not close cleanly: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    channel = undefined;
     await entity.stop();
     out("Stopped.");
     // If a handle is left open the event loop never drains and systemd kills us after 300 s; exit after a short grace.
     armExitFailsafe(EXIT_NOT_DRAINED);
     return 0;
   } finally {
+    if (channel !== undefined) {
+      try {
+        await channel.close();
+      } catch (error) {
+        err(`The vault channel did not close cleanly: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     lock.release();
   }
 }

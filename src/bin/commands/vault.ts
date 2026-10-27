@@ -7,7 +7,8 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ENTITY_FILE } from "../../entity/config.js";
-import { acquireLarLock, type LarLock } from "../../entity/lar-lock.js";
+import { acquireLarLock, LarLockBusy, type LarLock } from "../../entity/lar-lock.js";
+import { normalizeVaultHost, openVaultChannel, VAULT_CHANNEL_NO_ANSWER_MESSAGE, VAULT_VALUE_MAX, type VaultChannelClient } from "../../entity/vault-queue.js";
 import { MIN_KNOWN_VALUE_LENGTH } from "../../secrets/scanner.js";
 import { keepVaultEntry, readVault, validVaultName } from "../../worlds/web/vault.js";
 import { flagValue, hasFlag } from "./args.js";
@@ -15,8 +16,6 @@ import { flagValue, hasFlag } from "./args.js";
 export const VAULT_USAGE =
   "Usage: natalis vault --dir <entity folder>  or  natalis vault --dir <entity folder> --keep <name> --host <host> [--replace]" +
   " (the value is read from standard input, never from the command line)";
-const HOST = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
-const VALUE_MAX = 4096;
 
 /** Runs the vault command. `readValue` gives the typed value (hidden on a terminal); tests pass their own. */
 export async function vaultCommand(
@@ -56,8 +55,8 @@ export async function vaultCommand(
     err("A vault name is letters, digits, dots, dashes and underscores, up to 48 characters.");
     return 2;
   }
-  const host = (flagValue(args, "--host") ?? "").trim().toLowerCase().replace(/\.+$/, "");
-  if (!HOST.test(host)) {
+  const host = normalizeVaultHost(flagValue(args, "--host") ?? "");
+  if (host === undefined) {
     err("--host is the site the value is sent to, such as www.example.org. The value goes only to that host and its subdomains.");
     return 2;
   }
@@ -68,43 +67,114 @@ export async function vaultCommand(
   }
 
   // A keep is a write to the Lar's folder, so it takes the folder lock for its whole run. While the Lar runs,
-  // another process holds the lock; until the vault queue exists, that is refused with the busy message.
+  // another process holds the lock: the keep goes through the running Lar's own vault channel, so there is still
+  // one writer. With no channel answering, it is refused and says why.
   let lock: LarLock;
   try {
     lock = acquireLarLock(dir);
   } catch (error) {
-    err(error instanceof Error ? error.message : String(error));
-    return 1;
+    if (!(error instanceof LarLockBusy)) {
+      err(error instanceof Error ? error.message : String(error));
+      return 1;
+    }
+    return keepThroughRunningLar(dir, name, host, replace, vault[name] !== undefined, readValue, out, err);
   }
   try {
-    const value = (await readValue(`Value for ${name}, sent only to ${host} (hidden; press Enter when done): `)).trim();
-    if (value === "") {
-      err("No value was given. Nothing was kept.");
+    const checked = await readCheckedValue(readValue, name, host);
+    if ("error" in checked) {
+      err(checked.error);
       return 1;
     }
-    if (/\s/.test(value) || value.length > VALUE_MAX) {
-      err(`A value is one piece of text with no spaces or line breaks, up to ${VALUE_MAX} characters. Nothing was kept.`);
-      return 1;
-    }
-    if (value.length < MIN_KNOWN_VALUE_LENGTH) {
-      err(`A value shorter than ${MIN_KNOWN_VALUE_LENGTH} characters cannot be hidden from the Lar's text, so it cannot be kept. Nothing was kept.`);
-      return 1;
-    }
-
     try {
-      keepVaultEntry(dir, name, { host, value });
+      keepVaultEntry(dir, name, { host, value: checked.value });
     } catch (error) {
       err(`The value could not be kept: ${error instanceof Error ? error.message : String(error)} Nothing was kept.`);
       return 1;
     }
-    out(
-      `${vault[name] !== undefined ? "Replaced" : "Kept"} the value named ${name}, for ${host}. The Lar can send it with auth {"vault": "${name}"}. ` +
-        "A running Lar learns it at its next start, so restart it: until then the value can be sent but is not yet hidden if a site shows it back.",
-    );
+    out(keptWords(name, host, vault[name] !== undefined, false));
     return 0;
   } finally {
     lock.release();
   }
+}
+
+/** The words after a keep. A direct keep still needs a restart; a keep through the running Lar does not. */
+function keptWords(name: string, host: string, replaced: boolean, running: boolean): string {
+  const first =
+    `${replaced ? "Replaced" : "Kept"} the value named ${name}, for ${host}. The Lar can send it with auth {"vault": "${name}"}.`;
+  return running
+    ? `${first} The running Lar has it now.`
+    : `${first} A running Lar learns it at its next start, so restart it: until then the value can be sent but is not yet hidden if a site shows it back.`;
+}
+
+type CheckedValue = { value: string } | { error: string };
+
+async function readCheckedValue(
+  readValue: (prompt: string) => Promise<string>,
+  name: string,
+  host: string,
+): Promise<CheckedValue> {
+  const value = (await readValue(`Value for ${name}, sent only to ${host} (hidden; press Enter when done): `)).trim();
+  if (value === "") return { error: "No value was given. Nothing was kept." };
+  if (/\s/.test(value) || value.length > VAULT_VALUE_MAX) {
+    return { error: `A value is one piece of text with no spaces or line breaks, up to ${VAULT_VALUE_MAX} characters. Nothing was kept.` };
+  }
+  if (value.length < MIN_KNOWN_VALUE_LENGTH) {
+    return {
+      error: `A value shorter than ${MIN_KNOWN_VALUE_LENGTH} characters cannot be hidden from the Lar's text, so it cannot be kept. Nothing was kept.`,
+    };
+  }
+  return { value };
+}
+
+/**
+ * Asks the running Lar to keep the value. The channel is opened before the value is read, so a Lar that is not
+ * answering never asks for a value it cannot take.
+ */
+async function keepThroughRunningLar(
+  dir: string,
+  name: string,
+  host: string,
+  replace: boolean,
+  replaced: boolean,
+  readValue: (prompt: string) => Promise<string>,
+  out: (line: string) => void,
+  err: (line: string) => void,
+): Promise<number> {
+  let client: VaultChannelClient;
+  try {
+    client = await openVaultChannel(dir);
+  } catch {
+    err(VAULT_CHANNEL_NO_ANSWER_MESSAGE);
+    return 1;
+  }
+  try {
+    const checked = await readCheckedValue(readValue, name, host);
+    if ("error" in checked) {
+      err(checked.error);
+      return 1;
+    }
+    let answer: string;
+    try {
+      answer = await client.send({ op: "keep", name, host, value: checked.value, replace });
+    } catch {
+      err(VAULT_CHANNEL_NO_ANSWER_MESSAGE);
+      return 1;
+    }
+    if (answer !== "kept") {
+      err(answer === "" ? VAULT_CHANNEL_NO_ANSWER_MESSAGE : withoutValue(answer, checked.value));
+      return 1;
+    }
+    out(keptWords(name, host, replaced, true));
+    return 0;
+  } finally {
+    client.close();
+  }
+}
+
+/** Never repeats a value a buggy or other channel answer might have echoed. */
+function withoutValue(text: string, value: string): string {
+  return value === "" ? text : text.split(value).join("[the value was withheld]");
 }
 
 /**
