@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { grantsPath, openGrants } from "../../entity/grants.js";
 import { acquireLarLock, LAR_LOCK_BUSY_MESSAGE } from "../../entity/lar-lock.js";
 import { MEDIA_FOLDER, openShelf } from "../../media/shelf.js";
 import { openNotebook } from "../../notebook/index.js";
@@ -166,6 +167,130 @@ describe("natalis forget --query", () => {
     expect(seqsOf("Lantern Yard is by the water.")).toHaveLength(1);
     const notebook = await openNotebook(join(dir, "notebook"));
     expect(notebook.read("people/mara.md")).toContain("Mara lives on Lantern Yard");
+  });
+
+  it("forgetting a request's words clears its grant's hash and scope, logs it, and asks again", async () => {
+    const grants = openGrants(dir);
+    let requestId = 0;
+    let grantId = 0;
+    let hash = "";
+    try {
+      const river = openRiver(join(dir, "river.db"));
+      let seq = 0;
+      try {
+        seq = river.append({
+          thread: "cli:owner",
+          place: "cli:owner",
+          kind: "say",
+          source: "body",
+          text: "[natalis] Iris asks to use web_request on forum.example.org: POST forum.example.org/lantern-yard.",
+          data: { permissionRequest: true, tool: "web_request", scope: "forum.example.org" },
+        }).seq;
+      } finally {
+        river.close();
+      }
+      hash = grants.hmac({ url: "https://forum.example.org/lantern-yard" });
+      requestId = grants.request({
+        tool: "web_request",
+        scopeKey: "forum.example.org",
+        argsHmac: hash,
+        postedSeq: seq,
+        place: "cli:owner",
+        askingThread: "cli:owner",
+        nowMs: Date.now(),
+      });
+      grantId = grants.addGrant({
+        tool: "web_request",
+        scope: "forum.example.org",
+        kind: "once",
+        requestSeq: requestId,
+        argsHmac: hash,
+        createdBy: "owner",
+        nowMs: Date.now(),
+      });
+    } finally {
+      grants.close();
+    }
+
+    await runForget({ dir, query: "lantern yard", reason: REASON });
+
+    const after = openGrants(dir);
+    try {
+      expect(after.getRequest(requestId)).toMatchObject({ scopeKey: "cleared", argsHmac: "", status: "cleared" });
+      const grant = after.listGrants().find((item) => item.id === grantId);
+      expect(grant?.scope).toBe("cleared");
+      expect(grant?.argsHmac).toBeUndefined();
+      expect(after.check({ tool: "web_request", scope: "forum.example.org", argsHmac: hash, nowMs: Date.now() })).toEqual({
+        outcome: "ask",
+      });
+    } finally {
+      after.close();
+    }
+    const db = new DatabaseSync(grantsPath(dir));
+    try {
+      expect(db.prepare("SELECT grant_id, event FROM grant_log WHERE event = 'cleared by forget'").all()).toEqual([
+        { grant_id: grantId, event: "cleared by forget" },
+      ]);
+    } finally {
+      db.close();
+    }
+    expect(readFileSync(grantsPath(dir)).includes(Buffer.from("lantern"))).toBe(false);
+  });
+
+  it("forgetting a request row by number clears its grant too", async () => {
+    const river = openRiver(join(dir, "river.db"));
+    let requestSeq = 0;
+    try {
+      requestSeq = river.append({
+        thread: "cli:owner",
+        place: "cli:owner",
+        kind: "say",
+        source: "body",
+        text: "[natalis] Iris asks to use web_request on example.net: GET example.net/harbour.",
+        data: { permissionRequest: true, tool: "web_request", scope: "example.net" },
+      }).seq;
+    } finally {
+      river.close();
+    }
+    const grants = openGrants(dir);
+    let requestId = 0;
+    let grantId = 0;
+    const hash = grants.hmac({ url: "https://example.net/harbour" });
+    try {
+      requestId = grants.request({
+        tool: "web_request",
+        scopeKey: "example.net",
+        argsHmac: hash,
+        postedSeq: requestSeq,
+        place: "cli:owner",
+        askingThread: "cli:owner",
+        nowMs: Date.now(),
+      });
+      grantId = grants.addGrant({
+        tool: "web_request",
+        scope: "example.net",
+        kind: "once",
+        requestSeq: requestId,
+        argsHmac: hash,
+        createdBy: "owner",
+        nowMs: Date.now(),
+      });
+    } finally {
+      grants.close();
+    }
+
+    await runForget({ dir, seqs: [requestSeq], reason: REASON });
+
+    const after = openGrants(dir);
+    try {
+      expect(after.getRequest(requestId)?.status).toBe("cleared");
+      expect(after.listGrants().find((item) => item.id === grantId)?.scope).toBe("cleared");
+      expect(after.check({ tool: "web_request", scope: "example.net", argsHmac: hash, nowMs: Date.now() })).toEqual({
+        outcome: "ask",
+      });
+    } finally {
+      after.close();
+    }
   });
 });
 

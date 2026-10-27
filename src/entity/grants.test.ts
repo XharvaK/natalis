@@ -18,6 +18,7 @@ function larFolder(): string {
 }
 
 const NOW = 1_760_000_000_000;
+const DAY = 24 * 60 * 60_000;
 
 describe("grants.db (B4 Q1)", () => {
   it("grants.db holds no argument text, only the HMAC and the site or place scope", () => {
@@ -227,6 +228,239 @@ describe("grants.db (B4 Q1)", () => {
       expect(reopened.openRequests()).toHaveLength(1);
     } finally {
       reopened.close();
+    }
+  });
+});
+
+describe("grants.db lifetime, restore and forget (B4 Q3)", () => {
+  it("a request and an unused once grant close after a day, and the drop is logged", () => {
+    const dir = larFolder();
+    const grants = openGrants(dir);
+    let requestId = 0;
+    let onceId = 0;
+    let alwaysId = 0;
+    const args = { url: "https://forum.example.org/t/1", method: "POST" };
+    const hash = grants.hmac(args);
+    try {
+      requestId = grants.request({
+        tool: "web_request",
+        scopeKey: "forum.example.org",
+        argsHmac: hash,
+        postedSeq: 3,
+        place: "cli:summoner",
+        askingThread: "discord:room:garden",
+        nowMs: NOW,
+      });
+      onceId = grants.addGrant({
+        tool: "web_request",
+        scope: "forum.example.org",
+        kind: "once",
+        requestSeq: requestId,
+        argsHmac: hash,
+        createdBy: "owner",
+        nowMs: NOW,
+      });
+      alwaysId = grants.addGrant({
+        tool: "web_request",
+        scope: "example.net",
+        kind: "always",
+        createdBy: "owner",
+        nowMs: NOW,
+      });
+
+      const closed = grants.closeExpired(NOW + DAY);
+      expect(closed.requests.map((request) => request.id)).toEqual([requestId]);
+      expect(closed.onceGrants.map((grant) => grant.id)).toEqual([onceId]);
+      expect(grants.getRequest(requestId)?.status).toBe("expired");
+      expect(grants.getRequest(requestId)?.closedAt).toBe(NOW + DAY);
+      expect(grants.listGrants().find((grant) => grant.id === onceId)?.revokedAt).toBe(NOW + DAY);
+      expect(
+        grants.check({ tool: "web_request", scope: "forum.example.org", argsHmac: hash, nowMs: NOW + DAY }),
+      ).toEqual({ outcome: "ask" });
+      expect(
+        grants.check({
+          tool: "web_request",
+          scope: "example.net",
+          argsHmac: grants.hmac({ url: "https://example.net/" }),
+          nowMs: NOW + DAY,
+        }),
+      ).toMatchObject({ outcome: "allow", grantId: alwaysId, kind: "always" });
+      expect(grants.closeExpired(NOW + DAY + 1)).toEqual({ requests: [], onceGrants: [] });
+    } finally {
+      grants.close();
+    }
+    const db = new DatabaseSync(grantsPath(dir));
+    try {
+      expect(db.prepare("SELECT grant_id, event FROM grant_log WHERE event = 'dropped'").all()).toEqual([
+        { grant_id: onceId, event: "dropped" },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("a once grant older than a day asks even when no sweep ran", () => {
+    const grants = openGrants(larFolder());
+    try {
+      const hash = grants.hmac({ url: "https://forum.example.org/t/1" });
+      grants.addGrant({
+        tool: "web_request",
+        scope: "forum.example.org",
+        kind: "once",
+        argsHmac: hash,
+        createdBy: "owner",
+        nowMs: NOW,
+      });
+      expect(
+        grants.check({ tool: "web_request", scope: "forum.example.org", argsHmac: hash, nowMs: NOW + DAY - 1 }),
+      ).toMatchObject({ outcome: "allow", kind: "once" });
+      // A second unused once grant from the same day: at exactly a day it is closed, not used.
+      grants.addGrant({
+        tool: "web_request",
+        scope: "forum.example.org",
+        kind: "once",
+        argsHmac: hash,
+        createdBy: "owner",
+        nowMs: NOW,
+      });
+      expect(
+        grants.check({ tool: "web_request", scope: "forum.example.org", argsHmac: hash, nowMs: NOW + DAY }),
+      ).toEqual({ outcome: "ask" });
+    } finally {
+      grants.close();
+    }
+  });
+
+  it("dropping unused once grants on a restore leaves standing grants and logs each drop", () => {
+    const dir = larFolder();
+    const grants = openGrants(dir);
+    let onceId = 0;
+    try {
+      onceId = grants.addGrant({
+        tool: "write_note",
+        scope: ANYWHERE,
+        kind: "once",
+        argsHmac: grants.hmac({ path: "notes/a.md" }),
+        createdBy: "owner",
+        nowMs: NOW,
+      });
+      grants.addGrant({ tool: "web_request", scope: "forum.example.org", kind: "always", createdBy: "owner", nowMs: NOW });
+      grants.addGrant({ tool: "say", scope: "discord:room:garden", kind: "never", createdBy: "owner", nowMs: NOW });
+
+      const dropped = grants.dropUnusedOnce(NOW + 5_000);
+      expect(dropped.map((grant) => grant.id)).toEqual([onceId]);
+      expect(grants.listGrants().find((grant) => grant.id === onceId)?.revokedAt).toBe(NOW + 5_000);
+      expect(grants.listGrants().filter((grant) => grant.kind !== "once")).toHaveLength(2);
+    } finally {
+      grants.close();
+    }
+    const db = new DatabaseSync(grantsPath(dir));
+    try {
+      expect(db.prepare("SELECT grant_id, event FROM grant_log WHERE event = 'dropped'").all()).toEqual([
+        { grant_id: onceId, event: "dropped" },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("a schema re-open keeps the append-only trigger", () => {
+    const dir = larFolder();
+    const first = openGrants(dir);
+    first.addGrant({ tool: "web_request", scope: "forum.example.org", kind: "always", createdBy: "owner", nowMs: NOW });
+    first.close();
+    // A migration that drops the table's triggers is repaired by the next open, before any row can be changed.
+    const raw = new DatabaseSync(grantsPath(dir));
+    try {
+      raw.exec("DROP TRIGGER grant_log_update; DROP TRIGGER grant_log_delete;");
+    } finally {
+      raw.close();
+    }
+    const reopened = openGrants(dir);
+    reopened.addGrant({ tool: "web_request", scope: "forum.example.org", kind: "always", createdBy: "owner", nowMs: NOW });
+    reopened.close();
+    const db = new DatabaseSync(grantsPath(dir));
+    try {
+      expect(
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name IN ('grant_log_update', 'grant_log_delete') ORDER BY name").all(),
+      ).toEqual([{ name: "grant_log_delete" }, { name: "grant_log_update" }]);
+      expect(() => db.prepare("UPDATE grant_log SET event = 'used'").run()).toThrow(/append-only/i);
+      expect(() => db.prepare("DELETE FROM grant_log").run()).toThrow(/append-only/i);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("a forgotten request clears its hash and scope, and its grant asks again", () => {
+    const dir = larFolder();
+    const grants = openGrants(dir);
+    let requestId = 0;
+    let onceId = 0;
+    let otherRequestId = 0;
+    let otherGrantId = 0;
+    const hash = grants.hmac({ url: "https://forum.example.org/lantern-yard" });
+    const otherHash = grants.hmac({ url: "https://example.net/quiet" });
+    try {
+      requestId = grants.request({
+        tool: "web_request",
+        scopeKey: "forum.example.org",
+        argsHmac: hash,
+        postedSeq: 9,
+        place: "cli:summoner",
+        askingThread: "cli:summoner",
+        nowMs: NOW,
+      });
+      onceId = grants.addGrant({
+        tool: "web_request",
+        scope: "forum.example.org",
+        kind: "once",
+        requestSeq: requestId,
+        argsHmac: hash,
+        createdBy: "owner",
+        nowMs: NOW,
+      });
+      otherRequestId = grants.request({
+        tool: "web_request",
+        scopeKey: "example.net",
+        argsHmac: otherHash,
+        postedSeq: 10,
+        place: "cli:summoner",
+        askingThread: "cli:summoner",
+        nowMs: NOW,
+      });
+      otherGrantId = grants.addGrant({
+        tool: "web_request",
+        scope: "example.net",
+        kind: "once",
+        requestSeq: otherRequestId,
+        argsHmac: otherHash,
+        createdBy: "owner",
+        nowMs: NOW,
+      });
+
+      expect(grants.clearForgottenRequests([9], NOW + 1_000)).toBe(1);
+      expect(grants.getRequest(requestId)).toMatchObject({ scopeKey: "cleared", argsHmac: "", status: "cleared" });
+      const once = grants.listGrants().find((grant) => grant.id === onceId);
+      expect(once?.scope).toBe("cleared");
+      expect(once?.argsHmac).toBeUndefined();
+      expect(
+        grants.check({ tool: "web_request", scope: "forum.example.org", argsHmac: hash, nowMs: NOW + 1_000 }),
+      ).toEqual({ outcome: "ask" });
+
+      expect(grants.getRequest(otherRequestId)).toMatchObject({ scopeKey: "example.net", argsHmac: otherHash });
+      const other = grants.listGrants().find((grant) => grant.id === otherGrantId);
+      expect(other?.scope).toBe("example.net");
+      expect(other?.argsHmac).toBe(otherHash);
+    } finally {
+      grants.close();
+    }
+    const db = new DatabaseSync(grantsPath(dir));
+    try {
+      expect(db.prepare("SELECT grant_id, event FROM grant_log WHERE event = 'cleared by forget'").all()).toEqual([
+        { grant_id: onceId, event: "cleared by forget" },
+      ]);
+    } finally {
+      db.close();
     }
   });
 });

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ANYWHERE, openGrants } from "../entity/grants.js";
 import { openEntity, STATE_FILE } from "../entity/runtime.js";
 import { openRiver } from "../river/index.js";
 import { ScriptedModel } from "../testing/scripted-model.js";
@@ -209,6 +210,36 @@ describe("copyForReplay", () => {
     const state = JSON.parse(readFileSync(join(copy, STATE_FILE), "utf8")) as Record<string, unknown>;
     expect(state).toMatchObject({ lastSeq: 0, asks: [], wakes: [], threads: { "cli:owner": { seenSeq: 0 }, "room:harbour": { seenSeq: 0 } } });
     expect(state).not.toHaveProperty("lastOwnerMs");
+  });
+
+  it("a replay copy starts with an empty grants.db, so a standing grant in the source does not carry over", async () => {
+    const source = join(root, "source");
+    buildSource(source);
+    const opened = openGrants(source);
+    try {
+      opened.addGrant({ tool: "write_note", scope: ANYWHERE, kind: "always", createdBy: "owner", nowMs: T0 });
+    } finally {
+      opened.close();
+    }
+    const copy = join(root, "copy");
+    await copyForReplay({ from: source, to: copy, cutAtMs: CUT });
+
+    expect(existsSync(join(copy, "grants.db"))).toBe(true);
+    const copied = openGrants(copy);
+    try {
+      expect(copied.listGrants()).toEqual([]);
+      expect(
+        copied.check({ tool: "write_note", scope: ANYWHERE, argsHmac: copied.hmac({ path: "notes/a.md" }), nowMs: T0 }),
+      ).toEqual({ outcome: "ask" });
+    } finally {
+      copied.close();
+    }
+    const after = openGrants(source);
+    try {
+      expect(after.listGrants()).toHaveLength(1);
+    } finally {
+      after.close();
+    }
   });
 });
 

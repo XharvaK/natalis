@@ -1,11 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EntityConfig } from "../../entity/config.js";
+import { ANYWHERE, GRANTS_FILE, grantsPath, openGrants } from "../../entity/grants.js";
 import { acquireLarLock, LAR_LOCK_BUSY_MESSAGE, LAR_LOCK_DATABASE_FILE, LAR_LOCK_INFO_FILE } from "../../entity/lar-lock.js";
+import { THREAD_HASH_KEY_FILE } from "../../river/thread-key.js";
 import { openEntity, type Entity } from "../../entity/runtime.js";
 import { openRiver } from "../../river/index.js";
 import { ScriptedModel } from "../../testing/scripted-model.js";
@@ -225,6 +227,87 @@ describe("natalis restore", () => {
     expect(textsOf(target).slice(0, textsOf(lar).length)).toEqual(textsOf(lar));
   }, 60_000);
 
+  it("keeps today's grants.db, drops unused once grants and logs it, and leaves standing grants", async () => {
+    const lar = join(root, "iris");
+    const backup = await backupOf(lar);
+    const opened = openGrants(lar);
+    let onceId = 0;
+    try {
+      opened.addGrant({ tool: "web_request", scope: "forum.example.org", kind: "always", createdBy: "owner", nowMs: T0 });
+      opened.addGrant({ tool: "say", scope: "discord:room:garden", kind: "never", createdBy: "owner", nowMs: T0 });
+      onceId = opened.addGrant({
+        tool: "write_note",
+        scope: ANYWHERE,
+        kind: "once",
+        argsHmac: opened.hmac({ path: "notes/a.md" }),
+        createdBy: "owner",
+        nowMs: T0,
+      });
+    } finally {
+      opened.close();
+    }
+    const today = readFileSync(grantsPath(lar));
+
+    const target = join(root, "restored", "iris");
+    mkdirSync(target, { recursive: true });
+    copyFileSync(grantsPath(lar), grantsPath(target));
+
+    const log: string[] = [];
+    await restoreEntity({ from: backup, dir: target, say: (line) => log.push(line) });
+
+    const kept = openGrants(target);
+    try {
+      const grants = kept.listGrants();
+      expect(grants.filter((grant) => grant.kind === "always").map((grant) => grant.scope)).toEqual(["forum.example.org"]);
+      expect(grants.filter((grant) => grant.kind === "never").map((grant) => grant.scope)).toEqual(["discord:room:garden"]);
+      expect(grants.find((grant) => grant.id === onceId)?.revokedAt).toBeDefined();
+    } finally {
+      kept.close();
+    }
+    const db = new DatabaseSync(grantsPath(target));
+    try {
+      expect(db.prepare("SELECT grant_id, event FROM grant_log WHERE event = 'dropped'").all()).toEqual([
+        { grant_id: onceId, event: "dropped" },
+      ]);
+    } finally {
+      db.close();
+    }
+    expect(log.join("\n")).toContain("Kept today's grants.db");
+    expect(readFileSync(grantsPath(lar))).toEqual(today);
+  }, 60_000);
+
+  it("a restored Lar with no grants.db gets an empty one, so every ask tool asks", async () => {
+    const lar = join(root, "iris");
+    const backup = await backupOf(lar);
+    const target = join(root, "restored", "iris");
+    const log: string[] = [];
+    await restoreEntity({ from: backup, dir: target, say: (line) => log.push(line) });
+
+    expect(existsSync(grantsPath(target))).toBe(true);
+    const grants = openGrants(target);
+    try {
+      expect(grants.listGrants()).toEqual([]);
+      expect(
+        grants.check({ tool: "write_note", scope: ANYWHERE, argsHmac: grants.hmac({ path: "notes/a.md" }), nowMs: Date.now() }),
+      ).toEqual({ outcome: "ask" });
+    } finally {
+      grants.close();
+    }
+    expect(log.join("\n")).toContain("Started an empty grants.db");
+  }, 60_000);
+
+  it("a backup never holds grants.db or the per-Lar key", async () => {
+    const lar = join(root, "iris");
+    const backup = await backupOf(lar);
+    expect(existsSync(grantsPath(lar))).toBe(true);
+    expect(existsSync(join(lar, THREAD_HASH_KEY_FILE))).toBe(true);
+    const names = readManifest(backup).files.map((file) => file.name);
+    expect(names).not.toContain(GRANTS_FILE);
+    expect(names).not.toContain(THREAD_HASH_KEY_FILE);
+    expect(isAllowedName(GRANTS_FILE)).toBe(false);
+    expect(isAllowedName(THREAD_HASH_KEY_FILE)).toBe(false);
+  }, 60_000);
+
   it("refuses while another holder has the target's lock, then restores once it is free", async () => {
     const lar = join(root, "iris");
     const backup = await backupOf(lar);
@@ -256,6 +339,18 @@ describe("natalis restore", () => {
     await expect(restoreEntity({ from: backup, dir: target, say: () => {} })).rejects.toThrow(/not empty/);
     expect(readdirSync(target)).toEqual(["keep.txt"]);
     expect(readdirSync(root).sort()).toEqual(["backups", "busy", "iris"]);
+  }, 60_000);
+
+  it("keeps today's grants.db only when it is the only thing in the target", async () => {
+    const lar = join(root, "iris");
+    const backup = await backupOf(lar);
+    const target = join(root, "busy");
+    mkdirSync(target);
+    writeFileSync(join(target, GRANTS_FILE), "today's permissions");
+    writeFileSync(join(target, "keep.txt"), "not mine to overwrite\n");
+    await expect(restoreEntity({ from: backup, dir: target, say: () => {} })).rejects.toThrow(/not empty/);
+    expect(readFileSync(join(target, "keep.txt"), "utf8")).toBe("not mine to overwrite\n");
+    expect(readFileSync(join(target, GRANTS_FILE), "utf8")).toBe("today's permissions");
   }, 60_000);
 
   it("refuses a backup whose river was changed, and writes nothing", async () => {

@@ -73,7 +73,9 @@ type RequestRecord = {
 
 let harness: Harness | undefined;
 
-async function openHarness(options: { tools?: Record<string, string>; worlds?: World[]; model?: ModelPort } = {}): Promise<Harness> {
+async function openHarness(
+  options: { tools?: Record<string, string>; worlds?: World[]; model?: ModelPort; purpose?: "live" | "eval" | "replay" } = {},
+): Promise<Harness> {
   const root = mkdtempSync(join(tmpdir(), "natalis-permissions-"));
   roots.push(root);
   const dir = join(root, "lar");
@@ -91,6 +93,7 @@ async function openHarness(options: { tools?: Record<string, string>; worlds?: W
     worlds: [cli, ...(options.worlds ?? [])],
     nowMs: () => now,
     stopPollMs: 1e9,
+    ...(options.purpose === undefined ? {} : { purpose: options.purpose }),
   });
   await entity.start();
   cli.send("Hello.");
@@ -872,5 +875,65 @@ describe("her tools and the checks (B4 Q2)", () => {
     const later = await h.invoke("slow_probe", {});
     expect(later.ok).toBe(false);
     expect(refusal(later).code).toBe("ask_summoner");
+  });
+});
+
+describe("permission lifetime and copies (B4 Q3)", () => {
+  beforeEach(() => {
+    harness = undefined;
+  });
+  afterEach(async () => {
+    await closeHarness();
+  });
+
+  it("a request unanswered for a day closes with one line to him and one row to her asking thread", async () => {
+    const h = await openHarness();
+    const { id } = h.seedRequest({ tool: "web_request", scope: "forum.example.org", askingThread: "discord:room:garden" });
+    h.advance(DAY + 1);
+    h.cli.send("A day later.");
+    await h.entity.idle();
+
+    expect(h.requests().find((request) => request.id === id)?.status).toBe("expired");
+    expect(h.said).toContainEqual({
+      place: CLI_PLACE,
+      text: "[natalis] Closed without an answer: web_request on forum.example.org.",
+    });
+    const event = h.entity.river
+      .read({ thread: "discord:room:garden", kinds: ["event"], limit: 100 })
+      .find((row) => row.data?.["permissionClosed"] === "expired" && row.data?.["request"] === id);
+    expect(event).toBeDefined();
+    expect(event?.source).toBe("body");
+    expect(String(event?.text)).toContain("closed without an answer");
+  });
+
+  it("an unused once grant closes after a day and her asking thread is told, without a 'without an answer' line", async () => {
+    const h = await openHarness();
+    const { id } = h.seedRequest({ tool: "web_request", scope: "forum.example.org", askingThread: "discord:room:garden" });
+    const yes = h.ownerRow("Yes, once.");
+    expect((await h.invoke("answer_request", { request: id, answer: "once", ...ownerRowArgs(yes.seq) })).ok).toBe(true);
+    const [grant] = h.listGrants();
+    expect(grant).toBeDefined();
+
+    h.advance(DAY + 1);
+    h.cli.send("A day later.");
+    await h.entity.idle();
+
+    expect(h.listGrants().find((item) => item.id === grant!.id)?.revokedAt).toBe(h.now());
+    expect(h.grantLog()).toContainEqual(expect.objectContaining({ grant_id: grant!.id, event: "dropped" }));
+    const event = h.entity.river
+      .read({ thread: "discord:room:garden", kinds: ["event"], limit: 100 })
+      .find((row) => row.data?.["permissionClosed"] === "dropped" && row.data?.["grant"] === grant!.id);
+    expect(event).toBeDefined();
+    expect(String(event?.text)).toContain("closed unused");
+    expect(h.said.some((line) => line.text.includes("Closed without an answer"))).toBe(false);
+  });
+
+  it("an eval Lar starts with an empty grants.db, so an ask tool asks there", async () => {
+    const h = await openHarness({ tools: { write_note: "ask" }, purpose: "eval" });
+    const receipt = await h.invoke("write_note", { path: "notes/a.md", text: "A note.", why: "test" });
+    expect(receipt.ok).toBe(false);
+    expect(refusal(receipt).code).toBe("ask_summoner");
+    expect(h.requests()).toHaveLength(1);
+    expect(h.listGrants()).toEqual([]);
   });
 });
