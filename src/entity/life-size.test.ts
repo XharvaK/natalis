@@ -60,4 +60,49 @@ describe("NIT-5: size warning for self/life.md (never trimmed)", () => {
     expect(notes).toHaveLength(0);
     expect(lines.filter((l) => l.includes("life.md"))).toHaveLength(0);
   });
+
+  it("re-arms after the file drops back under the limit, so a later crossing warns again", async () => {
+    const root = mkdtempSync(join(tmpdir(), "natalis-life-"));
+    roots.push(root);
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("end_turn")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const cli = createCliWorld({ onSay: () => {} });
+    const entity = await openEntity({
+      dir: join(root, "lar"),
+      config: { ...CONFIG, limits: { lifeWarnChars: 100 } },
+      model,
+      worlds: [cli],
+    });
+    await entity.notebook.write("self/life.md", "A short life.", "test", "self");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    let notes;
+    try {
+      await entity.start();
+      const big = "\u00e9".repeat(150) + " END-OF-LIFE";
+      await entity.notebook.write("self/life.md", big, "test", "self");
+      cli.send("One.");
+      await entity.idle();
+      // Still over the limit across another write: the same crossing warns only once.
+      await entity.notebook.write("self/life.md", `${big} more`, "test", "self");
+      cli.send("Two.");
+      await entity.idle();
+      await entity.notebook.write("self/life.md", "A short life again.", "test", "self");
+      cli.send("Three.");
+      await entity.idle();
+      await entity.notebook.write("self/life.md", big, "test", "self");
+      cli.send("Four.");
+      await entity.idle();
+      notes = entity.river
+        .read({ limit: 100_000 })
+        .filter((r) => r.kind === "note" && r.data?.["bodyNote"] === "life_size");
+    } finally {
+      await entity.stop();
+      log.mockRestore();
+    }
+    expect(notes).toHaveLength(2);
+  });
 });
