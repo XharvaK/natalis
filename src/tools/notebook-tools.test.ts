@@ -114,6 +114,15 @@ describe("write_note", () => {
     });
     expect(await run("write_note", { path: "x.md", text: "x" })).toMatchObject({ ok: false, refused: { code: "bad_arguments" } });
   });
+
+  it("reports the length in code points, so one emoji is one character", async () => {
+    const { run, notebook } = await fixture();
+
+    const receipt = await run("write_note", { path: "diary.md", text: "😀", why: "one face" });
+
+    expect(receipt).toMatchObject({ ok: true, data: { path: "diary.md", chars: 1 } });
+    expect(notebook.read("diary.md")).toBe("😀");
+  });
 });
 
 describe("edit_note", () => {
@@ -186,6 +195,15 @@ describe("append_note", () => {
     const { run } = await fixture();
 
     expect(await run("append_note", { path: "diary.md", why: "x" })).toMatchObject({ ok: false, refused: { code: "bad_arguments" } });
+  });
+
+  it("reports the added length in code points, so one emoji is one character", async () => {
+    const { run, notebook } = await fixture();
+
+    const receipt = await run("append_note", { path: "diary.md", text: "😀", why: "one face" });
+
+    expect(receipt).toMatchObject({ ok: true, data: { path: "diary.md", chars: 1 } });
+    expect(notebook.read("diary.md")).toBe("😀");
   });
 });
 
