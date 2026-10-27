@@ -89,3 +89,48 @@ describe("NIT-1: the cap holds under concurrent appends", () => {
     }
   });
 });
+
+describe("NIT-A: the cap queue is per notebook", () => {
+  const BOUND_MS = 1000;
+
+  it("a hung write on one Lar's character.md does not delay another Lar's append", async () => {
+    const larA = new MemoryNotebook({ root: "memory://lar-a", nowMs: () => NOW });
+    const larB = new MemoryNotebook({ root: "memory://lar-b", nowMs: () => NOW });
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    larA.write = () => {
+      markEntered();
+      return new Promise<void>(() => {});
+    };
+    const contextOf = (notebook: MemoryNotebook): ToolContext => ({
+      thread: "dm:owner",
+      turnId: "t",
+      nowMs: NOW,
+      river: new MemoryRiver({ nowMs: () => NOW }),
+      notebook,
+    });
+    const run = (context: ToolContext, name: string, args: Record<string, unknown>): Promise<Receipt> =>
+      notebookTools().find((t) => t.spec.name === name)!.run(args, context);
+
+    const hung = run(contextOf(larA), "write_note", { path: "self/character.md", text: "a", why: "t" });
+    await entered; // Lar A's write holds its notebook's cap queue.
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bound = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Lar B waited on Lar A's hung write")), BOUND_MS);
+    });
+    try {
+      const receipt = await Promise.race([
+        run(contextOf(larB), "append_note", { path: "self/character.md", text: "b", why: "t" }),
+        bound,
+      ]);
+      expect(receipt.ok).toBe(true);
+      expect(larB.read("self/character.md")).toBe("b");
+    } finally {
+      clearTimeout(timer);
+      void hung.catch(() => {});
+    }
+  });
+});
