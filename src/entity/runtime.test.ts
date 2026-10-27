@@ -25,7 +25,7 @@ import {
   type WorldEvent,
 } from "../contracts.js";
 import { createSecretScanner } from "../secrets/index.js";
-import { ScriptedModel, call, reply, type ScriptStep } from "../testing/scripted-model.js";
+import { ScriptedModel, call, reply, untilAborted, type ScriptStep } from "../testing/scripted-model.js";
 import { createCliWorld, type CliWorld } from "../worlds/cli.js";
 import { createDiscordWorld, type PlatformClient } from "../worlds/discord/discord-world.js";
 import { effectOf } from "../tools/effects.js";
@@ -139,6 +139,8 @@ function allRows(entity: Entity): RiverRow[] {
 type SchedulerSeam = {
   takeTurn(thread: string, turn?: { purpose?: Purpose; deadlineMs?: number }): Promise<void>;
   reflectTurn(thread: string): Promise<void>;
+  queueReflectTurn(thread: string): void;
+  nonLiveWaitMs: number;
 };
 
 function schedulerOf(entity: Entity): SchedulerSeam {
@@ -257,6 +259,83 @@ function fakeWorld(id: string): { world: World; push(place: string, text: string
       emit({ world: id, place, actor: "mara", source: "outside", text });
     },
   };
+}
+
+/** The same, with the source chosen by the test: a room's passer-by or the summoner speaking in a Discord room. */
+function sourceWorld(id: string): { world: World; push(place: string, text: string, source?: WorldEvent["source"]): void } {
+  let emit: ((event: WorldEvent) => void) | undefined;
+  const world: World = {
+    id,
+    async start(next) {
+      emit = next;
+    },
+    async stop() {
+      emit = undefined;
+    },
+    async say(): Promise<Receipt> {
+      return { ok: true, summary: "Delivered." };
+    },
+    tools: () => [],
+    now: () => `${id} is open.`,
+  };
+  return {
+    world,
+    push(place, text, source = "outside") {
+      if (emit === undefined) throw new Error("the fake world is not started");
+      emit({ world: id, place, actor: source === "owner" ? "owner" : "mara", source, text });
+    },
+  };
+}
+
+/** A tool that reports when it started and waits until the test lets it finish; it ignores the turn's abort like a slow commit. */
+function slowWriteTool(): { tool: Tool; entered(path: string): Promise<void>; finish(path: string): void } {
+  const enteredPaths = new Set<string>();
+  const enteredWaiters = new Map<string, () => void>();
+  const gates = new Map<string, ReturnType<typeof deferred>>();
+  const tool: Tool = {
+    spec: {
+      name: "slow_write",
+      description: "Writes a note slowly.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+      },
+    },
+    async run(args): Promise<Receipt> {
+      const path = String(args["path"] ?? "");
+      const gate = deferred();
+      gates.set(path, gate);
+      enteredPaths.add(path);
+      enteredWaiters.get(path)?.();
+      await gate.promise;
+      return { ok: true, summary: `Wrote ${path}.` };
+    },
+  };
+  return {
+    tool,
+    entered(path) {
+      if (enteredPaths.has(path)) return Promise.resolve();
+      return new Promise<void>((resolve) => enteredWaiters.set(path, resolve));
+    },
+    finish(path) {
+      gates.get(path)?.resolve();
+    },
+  };
+}
+
+/** Lets queued microtasks run on a fake clock. */
+async function flush(advance: (ms: number) => Promise<void>, times = 40): Promise<void> {
+  for (let i = 0; i < times; i += 1) await advance(0);
+}
+
+/** Keeps a scripted step from outliving a stop, so a failing test cannot hang the shutdown. */
+function stopped(signal?: AbortSignal): Promise<never> {
+  return new Promise<never>((_resolve, reject) => {
+    const fail = (): void => reject(new ModelError("The request was aborted.", "aborted", 1));
+    if (signal?.aborted) fail();
+    else signal?.addEventListener("abort", fail, { once: true });
+  });
 }
 
 describe("opening an entity", () => {
@@ -3393,6 +3472,251 @@ describe("per-turn purpose and deadline for the scheduler", () => {
 
       const ends = allRows(entity).filter((row) => row.kind === "turn" && row.data?.["phase"] === "end");
       expect(ends.map((row) => row.data?.["endedBy"])).toEqual(["model_error", "model_error"]);
+    });
+  });
+});
+
+describe("L1: the mind lock in the scheduler", () => {
+  const WAIT_MS = 30 * 60_000;
+  const RELEASE_MS = 30_000;
+  const DAY_MS = 24 * 60 * 60_000;
+  const outcomeNotes = (entity: Entity): RiverRow[] =>
+    allRows(entity).filter((row) => row.kind === "note" && row.data?.["outcomeUnknown"] === true);
+  const dropNotes = (entity: Entity): RiverRow[] =>
+    allRows(entity).filter((row) => row.kind === "note" && row.data?.["nonLiveDropped"] === true);
+  const startedTurns = (entity: Entity): RiverRow[] =>
+    allRows(entity).filter((row) => row.kind === "turn" && row.data?.["phase"] === "start");
+  const endedTurns = (entity: Entity): RiverRow[] =>
+    allRows(entity).filter((row) => row.kind === "turn" && row.data?.["phase"] === "end");
+
+  it("non-live turn starts only when no turn runs", async () => {
+    await withClock(async (advance) => {
+      const liveStarted = deferred();
+      const liveDone = deferred();
+      const model = new ScriptedModel([
+        async (_request, signal) => {
+          liveStarted.resolve();
+          await Promise.race([liveDone.promise, stopped(signal)]);
+          return reply({ toolCalls: [call("end_turn")] });
+        },
+        reply({ toolCalls: [call("end_turn")] }),
+      ]);
+      const room = sourceWorld("fake");
+      const { entity } = await open(model, { stopPollMs: 1e9 }, [room.world]);
+      await entity.start();
+
+      room.push("fake:room", "A live message.");
+      await liveStarted.promise;
+      appendEventRow(entity, "self", "Think about this on your own.");
+      schedulerOf(entity).queueReflectTurn("self");
+      await flush(advance);
+
+      expect(model.requests).toHaveLength(1);
+      expect(startedTurns(entity)).toHaveLength(1);
+
+      liveDone.resolve();
+      await flush(advance);
+
+      expect(model.requests).toHaveLength(2);
+      expect(model.requests[1]?.thread).toBe("self");
+      expect(startedTurns(entity).map((row) => row.thread)).toEqual(["fake:room", "self"]);
+      expect(startedTurns(entity)[1]?.data?.["purpose"]).toBe("reflect");
+      await entity.idle();
+    });
+  });
+
+  it("live event during a non-live turn waits until it ends", async () => {
+    await withClock(async (advance) => {
+      const reflectStarted = deferred();
+      const reflectDone = deferred();
+      const model = new ScriptedModel([
+        async (_request, signal) => {
+          reflectStarted.resolve();
+          await Promise.race([reflectDone.promise, stopped(signal)]);
+          return reply({ toolCalls: [call("end_turn")] });
+        },
+        reply({ toolCalls: [call("end_turn")] }),
+      ]);
+      const room = sourceWorld("fake");
+      const { entity } = await open(model, { stopPollMs: 1e9 }, [room.world]);
+      await entity.start();
+
+      appendEventRow(entity, "self", "Think about this on your own.");
+      schedulerOf(entity).queueReflectTurn("self");
+      await reflectStarted.promise;
+
+      room.push("fake:room", "A live message.");
+      await flush(advance);
+      expect(model.requests).toHaveLength(1);
+      expect(startedTurns(entity).map((row) => row.thread)).toEqual(["self"]);
+
+      reflectDone.resolve();
+      await flush(advance);
+
+      expect(model.requests).toHaveLength(2);
+      expect(model.requests[1]?.thread).toBe("fake:room");
+      expect(startedTurns(entity).map((row) => row.thread)).toEqual(["self", "fake:room"]);
+      await entity.idle();
+    });
+  });
+
+  it("summoner event pre-empts a non-live turn and the summoner turn starts within the bound", async () => {
+    await withClock(async (advance) => {
+      const reflectStarted = deferred();
+      const model = new ScriptedModel([
+        async (_request, signal) => {
+          reflectStarted.resolve();
+          return await new Promise<ModelResponse>((_resolve, reject) => {
+            const fail = (): void => reject(new ModelError("The request was aborted.", "aborted", 1));
+            if (signal?.aborted) fail();
+            else signal?.addEventListener("abort", fail, { once: true });
+          });
+        },
+        reply({ toolCalls: [call("end_turn")] }),
+      ]);
+      const { entity, cli } = await open(model, { stopPollMs: 1e9 });
+      await entity.start();
+
+      appendEventRow(entity, "self", "Think about this on your own.");
+      schedulerOf(entity).queueReflectTurn("self");
+      await reflectStarted.promise;
+
+      cli.send("Answer me now.");
+      await flush(advance);
+
+      // No 30 s wait was needed: there was no tool in flight.
+      expect(model.requests.map((request) => request.thread)).toEqual(["self", "cli:summoner"]);
+      expect(endedTurns(entity).find((row) => row.thread === "self")?.data?.["endedBy"]).toBe("aborted");
+      expect(endedTurns(entity).find((row) => row.thread === "cli:summoner")?.data?.["endedBy"]).toBe("end_turn");
+      await entity.idle();
+    });
+  });
+
+  it("release waits for an in-flight tool to settle", async () => {
+    await withClock(async (advance) => {
+      const slow = slowWriteTool();
+      const room = sourceWorld("fake");
+      room.world.tools = () => [slow.tool];
+      const model = new ScriptedModel([
+        reply({ toolCalls: [call("slow_write", { path: "notes/plan.md" })] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ]);
+      const { entity, cli } = await open(model, { stopPollMs: 1e9 }, [room.world]);
+      await entity.start();
+
+      appendEventRow(entity, "self", "Think about this on your own.");
+      schedulerOf(entity).queueReflectTurn("self");
+      await slow.entered("notes/plan.md");
+
+      cli.send("Answer me now.");
+      await advance(RELEASE_MS - 1_000);
+      await flush(advance);
+      expect(model.requests).toHaveLength(1);
+      expect(outcomeNotes(entity)).toHaveLength(0);
+
+      slow.finish("notes/plan.md");
+      await flush(advance);
+      expect(model.requests).toHaveLength(2);
+      expect(model.requests[1]?.thread).toBe("cli:summoner");
+      await entity.idle();
+    });
+  });
+
+  it("outcome-unknown note names the path; in a Discord thread a private path shows as 'a private note'", async () => {
+    await withClock(async (advance) => {
+      const slow = slowWriteTool();
+      const room = sourceWorld("fake");
+      room.world.tools = () => [slow.tool];
+      const model = new ScriptedModel([
+        reply({ toolCalls: [call("slow_write", { path: "notes/plan.md" })] }),
+        reply({ toolCalls: [call("end_turn")] }),
+        reply({ toolCalls: [call("slow_write", { path: "private/close.md" })] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ]);
+      const { entity, cli } = await open(model, { stopPollMs: 1e9 }, [room.world]);
+      await entity.start();
+
+      // In the summoner's own place, the path is named.
+      appendEventRow(entity, "self", "Think about this on your own.");
+      schedulerOf(entity).queueReflectTurn("self");
+      await slow.entered("notes/plan.md");
+      cli.send("Answer me now.");
+      await advance(RELEASE_MS);
+      await flush(advance);
+      expect(outcomeNotes(entity)).toHaveLength(1);
+      expect(outcomeNotes(entity)[0]?.thread).toBe("cli:summoner");
+      expect(outcomeNotes(entity)[0]?.text).toContain("notes/plan.md");
+      slow.finish("notes/plan.md");
+      await flush(advance);
+
+      // In a Discord room, a private path is not named.
+      appendEventRow(entity, "self", "Think about this once more.");
+      schedulerOf(entity).queueReflectTurn("self");
+      await slow.entered("private/close.md");
+      room.push("discord:room:general", "Speak to me here.", "owner");
+      await advance(RELEASE_MS);
+      await flush(advance);
+      expect(outcomeNotes(entity)).toHaveLength(2);
+      expect(outcomeNotes(entity)[1]?.thread).toBe("discord:room:general");
+      expect(outcomeNotes(entity)[1]?.text).toContain("a private note");
+      expect(outcomeNotes(entity)[1]?.text).not.toContain("private/close.md");
+      slow.finish("private/close.md");
+      await flush(advance);
+      await entity.idle();
+    });
+  });
+
+  it("pending non-live turn is dropped after 30 min with one note; back-off doubles to a day; 10 h load gives at most one drop note per day", async () => {
+    await withClock(async (advance) => {
+      // This live turn never finishes on its own, so the mind lock never comes free. Its watchdog is put past the test.
+      const model = new ScriptedModel([untilAborted()]);
+      const room = sourceWorld("fake");
+      const { entity } = await open(model, { stopPollMs: 1e9, turnDeadlineMs: 2 * DAY_MS }, [room.world]);
+      await entity.start();
+
+      room.push("fake:room", "A live message that keeps the turn open.");
+      await flush(advance);
+      expect(model.requests).toHaveLength(1);
+      const scheduler = schedulerOf(entity);
+      appendEventRow(entity, "self", "Think about this on your own.");
+      scheduler.queueReflectTurn("self");
+
+      await advance(WAIT_MS);
+      await flush(advance);
+      expect(dropNotes(entity)).toHaveLength(1);
+      expect(dropNotes(entity)[0]?.text).toContain("30 min");
+      expect(scheduler.nonLiveWaitMs).toBe(60 * 60_000);
+
+      scheduler.queueReflectTurn("self");
+      await advance(60 * 60_000);
+      await flush(advance);
+      expect(scheduler.nonLiveWaitMs).toBe(120 * 60_000);
+      expect(dropNotes(entity)).toHaveLength(1);
+
+      scheduler.queueReflectTurn("self");
+      await advance(120 * 60_000);
+      await flush(advance);
+      expect(scheduler.nonLiveWaitMs).toBe(240 * 60_000);
+
+      scheduler.queueReflectTurn("self");
+      await advance(240 * 60_000);
+      await flush(advance);
+      expect(scheduler.nonLiveWaitMs).toBe(480 * 60_000);
+
+      // Ten hours of continuous live load still hold one drop note.
+      await advance(150 * 60_000);
+      expect(dropNotes(entity)).toHaveLength(1);
+
+      scheduler.queueReflectTurn("self");
+      await advance(480 * 60_000);
+      await flush(advance);
+      expect(scheduler.nonLiveWaitMs).toBe(960 * 60_000);
+
+      scheduler.queueReflectTurn("self");
+      await advance(960 * 60_000);
+      await flush(advance);
+      expect(scheduler.nonLiveWaitMs).toBe(DAY_MS);
+      expect(startedTurns(entity).filter((row) => row.data?.["purpose"] === "reflect")).toHaveLength(0);
     });
   });
 });
