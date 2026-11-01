@@ -127,6 +127,7 @@ import {
 import { isStopOn, readStop } from "./stop.js";
 import { clockOf, firstDailyOccurrence, localMinuteOf, instantOfLocal, isWakeRepeat, nextOccurrence, parseAtIso, parseClock, WAKE_LIMIT, type WakeRepeat } from "./wake-schedule.js";
 import { DEFAULT_LIFE_VIEW_CHARS, DEFAULT_LIFE_WARN_CHARS, DEFAULT_RHYTHM } from "./config.js";
+import { settingsChanges, settingsNoteText, settingsView } from "./settings-change.js";
 import { charCount, lifeView } from "./life-view.js";
 import { noteSections } from "../notebook/sections.js";
 
@@ -508,6 +509,8 @@ type EntityState = {
   folderHash?: string;
   /** The last time the body knew it was running: stamped at start, every ALIVE_STAMP_MS while running, and at a stop. */
   aliveMs?: number;
+  /** The settings view (settings-change.ts) the body last started with, so the next start can tell the Lar what changed. */
+  settingsSeen?: string;
   /** True when the body last ended with a stop of its own; false while it runs, so a crash leaves it false. */
   stoppedCleanly?: boolean;
   /** The place the summoner last spoke in, where the body's notices to them go. */
@@ -689,6 +692,11 @@ function checkState(value: unknown): EntityState {
   if (aliveMs !== undefined) {
     if (typeof aliveMs !== "number" || !Number.isSafeInteger(aliveMs) || aliveMs < 0) bad("aliveMs");
     state.aliveMs = aliveMs as number;
+  }
+  const settingsSeen = root["settingsSeen"];
+  if (settingsSeen !== undefined) {
+    if (typeof settingsSeen !== "string") bad("settingsSeen");
+    state.settingsSeen = settingsSeen as string;
   }
   const stoppedCleanly = root["stoppedCleanly"];
   if (stoppedCleanly !== undefined) {
@@ -1078,6 +1086,7 @@ class Runtime implements Entity {
     this.tagLegacyRhythm();
     this.seedRhythm();
     this.noteStart();
+    this.noteSettings();
     this.warnLifeSize(true);
     this.warnLifeView();
     this.stampAlive(true);
@@ -1861,6 +1870,32 @@ class Runtime implements Entity {
         ? `You were stopped at ${this.stamp(lastMs)} and started again ${down} later.`
         : `You were last known running at ${this.stamp(lastMs)} and started again ${down} after that; the stop itself was not recorded.`;
     this.river.append({ thread: "self", kind: "note", source: "body", text, data: { bodyNote: "start" }, atMs: now });
+  }
+
+  /**
+   * One note when the settings she runs under changed since her last start. The first start records the view and says
+   * nothing: there is no earlier one to compare. The view leaves out addresses and keys (settings-change.ts).
+   */
+  private noteSettings(): void {
+    const view = settingsView(this.config);
+    const earlier = this.state.settingsSeen;
+    if (earlier !== undefined && earlier !== view) {
+      const changes = settingsChanges(earlier, view);
+      if (changes.length > 0) {
+        this.river.append({
+          thread: "self",
+          kind: "note",
+          source: "body",
+          text: settingsNoteText(changes),
+          data: { bodyNote: "settings" },
+          atMs: this.nowMs(),
+        });
+      }
+    }
+    if (earlier !== view) {
+      this.state.settingsSeen = view;
+      this.saveState();
+    }
   }
 
   /**

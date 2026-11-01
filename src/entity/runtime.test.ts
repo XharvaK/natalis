@@ -2929,6 +2929,63 @@ describe("body notes on start", () => {
     await entity.idle();
     expect(allRows(entity).some((row) => row.data?.["bodyNote"] === "start")).toBe(false);
   });
+
+  it("records the settings view on the first start and writes no settings note", async () => {
+    const config: EntityConfig = { ...CONFIG, worldModels: { domus: { model: "scripted", effort: "low" } } };
+    const { entity } = await open(new ScriptedModel([]), { config, nowMs: () => Date.parse("2026-10-11T10:00:00Z") });
+    await entity.start();
+    await entity.idle();
+    const state = readStateFile() as unknown as Record<string, unknown>;
+    expect(typeof state["settingsSeen"]).toBe("string");
+    expect(allRows(entity).some((row) => row.data?.["bodyNote"] === "settings")).toBe(false);
+  });
+
+  it("tells the Lar when a world model's effort changed between starts", async () => {
+    const first = Date.parse("2026-10-11T10:00:00Z");
+    const firstConfig: EntityConfig = { ...CONFIG, worldModels: { domus: { model: "scripted", effort: "low" } } };
+    const before = await open(new ScriptedModel([]), { config: firstConfig, nowMs: () => first });
+    await before.entity.start();
+    await before.entity.stop();
+
+    const secondConfig: EntityConfig = { ...CONFIG, worldModels: { domus: { model: "scripted", effort: "high" } } };
+    const after = await open(new ScriptedModel([]), { config: secondConfig, nowMs: () => first + 60_000 });
+    await after.entity.start();
+    await after.entity.idle();
+
+    const notes = allRows(after.entity).filter((row) => row.data?.["bodyNote"] === "settings");
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.thread).toBe("self");
+    expect(notes[0]?.text).toContain('worldModels.domus.effort: "low" → "high"');
+  });
+
+  it("writes no settings note when a restart sees the same settings", async () => {
+    const first = Date.parse("2026-10-11T10:00:00Z");
+    const config: EntityConfig = { ...CONFIG, worldModels: { domus: { model: "scripted", effort: "low" } } };
+    const before = await open(new ScriptedModel([]), { config, nowMs: () => first });
+    await before.entity.start();
+    await before.entity.stop();
+
+    const after = await open(new ScriptedModel([]), { config, nowMs: () => first + 60_000 });
+    await after.entity.start();
+    await after.entity.idle();
+    expect(allRows(after.entity).some((row) => row.data?.["bodyNote"] === "settings")).toBe(false);
+  });
+
+  it("keeps a changed model address out of the settings note and out of every row", async () => {
+    const first = Date.parse("2026-10-11T10:00:00Z");
+    const firstConfig: EntityConfig = { ...CONFIG, model: { ...CONFIG.model, baseUrl: "http://model.invalid/v1" } };
+    const before = await open(new ScriptedModel([]), { config: firstConfig, nowMs: () => first });
+    await before.entity.start();
+    await before.entity.stop();
+
+    const secondConfig: EntityConfig = { ...CONFIG, model: { ...CONFIG.model, baseUrl: "http://other.invalid/v1" } };
+    const after = await open(new ScriptedModel([]), { config: secondConfig, nowMs: () => first + 60_000 });
+    await after.entity.start();
+    await after.entity.idle();
+
+    expect(allRows(after.entity).some((row) => row.data?.["bodyNote"] === "settings")).toBe(false);
+    expect(allRows(after.entity).filter((row) => (row.text ?? "").includes("http://other.invalid/v1"))).toEqual([]);
+  });
 });
 
 describe("repeating wakes", () => {
@@ -3943,9 +4000,13 @@ describe("the daily rhythm", () => {
 
     const full = await open(new ScriptedModel([]), { nowMs: () => NOW, config: RHYTHM_CONFIG });
     await full.entity.start();
-    // The start note the body writes on every start is not the rhythm's note, so it is left out here.
+    // The start and settings notes the body writes are not the rhythm's note, so they are left out here.
     const notes = allRows(full.entity).filter(
-      (row) => row.kind === "note" && row.source === "body" && row.data?.["bodyNote"] !== "start",
+      (row) =>
+        row.kind === "note" &&
+        row.source === "body" &&
+        row.data?.["bodyNote"] !== "start" &&
+        row.data?.["bodyNote"] !== "settings",
     );
     await full.entity.stop();
 
