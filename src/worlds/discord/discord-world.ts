@@ -28,6 +28,8 @@ import { FILE_BYTES_MAX, saveFile, type FilesHome } from "./files.js";
 
 
 const MAX_KEPT_REFS = 20_000;
+/** Message ids remembered to turn away a repeat from a gateway resume; the oldest is dropped first. */
+const HANDLED_IDS_CAP = 2000;
 
 type RefsFile = { version: 1; seq: number; refs: Record<string, [string, string]> };
 
@@ -265,6 +267,8 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
   const guestHits = new Map<string, number[]>();
   /** When a refused direct message from each author was last logged. */
   const refusedDmLogged = new Map<string, number>();
+  /** Message ids already handled, in arrival order, so a gateway resume cannot hand one over twice. */
+  const handledIds = new Set<string>();
   /** Bot messages in a row per channel, and when the last one came. A person's message or a quiet gap ends the run. */
   const botRuns = new Map<string, { count: number; lastAtMs: number }>();
   function countBotMessage(channelId: string, nowMs: number): number {
@@ -427,6 +431,12 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       if (!roomIds.has(message.channelId)) return;
     } else if (message.channelKind !== "dm") {
       return;
+    }
+    if (handledIds.has(message.id)) return;
+    handledIds.add(message.id);
+    if (handledIds.size > HANDLED_IDS_CAP) {
+      const oldest = handledIds.values().next().value as string;
+      handledIds.delete(oldest);
     }
 
     const nowMs = Date.now();
