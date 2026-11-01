@@ -150,6 +150,20 @@ name `owner` still works; give one, not both), `holds`, `limits`, `rhythm` and `
 
 Unknown fields are refused, and each error names the field that is wrong.
 
+## What the body enforces, and what it does not
+
+The body's gates are code. The model acts only through the tools the body runs, so it cannot skip them: the tool table
+in entity.json (allow, ask, deny), the permissions asked for in grants.db, the summoner's stop, the loop ceiling, the
+privacy list, the contacts gate on direct messages, and keys that stay in environment variables and never reach a model
+request. They hold against a model that makes a mistake or is talked into something by outside text.
+
+They are not a security boundary against the host. Anyone who can log in as the account that runs the Lar can read its
+folder, edit entity.json and grants.db, and read the keys in its environment. The sandbox for `run` (Bubblewrap, with a
+private network under pasta by default) keeps a command away from the rest of the host, but it has not been audited:
+treat it as a strong default, not a promise. The honesty hold is itself a model call: it catches many wrong claims, not
+all, and a message it passed is not proof the message was true. What the Lar reads in its context (its life, its
+skills, its own rules) guides it; only code enforces.
+
 ## When the model fails
 
 - Each request has a time limit (`timeoutMs`, default 180 s) and is tried up to 4 times, with short waits between.
