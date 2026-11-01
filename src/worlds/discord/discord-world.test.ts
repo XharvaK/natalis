@@ -285,6 +285,26 @@ describe("intake", () => {
     expect(events[0]?.data?.messageRefs).toEqual(["m1"]);
     expect(events[0]?.data?.replyToRef).toBe("m2");
   });
+
+  it("handles a message id it already handled only once", async () => {
+    const { fake, events } = await startWorld();
+    const message = incoming({ channelKind: "dm", author: OWNER_AUTHOR, content: "Hi there" });
+    fake.deliver(message);
+    fake.deliver(message);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.data?.messageRefs).toEqual(["m1"]);
+  });
+
+  it("still handles different message ids", async () => {
+    const { fake, events } = await startWorld();
+    fake.deliver(incoming({ channelKind: "dm", author: OWNER_AUTHOR, content: "first" }));
+    await vi.advanceTimersByTimeAsync(2000);
+    fake.deliver(incoming({ channelKind: "dm", author: OWNER_AUTHOR, content: "second" }));
+    await vi.advanceTimersByTimeAsync(2000);
+    const refs = events.flatMap((event) => event.data?.messageRefs ?? []);
+    expect(refs).toHaveLength(2);
+  });
 });
 
 describe("debounce and cap", () => {
