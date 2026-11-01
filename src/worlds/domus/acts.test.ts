@@ -7,7 +7,7 @@ import { findOption, type OptionObject } from "./options.js";
 import type { Found } from "./answers.js";
 import {
   ACT_TTL_MS, actRequestedMeanwhile, CODE_WORDS, expireDue, nextState, pendingCounts, PLAN_STEP_MAX_MS, requestAct, syncActs, type RequestResult, type SyncAct, wordsOfCode, ACT_BOARD_MS, recentActsBoard } from "./acts.js";
-import { openDomusDb } from "./store.js";
+import { admitObservation, markSpanUndone, openDomusDb, type ObservationRow } from "./store.js";
 import type { DomusActPhase, SyncEvent } from "./wire.js";
 
 const T0 = 1_800_000_000_000;
@@ -29,11 +29,13 @@ const VIEW: OptionObject[] = [
 let dir: string;
 let db: DatabaseSync;
 let turn: number;
+let views: number;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "domus-acts-"));
   db = openDomusDb(dir);
   turn = 0;
+  views = 0;
 });
 
 afterEach(() => {
@@ -65,6 +67,32 @@ function ask(now: number, option: string, extra: { then?: string[]; forSummoner?
 function sync(now: number, events: SyncEvent[] = [], attachment = HELPER) {
   return syncActs(db, { attachment, events, nowMs: now });
 }
+
+/** Admits one invented view of a game thread, with the portrait it carries and when it was received. */
+function view(receiptMs: number, portrait: Record<string, unknown>, extra: Partial<ObservationRow> = {}): void {
+  views += 1;
+  admitObservation(db, {
+    observationId: `view-${views}`,
+    digest: `digest-view-${views}`,
+    thread: THREAD,
+    world: "slot3",
+    branch: "branch-1",
+    session: `session-${views}`,
+    attachment: HELPER,
+    body: "sim-9",
+    snapshot: String(views),
+    seq: views,
+    sourceTimeMs: receiptMs - 500,
+    expiresAtMs: receiptMs + 60_000,
+    receiptTimeMs: receiptMs,
+    lineageClass: "LIVE",
+    payloadJson: JSON.stringify({ options: [], portrait }),
+    ...extra,
+  });
+}
+
+const RUNNING = { time: { weekday: "Monday", hour: 8, minute: 0 }, paused: false, clock_speed: "NORMAL" };
+const PAUSED = { time: { weekday: "Monday", hour: 9, minute: 0 }, paused: true, clock_speed: "NORMAL" };
 
 function ev(actId: string, phase: DomusActPhase, atMs: number, detail?: Record<string, unknown>): SyncEvent {
   return { actId, phase, atMs, ...(detail ? { detail } : {}) };
@@ -619,3 +647,68 @@ describe("plain words for every code the game's side and the helper send (NATALI
     expect(other?.text).toBe('Your act "save the game": it finished.');
   });
 });
+
+describe("a refusal says what the clock of her last view read", () => {
+  it("adds the clock of her last view to a rejection", () => {
+    view(T0 + 1000, RUNNING);
+    const actId = okId(ask(T0, "a1"));
+    const note = sync(T0 + 15_000, [ev(actId, "rejected", T0 + 15_000, { code: "GAME_REFUSED", by: "game" })]).notes[0];
+    expect(note?.text.endsWith(
+      " Your last view before this report, 14 s earlier, read: Game time: Monday 08:00, running (clock speed NORMAL).",
+    )).toBe(true);
+  });
+
+  it("uses the newest view before the report, and not one received after it", () => {
+    view(T0 + 1000, RUNNING);
+    view(T0 + 2000, PAUSED);
+    view(T0 + 9000, { time: { weekday: "Tuesday", hour: 23, minute: 59 }, paused: true });
+    const actId = okId(ask(T0, "a1"));
+    const note = sync(T0 + 5000, [ev(actId, "rejected", T0 + 5000, { code: "GAME_REFUSED" })]).notes[0];
+    expect(note?.text).toContain(
+      " Your last view before this report, 3 s earlier, read: Game time: Monday 09:00, paused (clock speed NORMAL).",
+    );
+    expect(note?.text).not.toContain("Tuesday");
+  });
+
+  it("skips an undone view", () => {
+    view(T0 + 1000, RUNNING, { session: "session-live" });
+    view(T0 + 2000, PAUSED, { session: "session-undone" });
+    markSpanUndone(db, {
+      thread: THREAD,
+      world: "slot3",
+      branch: "branch-1",
+      session: "session-undone",
+      afterSourceTimeMs: 0,
+      reason: "test",
+    }, T0 + 3000);
+    const actId = okId(ask(T0, "a1"));
+    const note = sync(T0 + 5000, [ev(actId, "rejected", T0 + 5000, { code: "GAME_REFUSED" })]).notes[0];
+    expect(note?.text).toContain(
+      " Your last view before this report, 4 s earlier, read: Game time: Monday 08:00, running (clock speed NORMAL).",
+    );
+    expect(note?.text).not.toContain("Monday 09:00");
+  });
+
+  it("says nothing extra when the thread has no view", () => {
+    // A view on another thread says nothing about this one.
+    view(T0 + 1000, RUNNING, { thread: "domus:slot4" });
+    const actId = okId(ask(T0, "a1"));
+    const note = sync(T0 + 1, [ev(actId, "rejected", T0 + 1, { code: "GAME_REFUSED", by: "game" })]).notes[0];
+    expect(note?.text).toBe('Your act "Boil water (Test kettle)" (a1): the game refused it: the game would not do it right now.');
+  });
+
+  it("says nothing when the last view's portrait has neither a time nor a paused field", () => {
+    view(T0 + 1000, { clock_speed: "NORMAL" });
+    const actId = okId(ask(T0, "a1"));
+    const note = sync(T0 + 5000, [ev(actId, "rejected", T0 + 5000, { code: "GAME_REFUSED" })]).notes[0];
+    expect(note?.text).not.toContain("Your last view before this report");
+  });
+
+  it("adds nothing to a finished report", () => {
+    view(T0 + 1000, RUNNING);
+    const actId = okId(ask(T0, "a1"));
+    const note = sync(T0 + 5000, [completed(actId, T0 + 5000)]).notes[0];
+    expect(note?.text).not.toContain("Your last view before this report");
+  });
+});
+

@@ -12,6 +12,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Found, StoredAnswer } from "./answers.js";
+import { clockLine } from "./body.js";
 import { endingOf } from "./endings.js";
 import { labelOf } from "./options.js";
 import { inTransaction, type Row } from "./store.js";
@@ -593,6 +594,27 @@ function noteFor(act: Row, phase: DomusActPhase, detail: Record<string, unknown>
   };
 }
 
+/** The clock of the newest view of a game thread received at or before atMs, as a sentence for a refusal note; undefined when there is none. */
+function clockBefore(db: DatabaseSync, thread: string, atMs: number): string | undefined {
+  const row = db.prepare(`SELECT payload_json, receipt_time_ms FROM observations WHERE thread = ? AND undone_at_ms IS NULL
+    AND receipt_time_ms <= ? ORDER BY receipt_time_ms DESC, rowid DESC LIMIT 1`).get(thread, atMs) as Row | undefined;
+  if (!row) return undefined;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(String(row.payload_json));
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(payload)) return undefined;
+  const portrait = payload.portrait;
+  if (!isRecord(portrait)) return undefined;
+  const line = clockLine(portrait);
+  if (line === undefined) return undefined;
+  const ageMs = atMs - Number(row.receipt_time_ms);
+  const age = ageMs < 1000 ? "less than a second" : ageMs < 120_000 ? `${Math.round(ageMs / 1000)} s` : `${Math.round(ageMs / 60_000)} min`;
+  return ` Your last view before this report, ${age} earlier, read: ${line}`;
+}
+
 /**
  * One helper sync: its reports are kept (only for acts of its own attachment), the acts it may run are returned,
  * and the notes for the game thread come back with them. The helper gets the acts still requested for it, not expired.
@@ -615,7 +637,10 @@ export function syncActs(db: DatabaseSync, input: { attachment: string; events: 
       const guessed = current === "unknown" && isReplaceableUnknown(db, actId);
       const next = nextState(current, event.phase, guessed);
       if (next !== null) setState(db, actId, next, input.nowMs);
-      notes.push(noteFor(act, event.phase, detail, next === null));
+      const note = noteFor(act, event.phase, detail, next === null);
+      // A refusal says what the clock of her last view read, so a claim about the game's clock can be checked then.
+      if (event.phase === "rejected") note.text += clockBefore(db, String(act.thread), input.nowMs) ?? "";
+      notes.push(note);
     }
     notes.push(...expireRequested(db, input.nowMs));
     // Acts still in flight from an earlier helper session can no longer be told about: unknown, as a guess, so a later
