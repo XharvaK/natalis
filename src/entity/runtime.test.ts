@@ -1065,6 +1065,30 @@ describe("what the Lar sends and what it is shown", () => {
     });
   });
 
+  it("keeps her wake words verbatim and adds one host line with the latest Domus receipt after them (N3a)", async () => {
+    await withClock(async (advance) => {
+      const model = new ScriptedModel([
+        reply({ toolCalls: [call("schedule_wake", { in_minutes: 1, why: "whether Domus attached (dark since 2026-10-13)" })] }),
+        reply({ toolCalls: [call("end_turn")] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ]);
+      const { entity, cli } = await open(model, { stopPollMs: 1e9 });
+      await entity.start();
+      const seen = entity.river.append({ thread: "domus:slot8", kind: "event", source: "outside", text: "A view.\nThe game is running.", data: { view: "domus" } });
+      const gone = entity.river.append({ thread: "domus:slot8", kind: "event", source: "body", text: "The game is no longer attached.", data: { attached: false } });
+      cli.send("Wake yourself later.");
+      await entity.idle();
+      await advance(60_000);
+      await entity.idle();
+
+      const wake = allRows(entity).find((row) => row.thread === "self" && row.kind === "event" && row.text?.startsWith("Your wake:"));
+      const [first, second, ...rest] = (wake?.text ?? "").split("\n");
+      expect(first).toBe("Your wake: whether Domus attached (dark since 2026-10-13)");
+      expect(second).toMatch(new RegExp(`^Body note \\(receipt\\): Domus: attached from .* \\(seq ${seen.seq}\\) to the last view at .* \\(seq ${seen.seq}\\); not attached since .* \\(seq ${gone.seq}\\)\\.$`));
+      expect(rest).toEqual([]);
+    });
+  });
+
   it("refuses a self-wake of less than a minute, says why, keeps no wake, and lets end_turn close the turn", async () => {
     // A1 (Owner 2026-10-26): a refused schedule_wake does not hold end_turn open, so a full wake list cannot keep a turn
     // running to its ceiling.
