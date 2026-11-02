@@ -128,7 +128,8 @@ import { isStopOn, readStop } from "./stop.js";
 import { clockOf, firstDailyOccurrence, localMinuteOf, instantOfLocal, isWakeRepeat, nextOccurrence, parseAtIso, parseClock, WAKE_LIMIT, type WakeRepeat } from "./wake-schedule.js";
 import { DEFAULT_LIFE_VIEW_CHARS, DEFAULT_LIFE_WARN_CHARS, DEFAULT_RHYTHM } from "./config.js";
 import { settingsChanges, settingsNoteText, settingsView } from "./settings-change.js";
-import { charCount, lifeView } from "./life-view.js";
+import { charCount, editedStamp, lifeView } from "./life-view.js";
+import type { NoteSection } from "../notebook/sections.js";
 import { noteSections } from "../notebook/sections.js";
 
 export const STATE_FILE = "state.json";
@@ -2005,6 +2006,32 @@ class Runtime implements Entity {
     }
   }
 
+  /**
+   * N1: under each heading of her life file, when a line of that section last changed (git blame of her notebook) and
+   * how many days ago. A fact beside her words, never a change to them. None when the history cannot be read.
+   */
+  private lifeStamps(body: string): ((section: NoteSection) => string | undefined) | undefined {
+    const times = this.notebook.lineTimes?.(LIFE_PATH);
+    if (!times || times.length === 0) return undefined;
+    const now = this.nowMs();
+    const zone = this.config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const lineAt = (offset: number): number => {
+      let count = 0;
+      for (let at = body.indexOf("\n"); at !== -1 && at < offset; at = body.indexOf("\n", at + 1)) count += 1;
+      return count;
+    };
+    return (section) => {
+      const first = lineAt(section.start);
+      const last = Math.max(first, lineAt(Math.max(section.start, section.end - 1)));
+      let newest: number | undefined;
+      for (let line = first; line <= last && line < times.length; line += 1) {
+        const time = times[line];
+        if (time !== undefined && (newest === undefined || time > newest)) newest = time;
+      }
+      return newest === undefined ? undefined : editedStamp(newest, now, zone);
+    };
+  }
+
   /** The part of self/life.md this turn shows (Q21): whole below the switch, or the first part, ranked sections and pointers. */
   private lifeViewText(fresh: readonly RiverRow[], recent: readonly RiverRow[]): string {
     const body = this.notebook.read(LIFE_PATH);
@@ -2013,6 +2040,7 @@ class Runtime implements Entity {
     const view = lifeView(body, query, {
       switchChars: this.config.limits?.lifeWarnChars ?? DEFAULT_LIFE_WARN_CHARS,
       viewChars: this.config.limits?.lifeViewChars ?? DEFAULT_LIFE_VIEW_CHARS,
+      stampOf: this.lifeStamps(body),
     });
     return view.text === "" ? LIFE_STUB.trim() : view.text;
   }

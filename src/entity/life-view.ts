@@ -30,7 +30,34 @@ export type LifeViewOptions = {
   switchChars: number;
   /** The most characters of the switched view: the first part and the whole sections shown beside it. */
   viewChars: number;
+  /**
+   * N1: a line put under a section's heading, such as when it was last edited; undefined puts none. Only the view
+   * carries it: the file is never changed, and the stamp does not count toward viewChars.
+   */
+  stampOf?: (section: NoteSection) => string | undefined;
 };
+
+/** N1: "(last edited YYYY-MM-DD, N days ago)", the date in the Lar's zone and N in whole days. */
+export function editedStamp(editedMs: number, nowMs: number, timeZone: string): string {
+  const date = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(editedMs));
+  const days = Math.max(0, Math.floor((nowMs - editedMs) / 86_400_000));
+  return `(last edited ${date}, ${days === 0 ? "today" : days === 1 ? "1 day ago" : `${days} days ago`})`;
+}
+
+/** The text with each section's stamp on the line after its heading; the text itself is not changed. */
+function withStamps(text: string, sections: readonly NoteSection[], stampOf: LifeViewOptions["stampOf"]): string {
+  if (stampOf === undefined) return text;
+  let out = text;
+  for (const section of sections) {
+    const stamp = stampOf(section);
+    if (stamp === undefined) continue;
+    const at = out.indexOf(section.heading);
+    if (at === -1) continue;
+    const lineEnd = out.indexOf("\n", at);
+    out = lineEnd === -1 ? `${out}\n${stamp}` : `${out.slice(0, lineEnd)}\n${stamp}${out.slice(lineEnd)}`;
+  }
+  return out;
+}
 
 /** Characters as Unicode code points, so an emoji or an accented letter counts as one. */
 export function charCount(text: string): number {
@@ -45,7 +72,7 @@ export function lifeView(source: string, query: string, options: LifeViewOptions
   const over = charCount(source) >= options.switchChars;
   if (!over || sections.length === 0) {
     return {
-      text: whole,
+      text: stampWhole(whole, sections, options.stampOf),
       mode: "whole",
       firstPart: whole,
       shownSections: [],
@@ -72,8 +99,8 @@ export function lifeView(source: string, query: string, options: LifeViewOptions
   const shownSet = new Set(shown);
   const hidden = remaining.filter((section) => !shownSet.has(section));
   const parts: string[] = [];
-  if (firstPart !== "") parts.push(firstPart);
-  for (const section of shown) if (section.text !== "") parts.push(section.text);
+  if (firstPart !== "") parts.push(withStamps(firstPart, startsWithHeading && sections[0] ? [sections[0]] : [], options.stampOf));
+  for (const section of shown) if (section.text !== "") parts.push(withStamps(section.text, [section], options.stampOf));
   if (hidden.length > 0) {
     parts.push(
       [
@@ -115,4 +142,21 @@ function sharedWords(text: string, wanted: ReadonlySet<string>): number {
 /** A word without the punctuation around it, so "work?" and "Work" are the same word. */
 function cleanWord(word: string): string {
   return word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+}
+
+/** The whole file with every section stamped, one heading at a time from the end so earlier offsets hold. */
+function stampWhole(whole: string, sections: readonly NoteSection[], stampOf: LifeViewOptions["stampOf"]): string {
+  if (stampOf === undefined) return whole;
+  const local = noteSections(whole);
+  const parts: string[] = [];
+  let cursor = whole.length;
+  for (let index = local.length - 1; index >= 0; index -= 1) {
+    const section = local[index] as NoteSection;
+    const original = sections[index] ?? section;
+    const piece = whole.slice(section.start, cursor);
+    parts.unshift(withStamps(piece, [{ ...original, heading: section.heading }], stampOf));
+    cursor = section.start;
+  }
+  parts.unshift(whole.slice(0, cursor));
+  return parts.join("");
 }

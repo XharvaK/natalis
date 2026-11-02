@@ -279,6 +279,12 @@ export interface Notebook {
   list(dir?: string): NotebookEntry[];
   /** Plain-text search across notebook files. */
   search(text: string, limit?: number): Array<{ path: string; line: number; text: string }>;
+  /**
+   * N1: for each line of a note, the time (ms) of the commit that last changed it, from git blame; a line not yet
+   * committed has the time of now. Null when the note is missing or its history cannot be read. Optional: a notebook
+   * without history leaves it out.
+   */
+  lineTimes?(path: string): Array<number | undefined> | null;
 }
 
 export class NotebookError extends Error {

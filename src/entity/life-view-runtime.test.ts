@@ -28,9 +28,14 @@ function lifeOf(total: number): string {
   return LIFE_HEAD + "n".repeat(Math.max(0, total - LIFE_HEAD.length));
 }
 
-function systemTextOf(request: ModelRequest | undefined): string {
+function rawSystemTextOf(request: ModelRequest | undefined): string {
   const message = request?.messages[0];
   return message?.role === "system" ? message.content : "";
+}
+
+/** The system text without the N1 last-edited stamps, so the checks of the life text itself stay exact. */
+function systemTextOf(request: ModelRequest | undefined): string {
+  return rawSystemTextOf(request).replace(/\n\(last edited [^)\n]*\)/g, "");
 }
 
 function userTextOf(request: ModelRequest | undefined): string {
@@ -215,6 +220,23 @@ describe("a held say under the switched view", () => {
       expect(refused).toMatchObject({ refused: { code: "held_honesty" } });
       const reason = String((refused?.["refused"] as Record<string, unknown> | undefined)?.["reason"] ?? "");
       expect(reason).toContain('under the heading "## Work"');
+    } finally {
+      await entity.stop();
+    }
+  });
+});
+
+describe("N1: the life view in a turn carries a last-edited stamp per section", () => {
+  it("shows when each section last changed under its heading, and her file is left as she wrote it", async () => {
+    const life = lifeOf(500);
+    const { entity, model, cli } = await startWithLife(CONFIG, life);
+    try {
+      cli.send("Hello.");
+      await entity.idle();
+      const today = new Date().toISOString().slice(0, 10);
+      const system = rawSystemTextOf(model.requests[0]);
+      expect(system).toContain(`## Work\n(last edited ${today}, today)\n\nI work at the bakery`);
+      expect(entity.notebook.read("self/life.md")).toBe(life);
     } finally {
       await entity.stop();
     }

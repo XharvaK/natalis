@@ -18,5 +18,6 @@ export function withoutPrivate(notebook: Notebook): Notebook {
     remove: (...args) => notebook.remove(...args),
     list: (dir) => notebook.list(dir).filter((entry) => !isPrivatePath(entry.path)),
     search: (text, limit) => notebook.search(text, limit === undefined ? undefined : limit * 4).filter((hit) => !isPrivatePath(hit.path)).slice(0, limit),
+    ...(notebook.lineTimes ? { lineTimes: (path: string) => (isPrivatePath(path) ? null : notebook.lineTimes?.(path) ?? null) } : {}),
   };
 }

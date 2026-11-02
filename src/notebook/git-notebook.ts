@@ -1,7 +1,7 @@
 // The entity's notebook: a folder of plain text, versioned with git. Every write is a commit with a reason.
 // Git runs only through execFile (no shell). All writes go through one queue so git never races itself.
 
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { NotebookError } from "../contracts.js";
@@ -236,6 +236,41 @@ class GitNotebook implements Notebook {
 
   read(path: string): string | null {
     return readText(toAbsolute(this.root, normalizePath(path)));
+  }
+
+  /** Line times by path, with the size and modification time they were read at; blame runs again only after a change. */
+  private readonly lineTimeCache = new Map<string, { size: number; mtimeMs: number; times: Array<number | undefined> }>();
+
+  lineTimes(path: string): Array<number | undefined> | null {
+    const rel = normalizePath(path);
+    const file = toAbsolute(this.root, rel);
+    let stat;
+    try {
+      stat = statSync(file);
+    } catch {
+      return null;
+    }
+    const cached = this.lineTimeCache.get(rel);
+    if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.times;
+    let out: string;
+    try {
+      out = execFileSync("git", ["blame", "--line-porcelain", "--", rel], {
+        cwd: this.root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024, timeout: 10_000,
+      });
+    } catch {
+      return null;
+    }
+    const times: Array<number | undefined> = [];
+    let time: number | undefined;
+    for (const line of out.split("\n")) {
+      if (line.startsWith("committer-time ")) time = Number(line.slice(15)) * 1000;
+      else if (line.startsWith("\t")) {
+        times.push(Number.isFinite(time) ? time : undefined);
+        time = undefined;
+      }
+    }
+    this.lineTimeCache.set(rel, { size: stat.size, mtimeMs: stat.mtimeMs, times });
+    return times;
   }
 
   async write(path: string, text: string, reason: string, author: NotebookAuthor): Promise<void> {

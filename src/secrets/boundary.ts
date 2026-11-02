@@ -63,6 +63,7 @@ export function guardNotebook(notebook: Notebook, scanner: SecretScanner): Noteb
     remove: (path, reason, author) => notebook.remove(path, scanner.redact(reason), author),
     list: (dir) => notebook.list(dir),
     search: (text, limit) => notebook.search(text, limit),
+    ...(notebook.lineTimes ? { lineTimes: (path: string) => notebook.lineTimes?.(path) ?? null } : {}),
   };
 }
 
