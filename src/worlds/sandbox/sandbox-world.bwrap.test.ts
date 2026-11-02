@@ -1,6 +1,7 @@
 // A real Bubblewrap smoke test. It runs only on a Linux host with bwrap installed, and only when
 // NATALIS_BWRAP_TEST is "1". Everything else in the sandbox is tested with a fake spawn.
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -174,4 +175,46 @@ describe.skipIf(!wallTools)("sandbox network wall with real pasta and bwrap", ()
     const receipt = await callOn(worlds[1] as World, { command: connect("127.0.0.1", loopbackPort) });
     expect(receipt.ok).toBe(true);
   });
+});
+
+// NOTE-6: in host and none modes bwrap's parent is this process, so the group kill is the only path to a timed-out
+// command's children. This checks it on a real bwrap: a background child writing a heartbeat into the home must stop
+// once the command times out. It runs wherever bwrap can start a sandbox, flag or not, and is skipped (saying why) where
+// it cannot.
+const bwrapWorks = ((): boolean => {
+  if (process.platform !== "linux") return false;
+  try {
+    execFileSync("bwrap", ["--unshare-all", "--die-with-parent", "--ro-bind", "/", "/", "true"], { stdio: "ignore", timeout: 10_000 });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+if (!bwrapWorks) console.log("[skip] NOTE-6 timeout kill tests: bwrap is not installed or cannot start a sandbox here.");
+
+describe.skipIf(!bwrapWorks)("a timed-out command's children die with it (NOTE-6)", () => {
+  for (const network of ["host", "none"] as const) {
+    it(`in ${network} mode`, async () => {
+      const dir = mkdtempSync(join(tmpdir(), `natalis-bwrap-kill-${network}-`));
+      const world = createSandboxWorld({ dir, config: { timeoutSeconds: 30, maxTimeoutSeconds: 60, network } });
+      try {
+        await world.start(() => undefined, privacyBody(dir));
+        const run = world.tools().find((tool) => tool.spec.name === "run") as Tool;
+        const receipt = await run.run(
+          { command: "(while :; do date +%s%N > /home/lar/beat; sleep 0.1; done) & sleep 30", timeout_s: 1 },
+          { thread: "smoke", turnId: "smoke", nowMs: Date.now() } as unknown as ToolContext,
+        );
+        expect(receipt.data?.["timedOut"]).toBe(true);
+        const beat = join(dir, "home", "beat");
+        expect(existsSync(beat)).toBe(true);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        const before = readFileSync(beat, "utf8");
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        expect(readFileSync(beat, "utf8")).toBe(before);
+      } finally {
+        await world.stop();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }, 20_000);
+  }
 });
