@@ -139,8 +139,12 @@ export function createOpenAICompatiblePort(options: OpenAICompatibleOptions): Mo
   };
 
   // Every text that could reach an error message passes through here, so the key cannot leak into one.
+  // NOTE-3: the configured header values too, longest first, from 8 characters up (shorter ones are not secrets and
+  // would blot ordinary words).
+  const headerValues = Object.values(options.headers ?? {}).filter((value) => value.length >= 8).sort((a, b) => b.length - a.length);
   const safe = (text: string): string => {
-    const cleaned = apiKey ? text.split(apiKey).join("[key removed]") : text;
+    let cleaned = apiKey ? text.split(apiKey).join("[key removed]") : text;
+    for (const value of headerValues) cleaned = cleaned.split(value).join("[header removed]");
     return cleaned.length > DETAIL_CHARS ? `${cleaned.slice(0, DETAIL_CHARS)}...` : cleaned;
   };
 
