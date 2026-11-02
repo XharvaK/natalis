@@ -595,7 +595,7 @@ function noteFor(act: Row, phase: DomusActPhase, detail: Record<string, unknown>
 }
 
 /** The clock of the newest view of a game thread received at or before atMs, as a sentence for a refusal note; undefined when there is none. */
-function clockBefore(db: DatabaseSync, thread: string, atMs: number): string | undefined {
+function clockBefore(db: DatabaseSync, thread: string, atMs: number, before = "this report"): string | undefined {
   const row = db.prepare(`SELECT payload_json, receipt_time_ms FROM observations WHERE thread = ? AND undone_at_ms IS NULL
     AND receipt_time_ms <= ? ORDER BY receipt_time_ms DESC, rowid DESC LIMIT 1`).get(thread, atMs) as Row | undefined;
   if (!row) return undefined;
@@ -612,7 +612,7 @@ function clockBefore(db: DatabaseSync, thread: string, atMs: number): string | u
   if (line === undefined) return undefined;
   const ageMs = atMs - Number(row.receipt_time_ms);
   const age = ageMs < 1000 ? "less than a second" : ageMs < 120_000 ? `${Math.round(ageMs / 1000)} s` : `${Math.round(ageMs / 60_000)} min`;
-  return ` Your last view before this report, ${age} earlier, read: ${line}`;
+  return ` Your last view before ${before}, ${age} earlier, read: ${line}`;
 }
 
 /**
@@ -639,7 +639,12 @@ export function syncActs(db: DatabaseSync, input: { attachment: string; events: 
       if (next !== null) setState(db, actId, next, input.nowMs);
       const note = noteFor(act, event.phase, detail, next === null);
       // A refusal says what the clock of her last view read, so a claim about the game's clock can be checked then.
-      if (event.phase === "rejected") note.text += clockBefore(db, String(act.thread), input.nowMs) ?? "";
+      // The cutoff is the rejection's own time; a time after this sync (or none) cannot be trusted, so the sync's is used
+      // and the note says so (NB-1).
+      if (event.phase === "rejected") {
+        const own = event.atMs > 0 && event.atMs <= input.nowMs;
+        note.text += clockBefore(db, String(act.thread), own ? event.atMs : input.nowMs, own ? "this report" : "this sync") ?? "";
+      }
       notes.push(note);
     }
     notes.push(...expireRequested(db, input.nowMs));
