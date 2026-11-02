@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { noteSections } from "../notebook/sections.js";
-import { lifeView } from "./life-view.js";
+import { editedStamp, lifeView } from "./life-view.js";
 
 // Invented people and places only.
 const LIFE = [
@@ -123,5 +123,38 @@ describe("the life view", () => {
     expect(view.mode).toBe("whole");
     expect(view.needsHeadings).toBe(true);
     expect(view.text).toBe(plain.trim());
+  });
+});
+
+describe("N1: a last-edited stamp under each heading", () => {
+  const DAY = 86_400_000;
+  const NOW = Date.UTC(2026, 10, 3, 12, 0, 0);
+  const stampOf = (section: { title: string }) =>
+    section.title === "Garden" ? editedStamp(NOW - 8 * DAY, NOW, "UTC") : section.title === "Work" ? undefined : editedStamp(NOW - 1000, NOW, "UTC");
+
+  it("says the date and how many days ago, and today for today", () => {
+    expect(editedStamp(NOW - 8 * DAY, NOW, "UTC")).toBe("(last edited 2026-10-26, 8 days ago)");
+    expect(editedStamp(NOW - DAY, NOW, "UTC")).toBe("(last edited 2026-11-02, 1 day ago)");
+    expect(editedStamp(NOW - 1000, NOW, "UTC")).toBe("(last edited 2026-11-03, today)");
+  });
+
+  it("puts the stamp on the line after each heading in the whole view, and none where the time is not known", () => {
+    const view = lifeView(LIFE, "", { switchChars: 10_000, viewChars: 10_000, stampOf });
+    expect(view.text).toContain("## Garden\n(last edited 2026-10-26, 8 days ago)\n\nI grow beans");
+    expect(view.text).toContain("# Life\n(last edited 2026-11-03, today)\n");
+    expect(view.text).toContain("## Work\n\nI work at the bakery");
+    // Her words are all still there, unchanged.
+    expect(view.text.replace(/\n\(last edited [^)]*\)/g, "")).toBe(LIFE.trim());
+  });
+
+  it("stamps the sections shown in the switched view, and leaves the pointer lines alone", () => {
+    const view = lifeView(LIFE, "beans", { switchChars: 10, viewChars: 120, stampOf });
+    expect(view.mode).toBe("sections");
+    expect(view.text).toContain("## Garden\n(last edited 2026-10-26, 8 days ago)");
+    expect(view.text).not.toContain("section: ## Boats\n(last edited");
+  });
+
+  it("is the old view exactly when no stamps are asked for", () => {
+    expect(lifeView(LIFE, "", { switchChars: 10_000, viewChars: 10_000 }).text).toBe(LIFE.trim());
   });
 });

@@ -304,3 +304,26 @@ describe("search", () => {
     expect(hit?.text).toHaveLength(200);
   });
 });
+
+describe("lineTimes (N1)", () => {
+  it("gives each line the time of the commit that last changed it, and null for a missing file", async () => {
+    await nb.write("self/life.md", "# Life\none\ntwo\n", "Start my life file", "body");
+    const first = nb.lineTimes?.("self/life.md");
+    expect(first).toHaveLength(3);
+    for (const time of first ?? []) expect(Math.abs((time ?? 0) - Date.now())).toBeLessThan(120_000);
+    expect(nb.lineTimes?.("self/missing.md")).toBeNull();
+  });
+
+  it("dates an old line by its old commit and a changed line by the new one", async () => {
+    const old = { ...process.env, GIT_AUTHOR_DATE: "2026-01-01T00:00:00Z", GIT_COMMITTER_DATE: "2026-01-01T00:00:00Z" };
+    mkdirSync(path.join(dir, "self"), { recursive: true });
+    writeFileSync(path.join(dir, "self", "life.md"), "# Life\none\ntwo\n", "utf8");
+    git(["add", "self/life.md"]);
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "old"], { cwd: dir, env: old });
+    await nb.edit("self/life.md", "two", "three", "Change one line", "body");
+    const times = nb.lineTimes?.("self/life.md") ?? [];
+    expect(times[0]).toBe(Date.UTC(2026, 0, 1));
+    expect(times[1]).toBe(Date.UTC(2026, 0, 1));
+    expect(Math.abs((times[2] ?? 0) - Date.now())).toBeLessThan(120_000);
+  });
+});
