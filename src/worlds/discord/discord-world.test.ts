@@ -1096,6 +1096,25 @@ describe("direct messages and contacts", () => {
     expect(world.now()).toContain("Your contacts file cannot be read, so only your summoner may write to you directly.");
   });
 
+  it("delivers a refused DM when the same id is redelivered after the person is admitted (NB-2)", async () => {
+    const { fake, events } = await startWorld();
+    const message = incoming({ channelKind: "dm", author: MARA_AUTHOR, content: "let me in" });
+    fake.deliver(message);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(events).toHaveLength(0);
+
+    setContacts([MARA]);
+    fake.deliver(message);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ place: "discord:dm:mara", text: "let me in" });
+
+    // Once admitted, the same id is still handled only once.
+    fake.deliver(message);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(events).toHaveLength(1);
+  });
+
   it("names the contacts by alias on the now line, once they have a name", async () => {
     setContacts([MARA]);
     const { world, fake } = await startWorld();
