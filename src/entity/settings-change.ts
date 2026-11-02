@@ -85,10 +85,20 @@ function cutValue(value: string): string {
   return points.length > SETTING_VALUE_MAX ? `${points.slice(0, SETTING_VALUE_MAX).join("")}…` : value;
 }
 
+/**
+ * A fact about tools she already has, added once: only to the note where limits.reflectBudget goes from not set to a
+ * value, which is when reflection turns become possible. Not a rule or a quota.
+ */
+export const MEMORY_TOOLS_LINE =
+  "Besides your notebook, you have these memory tools: mark (flag rows that matter; enough marked weight brings a quiet turn to reflect, where record_observation is offered), record_fact and close_fact (store a dated fact that cites river rows, and close it later), and link_notes (record how two notes relate).";
+
+const REFLECT_TURNED_ON = "limits.reflectBudget: (not set) → ";
+
 /** The note for the river: a heading, then one line per change, and a count of the rest past SETTINGS_NOTE_MAX. */
 export function settingsNoteText(changes: readonly string[]): string {
   const listed = changes.slice(0, SETTINGS_NOTE_MAX);
   const more = changes.length - listed.length;
   const lines = listed.map((change) => `\n- ${change}`).join("");
-  return `The settings you run under changed since your last start:${lines}${more > 0 ? `\n- and ${more} more.` : ""}`;
+  const tools = changes.some((change) => change.startsWith(REFLECT_TURNED_ON)) ? `\n${MEMORY_TOOLS_LINE}` : "";
+  return `The settings you run under changed since your last start:${lines}${more > 0 ? `\n- and ${more} more.` : ""}${tools}`;
 }
