@@ -30,6 +30,7 @@ import {
   type TurnResult,
 } from "../contracts.js";
 import { MalformedToolBlock } from "../model/emulated-tools.js";
+import { homedir } from "node:os";
 
 export const END_TURN = "end_turn";
 
@@ -233,7 +234,7 @@ export async function runTurnWithMessages(input: RunTurnInput): Promise<RunTurnO
         }
         write({ kind: "note", source: "body", text: `${call.name} was refused (${receipt.refused?.code ?? "refused"}); trying again.`, data: { retryOf: call.name, attempt, turnId, callId: call.id } });
       } catch (err) {
-        const message = messageOf(err);
+        const message = toolErrorText(err, input.notebook.root.replace(/[\\/]notebook$/, ""));
         if (attempt >= runs || toolSignal?.aborted === true) {
           return { ok: false, summary: `The tool failed: ${message}`, refused: { code: "tool_error", reason: message } };
         }
@@ -664,6 +665,31 @@ function parseArguments(raw: string): Parsed {
     };
   }
   return { ok: true, value: value as Record<string, unknown> };
+}
+
+/**
+ * NOTE-2: a tool error as the Lar sees it. A file error is its code and the path inside her folder (the folder that holds
+ * her notebook), or that it was outside them; never a host path. Any other error has her folder and the host's home
+ * taken out of its text.
+ */
+export function toolErrorText(err: unknown, larDir: string): string {
+  const lar = larDir.replace(/[\\/]+$/, "");
+  const inside = (path: string): string | undefined =>
+    lar !== "" && (path === lar || path.startsWith(`${lar}/`) || path.startsWith(`${lar}\\`))
+      ? path.slice(lar.length).replace(/^[\\/]+/, "").replace(/\\/g, "/")
+      : undefined;
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  if (typeof code === "string" && /^E[A-Z0-9]+$/.test(code)) {
+    const path = (err as NodeJS.ErrnoException).path;
+    if (typeof path !== "string") return code;
+    const rel = inside(path);
+    return rel === undefined ? `${code} (a path outside your folders)` : `${code} ${rel || "."}`;
+  }
+  let text = messageOf(err);
+  if (lar !== "") text = text.split(`${lar}/`).join("").split(lar).join(".");
+  const home = homedir();
+  if (home.length > 1) text = text.split(home).join("~");
+  return text;
 }
 
 function messageOf(err: unknown): string {
