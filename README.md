@@ -3,7 +3,7 @@
 Natalis gives life to a digital entity, called a Lar: one with its own identity, memory, inner time and a place to be,
 running on the model you choose. The model is the mind; the host is the body.
 
-Natalis runs today. It has a terminal chat, a Discord world, a Sims 4 world (Domus), backups, import and replay. Expect
+Natalis runs today. It has a terminal chat and four worlds (Discord, a sandboxed Linux shell, the web and a Sims 4 world called Domus), backups, import and replay. Expect
 rough edges.
 
 ## Quickstart
@@ -40,7 +40,8 @@ export IRIS_MODEL_KEY=...        # your key
 node dist/bin/natalis.js chat --dir ~/lares/iris
 ```
 
-The Lar is born on its first start. To keep it living in Discord, add `discord.json` beside `entity.json` and use
+The Lar is born on its first start. To keep it living in its worlds, add the world files you want beside `entity.json`
+(`discord.json`, `sandbox.json`, `web.json`, `domus.json`; a world without its file does not start) and use
 `natalis run --dir ~/lares/iris`. To run it as a systemd user service with daily backups, see
 [deploy/README.md](deploy/README.md). To stop all outward acts at once: `natalis stop --dir ~/lares/iris`.
 
@@ -53,7 +54,7 @@ Tests: `npm test`. Type check: `npm run typecheck`.
   forgets honestly and never invents.
 - **Inner time.** It can wake itself (once, daily or weekly) and writes first only when it has a reason and permission.
   A wake set in a turn its own wake woke is held to at least 15 minutes, and 15 minutes from its other wakes set there.
-- **A presence.** It lives where you put it: the terminal, Discord, or The Sims 4.
+- **A presence.** It lives where you put it: the terminal, Discord, a shell of its own, the web, or The Sims 4.
 - **Your own model.** You bring the key. Nothing goes to a service you did not choose.
 
 When you design a Lar you choose how honest it is about itself, how independent, whom it may write to first, whether you
@@ -72,7 +73,9 @@ Each takes `--dir <entity folder>` (the Lar's own folder) unless noted.
 - `check`: read every file of a Lar's folder the way its body will (entity.json, nature.md, privacy.json, contacts.json,
   welcome.md and the world files) and name what is wrong. It writes nothing; it never prints ids, tokens or private terms.
 - `chat`: talk with a Lar in the terminal.
-- `run`: keep a Lar living in its worlds (Discord) until it is stopped.
+- `run`: keep a Lar living in its worlds until it is stopped. Each world starts only when its file is beside entity.json:
+  `discord.json` (Discord), `sandbox.json` (a Linux shell in Bubblewrap), `web.json` (the `web_request` tool; reads reach
+  public sites, writes only the sites listed there) and `domus.json` (The Sims 4).
 - `stop`: the summoner's emergency stop; pauses outward acts (`--reason "<text>"` optional). It writes a file named
   `STOP` in the Lar's folder. `--off` lifts it.
 - `forget`: erase river rows, or with `--query` every place the words live (note lines, the notebook's git history,
@@ -96,17 +99,34 @@ Each takes `--dir <entity folder>` (the Lar's own folder) unless noted.
   `--keep <name> --host <host> [--replace]` it keeps one value you type on standard input; it is never a flag value and is
   never printed.
 
+- `probe`: a health probe that prints numbers and booleans only (`--turns N` optional). It writes nothing in the folder.
+- `notebook-restore`: put the notebook's files back as they stood at an earlier commit (`--commit <sha>`,
+  `--reason "<line>"`), as one new commit; no history is removed. It refuses unless the Lar's last stop was clean;
+  `--force` skips that check for a Lar known to be down.
+- `memory-rollback`: the code-only rollback of the memory stores (`--scan <folder>` and `--ack-unscrubbed` optional). It
+  never touches the river's rows, the ledger, the notebook or any backup.
+- `eval`: run scenario cases on fresh throwaway Lars (`--cases <folder> --model-config <entity.json> --out <folder>`).
+  No real Lar folder is opened.
+- `eval-permissions`: run the permissions gate fixtures the same way (`--fixtures <folder> --model-config <entity.json>
+  --out <folder>`), printing numbers only.
+
 To run a Lar as a service on a host, see [deploy/README.md](deploy/README.md).
 
 ## entity.json
 
 The file in the Lar's folder. Top-level keys: `name`, `timeZone`, `model`, `effort`, `ceiling`, `summoner` (the older
-name `owner` still works; give one, not both), `holds`, `limits`, `rhythm` and `worldModels`.
+name `owner` still works; give one, not both), `holds`, `tools`, `limits`, `rhythm` and `worldModels`.
 
 - `name` and `timeZone`: the Lar's name and its IANA zone (e.g. `"Europe/Istanbul"`). Times it sees are in that zone.
 - `effort`: `low`, `medium`, `high` or `xhigh`, sent to the model as its `effortParam` says.
-- `ceiling`: the loop limits per turn, `maxModelCalls` (default 24) and `maxToolCalls` (default 48).
-- `limits.turnsPerDay`: cap on turns per day. 288 (one per 5 minutes on average) unless written.
+- `ceiling`: the loop limits per turn, `maxModelCalls` (default 24) and `maxToolCalls` (default 48). Optional
+  `wholeResultsChars`: once the tool results before the newest reply pass this many characters together, each older one
+  is shortened to 2 KB and the Lar can call the tool again for all of it. Left out, results are never shortened.
+- `tools`: the summoner's tool table, tool name to `allow`, `ask` or `deny`. A tool not named is allowed.
+- `limits`: `turnsPerDay` caps turns per day, 288 (one per 5 minutes on average) unless written. `lifeWarnChars`: when
+  `self/life.md` passes this many characters, the body writes a river note and a startup log line; the note is never
+  trimmed. `lifeViewChars`: past that, the most characters of life.md a turn shows. `reflectBudget`: the sum of
+  importance-mark weights (see Memory tools below) that brings one quiet reflection turn; left out, there are none.
 - `rhythm`: local clock times (`"HH:MM"`) for daily wakes given once on the first start. Left out or `[]`, none.
 
 - `model`: the main model. `baseUrl` (http or https), `model` (its name), `contextTokens`, and optionally `apiKeyEnv`
@@ -146,9 +166,38 @@ name `owner` still works; give one, not both), `holds`, `limits`, `rhythm` and `
   is sent, in the household note (`self/household.md` in the notebook). The body does not know these and does not check
   them. A backup on the same service as the main model shares its quota, so it does not help when that quota is spent.
 - `holds`: body checks on what the Lar says. `honesty` (true or false) runs one model call that asks whether the words
-  contradict the Lar's own life record. It is **off** unless `"holds": { "honesty": true }` is written.
+  contradict the Lar's own life record. It is **off** unless `"holds": { "honesty": true }` is written. `impersonation` (true or false, off unless written)
+  holds a message that poses as the body's own notices or as the summoner.
 
 Unknown fields are refused, and each error names the field that is wrong.
+
+## Memory tools
+
+Besides its notebook, a Lar has these tools for its own memory. Each stores only its own words and the river row numbers
+it cites.
+
+- `mark`: mark 1 to 20 river rows as important, with a weight from 1 to 3 and an optional short reason. Marked rows count
+  more in recall. When `limits.reflectBudget` is set and the marked weight reaches it, the Lar gets one quiet reflection
+  turn to think them over. A reflection turn prepares memory and does not act: it has no world tools, no `say` and no
+  wakes, and it has its own five minute watchdog.
+- `record_fact` and `close_fact`: record a fact that cites the river rows it came from, and close it later when it is no
+  longer true. A fact is never edited; closing writes a new row.
+- `link_notes`: link two notes as `supports`, `contradicts`, `supersedes` or `elaborates`, with a one line reason.
+- `record_observation`: write an observation about a span of the river (its first and last row). Offered only in
+  reflection turns, never in a live turn.
+
+## Settings notes
+
+When entity.json changed between two starts, the Lar's river gets one note listing what changed. It is a record, not a
+rule. Addresses, key variable names and headers (`baseUrl`, `apiKeyEnv`, `headers`) are left out. When
+`limits.reflectBudget` goes from not set to a value, that note also carries, once, one factual line naming the memory
+tools above.
+
+## Files on disk
+
+The body replaces its own files whole and atomically: it writes a new temporary file, syncs it, renames it over the old
+one and syncs the folder, so after a crash a file is the old version or the new one, never empty or cut. Such files are
+written with mode 0600 unless a caller asks for another mode.
 
 ## What the body enforces, and what it does not
 

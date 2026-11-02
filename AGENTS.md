@@ -1,4 +1,4 @@
-# Natalis — rules for anyone building here
+# Natalis: rules for anyone building here
 
 **Principle.** The model is the mind and the compute; the host is the body (storage, CPU, network). An entity
 must get better when a better model is swapped in, with no code change. Before adding any rule to the body, ask:

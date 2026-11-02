@@ -8,7 +8,9 @@ without touching the others.
 
 ## 1. Build Natalis
 
-Needs Node 22.13 or newer.
+Needs Node 22.13 or newer (storage uses `node:sqlite`, which older Node lacks). The units run `/usr/bin/env node`, so
+the `node` first on the service's PATH must be that version; if the host's default Node is older, point the
+`ExecStart` lines at a Node 22 binary.
 
 ```sh
 git clone <repository url> ~/natalis
@@ -75,6 +77,11 @@ cap the Lar sees how many calls are left, and at the cap it gets one last call t
 `"wholeResultsChars": 48000` beside them, older tool results in a turn are shortened to 2 KB each once together they
 pass that many characters; the Lar can call the tool again to see one in full.
 
+Each world is switched on by its own file beside entity.json: `discord.json` (below), `sandbox.json` (a Linux shell in
+Bubblewrap, with its ceilings), `web.json` (the sites the Lar may post to or log in at, and its hourly request ceiling;
+read fresh on each request, so an edit needs no restart) and `domus.json` (The Sims 4: the variable with the helper's
+token and where the listener binds). No file, no world. These files name environment variables, never the values.
+
 To connect the Lar to Discord, add `~/lares/<name>/discord.json`. It names the variable that holds the bot token, never
 the token itself:
 
@@ -139,6 +146,19 @@ journalctl --user -u natalis@<name> -f
 ```
 
 Logs are kept by the journal. Press Ctrl+C to stop following them; that does not stop the Lar.
+
+### Updating to a new version
+
+Make a backup first (section 5), then bring the checkout to the new commit and build it while the Lar still runs. Stop
+and restart the service only once the build succeeds; if it fails, put the checkout back on the old commit and build
+again, and the running Lar is never left without a working build:
+
+```sh
+systemctl --user start natalis-backup@<name>.service
+cd ~/natalis && git pull --ff-only && npm ci && npm run build
+systemctl --user restart natalis@<name>
+journalctl --user -u natalis@<name> -n 50
+```
 
 ## 5. Backups
 
