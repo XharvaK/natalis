@@ -6,6 +6,18 @@ import type { EntityConfig } from "./config.js";
 /** Keys left out of the view at any depth: addresses, key names and headers are not hers to read. */
 export const HIDDEN_SETTING_KEYS: ReadonlySet<string> = new Set(["baseUrl", "apiKeyEnv", "headers"]);
 
+/**
+ * Keys of entity.json the view shows. Every key config.ts accepts is in this set or in HIDDEN_SETTING_KEYS, and a test
+ * fails on one in neither, so a new field is classified before it can reach her river note.
+ */
+export const VISIBLE_SETTING_KEYS: ReadonlySet<string> = new Set([
+  "alias", "api", "cacheMarks", "ceiling", "contextTokens", "effort", "effortMap", "effortParam", "fallback", "holds",
+  "honesty", "idleTimeoutMs", "impersonation", "incremental", "inputPerMillion", "lifeViewChars", "lifeWarnChars",
+  "limits", "maxModelCalls", "maxToolCalls", "model", "name", "nativeTools", "outputPerMillion", "owner", "price",
+  "reflectBudget", "rhythm", "stream", "summoner", "timeZone", "timeoutMs", "tools", "turnsPerDay", "vision",
+  "wholeResultsChars", "worldModels",
+]);
+
 /** The most changes one note lists. */
 export const SETTINGS_NOTE_MAX = 20;
 

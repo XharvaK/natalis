@@ -189,7 +189,8 @@ describe("every entity.json key is classified for the settings view (guard)", ()
 
   it("never shows a key whose name looks like an address, a key, a token or a secret", () => {
     const secretLike = /url|key|token|secret|password|auth|header|cookie|credential/i;
-    const shown = [...VISIBLE_SETTING_KEYS].filter((key) => secretLike.test(key));
+    // contextTokens is a size, not a token: the one known name that matches and is safe to show.
+    const shown = [...VISIBLE_SETTING_KEYS].filter((key) => key !== "contextTokens" && secretLike.test(key));
     expect(shown).toEqual([]);
     for (const key of HIDDEN_SETTING_KEYS) expect(VISIBLE_SETTING_KEYS.has(key)).toBe(false);
   });
