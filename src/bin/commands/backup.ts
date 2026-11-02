@@ -6,7 +6,7 @@
 // --key-env <NAME>, the checked folder is also sealed into one encrypted package in <dir> (see backup-seal.ts), and
 // --seal-keep n keeps the newest n sealed packages of this Lar.
 
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -234,21 +234,56 @@ export function copyTree(dir: string, partial: string, tree: string, keep: (rel:
   const root = join(dir, tree);
   if (!existsSync(root) || !lstatSync(root).isDirectory()) return [];
   const copied: string[] = [];
-  const walk = (rel: string): void => {
-    for (const entry of readdirSync(join(dir, rel), { withFileTypes: true })) {
+  // NB-A: every folder is opened without following a link and read through its open handle, and every file is opened
+  // without following a link and checked to be a plain file before a byte is read. A swap the sandbox makes mid-walk
+  // can only make an entry be left out, never bring a host file in.
+  const walk = (rel: string, fd: number, at: string): void => {
+    const base = process.platform === "linux" ? `/proc/self/fd/${fd}` : at;
+    for (const entry of readdirSync(base, { withFileTypes: true })) {
       const child = `${rel}/${entry.name}`;
       if (!keep(child)) continue;
       if (entry.isDirectory()) {
-        walk(child);
+        const sub = openNoFollow(`${base}/${entry.name}`, constants.O_RDONLY | constants.O_DIRECTORY);
+        if (sub === undefined) continue;
+        try {
+          walk(child, sub, `${at}/${entry.name}`);
+        } finally {
+          closeSync(sub);
+        }
       } else if (entry.isFile() && isAllowedName(child)) {
-        mkdirSync(join(partial, rel), { recursive: true });
-        copyFileSync(join(dir, child), join(partial, child));
-        copied.push(child);
+        const file = openNoFollow(`${base}/${entry.name}`, constants.O_RDONLY | constants.O_NONBLOCK);
+        if (file === undefined) continue;
+        try {
+          const stat = fstatSync(file);
+          if (!stat.isFile()) continue;
+          const content = readFileSync(file);
+          mkdirSync(join(partial, rel), { recursive: true });
+          writeFileSync(join(partial, child), content, { mode: stat.mode & 0o7777 });
+          chmodSync(join(partial, child), stat.mode & 0o7777);
+          copied.push(child);
+        } finally {
+          closeSync(file);
+        }
       }
     }
   };
-  walk(tree);
+  const top = openNoFollow(root, constants.O_RDONLY | constants.O_DIRECTORY);
+  if (top === undefined) return [];
+  try {
+    walk(tree, top, root);
+  } finally {
+    closeSync(top);
+  }
   return copied.sort();
+}
+
+/** An open handle on path, never through a link at its last step; undefined when it is a link or cannot be opened. */
+function openNoFollow(path: string, flags: number): number | undefined {
+  try {
+    return openSync(path, flags | constants.O_NOFOLLOW);
+  } catch {
+    return undefined;
+  }
 }
 
 function describeFile(folder: string, name: string): ManifestFile {
