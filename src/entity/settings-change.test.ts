@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { EntityConfig } from "./config.js";
 import {
   HIDDEN_SETTING_KEYS,
+  MEMORY_TOOLS_LINE,
   SETTINGS_NOTE_MAX,
   SETTING_VALUE_MAX,
   settingsChanges,
@@ -193,5 +194,19 @@ describe("every entity.json key is classified for the settings view (guard)", ()
     const shown = [...VISIBLE_SETTING_KEYS].filter((key) => key !== "contextTokens" && secretLike.test(key));
     expect(shown).toEqual([]);
     for (const key of HIDDEN_SETTING_KEYS) expect(VISIBLE_SETTING_KEYS.has(key)).toBe(false);
+  });
+});
+
+describe("memory tools line (one time, when reflection turns on)", () => {
+  it("adds one factual line when limits.reflectBudget goes from not set to a value", () => {
+    const text = settingsNoteText(["limits.reflectBudget: (not set) → 6"]);
+    expect(text.endsWith(`\n${MEMORY_TOOLS_LINE}`)).toBe(true);
+    for (const tool of ["mark", "record_fact", "close_fact", "link_notes", "record_observation"]) {
+      expect(MEMORY_TOOLS_LINE).toContain(tool);
+    }
+  });
+  it("leaves the note unchanged for other changes and for a later budget change", () => {
+    expect(settingsNoteText(['name: "Iris" → "Iris II"'])).not.toContain(MEMORY_TOOLS_LINE);
+    expect(settingsNoteText(["limits.reflectBudget: 6 → 8"])).not.toContain(MEMORY_TOOLS_LINE);
   });
 });
