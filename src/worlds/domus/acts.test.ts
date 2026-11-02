@@ -704,6 +704,25 @@ describe("a refusal says what the clock of her last view read", () => {
     expect(note?.text).not.toContain("Your last view before this report");
   });
 
+  it("measures to the rejection's own time, not the sync's, when the report comes late (NB-1)", () => {
+    view(T0 + 1000, RUNNING);
+    view(T0 + 6000, PAUSED);
+    const actId = okId(ask(T0, "a1"));
+    // Rejected at T0+2000, reported in a sync at T0+10000; the paused view came in between.
+    const note = sync(T0 + 10_000, [ev(actId, "rejected", T0 + 2000, { code: "GAME_REFUSED" })]).notes[0];
+    expect(note?.text).toContain(
+      " Your last view before this report, 1 s earlier, read: Game time: Monday 08:00, running (clock speed NORMAL).",
+    );
+    expect(note?.text).not.toContain("paused");
+  });
+
+  it("falls back to the sync's time, and says so, when the rejection's time is after the sync (NB-1)", () => {
+    view(T0 + 1000, RUNNING);
+    const actId = okId(ask(T0, "a1"));
+    const note = sync(T0 + 5000, [ev(actId, "rejected", T0 + 60_000, { code: "GAME_REFUSED" })]).notes[0];
+    expect(note?.text).toContain(" Your last view before this sync, 4 s earlier, read:");
+  });
+
   it("adds nothing to a finished report", () => {
     view(T0 + 1000, RUNNING);
     const actId = okId(ask(T0, "a1"));
