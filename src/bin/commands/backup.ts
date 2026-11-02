@@ -230,7 +230,7 @@ function sha256Of(content: Buffer): string {
  * Symlinks and anything else that is not a plain file or folder are left out, and so is every name the manifest would
  * refuse. Returns the copied names, as the manifest lists them ("<tree>/<path>").
  */
-function copyTree(dir: string, partial: string, tree: string, keep: (rel: string) => boolean): string[] {
+export function copyTree(dir: string, partial: string, tree: string, keep: (rel: string) => boolean): string[] {
   const root = join(dir, tree);
   if (!existsSync(root) || !lstatSync(root).isDirectory()) return [];
   const copied: string[] = [];
