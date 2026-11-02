@@ -326,6 +326,36 @@ describe("runTurn: refused and broken calls", () => {
     });
   });
 
+  it("shows a file error as its code and a path inside her folders, never the host path (NOTE-2)", async () => {
+    const { input } = await setup({
+      steps: [
+        reply({ toolCalls: [call("fs_inside", {}, "c1")] }),
+        reply({ toolCalls: [call("fs_outside", {}, "c2")] }),
+        reply({ toolCalls: [call(END_TURN, {}, "c3")] }),
+      ],
+    });
+    const lar = input.notebook.root.replace(/[\\/]notebook$/, "");
+    const fsError = (path: string): Error =>
+      Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: "ENOENT", errno: -2, syscall: "open", path });
+    const thrower = (name: string, path: string): Tool => ({
+      spec: { name, description: "Fails with a file error.", parameters: { type: "object", properties: {} } },
+      async run(): Promise<Receipt> {
+        throw fsError(path);
+      },
+    });
+    input.tools = [...input.tools, thrower("fs_inside", `${lar}/home/files/x.txt`), thrower("fs_outside", "/home/alice/.config/secret/key.txt")];
+
+    const result = await runTurn(input);
+
+    expect(result.receipts[0]?.receipt).toEqual({
+      ok: false,
+      summary: "The tool failed: ENOENT home/files/x.txt",
+      refused: { code: "tool_error", reason: "ENOENT home/files/x.txt" },
+    });
+    expect(result.receipts[1]?.receipt.summary).toBe("The tool failed: ENOENT (a path outside your folders)");
+    expect(JSON.stringify(result.receipts)).not.toContain("alice");
+  });
+
   it("does not end the turn when end_turn is refused; the model can end it again", async () => {
     const { input } = await setup({
       steps: [
