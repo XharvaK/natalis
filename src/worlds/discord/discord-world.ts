@@ -433,11 +433,6 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       return;
     }
     if (handledIds.has(message.id)) return;
-    handledIds.add(message.id);
-    if (handledIds.size > HANDLED_IDS_CAP) {
-      const oldest = handledIds.values().next().value as string;
-      handledIds.delete(oldest);
-    }
 
     const nowMs = Date.now();
     // A direct message from anyone but the summoner and the contacts is not admitted: no event, alias, ref or flood count.
@@ -497,6 +492,12 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     burst.flooded = burst.flooded || flooded;
     burst.loopCeiling = burst.loopCeiling || loopCeiling;
     arm(burst, nowMs);
+    // The id is remembered only once the message is admitted and queued, so a refused or failed one can come again (NB-2).
+    handledIds.add(message.id);
+    if (handledIds.size > HANDLED_IDS_CAP) {
+      const oldest = handledIds.values().next().value as string;
+      handledIds.delete(oldest);
+    }
   }
 
   /**
