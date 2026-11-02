@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { EntityConfig } from "./config.js";
 import {
@@ -7,6 +10,7 @@ import {
   settingsChanges,
   settingsNoteText,
   settingsView,
+  VISIBLE_SETTING_KEYS,
 } from "./settings-change.js";
 
 /** An invented config with a key, headers and addresses at three depths. */
@@ -158,5 +162,35 @@ describe("settingsNoteText", () => {
     expect(lines.slice(1, 1 + SETTINGS_NOTE_MAX)).toEqual(changes.slice(0, SETTINGS_NOTE_MAX).map((change) => `- ${change}`));
     expect(lines[1 + SETTINGS_NOTE_MAX]).toBe("- and 3 more.");
     expect(lines).toHaveLength(SETTINGS_NOTE_MAX + 2);
+  });
+});
+
+describe("every entity.json key is classified for the settings view (guard)", () => {
+  /** Every key named in an onlyKeys list in config.ts: the keys entity.json can carry. */
+  function configKeys(): string[] {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "config.ts"), "utf8");
+    const keys = new Set<string>();
+    for (const match of source.matchAll(/onlyKeys\(\s*\w+,\s*\[([^\]]*)\]/g)) {
+      for (const literal of (match[1] ?? "").matchAll(/"([^"]+)"/g)) keys.add(literal[1] ?? "");
+    }
+    return [...keys].sort();
+  }
+
+  it("finds the key lists it guards", () => {
+    const keys = configKeys();
+    expect(keys.length).toBeGreaterThan(30);
+    for (const known of ["baseUrl", "apiKeyEnv", "headers", "model", "fallback"]) expect(keys).toContain(known);
+  });
+
+  it("fails when a key is neither shown nor hidden, so a new field cannot leak by default", () => {
+    const unclassified = configKeys().filter((key) => !VISIBLE_SETTING_KEYS.has(key) && !HIDDEN_SETTING_KEYS.has(key));
+    expect(unclassified).toEqual([]);
+  });
+
+  it("never shows a key whose name looks like an address, a key, a token or a secret", () => {
+    const secretLike = /url|key|token|secret|password|auth|header|cookie|credential/i;
+    const shown = [...VISIBLE_SETTING_KEYS].filter((key) => secretLike.test(key));
+    expect(shown).toEqual([]);
+    for (const key of HIDDEN_SETTING_KEYS) expect(VISIBLE_SETTING_KEYS.has(key)).toBe(false);
   });
 });
