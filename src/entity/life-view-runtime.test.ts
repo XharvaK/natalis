@@ -242,3 +242,30 @@ describe("N1: the life view in a turn carries a last-edited stamp per section", 
     }
   });
 });
+
+describe("N2c: the body notes block after her life", () => {
+  it("shows no block when the river has no Domus receipt", async () => {
+    const { entity, model, cli } = await startWithLife(CONFIG, lifeOf(500));
+    try {
+      cli.send("Hello.");
+      await entity.idle();
+      expect(rawSystemTextOf(model.requests[0])).not.toContain("Body notes (receipts");
+    } finally {
+      await entity.stop();
+    }
+  });
+
+  it("states the last Domus view with its seq after her life", async () => {
+    const { entity, model, cli } = await startWithLife(CONFIG, lifeOf(500));
+    try {
+      const seen = entity.river.append({ thread: "domus:slot8", kind: "event", source: "outside", text: "A view.\nGame time: Monday 08:00, running (clock speed NORMAL).", data: { view: "domus" } });
+      cli.send("Hello.");
+      await entity.idle();
+      const system = rawSystemTextOf(model.requests[0]);
+      expect(system).toContain("Body notes (receipts the host keeps; yours to compare):");
+      expect(system).toContain(`Domus clock at the last view (seq ${seen.seq}): Game time: Monday 08:00, running (clock speed NORMAL).`);
+    } finally {
+      await entity.stop();
+    }
+  });
+});
