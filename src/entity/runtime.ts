@@ -2055,6 +2055,12 @@ class Runtime implements Entity {
   /** N2c and N3a: the host's receipts for the states it can check, cached until the river grows. */
   private receiptCache: { lastSeq: number; lines: string[] } | undefined;
 
+  /** N3a: after her wake words, kept as she wrote them, one host line with the latest Domus receipt; empty without one. */
+  private wakeReceiptLine(): string {
+    const attach = this.receiptLines().find((line) => line.startsWith("Domus: "));
+    return attach === undefined ? "" : `\nBody note (receipt): ${attach}`;
+  }
+
   private receiptLines(): string[] {
     const lastSeq = this.river.lastSeq();
     if (this.receiptCache?.lastSeq === lastSeq) return this.receiptCache.lines;
@@ -2216,7 +2222,7 @@ class Runtime implements Entity {
       thread: "self",
       actor: "body",
       source: "body",
-      text: `Your wake: ${wake.why}${wake.until === undefined ? "" : ` (You said it is no longer needed once: ${wake.until}. If so, let it go with cancel_wake.)`}`,
+      text: `Your wake: ${wake.why}${wake.until === undefined ? "" : ` (You said it is no longer needed once: ${wake.until}. If so, let it go with cancel_wake.)`}${this.wakeReceiptLine()}`,
       data: { wakeId: wake.id, scheduledIn: wake.scheduledIn },
       atMs: this.nowMs(),
     });
