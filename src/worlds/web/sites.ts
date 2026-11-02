@@ -4,6 +4,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeFileAtomic } from "../../fsutil/write-atomic.js";
 
 export const WEB_FILE = "web.json";
 export const WEB_PER_HOUR_DEFAULT = 120;
@@ -80,7 +81,5 @@ export function saveWebFile(dir: string, file: { sites: string[]; perHour?: numb
   const body: Record<string, unknown> = { sites: file.sites };
   if (file.perHour !== undefined) body["perHour"] = file.perHour;
   const path = join(dir, WEB_FILE);
-  const temp = `${path}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(body, null, 2)}\n`);
-  renameSync(temp, path);
+  writeFileAtomic(path, `${JSON.stringify(body, null, 2)}\n`);
 }

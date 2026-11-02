@@ -132,6 +132,7 @@ import { charCount, editedStamp, lifeView } from "./life-view.js";
 import { bodyNotesBlock, domusReceipts } from "./body-notes.js";
 import type { NoteSection } from "../notebook/sections.js";
 import { noteSections } from "../notebook/sections.js";
+import { writeFileAtomic } from "../fsutil/write-atomic.js";
 
 export const STATE_FILE = "state.json";
 /** The welcome notice the host may write into the entity's folder. Sent once, in the summoner's place. */
@@ -733,9 +734,7 @@ function checkState(value: unknown): EntityState {
 }
 
 function writeStateFile(path: string, state: EntityState): void {
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, "utf8");
-  renameSync(tmp, path);
+  writeFileAtomic(path, `${JSON.stringify(state, null, 2)}\n`);
 }
 
 export async function seedStub(notebook: Notebook, path: string, text: string, reason: string): Promise<void> {

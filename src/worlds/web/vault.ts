@@ -6,6 +6,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeFileAtomic } from "../../fsutil/write-atomic.js";
 
 export const VAULT_DIR = "vault";
 const VAULT_NAME = /^[A-Za-z0-9_.-]{1,48}$/;
@@ -90,10 +91,8 @@ export function keepVaultEntry(dir: string, name: string, entry: VaultEntry): vo
   const folder = vaultPath(dir);
   mkdirSync(folder, { recursive: true, mode: 0o700 });
   const file = entryFile(dir, name);
-  // The temporary name has a "~", which no vault name may hold, so a leftover is never listed as an entry.
-  const temp = join(folder, `~tmp-${randomBytes(6).toString("hex")}`);
-  writeFileSync(temp, JSON.stringify({ host: entry.host, value: entry.value }), { mode: 0o600 });
-  renameSync(temp, file);
+  // The temporary name starts with a dot and ends in .tmp, which no vault name may hold, so a leftover is never an entry.
+  writeFileAtomic(file, JSON.stringify({ host: entry.host, value: entry.value }), { mode: 0o600 });
 }
 
 /** Deletes one entry. Returns false when there was no entry of that name. */

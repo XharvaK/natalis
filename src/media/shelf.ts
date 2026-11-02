@@ -8,6 +8,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorldBody } from "../contracts.js";
+import { writeFileAtomic } from "../fsutil/write-atomic.js";
 
 export const MEDIA_FOLDER = "media";
 /** A picture is at most this large. */
@@ -112,7 +113,7 @@ export function openShelf(dir: string): Shelf {
         from: { world: input.from.world, place: input.from.place.slice(0, 200) },
         atMs: input.atMs,
       };
-      writeFileSync(join(dir, fileName(meta)), input.bytes);
+      writeFileAtomic(join(dir, fileName(meta)), input.bytes);
       writeSidecar(dir, meta);
       return meta;
     },
@@ -194,9 +195,7 @@ function freshId(dir: string): string {
 
 function writeSidecar(dir: string, meta: PictureMeta): void {
   const path = join(dir, `${meta.id}.json`);
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(meta, null, 2)}\n`, "utf8");
-  renameSync(tmp, path);
+  writeFileAtomic(path, `${JSON.stringify(meta, null, 2)}\n`);
 }
 
 /** One picture's sidecar, checked against its file; undefined when either is missing or does not hold together. */

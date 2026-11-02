@@ -5,6 +5,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { writeFileAtomic } from "../../fsutil/write-atomic.js";
 
 export const OWNER_ALIAS = "owner";
 /** The alias file's name in the Lar's folder. Platform ids are kept only here and in the contacts file. */
@@ -71,11 +72,8 @@ function isStringMap(value: unknown): value is Record<string, string> {
   return Object.values(value).every((alias) => typeof alias === "string" && alias.length > 0);
 }
 
-function writeFileAtomic(path: string, file: AliasFile): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const temp = `${path}.${process.pid}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(file, null, 2)}\n`, "utf8");
-  renameSync(temp, path);
+function writeAliasFile(path: string, file: AliasFile): void {
+  writeFileAtomic(path, `${JSON.stringify(file, null, 2)}\n`, { mkdir: true });
 }
 
 /** A unique alias: the base, then base-2, base-3 ... Never reuses a taken one. */
@@ -104,7 +102,7 @@ export function createAliasStore(options: { path: string; ownerUserId: string; o
   for (const [id, slug] of roomAliasById) channelIdByRoom.set(slug, id);
 
   const save = (): void => {
-    writeFileAtomic(path, {
+    writeAliasFile(path, {
       version: 1,
       users: Object.fromEntries(userAliasById),
       rooms: Object.fromEntries(roomAliasById),

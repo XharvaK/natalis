@@ -7,6 +7,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { writeFileAtomic } from "../fsutil/write-atomic.js";
 
 export const CONTACTS_FILE = "contacts.json";
 const ROOT_KEYS = ["version", "discord"] as const;
@@ -55,10 +56,7 @@ export function readContacts(path: string): ContactsLoad {
 
 /** Writes the contacts file whole: a temporary file, then a rename over the old one. */
 export function writeContacts(path: string, contacts: Contacts): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const temp = `${path}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(contacts, null, 2)}\n`, "utf8");
-  renameSync(temp, path);
+  writeFileAtomic(path, `${JSON.stringify(contacts, null, 2)}\n`, { mkdir: true });
 }
 
 /** The user id a Discord mention names (<@id> or <@!id>), or undefined when the text is not exactly one mention. */

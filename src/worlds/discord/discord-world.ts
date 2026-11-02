@@ -21,6 +21,7 @@ import type { Receipt, RiverSource, SayFile, Tool, World, WorldBody, WorldEvent 
 import { PICTURE_BYTES_MAX } from "../../media/shelf.js";
 import { createAliasStore, OWNER_ALIAS, type AliasStore } from "./aliases.js";
 import { FILE_BYTES_MAX, saveFile, type FilesHome } from "./files.js";
+import { writeFileAtomic } from "../../fsutil/write-atomic.js";
 
 // ---------------------------------------------------------------------------------------------------
 // Platform port: the few calls this world needs. A fake implements it in tests; discord.js implements it
@@ -61,10 +62,7 @@ function readRefs(path: string): RefsFile {
 }
 
 function writeJsonAtomic(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(value));
-  renameSync(tmp, path);
+  writeFileAtomic(path, JSON.stringify(value), { mkdir: true });
 }
 
 export type PlatformAuthor = { id: string; displayName: string; bot: boolean };

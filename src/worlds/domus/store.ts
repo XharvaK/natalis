@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { FORGOTTEN_LINE } from "../../notebook/forget.js";
+import { writeFileAtomic } from "../../fsutil/write-atomic.js";
 
 export const DOMUS_FOLDER = "domus";
 export const DOMUS_DB_FILE = "domus.sqlite";
@@ -610,11 +611,8 @@ export class HeartbeatBook {
   }
 
   private save(): void {
-    mkdirSync(join(this.path, ".."), { recursive: true });
-    const tmp = `${this.path}.tmp`;
     const body: StateFile = { version: 1, sessions: this.sessions };
-    writeFileSync(tmp, JSON.stringify(body));
-    renameSync(tmp, this.path);
+    writeFileAtomic(this.path, JSON.stringify(body), { mkdir: true });
   }
 }
 
