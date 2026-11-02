@@ -129,6 +129,7 @@ import { clockOf, firstDailyOccurrence, localMinuteOf, instantOfLocal, isWakeRep
 import { DEFAULT_LIFE_VIEW_CHARS, DEFAULT_LIFE_WARN_CHARS, DEFAULT_RHYTHM } from "./config.js";
 import { settingsChanges, settingsNoteText, settingsView } from "./settings-change.js";
 import { charCount, editedStamp, lifeView } from "./life-view.js";
+import { bodyNotesBlock, domusReceipts } from "./body-notes.js";
 import type { NoteSection } from "../notebook/sections.js";
 import { noteSections } from "../notebook/sections.js";
 
@@ -154,6 +155,8 @@ export const HOW_YOU_ACT = [
 const DISCORD_PLACE_PREFIX = "discord:";
 const CHARACTER_STUB = "# Character\n\nNothing is written here yet. This is where who I am will go, in my own words.\n";
 const LIFE_PATH = "self/life.md";
+/** The newest river rows the body notes look through for a receipt (N2c). */
+const RECEIPT_SCAN_ROWS = 5000;
 const LIFE_STUB =
   "# Life\n\nNothing is written here yet. This is where my life facts go: where I live, my work, my accounts and my places, in my own words.\n";
 /** The stub notes every entity starts with. The importer replaces them with an imported self. */
@@ -1020,6 +1023,8 @@ class Runtime implements Entity {
         const forgotten = new Set(this.forgottenSeqsIn(river, match));
         const erased = river.forget(match, by, reason);
         if (erased > 0) {
+          // A forgotten view may hold a clock the body notes quote: read them again (N2c).
+          this.receiptCache = undefined;
           // The tombstone names exactly what the river erased, including words the pre-read may have folded away.
           const tomb = river.read({ kinds: ["tombstone"], newestFirst: true, limit: 1 })[0];
           const seqs = tomb?.data?.["seqs"];
@@ -2042,7 +2047,23 @@ class Runtime implements Entity {
       viewChars: this.config.limits?.lifeViewChars ?? DEFAULT_LIFE_VIEW_CHARS,
       stampOf: this.lifeStamps(body),
     });
-    return view.text === "" ? LIFE_STUB.trim() : view.text;
+    const text = view.text === "" ? LIFE_STUB.trim() : view.text;
+    const notes = bodyNotesBlock(this.receiptLines());
+    return notes === "" ? text : `${text}\n\n${notes}`;
+  }
+
+  /** N2c and N3a: the host's receipts for the states it can check, cached until the river grows. */
+  private receiptCache: { lastSeq: number; lines: string[] } | undefined;
+
+  private receiptLines(): string[] {
+    const lastSeq = this.river.lastSeq();
+    if (this.receiptCache?.lastSeq === lastSeq) return this.receiptCache.lines;
+    const rows = this.river.read({ newestFirst: true, limit: RECEIPT_SCAN_ROWS });
+    const zone = this.config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const format = (ms: number): string => `${this.stampFormat.format(ms).replace(",", "")} ${zone}`;
+    const lines = domusReceipts(rows, format);
+    this.receiptCache = { lastSeq, lines };
+    return lines;
   }
 
   /** Stamps the time the body knew it was running, at start and then every ALIVE_STAMP_MS; a start also marks it not stopped. */
