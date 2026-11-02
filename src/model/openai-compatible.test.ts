@@ -597,6 +597,15 @@ describe("final errors", () => {
       expect(err.message).not.toContain(KEY);
     }
   });
+
+  it("never puts a configured header value into an error message (NOTE-3)", async () => {
+    const HEADER = "hdr-token-0123456789abcdef";
+    const { port } = harness([status(400, { error: { message: `bad org ${HEADER} here` } })], { maxAttempts: 1, headers: { "X-Org": HEADER } });
+    const err = await errorOf(port.complete(asks([{ role: "user", content: "hi" }])));
+    expect(err).toBeInstanceOf(ModelError);
+    expect(err.message).not.toContain(HEADER);
+    expect(err.message).toContain("bad org");
+  });
 });
 
 describe("cache marks", () => {
