@@ -2,7 +2,7 @@
 // sees them. The body never opens them and never judges what they are. It caps the size, keeps the name plain, never
 // overwrites a file, and never writes through a link the Lar may have made inside her home.
 
-import { lstatSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** A file is at most this large. */
@@ -38,21 +38,36 @@ export function saveFile(home: FilesHome, name: string, bytes: Uint8Array): { sh
   else if (found.isSymbolicLink() || !found.isDirectory()) {
     throw new Error(`${FILES_FOLDER} in your home is not a plain folder, so nothing was written there`);
   }
-  // The folder must be where it says it is, so a link higher up cannot send the file somewhere else on the host.
-  if (realpathSync(folder) !== join(realpathSync(home.dir), FILES_FOLDER)) {
-    throw new Error(`${FILES_FOLDER} in your home leads somewhere else, so nothing was written there`);
+  // B-1: the folder is opened once, without following a link, and every write goes through that open folder. A swap
+  // the sandbox makes after this point cannot send the file anywhere else on the host.
+  let fd: number;
+  try {
+    fd = openSync(folder, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  } catch {
+    throw new Error(`${FILES_FOLDER} in your home is not a plain folder, so nothing was written there`);
   }
-  const { stem, extension } = plainFileName(name);
-  for (let n = 1; n <= SAME_NAME_MAX; n++) {
-    const candidate = n === 1 ? `${stem}${extension}` : `${stem}-${n}${extension}`;
-    try {
-      // "wx" never replaces a file and never follows a link that is already there.
-      writeFileSync(join(folder, candidate), bytes, { flag: "wx", mode: 0o600 });
-      return { shownAt: `${home.shownAs.replace(/\/+$/, "")}/${FILES_FOLDER}/${candidate}`, name: candidate };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
-      throw new Error("it could not be written into your home");
+  try {
+    // The open folder must be the one at realpath(home)/files, so a link higher up cannot send the file elsewhere.
+    const opened = fstatSync(fd);
+    const expected = lstatOrUndefined(join(realpathSync(home.dir), FILES_FOLDER));
+    if (expected === undefined || !expected.isDirectory() || expected.dev !== opened.dev || expected.ino !== opened.ino) {
+      throw new Error(`${FILES_FOLDER} in your home leads somewhere else, so nothing was written there`);
     }
+    const base = process.platform === "linux" ? `/proc/self/fd/${fd}` : folder;
+    const { stem, extension } = plainFileName(name);
+    for (let n = 1; n <= SAME_NAME_MAX; n++) {
+      const candidate = n === 1 ? `${stem}${extension}` : `${stem}-${n}${extension}`;
+      try {
+        // "wx" never replaces a file and never follows a link that is already there.
+        writeFileSync(`${base}/${candidate}`, bytes, { flag: "wx", mode: 0o600 });
+        return { shownAt: `${home.shownAs.replace(/\/+$/, "")}/${FILES_FOLDER}/${candidate}`, name: candidate };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+        throw new Error("it could not be written into your home");
+      }
+    }
+  } finally {
+    closeSync(fd);
   }
   throw new Error(`${SAME_NAME_MAX} files with that name are already in your home`);
 }
