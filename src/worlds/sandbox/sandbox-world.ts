@@ -377,6 +377,16 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
     let own: string[];
     try {
       own = hostAddresses.current();
+      // AU NB-1: without the router's WAN address the wall has a hole (a NAT hairpin back in), so it does not run.
+      if (hostAddresses.publicState() === "unknown") {
+        void hostAddresses.refresh();
+        console.error("[sandbox] a wall-mode command was refused: the host's public IPv4 address is not known yet.");
+        return refusal(
+          "network_not_walled",
+          "The command did not run, because the network wall needs this host's public address and it is not known yet. Try again in a minute.",
+          "the host's public IPv4 address is not known (the lookup has not answered), so the wall cannot block it",
+        );
+      }
     } catch (err) {
       return refusal("network_not_walled", "The command did not run, because this host's own addresses could not be read for the wall.", errorText(err));
     }

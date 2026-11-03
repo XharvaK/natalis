@@ -15,7 +15,15 @@ export type HostAddresses = {
   current(): string[];
   /** Looks the public address up again. Never rejects: a failed lookup keeps the last answer. */
   refresh(): Promise<void>;
+  /**
+   * Whether the public address the internet sees is known (learned at least once; the last answer is kept),
+   * unknown (no lookup has answered yet), or off (NATALIS_PUBLIC_IP_LOOKUP=off). The sandbox wall refuses while
+   * unknown (AU NB-1); the web world goes on, since it runs on the host's own network anyway.
+   */
+  publicState(): PublicState;
 };
+
+export type PublicState = "known" | "unknown" | "off";
 
 /** Every interface address, loopback included, with any IPv6 zone id taken off. */
 export function interfaceAddresses(interfaces: Interfaces = networkInterfaces()): string[] {
@@ -80,32 +88,64 @@ function readRoutes(): string {
 /** How long a public answer is trusted before current() starts a fresh lookup in the background. */
 const PUBLIC_REFRESH_MS = 10 * 60 * 1000;
 
+/** After a failed lookup, the next one is tried this soon (AU NB-1), not after the full refresh period. */
+const PUBLIC_RETRY_MS = 30 * 1000;
+
 export function createHostAddresses(
   deps: {
     interfaces?: () => Interfaces;
     routeText?: () => string;
     publicIpv4?: () => Promise<string | undefined>;
     nowMs?: () => number;
+    /** "off" skips the outside lookup. Defaults to NATALIS_PUBLIC_IP_LOOKUP. */
+    lookup?: "on" | "off";
+    /** Where a lookup failure or the off switch is told. Defaults to stderr (the service journal). */
+    log?: (line: string) => void;
   } = {},
 ): HostAddresses {
   const interfaces = deps.interfaces ?? (() => networkInterfaces());
   const routeText = deps.routeText ?? readRoutes;
-  // NATALIS_PUBLIC_IP_LOOKUP=off skips the outside lookup (tests; hosts with no outside DNS). Interfaces and gateways stay.
-  const publicIpv4 =
-    deps.publicIpv4 ?? (process.env["NATALIS_PUBLIC_IP_LOOKUP"] === "off" ? async () => undefined : () => lookupPublicIpv4());
+  // NATALIS_PUBLIC_IP_LOOKUP=off skips the outside lookup (tests; hosts with no outside DNS). Interfaces and gateways
+  // stay walled; the router's WAN address is not, and that is logged once (AU NOTE-3).
+  const lookup =
+    deps.lookup ?? (deps.publicIpv4 === undefined && process.env["NATALIS_PUBLIC_IP_LOOKUP"] === "off" ? "off" : "on");
+  const publicIpv4 = deps.publicIpv4 ?? (() => lookupPublicIpv4());
   const nowMs = deps.nowMs ?? Date.now;
+  const log = deps.log ?? ((line: string) => console.error(line));
   let publicAddress: string | undefined;
   let lookedUpAt: number | undefined;
+  let lastFailed = false;
+  let toldFailure = false;
+  let toldOff = false;
   let inFlight: Promise<void> | undefined;
 
   const refresh = (): Promise<void> => {
+    if (lookup === "off") {
+      if (!toldOff) {
+        toldOff = true;
+        log("[natalis] NATALIS_PUBLIC_IP_LOOKUP=off: the router's public (WAN) address is not looked up, so the sandbox wall does not block it.");
+      }
+      return Promise.resolve();
+    }
     if (inFlight) return inFlight;
     inFlight = (async () => {
       try {
         const answer = await publicIpv4();
-        if (answer !== undefined && isIP(answer) === 4) publicAddress = canonicalAddress(answer);
-      } catch {
-        // The last answer stays. Interfaces and gateways are still walled.
+        if (answer === undefined || isIP(answer) !== 4) throw new Error("the answer was not an IPv4 address");
+        publicAddress = canonicalAddress(answer);
+        lastFailed = false;
+        toldFailure = false;
+      } catch (error) {
+        lastFailed = true;
+        if (!toldFailure) {
+          toldFailure = true;
+          const why = error instanceof Error ? error.message : String(error);
+          log(
+            publicAddress === undefined
+              ? `[natalis] the host's public IPv4 address could not be looked up (${why}); wall-mode sandbox commands are refused until it is.`
+              : `[natalis] the host's public IPv4 address could not be looked up again (${why}); the last-known address stays walled.`,
+          );
+        }
       } finally {
         lookedUpAt = nowMs();
         inFlight = undefined;
@@ -116,7 +156,8 @@ export function createHostAddresses(
 
   return {
     current() {
-      if (lookedUpAt !== undefined && nowMs() - lookedUpAt > PUBLIC_REFRESH_MS) void refresh();
+      const wait = lastFailed ? PUBLIC_RETRY_MS : PUBLIC_REFRESH_MS;
+      if (lookup === "on" && (lookedUpAt === undefined || nowMs() - lookedUpAt > wait)) void refresh();
       const all = [...interfaceAddresses(interfaces()), ...defaultGatewaysV4(routeText()), ...(publicAddress ? [publicAddress] : [])];
       const out: string[] = [];
       for (const address of all) {
@@ -126,6 +167,10 @@ export function createHostAddresses(
       return out;
     },
     refresh,
+    publicState() {
+      if (publicAddress !== undefined) return "known";
+      return lookup === "off" ? "off" : "unknown";
+    },
   };
 }
 
