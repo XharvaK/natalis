@@ -274,6 +274,20 @@ describe("the privacy list", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("holds a listed term next to an invalid percent byte in the same run (AU NB-2)", async () => {
+    writeFileSync(join(dir, "privacy.json"), JSON.stringify({ terms: [{ term: "Lantern Yard", category: "home" }] }));
+    for (const url of [
+      "https://example.org/q?x=%4C%61%6E%74%65%72%6E%20%59%61%72%64%FF",
+      "https://example.org/q?x=%254C%2561%256E%2574%2565%2572%256E%2520%2559%2561%2572%2564%25FF",
+      "https://example.org/q?x=%FF%4C%61%6E%74%65%72%6E%20%59%61%72%64",
+      "https://example.org/q?x=%C3%4C%61%6E%74%65%72%6E%20%59%61%72%64",
+    ]) {
+      const r = await run({ url });
+      expect(r.refused?.code, url).toBe("held_privacy");
+    }
+    expect(calls).toHaveLength(0);
+  });
+
   it("refuses every request while the privacy list cannot be read, and says why", async () => {
     writeFileSync(join(dir, "privacy.json"), "{ not json");
     const r = await run({ url: "https://example.org/" });
