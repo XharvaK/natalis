@@ -117,14 +117,16 @@ function outwardRefusal(hold: OutwardHold): Receipt {
 }
 
 /** Every text that leaves in a request: the url as written and as decoded, the header names and values, and the body. */
-function outgoingTexts(url: string, headers: Record<string, string>, body: string | undefined): string[] {
+function outgoingTexts(url: string, headers: Record<string, string>, body: string | undefined, auth?: Auth): string[] {
   let decoded = url;
   try {
     decoded = decodeURIComponent(url.replace(/\+/g, " "));
   } catch {
     // A url that is not valid percent-encoding is checked as written.
   }
-  return [url, decoded, ...Object.keys(headers), ...Object.values(headers), ...(body === undefined ? [] : [body])];
+  // The auth header's name and scheme are the model's own words and leave with the request, like any header.
+  const authTexts = auth === undefined ? [] : [...(auth.header === undefined ? [] : [auth.header]), ...(auth.scheme === undefined ? [] : [auth.scheme])];
+  return [url, decoded, ...Object.keys(headers), ...Object.values(headers), ...authTexts, ...(body === undefined ? [] : [body])];
 }
 
 function messageOf(error: unknown): string {
@@ -450,7 +452,7 @@ export function createWebWorld(options: WebWorldOptions): World {
     if (outward === undefined) {
       return refused("not_started", "The web has not started yet, so nothing was sent.", "The web is not running, so nothing was sent.");
     }
-    const hold = outward.outwardHold(outgoingTexts(asked.url, asked.headers, asked.body));
+    const hold = outward.outwardHold(outgoingTexts(asked.url, asked.headers, asked.body, asked.auth));
     if (hold !== undefined) return outwardRefusal(hold);
 
     let sites: WebFile | undefined;
