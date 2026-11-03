@@ -26,6 +26,9 @@ const DNS: Record<string, string[]> = {
   "internal.example": ["10.1.2.3"],
   "mixed.example": ["93.184.216.60", "192.168.0.9"],
   "mapped.example": ["::ffff:10.0.0.1"],
+  "self.example": ["93.184.216.99"],
+  "self-mapped.example": ["::ffff:93.184.216.99"],
+  "self6.example": ["2606:4700::20"],
 };
 
 const resolve: ResolveHost = async (hostname) => {
@@ -60,7 +63,14 @@ function fetchFake(request: WebFetchRequest): Promise<WebFetchResponse> {
 /** A world started the way the runtime starts it: the body gives it the Lar's privacy check. */
 async function build(): Promise<void> {
   scanner = createSecretScanner();
-  world = createWebWorld({ dir, scanner, fetch: fetchFake, resolve, nowMs: () => clock.now });
+  world = createWebWorld({
+    dir,
+    scanner,
+    fetch: fetchFake,
+    resolve,
+    nowMs: () => clock.now,
+    hostAddresses: { current: () => ["93.184.216.99", "2606:4700::20"], refresh: async () => undefined },
+  });
   await world.start(() => undefined, privacyBody(dir));
 }
 
@@ -89,6 +99,14 @@ afterEach(() => {
 });
 
 describe("addresses and names", () => {
+  it("refuses the host's own public addresses in any spelling (OPENVULN network finding)", async () => {
+    for (const url of ["https://self.example/", "https://self-mapped.example/", "https://self6.example/", "https://93.184.216.99/", "https://[::ffff:5db8:d863]/", "https://[2606:4700:0:0:0:0:0:20]/"]) {
+      const r = await run({ url });
+      expect(r.refused?.code, url).toBe("host_address");
+    }
+    expect(calls).toHaveLength(0);
+  });
+
   it("refuses a name that resolves to a private address, even when one of several is public", async () => {
     const r = await run({ url: "https://internal.example/" });
     expect(r.refused?.code).toBe("non_public_address");

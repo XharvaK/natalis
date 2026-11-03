@@ -47,6 +47,30 @@ describe("the route script", () => {
   });
 });
 
+describe("the host's own addresses in the route script", () => {
+  it("adds one unreachable /32 route per host IPv4 address, after the walled ranges", () => {
+    const script = routeScript("/usr/sbin/ip", ["203.0.113.7", "198.51.100.20"]);
+    expect(script).toContain("/usr/sbin/ip route add unreachable 203.0.113.7/32");
+    expect(script.endsWith("/usr/sbin/ip route add unreachable 198.51.100.20/32")).toBe(true);
+  });
+
+  it("walls the public address the NAT router answers on, so a hairpin back to the LAN fails", () => {
+    expect(routeScript("/usr/sbin/ip", ["192.168.1.1", "203.0.113.1"])).toContain("route add unreachable 203.0.113.1/32");
+  });
+
+  it("leaves out IPv6, loopback, the wall's own network and anything that is not an address, and repeats nothing", () => {
+    const script = routeScript("/usr/sbin/ip", ["2001:db8::1", "127.0.0.1", "192.0.2.2", "1.2.3.4; reboot", "203.0.113.7", "203.0.113.7"]);
+    expect(script.split("route add unreachable").length - 1).toBe(WALLED_RANGES.length + 1);
+    expect(script).not.toContain("reboot");
+    expect(script).not.toContain("2001:db8");
+  });
+
+  it("is passed through by wallCommand", () => {
+    const command = wallCommand({ pastaPath: "/p", ipPath: "/usr/sbin/ip", bwrapPath: "/b", bwrapArgs: [], hostAddresses: ["203.0.113.7"] });
+    expect(command.args.join(" ")).toContain("route add unreachable 203.0.113.7/32");
+  });
+});
+
 describe("wallCommand", () => {
   it("runs pasta with its arguments, then the shell that routes and then execs bwrap with its arguments", () => {
     const bwrapArgs = ["--unshare-all", "--share-net", "bash", "-lc", "echo hi"];

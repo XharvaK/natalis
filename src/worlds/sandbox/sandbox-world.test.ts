@@ -52,6 +52,7 @@ function makeHarness(
     locate: (configured: string | undefined) => string | undefined;
     locatePasta: (configured: string | undefined) => string | undefined;
     locateIp: (configured: string | undefined) => string | undefined;
+    hostAddresses: string[];
   }> = {},
 ): Harness {
   const children: FakeChild[] = [];
@@ -75,6 +76,7 @@ function makeHarness(
     locatePasta: overrides.locatePasta ?? (() => "/usr/bin/pasta"),
     locateIp: overrides.locateIp ?? (() => "/usr/sbin/ip"),
     killGroup,
+    hostAddresses: { current: () => overrides.hostAddresses ?? [], refresh: async () => undefined },
     nowMs: () => (nowValues.length > 1 ? (nowValues.shift() as number) : nowValues[0] as number),
   });
   return { world, spawn, killGroup, children, dir, nowValues };
@@ -523,6 +525,16 @@ describe("the network: wall (the default), host, or none", () => {
     ]);
     expect(bwrapArgs).toContain("--share-net");
     expect(options).toMatchObject({ detached: true, env: {} });
+    (harness.children[0] as FakeChild).emit("close", 0, null);
+    await pending;
+  });
+
+  it("walls the host's own addresses, looked up when the command runs (OPENVULN wall highs)", async () => {
+    harness = await started({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, network: "wall" }, hostAddresses: ["203.0.113.7", "203.0.113.1"] });
+    const pending = runTool(harness.world).run({ command: "echo hi" }, context());
+    const [, args] = harness.spawn.mock.calls[0] as [string, string[], SpawnOptions];
+    expect(args).toContain(`${routeScript("/usr/sbin/ip", ["203.0.113.7", "203.0.113.1"])}; exec "$@"`);
+    expect(args.join(" ")).toContain("route add unreachable 203.0.113.7/32");
     (harness.children[0] as FakeChild).emit("close", 0, null);
     await pending;
   });
