@@ -425,7 +425,7 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
 
     async start(_emit, body): Promise<void> {
       outward = body;
-      if (config.network === "wall") await hostAddresses.refresh();
+      if (network === "wall") await hostAddresses.refresh();
       if (platform !== "linux") {
         throw new Error(
           `The sandbox runs on Linux only (Bubblewrap); this host is ${platform}. Remove sandbox.json, or run the Lar on a Linux host.`,
