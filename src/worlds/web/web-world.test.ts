@@ -240,6 +240,23 @@ describe("the privacy list", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("holds a listed term in auth.scheme or auth.header, and sends nothing (OPENVULN auth fields)", async () => {
+    writeFileSync(
+      join(dir, "privacy.json"),
+      JSON.stringify({ terms: [{ term: "Lantern Yard", category: "home" }, { term: "Hollins", category: "family" }] }),
+    );
+    await seedVault();
+    const cases: Record<string, unknown>[] = [
+      { url: "https://example.org/me", auth: { vault: "site_key", scheme: "Lantern Yard" } },
+      { url: "https://example.org/me", auth: { vault: "site_key", header: "x-hollins" } },
+    ];
+    for (const args of cases) {
+      const r = await run(args);
+      expect(r.refused?.code, JSON.stringify(args)).toBe("held_privacy");
+    }
+    expect(calls).toHaveLength(0);
+  });
+
   it("refuses every request while the privacy list cannot be read, and says why", async () => {
     writeFileSync(join(dir, "privacy.json"), "{ not json");
     const r = await run({ url: "https://example.org/" });
