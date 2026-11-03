@@ -28,6 +28,15 @@ describe("validVaultName", () => {
 });
 
 describe("hostsMatch", () => {
+  it("keeps a value bound to www.<zone> to www.<zone> and the bare zone, never another subdomain (OPENVULN vault)", () => {
+    expect(hostsMatch("www.example.org", "www.example.org")).toBe(true);
+    expect(hostsMatch("example.org", "www.example.org")).toBe(true);
+    expect(hostsMatch("evil.example.org", "www.example.org")).toBe(false);
+    expect(hostsMatch("uploads.example.org", "www.example.org")).toBe(false);
+    expect(hostsMatch("a.b.example.org", "WWW.example.org.")).toBe(false);
+    expect(hostsMatch("api.www.example.org", "www.example.org")).toBe(true);
+  });
+
   it("matches equal hosts, subdomains and a leading www. on either side", () => {
     expect(hostsMatch("example.org", "example.org")).toBe(true);
     expect(hostsMatch("api.example.org", "example.org")).toBe(true);
