@@ -119,14 +119,18 @@ function outwardRefusal(hold: OutwardHold): Receipt {
 /** How many times a url is percent-decoded at most before the privacy check: deeper nesting is held, not sent. */
 const MAX_URL_DECODES = 8;
 
-/** One pass of percent-decoding that leaves an invalid sequence as written, so one bad "%" cannot hide the rest. */
+/** Lossy UTF-8: an invalid byte becomes U+FFFD and the bytes around it still decode (AU NB-2). */
+const LOSSY_UTF8 = new TextDecoder("utf-8", { fatal: false });
+
+/**
+ * One pass of percent-decoding. Each run of %XX is decoded as UTF-8 bytes, with an invalid byte turned into U+FFFD,
+ * so one bad byte cannot keep the rest of its run encoded and hide a listed term from the check.
+ */
 function decodeOnce(text: string): string {
   return text.replace(/\+/g, " ").replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
-    try {
-      return decodeURIComponent(run);
-    } catch {
-      return run;
-    }
+    const bytes = new Uint8Array(run.length / 3);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(run.slice(i * 3 + 1, i * 3 + 3), 16);
+    return LOSSY_UTF8.decode(bytes);
   });
 }
 
