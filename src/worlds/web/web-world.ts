@@ -116,17 +116,38 @@ function outwardRefusal(hold: OutwardHold): Receipt {
   return refused(words.code, words.reason, words.summary);
 }
 
-/** Every text that leaves in a request: the url as written and as decoded, the header names and values, and the body. */
-function outgoingTexts(url: string, headers: Record<string, string>, body: string | undefined, auth?: Auth): string[] {
-  let decoded = url;
-  try {
-    decoded = decodeURIComponent(url.replace(/\+/g, " "));
-  } catch {
-    // A url that is not valid percent-encoding is checked as written.
+/** How many times a url is percent-decoded at most before the privacy check: deeper nesting is held, not sent. */
+const MAX_URL_DECODES = 8;
+
+/** One pass of percent-decoding that leaves an invalid sequence as written, so one bad "%" cannot hide the rest. */
+function decodeOnce(text: string): string {
+  return text.replace(/\+/g, " ").replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
+    try {
+      return decodeURIComponent(run);
+    } catch {
+      return run;
+    }
+  });
+}
+
+/**
+ * Every text that leaves in a request: the url as written and in every decoded form until decoding changes nothing,
+ * the header names and values, the auth header's name and scheme, and the body. Undefined when the url still changes
+ * after MAX_URL_DECODES passes: such a url is refused, never sent unchecked.
+ */
+function outgoingTexts(url: string, headers: Record<string, string>, body: string | undefined, auth?: Auth): string[] | undefined {
+  const forms = [url];
+  let current = url;
+  for (let pass = 0; pass < MAX_URL_DECODES; pass++) {
+    const next = decodeOnce(current);
+    if (next === current) break;
+    forms.push(next);
+    current = next;
   }
+  if (decodeOnce(current) !== current) return undefined;
   // The auth header's name and scheme are the model's own words and leave with the request, like any header.
   const authTexts = auth === undefined ? [] : [...(auth.header === undefined ? [] : [auth.header]), ...(auth.scheme === undefined ? [] : [auth.scheme])];
-  return [url, decoded, ...Object.keys(headers), ...Object.values(headers), ...authTexts, ...(body === undefined ? [] : [body])];
+  return [...forms, ...Object.keys(headers), ...Object.values(headers), ...authTexts, ...(body === undefined ? [] : [body])];
 }
 
 function messageOf(error: unknown): string {
@@ -452,7 +473,11 @@ export function createWebWorld(options: WebWorldOptions): World {
     if (outward === undefined) {
       return refused("not_started", "The web has not started yet, so nothing was sent.", "The web is not running, so nothing was sent.");
     }
-    const hold = outward.outwardHold(outgoingTexts(asked.url, asked.headers, asked.body, asked.auth));
+    const texts = outgoingTexts(asked.url, asked.headers, asked.body, asked.auth);
+    if (texts === undefined) {
+      return refused("url_too_nested", `The url is percent-encoded more than ${MAX_URL_DECODES} times over, so it cannot be checked and nothing was sent.`, "The url is encoded too many times over to check, so nothing was sent.");
+    }
+    const hold = outward.outwardHold(texts);
     if (hold !== undefined) return outwardRefusal(hold);
 
     let sites: WebFile | undefined;
