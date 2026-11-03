@@ -5,6 +5,7 @@
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { type HostAddresses, sharedHostAddresses } from "../host-addresses.js";
 import type { Receipt, Tool, ToolContext, World, WorldBody } from "../../contracts.js";
 import { outwardHoldWords } from "../../entity/privacy.js";
 import { BODY_MOUNT, bodyRefusal, defaultBodyRoot } from "./body.js";
@@ -48,6 +49,8 @@ export type SandboxWorldOptions = {
    * runs from. Injected in tests.
    */
   bodyDir?: string;
+  /** The host's own addresses, walled in "wall" mode. Injected in tests; the process's shared lookup when absent. */
+  hostAddresses?: HostAddresses;
 };
 
 type Status = "idle" | "ready" | "stopped";
@@ -159,6 +162,7 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
   const locate = options.locateBwrap ?? findBwrap;
   const locatePasta = options.locatePasta ?? findPasta;
   const locateIp = options.locateIp ?? findIp;
+  const hostAddresses = options.hostAddresses ?? sharedHostAddresses();
   const killGroup = options.killGroup ?? defaultKillGroup;
   const bodyRoot = options.bodyDir ?? defaultBodyRoot();
   const network = config.network ?? SANDBOX_DEFAULT_NETWORK;
@@ -370,7 +374,13 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
         `not found: ${missing.join(", ")}`,
       );
     }
-    const walled = wallCommand({ pastaPath, ipPath, bwrapPath, bwrapArgs });
+    let own: string[];
+    try {
+      own = hostAddresses.current();
+    } catch (err) {
+      return refusal("network_not_walled", "The command did not run, because this host's own addresses could not be read for the wall.", errorText(err));
+    }
+    const walled = wallCommand({ pastaPath, ipPath, bwrapPath, bwrapArgs, hostAddresses: own });
     return execute(walled.command, walled.args, timeoutSeconds, context.signal);
   }
 
@@ -405,6 +415,7 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
 
     async start(_emit, body): Promise<void> {
       outward = body;
+      if (config.network === "wall") await hostAddresses.refresh();
       if (platform !== "linux") {
         throw new Error(
           `The sandbox runs on Linux only (Bubblewrap); this host is ${platform}. Remove sandbox.json, or run the Lar on a Linux host.`,

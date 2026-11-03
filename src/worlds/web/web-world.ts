@@ -4,6 +4,7 @@
 // mechanics (what may be connected to, what may be sent, how much is read); what a page means is the Lar's to judge.
 
 import { isIP } from "node:net";
+import { canonicalAddress, type HostAddresses, sharedHostAddresses } from "../host-addresses.js";
 import type { OutwardHold, Receipt, SecretScanner, Tool, World, WorldBody } from "../../contracts.js";
 import { outwardHoldWords } from "../../entity/privacy.js";
 import { MIN_KNOWN_VALUE_LENGTH } from "../../secrets/scanner.js";
@@ -82,6 +83,8 @@ export type WebWorldOptions = {
   /** The name lookup. Defaults to the system resolver. */
   resolve?: ResolveHost;
   nowMs?: () => number;
+  /** The host's own addresses, never a request's target. Injected in tests; the process's shared lookup when absent. */
+  hostAddresses?: HostAddresses;
 };
 
 /** A stop before anything is sent, or while the request is being made: a plain code, summary and reason. */
@@ -155,7 +158,7 @@ export function webUrl(value: string): URL | undefined {
 }
 
 /** The address a check must pass: the host's own address, or every address the name resolves to. */
-async function checkedAddress(hostname: string, resolve: ResolveHost): Promise<ResolvedAddress> {
+async function checkedAddress(hostname: string, resolve: ResolveHost, own: HostAddresses): Promise<ResolvedAddress> {
   const bare = hostname.replace(/^\[|\]$/g, "");
   const literal = isIP(bare);
   let addresses: ResolvedAddress[];
@@ -173,6 +176,11 @@ async function checkedAddress(hostname: string, resolve: ResolveHost): Promise<R
   }
   if (addresses.some((record) => !isPublicAddress(record.address))) {
     throw new WebStop("non_public_address", "That address is not a public one, so nothing was sent.", "That address is not a public one.");
+  }
+  // A public range is not enough: this host's own public address (or its router's) reaches its own services.
+  const ownList = own.current();
+  if (addresses.some((record) => ownList.includes(canonicalAddress(record.address) ?? record.address))) {
+    throw new WebStop("host_address", "That address is this host's own, so nothing was sent.", "That address belongs to this host or its router.");
   }
   return addresses[0]!;
 }
@@ -331,6 +339,7 @@ export function createWebWorld(options: WebWorldOptions): World {
   const { dir, scanner } = options;
   const transport = options.fetch ?? defaultWebFetch;
   const resolve = options.resolve ?? defaultResolve;
+  const hostAddresses = options.hostAddresses ?? sharedHostAddresses();
   const nowMs = options.nowMs ?? (() => Date.now());
   const requestTimes: number[] = [];
   /** The body the runtime gives the world at start. Its privacy check is the only way a request is checked. */
@@ -529,7 +538,7 @@ export function createWebWorld(options: WebWorldOptions): World {
       }
       let address: ResolvedAddress;
       try {
-        address = await checkedAddress(current.hostname, resolve);
+        address = await checkedAddress(current.hostname, resolve, hostAddresses);
       } catch (error) {
         if (error instanceof WebStop) return refused(error.code, error.message, error.summary);
         throw error;
@@ -727,6 +736,7 @@ export function createWebWorld(options: WebWorldOptions): World {
 
     async start(_emit, body) {
       outward = body;
+      await hostAddresses.refresh();
       // Every vault value is known to the scanner before anything can read the reply that might carry it.
       const vault = readVault(dir);
       for (const entry of Object.values(vault)) {

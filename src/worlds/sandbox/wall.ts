@@ -65,16 +65,39 @@ function shellWord(text: string): string {
  * The route script, run as root inside the command's network before bwrap drops everything. `set -e` makes a failed
  * route stop the script, so the command never runs without the wall. The ip program is named by its full path.
  */
-export function routeScript(ipPath: string): string {
+export function routeScript(ipPath: string, hostAddresses: readonly string[] = []): string {
   const ip = shellWord(ipPath);
-  return ["set -e", ...WALLED_RANGES.map((range) => `${ip} route add unreachable ${range}`)].join("; ");
+  return ["set -e", ...[...WALLED_RANGES, ...hostRoutes(hostAddresses)].map((range) => `${ip} route add unreachable ${range}`)].join("; ");
+}
+
+/**
+ * The host's own IPv4 addresses as /32 routes: its interfaces, its gateways and the public address the internet sees
+ * (the router's, behind NAT, so a hairpin back in fails too). The wall is IPv4 only, so IPv6 is left out; so are the
+ * loopback (the command has its own), the wall's own 192.0.2.0/24, and any text that is not a dotted IPv4 address.
+ */
+function hostRoutes(addresses: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const address of addresses) {
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(address) || address.split(".").some((octet) => Number(octet) > 255)) continue;
+    if (address.startsWith("127.") || address.startsWith("192.0.2.")) continue;
+    const route = `${address}/32`;
+    if (!out.includes(route)) out.push(route);
+  }
+  return out;
 }
 
 /**
  * The program and argument list for a wall-mode run: pasta runs `sh -c '<route script>; exec "$@"'`, and the shell
  * replaces itself with bwrap, which keeps --share-net and so shares the network pasta made.
  */
-export function wallCommand(input: { pastaPath: string; ipPath: string; bwrapPath: string; bwrapArgs: string[] }): {
+export function wallCommand(input: {
+  pastaPath: string;
+  ipPath: string;
+  bwrapPath: string;
+  bwrapArgs: string[];
+  /** The host's own addresses, looked up when the command runs. */
+  hostAddresses?: readonly string[];
+}): {
   command: string;
   args: string[];
 } {
@@ -85,7 +108,7 @@ export function wallCommand(input: { pastaPath: string; ipPath: string; bwrapPat
       "--",
       "/bin/sh",
       "-c",
-      `${routeScript(input.ipPath)}; exec "$@"`,
+      `${routeScript(input.ipPath, input.hostAddresses ?? [])}; exec "$@"`,
       "sh",
       input.bwrapPath,
       ...input.bwrapArgs,
