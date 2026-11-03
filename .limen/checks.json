@@ -1,0 +1,5 @@
+{
+  "test_cmd": "npm run typecheck && npm test",
+  "test_timeout_seconds": 1800,
+  "reuse_test_for": ["*.md"]
+}
