@@ -534,6 +534,24 @@ describe("the network: wall (the default), host, or none", () => {
     await pending;
   });
 
+  it("looks the public address up at start when the network is left to its default, the wall (AU NOTE-2)", async () => {
+    let refreshes = 0;
+    const world = createSandboxWorld({
+      dir,
+      config: { timeoutSeconds: 120, maxTimeoutSeconds: 900 },
+      bodyDir: checkout,
+      spawn: vi.fn() as unknown as SpawnFn,
+      platform: "linux",
+      locateBwrap: () => "/usr/bin/bwrap",
+      locatePasta: () => "/usr/bin/pasta",
+      locateIp: () => "/usr/sbin/ip",
+      killGroup: vi.fn(),
+      hostAddresses: { current: () => [], refresh: async () => void (refreshes += 1), publicState: () => "known" },
+    });
+    await world.start(() => undefined, privacyBody(dir));
+    expect(refreshes).toBe(1);
+  });
+
   it("refuses a wall-mode command while the host's public address is unknown (AU NB-1)", async () => {
     harness = await started({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, network: "wall" }, publicState: "unknown" });
     const receipt = await runTool(harness.world).run({ command: "echo hi" }, context());
