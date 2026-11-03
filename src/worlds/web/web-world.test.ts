@@ -257,6 +257,23 @@ describe("the privacy list", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("refuses a url still encoded after the decode cap (OPENVULN url decode)", async () => {
+    let url = "Lantern Yard";
+    for (let i = 0; i < 10; i++) url = encodeURIComponent(url);
+    const r = await run({ url: `https://example.org/q?${url}` });
+    expect(r.refused?.code).toBe("url_too_nested");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("holds a double- or triple-encoded listed term in the url (OPENVULN url decode)", async () => {
+    writeFileSync(join(dir, "privacy.json"), JSON.stringify({ terms: [{ term: "Lantern Yard", category: "home" }] }));
+    for (const url of ["https://example.org/search?q=Lantern%2520Yard", "https://example.org/p/Lantern%252520Yard", "https://example.org/%254c%2561ntern+Yard"]) {
+      const r = await run({ url });
+      expect(r.refused?.code, url).toBe("held_privacy");
+    }
+    expect(calls).toHaveLength(0);
+  });
+
   it("refuses every request while the privacy list cannot be read, and says why", async () => {
     writeFileSync(join(dir, "privacy.json"), "{ not json");
     const r = await run({ url: "https://example.org/" });
