@@ -20,18 +20,16 @@ export function validVaultName(name: string): boolean {
 }
 
 /**
- * Whether a request host may receive a vault entry bound to another host. One leading "www." is ignored on both
- * sides. The request host must be the bound host or a subdomain of it, so a value kept for api.example.org never
- * goes to example.org, but a value kept for example.org may go to api.example.org.
+ * Whether a request host may receive a vault entry bound to another host. The request host must be the bound host or a
+ * subdomain of it, so a value kept for api.example.org never goes to example.org, but a value kept for example.org may
+ * go to api.example.org and www.example.org. A value kept for www.example.org goes to www.example.org, its subdomains,
+ * and the bare example.org; never to another subdomain of example.org (the "www." is not dropped from the bound host).
  */
 export function hostsMatch(requestHost: string, boundHost: string): boolean {
-  const a = stripWww(requestHost.toLowerCase().replace(/\.+$/, ""));
-  const b = stripWww(boundHost.toLowerCase().replace(/\.+$/, ""));
-  return a === b || a.endsWith(`.${b}`);
-}
-
-function stripWww(host: string): string {
-  return host.startsWith("www.") ? host.slice(4) : host;
+  const a = requestHost.toLowerCase().replace(/\.+$/, "");
+  const b = boundHost.toLowerCase().replace(/\.+$/, "");
+  if (a === b || a.endsWith(`.${b}`)) return true;
+  return b.startsWith("www.") && a === b.slice(4);
 }
 
 function vaultPath(dir: string): string {
