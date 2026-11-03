@@ -276,6 +276,9 @@ function checkAuth(value: unknown): Checked<Auth | undefined> {
   if (typeof auth["vault"] !== "string" || !validVaultName(auth["vault"])) return bad("auth.vault is the name of a value in your vault.");
   const header = auth["header"];
   if (header !== undefined && (typeof header !== "string" || !HEADER_NAME.test(header))) return bad("auth.header is a header name.");
+  if (typeof header === "string" && FORBIDDEN_HEADERS.has(header.toLowerCase())) {
+    return bad(`auth.header cannot be ${header.toLowerCase()}: the web sets that header itself.`);
+  }
   const scheme = auth["scheme"];
   if (scheme !== undefined && (typeof scheme !== "string" || scheme.length > 32)) return bad("auth.scheme is short text, such as Bearer, or empty.");
   return {
