@@ -436,6 +436,15 @@ describe("the vault", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("refuses an auth.header the web sets itself, such as host or content-length (AU NOTE-1)", async () => {
+    await seedVault();
+    for (const header of ["host", "Content-Length", "transfer-encoding", "connection"]) {
+      const r = await run({ url: "https://example.org/me", auth: { vault: "site_key", header } });
+      expect(r.refused?.code, header).toBe("bad_request");
+    }
+    expect(calls).toHaveLength(0);
+  });
+
   it("refuses auth with a name that is not in the vault", async () => {
     const r = await run({ url: "https://example.org/", auth: { vault: "nothing_here" } });
     expect(r.refused?.code).toBe("vault_missing");
