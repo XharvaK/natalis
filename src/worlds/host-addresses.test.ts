@@ -74,3 +74,57 @@ describe("the host's own addresses", () => {
     expect(host.current()).toEqual([]);
   });
 });
+
+describe("a failed public lookup (AU NB-1)", () => {
+  it("reports the public address unknown, logs it once per episode, and retries within a minute", async () => {
+    let calls = 0;
+    let now = 0;
+    const lines: string[] = [];
+    const host = createHostAddresses({
+      interfaces: () => ({}),
+      routeText: () => "",
+      publicIpv4: async () => {
+        calls += 1;
+        throw new Error("no outside DNS");
+      },
+      nowMs: () => now,
+      log: (line) => lines.push(line),
+    });
+    await host.refresh();
+    expect(host.publicState()).toBe("unknown");
+    await host.refresh();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("public IPv4");
+    now = 61_000;
+    host.current();
+    await host.refresh();
+    expect(calls).toBeGreaterThanOrEqual(3);
+  });
+
+  it("keeps the last-known address as known after a later failure", async () => {
+    let fail = false;
+    const host = createHostAddresses({
+      interfaces: () => ({}),
+      routeText: () => "",
+      publicIpv4: async () => {
+        if (fail) throw new Error("down");
+        return "93.184.216.99";
+      },
+      nowMs: () => 0,
+      log: () => undefined,
+    });
+    await host.refresh();
+    fail = true;
+    await host.refresh();
+    expect(host.publicState()).toBe("known");
+    expect(host.current()).toContain("93.184.216.99");
+  });
+
+  it("says off when the lookup is switched off, and logs that the WAN address is not walled", async () => {
+    const lines: string[] = [];
+    const host = createHostAddresses({ interfaces: () => ({}), routeText: () => "", lookup: "off", log: (line) => lines.push(line) });
+    await host.refresh();
+    expect(host.publicState()).toBe("off");
+    expect(lines.join(" ")).toContain("NATALIS_PUBLIC_IP_LOOKUP=off");
+  });
+});

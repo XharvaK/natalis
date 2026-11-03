@@ -52,6 +52,7 @@ let queue: Array<WebFetchResponse | Error>;
 let clock: { now: number };
 let scanner: ReturnType<typeof createSecretScanner>;
 let world: World;
+let hostPublicState: "known" | "unknown" | "off" = "known";
 
 function fetchFake(request: WebFetchRequest): Promise<WebFetchResponse> {
   calls.push({ ...request, headers: { ...request.headers } });
@@ -69,7 +70,7 @@ async function build(): Promise<void> {
     fetch: fetchFake,
     resolve,
     nowMs: () => clock.now,
-    hostAddresses: { current: () => ["93.184.216.99", "2606:4700::20"], refresh: async () => undefined },
+    hostAddresses: { current: () => ["93.184.216.99", "2606:4700::20"], refresh: async () => undefined, publicState: () => hostPublicState },
   });
   await world.start(() => undefined, privacyBody(dir));
 }
@@ -99,6 +100,17 @@ afterEach(() => {
 });
 
 describe("addresses and names", () => {
+  it("still sends an ordinary web request while the host's public address is unknown (AU NB-1)", async () => {
+    hostPublicState = "unknown";
+    try {
+      const r = await run({ url: "https://example.org/" });
+      expect(r.ok).toBe(true);
+      expect(calls).toHaveLength(1);
+    } finally {
+      hostPublicState = "known";
+    }
+  });
+
   it("refuses the host's own public addresses in any spelling (OPENVULN network finding)", async () => {
     for (const url of ["https://self.example/", "https://self-mapped.example/", "https://self6.example/", "https://93.184.216.99/", "https://[::ffff:5db8:d863]/", "https://[2606:4700:0:0:0:0:0:20]/"]) {
       const r = await run({ url });

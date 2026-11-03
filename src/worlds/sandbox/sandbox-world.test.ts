@@ -53,6 +53,7 @@ function makeHarness(
     locatePasta: (configured: string | undefined) => string | undefined;
     locateIp: (configured: string | undefined) => string | undefined;
     hostAddresses: string[];
+    publicState: "known" | "unknown" | "off";
   }> = {},
 ): Harness {
   const children: FakeChild[] = [];
@@ -76,7 +77,11 @@ function makeHarness(
     locatePasta: overrides.locatePasta ?? (() => "/usr/bin/pasta"),
     locateIp: overrides.locateIp ?? (() => "/usr/sbin/ip"),
     killGroup,
-    hostAddresses: { current: () => overrides.hostAddresses ?? [], refresh: async () => undefined },
+    hostAddresses: {
+      current: () => overrides.hostAddresses ?? [],
+      refresh: async () => undefined,
+      publicState: () => overrides.publicState ?? "known",
+    },
     nowMs: () => (nowValues.length > 1 ? (nowValues.shift() as number) : nowValues[0] as number),
   });
   return { world, spawn, killGroup, children, dir, nowValues };
@@ -525,6 +530,22 @@ describe("the network: wall (the default), host, or none", () => {
     ]);
     expect(bwrapArgs).toContain("--share-net");
     expect(options).toMatchObject({ detached: true, env: {} });
+    (harness.children[0] as FakeChild).emit("close", 0, null);
+    await pending;
+  });
+
+  it("refuses a wall-mode command while the host's public address is unknown (AU NB-1)", async () => {
+    harness = await started({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, network: "wall" }, publicState: "unknown" });
+    const receipt = await runTool(harness.world).run({ command: "echo hi" }, context());
+    expect(receipt.refused?.code).toBe("network_not_walled");
+    expect(receipt.refused?.reason).toContain("public");
+    expect(harness.spawn).not.toHaveBeenCalled();
+  });
+
+  it("still runs a host-network command while the public address is unknown", async () => {
+    harness = await started({ config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, network: "host" }, publicState: "unknown" });
+    const pending = runTool(harness.world).run({ command: "echo hi" }, context());
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
     (harness.children[0] as FakeChild).emit("close", 0, null);
     await pending;
   });
