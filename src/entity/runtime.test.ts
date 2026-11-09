@@ -37,6 +37,7 @@ import { TURN_DEADLINE_MS } from "../model/turn-deadline.js";
 import { isLive, purposeOf, type Purpose } from "../river/purpose.js";
 import { viewKeyOfRow } from "../river/view-index.js";
 import { forgetInStateFile, openEntity, OUTBOX_JOB_TIMEOUT_MS, REFLECT_DEADLINE_MS, STATE_FILE, type Entity, type OpenEntityOptions } from "./runtime.js";
+import { MEMORY_TOOLS_LINE } from "./settings-change.js";
 import { COMMITMENTS_STUB, HOUSEHOLD_PATH, OLD_COMMITMENTS_STUB } from "./commitments.js";
 import { isStopOn } from "./stop.js";
 import { PRIVACY_UNREADABLE_REASON } from "./privacy.js";
@@ -3935,6 +3936,23 @@ describe("the daily rhythm", () => {
     ]);
     expect(stateObject()["rhythmGiven"]).toBe(true);
     expect(new Set(wakes.map((wake) => wake.id)).size).toBe(3);
+  });
+
+  it("names the memory tools and when to use each on the host's daily wake", async () => {
+    await withClock(async (advance) => {
+      vi.setSystemTime(Date.parse("2026-10-11T13:59:00Z"));
+      const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+      const { entity } = await open(model, { stopPollMs: 1e9, config: { ...CONFIG, rhythm: ["14:00"] } });
+      await entity.start();
+      await advance(61_000);
+      await entity.idle();
+      const fired = allRows(entity).find((row) => row.thread === "self" && row.text?.startsWith("Your wake:"));
+      expect(fired?.text).toContain("Your daily rhythm.");
+      expect(fired?.text).toContain(MEMORY_TOOLS_LINE);
+      for (const tool of ["mark", "record_fact", "close_fact", "link_notes"]) {
+        expect(fired?.text).toContain(tool);
+      }
+    });
   });
 
   it("is not given again after the Lar cancels its rhythm and starts again", async () => {
