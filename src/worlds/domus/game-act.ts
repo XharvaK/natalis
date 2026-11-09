@@ -212,7 +212,7 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
   }
   if (typeof args.expect === "string") {
     const changed = refChanged(option, first, args.expect, "");
-    if (changed) return changed;
+    if (changed) return withNewestView(changed, options);
   }
   const then: Array<{ ref: string; found: Found }> = [];
   for (const [index, ref] of (thenRefs as string[]).entries()) {
@@ -221,7 +221,7 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
     const expected = Array.isArray(expectThen) ? expectThen[index] : undefined;
     if (typeof expected === "string") {
       const changed = refChanged(ref, found, expected, " (in then)");
-      if (changed) return changed;
+      if (changed) return withNewestView(changed, options);
     }
     // A later step is released with no Sim, so one that opens a Sim's picker could not be done: it is refused now.
     if (found.act.needs_sim === true) {
