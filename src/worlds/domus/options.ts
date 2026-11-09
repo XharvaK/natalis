@@ -379,6 +379,13 @@ function distanceOf(object: OptionObject): number {
  * not fit the budget is cut farthest first and said in one line (VIEW3-8, item 14). Every object keeps its refs. The
  * view's count line of the game's own cut is added to the count.
  */
+function roomName(object: OptionObject): string | undefined {
+  const id = typeof object.room_id === "string" && object.room_id !== "" ? object.room_id : undefined;
+  const label = typeof object.room === "string" && object.room !== "" ? object.room : undefined;
+  if (id && label && label !== id) return `${id} ${label}`;
+  return id ?? label;
+}
+
 function choicesBlock(options: readonly OptionObject[], cut: OptionsCut | undefined, budget: number, ranks: ReadonlyMap<string, number>): string[] {
   const near = options.filter(isNear);
   // Her queue is not in a room: it is its own group, right after the near objects, and never under a room heading.
@@ -396,7 +403,7 @@ function choicesBlock(options: readonly OptionObject[], cut: OptionsCut | undefi
     }
     const groups = new Map<string, OptionObject[]>();
     for (const object of kept) {
-      const room = typeof object.room === "string" && object.room !== "" ? object.room : OTHER_ROOMS;
+      const room = roomName(object) ?? OTHER_ROOMS;
       groups.set(room, [...(groups.get(room) ?? []), object]);
     }
     if (groups.size) out.push("Elsewhere on the lot:");
@@ -507,7 +514,9 @@ function awayLines(refused: readonly string[], leftOut: readonly string[]): stri
  */
 function objectLines(object: OptionObject, shape: { underRoom?: boolean; noWayInHeading?: boolean; queue?: boolean } = {}): string[] {
   const place = shape.underRoom ? object.where?.replace(/^elsewhere(, )?/, "") : object.where;
-  const where = place ? ` (${place})` : "";
+  const named = shape.underRoom || shape.queue ? undefined : roomName(object);
+  const parts = [place, named].filter((part): part is string => typeof part === "string" && part !== "");
+  const where = parts.length ? ` (${parts.join(", ")})` : "";
   const noWay = typeof object.noWay === "string" && !shape.noWayInHeading ? ` [${object.noWay}]` : "";
   const acts = object.acts
     .filter((act) => act && typeof act === "object" && typeof act.ref === "string" && typeof act.text === "string")
@@ -533,7 +542,7 @@ export function choicesSignature(options: readonly OptionObject[]): string {
       if (act && typeof act === "object" && typeof act.ref === "string" && typeof act.text === "string") {
         const noWay = typeof object.noWay === "string" ? object.noWay : null;
         const opens = typeof act.opens === "string" ? act.opens : null;
-        const room = typeof object.room === "string" ? object.room : null;
+        const room = roomName(object) ?? null;
         const serves = servesOf(object);
         const words = [object.states ?? null, object.refused ?? null, object.left_out ?? null, object.excluded ?? null, serves.length ? serves : null];
         rows.add(JSON.stringify([act.ref, act.text, noWay, opens, room, isNear(object), ...words]));

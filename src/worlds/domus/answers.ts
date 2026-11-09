@@ -34,6 +34,8 @@ export type OptionObject = {
   object: string; object_id: string; where?: string; acts: OptionAct[]; noWay?: string; answer_rules?: unknown;
   /** The room the object is in, by its name; absent when the helper does not know it. */
   room?: string;
+  /** Stable short room id (r1, r2, ...); printed with the room label (D6). */
+  room_id?: string;
   /** True for an object near her (the helper's own reckoning). */
   near?: boolean;
   /** True for a Sim (a person): the only kind of option her words to them go with (S1). */

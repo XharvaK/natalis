@@ -151,12 +151,13 @@ export type ParsedObservation = {
 export type OptionsCut = { objects: number; rooms: string[] };
 
 /**
- * An option object's optional fields: a room (a name, up to ROOM_MAX characters), near and person (flags), the needs
+ * An option object's optional fields: a room (a name, up to ROOM_MAX characters), a short room id (r1, r2, ...; D6), near and person (flags), the needs
  * its acts serve (need ids, for the view's cap), and the acts the game's side left out with their reason codes (D3).
  * The rest is passed on as sent.
  */
 function optionObject(item: Record<string, unknown>): Record<string, unknown> {
   if (item.room !== undefined) textOf(item.room, 1, ROOM_MAX);
+  if (item.room_id !== undefined) textOf(item.room_id, 2, 9, /^r[0-9]{1,8}$/);
   if (item.near !== undefined && typeof item.near !== "boolean") fail(400, "invalid_body");
   if (item.person !== undefined && typeof item.person !== "boolean") fail(400, "invalid_body");
   if (item.serves !== undefined) textListOf(item.serves, SERVES_MAX, NEED_ID_MAX);
