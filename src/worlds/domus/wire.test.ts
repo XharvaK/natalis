@@ -332,4 +332,21 @@ describe("option objects: refused, states and left_out (T2, T3)", () => {
     expect(parsed.options?.[0]?.states).toHaveLength(4);
     expect(parsed.options?.[0]?.left_out).toHaveLength(12);
   });
+
+  it("keeps an object's excluded acts and reason codes as the helper sent them, and refuses a wrong shape (D3)", () => {
+    const parsed = parseObservation(view({
+      options: [option({ excluded: [{ text: "Test cheat act", reason: "deny_name", ref: "a333" }, { text: "Test hidden act" }] })],
+    }), NOW);
+    expect(parsed.options?.[0]?.excluded).toEqual([{ text: "Test cheat act", reason: "deny_name", ref: "a333" }, { text: "Test hidden act" }]);
+    const wrong: Array<Record<string, unknown>> = [
+      { excluded: "Test cheat act" }, { excluded: [{ text: 5 }] }, { excluded: [{ text: "" }] },
+      { excluded: [{ text: "x".repeat(161) }] }, { excluded: [{ text: "ok", reason: 5 }] },
+      { excluded: [{ text: "ok", reason: "x".repeat(65) }] }, { excluded: [{ text: "ok", ref: 5 }] },
+      { excluded: [{ text: "ok", ref: "not a ref" }] }, { excluded: [{ text: "ok", extra: 1 }] },
+      { excluded: Array.from({ length: 33 }, (_, index) => ({ text: `Act ${index}` })) },
+    ];
+    for (const extra of wrong) {
+      expect(refusal(() => parseObservation(view({ options: [option(extra)] }), NOW)), JSON.stringify(extra)).toEqual({ status: 400, code: "invalid_body" });
+    }
+  });
 });

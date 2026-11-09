@@ -417,6 +417,7 @@ describe("an option object's refusals, states and left-out acts (T3, T2)", () =>
     expect(choicesSignature([{ ...KETTLE, refused: ["Boil water: refused: the water is cold"] }])).not.toBe(sig);
     expect(choicesSignature([{ ...KETTLE, states: ["dirty"] }])).not.toBe(sig);
     expect(choicesSignature([{ ...KETTLE, left_out: [] }])).not.toBe(sig);
+    expect(choicesSignature([{ ...KETTLE, excluded: [{ text: "Test cheat act", reason: "deny_name" }] }])).not.toBe(sig);
     const again = renderView({ world: "slot3", percepts: [], options: [{ ...KETTLE, refused: ["Boil water: refused: the water is cold"] }] });
     expect(again).toContain("the water is cold");
     expect(again).not.toContain("the same as in the last view");
