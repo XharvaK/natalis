@@ -281,6 +281,19 @@ describe("game_act: the words she read still name the ref", () => {
     expect(acts()).toEqual([]);
   });
 
+  it("attaches the newest view to a ref_changed refusal (NB-1)", async () => {
+    view(VIEW);
+    const receipt = await run({ option: "a1", expect: "Tidy up" });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "ref_changed" } });
+    expect(receipt.summary).toContain("Newest view:");
+    expect(receipt.refused?.reason).toContain("Newest view:");
+    expect(receipt.summary).toContain("Boil water");
+    const thenChanged = await run({ option: "a1", then: ["a3", "a4"], expect_then: ["sit down", "Sit"] });
+    expect(thenChanged).toMatchObject({ ok: false, refused: { code: "ref_changed" } });
+    expect(thenChanged.summary).toContain("Newest view:");
+    expect(acts()).toEqual([]);
+  });
+
   it("checks each then ref against expect_then, by its place in the list, and names the then ref that changed", async () => {
     view(VIEW);
     const receipt = await run({ option: "a1", then: ["a3", "a4"], expect_then: ["sit down", "Sit"] });
