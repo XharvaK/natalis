@@ -237,9 +237,22 @@ function excludedReason(reason: unknown): string {
   return wordsOfCode(code) ?? "the game's side did not give a reason in words";
 }
 
+/** A comparable act name: underscores in the probe's name are the spaces she reads. */
+function actNameKey(name: string): string {
+  return name.trim().toLowerCase().replace(/[_]+/g, " ").replace(/\s+/g, " ");
+}
+
+/** The act's words in a left_out line, before ": left out:". The whole line if that mark is missing. */
+function leftOutName(line: string): string {
+  const mark = ": left out:";
+  const at = line.toLowerCase().indexOf(mark);
+  return (at === -1 ? line : line.slice(0, at)).trim();
+}
+
 /**
  * The acts answer (D3): every act of each matching object with its ref, then the acts the game's side excluded, the
  * view hides after refusals, or the game left out, each with its reason. No act is both offered and left out.
+ * N-5: an act named in both left_out and excluded is printed once (the excluded form, which may carry a ref).
  */
 export function actsOnAnswer(objects: readonly OptionObject[], hidden: readonly ReadonlySet<string>[]): string {
   const blocks: string[] = [];
@@ -249,13 +262,22 @@ export function actsOnAnswer(objects: readonly OptionObject[], hidden: readonly 
     for (const act of actsOf(object)) lines.push(actLine(act, hiddenHere.has(act.ref)));
     if (lines.length === 1) lines.push("- The newest view shows no act on it.");
     for (const line of object.refused ?? []) if (typeof line === "string" && line !== "") lines.push(`- ${dropTokens(line)}`);
-    for (const line of object.left_out ?? []) if (typeof line === "string" && line !== "") lines.push(`- ${dropTokens(line)}`);
+    const excludedNames = new Set<string>();
+    const excludedLines: string[] = [];
     for (const entry of object.excluded ?? []) {
       const text = typeof entry?.text === "string" ? dropTokens(entry.text) : "";
       if (text === "") continue;
+      excludedNames.add(actNameKey(text));
       const ref = typeof entry.ref === "string" && entry.ref !== "" ? `${entry.ref} ` : "";
-      lines.push(`- ${ref}${text}: left out: ${excludedReason(entry.reason)}`);
+      excludedLines.push(`- ${ref}${text}: left out: ${excludedReason(entry.reason)}`);
     }
+    for (const line of object.left_out ?? []) {
+      if (typeof line !== "string" || line === "") continue;
+      const words = dropTokens(line);
+      if (excludedNames.has(actNameKey(leftOutName(words)))) continue;
+      lines.push(`- ${words}`);
+    }
+    for (const line of excludedLines) lines.push(line);
     blocks.push(lines.join("\n"));
   }
   return blocks.join("\n\n");
