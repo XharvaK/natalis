@@ -235,6 +235,28 @@ describe("game_list acts on one object (D3)", () => {
     expect(receipt.summary).toContain("- Call Test Friend: left out: it is not on your phone list");
   });
 
+  it("prints each left-out act once when excluded and left_out name the same act (N-5)", async () => {
+    observe([{
+      ...TOILET,
+      left_out: [
+        "Test cheat act: left out: a debug, cheat or test act",
+        "thing Clean: left out: it opens a menu of choices, not an act",
+        "Call Test Friend: left out: it is not on your phone list",
+      ],
+      excluded: [
+        { text: "Test cheat act", reason: "deny_name", ref: "a333" },
+        { text: "thing_Clean", reason: "PIE_PICKER" },
+      ],
+    }]);
+    const receipt = await list({ what: "acts", object: "Test toilet upstairs" });
+    const text = receipt.summary ?? "";
+    expect((text.match(/Test cheat act: left out:/g) ?? []).length).toBe(1);
+    expect((text.match(/thing Clean: left out:|thing_Clean: left out:/g) ?? []).length).toBe(1);
+    expect(text).toContain("- a333 Test cheat act: left out: a debug, cheat or test act");
+    expect(text).toContain("thing_Clean: left out:");
+    expect(text).toContain("- Call Test Friend: left out: it is not on your phone list");
+  });
+
   it("names an act the view hides after a refusal as left out now, not as offered", async () => {
     const refuse = (objectId: string, guid64: string, ref: string, n: number) => {
       const actId = `act-${objectId}-${guid64}-${n}`;
