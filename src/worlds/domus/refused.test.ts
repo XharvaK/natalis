@@ -79,3 +79,43 @@ describe("the hide expires (S-D)", () => {
     expect(withoutRefused(db, SESSION, [QUEUE], NOW + 10 * 60_000 + 1)).toEqual([QUEUE]);
   });
 });
+
+function finishDeleted(attachment: string, objectId: string, guid64 = "1"): void {
+  const id = `gone${++n}`;
+  db.prepare(`INSERT INTO acts (act_id, turn_id, thread, attachment, observation_id, option_ref, object_id, guid64, label, state,
+    requested_at_ms, expires_at_ms, updated_at_ms, for_summoner) VALUES (?, 't', 'domus:slot8', ?, NULL, 'a9', ?, ?, 'x', 'finished', 1, 2, 3, 0)`)
+    .run(id, attachment, objectId, guid64);
+  db.prepare("INSERT INTO act_events (act_id, phase, at_ms, received_at_ms, detail_json) VALUES (?, 'finished', ?, ?, ?)")
+    .run(id, NOW, NOW, JSON.stringify({ finishing_type: "TARGET_DELETED", started: false }));
+}
+
+describe("D4: deleted objects leave at once, and one view never offers and refuses the same act", () => {
+  it("hides an act after the first refusal, not the second", () => {
+    expect(HIDE_AFTER_REFUSALS).toBe(1);
+    act(SESSION, "queue:her", "201", "NO_INTERACTION");
+    expect(withoutRefused(db, SESSION, [QUEUE, BED], NOW)).toEqual([{ ...QUEUE, acts: [QUEUE.acts[1]] }, BED]);
+  });
+
+  it("drops an object after TARGET_DELETED even if the next payload still lists it", () => {
+    finishDeleted(SESSION, "77", "500");
+    expect(withoutRefused(db, SESSION, [QUEUE, BED], NOW)).toEqual([QUEUE]);
+  });
+
+  it("drops an object after NO_OBJECT", () => {
+    act(SESSION, "77", "500", "NO_OBJECT");
+    expect(withoutRefused(db, SESSION, [BED], NOW)).toEqual([]);
+  });
+
+  it("does not list an act as both offered and refused", () => {
+    const food: OptionObject = {
+      object: "Test leftover sandwich",
+      object_id: "9",
+      acts: [
+        { ref: "a1", guid64: "1", text: "Clean Up" },
+        { ref: "a2", guid64: "2", text: "Eat" },
+      ],
+      refused: ["Clean Up: refused: that object is gone"],
+    };
+    expect(withoutRefused(db, SESSION, [food], NOW)).toEqual([{ ...food, acts: [food.acts[1]!] }]);
+  });
+});
