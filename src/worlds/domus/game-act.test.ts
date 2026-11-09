@@ -304,6 +304,25 @@ describe("game_act: the words she read still name the ref", () => {
     expect(acts()).toEqual([]);
   });
 
+  it("does not treat Sit as the words of Visit a neighbour, and a blank expect never matches (NB-2)", async () => {
+    const neighbour: OptionObject[] = [{
+      object: "Test neighbour", object_id: "obj-neighbour", acts: [
+        { ref: "a5", guid64: "311", text: "Visit a neighbour" },
+        { ref: "a6", guid64: "312", text: "Sit" },
+      ],
+    }];
+    view(neighbour);
+    const sit = await run({ option: "a5", expect: "Sit" });
+    expect(sit).toMatchObject({ ok: false, refused: { code: "ref_changed" } });
+    expect(sit.refused?.reason).toContain("a5 now names: Visit a neighbour (Test neighbour).");
+    expect(await run({ option: "a6", expect: "Sit" })).toMatchObject({ ok: true });
+    view(VIEW);
+    const blank = await run({ option: "a1", expect: "" });
+    expect(blank).toMatchObject({ ok: false, refused: { code: "ref_changed" } });
+    expect(await run({ option: "a1", expect: "   " })).toMatchObject({ ok: false, refused: { code: "ref_changed" } });
+    expect(await run({ option: "a3", expect: "Sit" })).toMatchObject({ ok: true });
+  });
+
   it("describes expect and expect_then in the tool's parameters", () => {
     const properties = tool.spec.parameters.properties as Record<string, { description?: string }>;
     expect(properties["expect"]?.description).toContain("as you read them");

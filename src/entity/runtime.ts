@@ -127,7 +127,7 @@ import {
 import { isStopOn, readStop } from "./stop.js";
 import { clockOf, firstDailyOccurrence, localMinuteOf, instantOfLocal, isWakeRepeat, nextOccurrence, parseAtIso, parseClock, WAKE_LIMIT, type WakeRepeat } from "./wake-schedule.js";
 import { DEFAULT_LIFE_VIEW_CHARS, DEFAULT_LIFE_WARN_CHARS, DEFAULT_RHYTHM } from "./config.js";
-import { settingsChanges, settingsNoteText, settingsView } from "./settings-change.js";
+import { MEMORY_TOOLS_LINE, settingsChanges, settingsNoteText, settingsView } from "./settings-change.js";
 import { charCount, editedStamp, lifeView } from "./life-view.js";
 import { bodyNotesBlock, domusReceipts } from "./body-notes.js";
 import type { NoteSection } from "../notebook/sections.js";
@@ -2221,7 +2221,7 @@ class Runtime implements Entity {
       thread: "self",
       actor: "body",
       source: "body",
-      text: `Your wake: ${wake.why}${wake.until === undefined ? "" : ` (You said it is no longer needed once: ${wake.until}. If so, let it go with cancel_wake.)`}${this.wakeReceiptLine()}`,
+      text: `Your wake: ${wake.why}${wake.until === undefined ? "" : ` (You said it is no longer needed once: ${wake.until}. If so, let it go with cancel_wake.)`}${this.wakeReceiptLine()}${wake.rhythm === true ? `\n${MEMORY_TOOLS_LINE}` : ""}`,
       data: { wakeId: wake.id, scheduledIn: wake.scheduledIn },
       atMs: this.nowMs(),
     });
