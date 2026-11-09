@@ -32,9 +32,17 @@ function refused(code: string, reason: string, summary: string = reason): Receip
   return { ok: false, summary, refused: { code, reason } };
 }
 
-/** Whether the words the Lar read for a ref still name it: the act's label contains them, any case, trimmed. */
+/** Whether the words the Lar read for a ref still name it: they equal the act's own words or appear as a whole
+ * word in them (or in the label), any case, trimmed. A blank expect never matches (NB-2). */
 function stillNames(found: Found, expected: string): boolean {
-  return labelOf(found).toLowerCase().includes(expected.trim().toLowerCase());
+  const want = expected.trim().toLowerCase();
+  if (want === "") return false;
+  const act = found.act.text.trim().toLowerCase();
+  const label = labelOf(found).toLowerCase();
+  if (want === act || want === label) return true;
+  const escaped = want.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const whole = new RegExp(`\\b${escaped}\\b`);
+  return whole.test(act) || whole.test(label);
 }
 
 /** The refusal for a ref whose words changed since the Lar read them, saying what it names now. Undefined when it still names them. */
