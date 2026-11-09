@@ -38,6 +38,9 @@ const LEFT_OUT_MAX = 12;
 const STATE_MAX = 40;
 const OPTION_STATES_MAX = 4;
 const CUT_ROOMS_MAX = 64;
+/** The needs an option object can say it serves: at most this many need ids, each at most this long. */
+const SERVES_MAX = 8;
+const NEED_ID_MAX = 32;
 /** The helper's token must be at least this many bytes. */
 export const MIN_TOKEN_BYTES = 32;
 /** The reasons a picture can fail. "minimized" and "not_front" are the helper's refusals to take a picture of an old moment. */
@@ -144,13 +147,14 @@ export type ParsedObservation = {
 export type OptionsCut = { objects: number; rooms: string[] };
 
 /**
- * An option object's optional fields: a room (a name, up to ROOM_MAX characters), near and person (flags). The rest is
- * passed on as sent.
+ * An option object's optional fields: a room (a name, up to ROOM_MAX characters), near and person (flags), and the needs
+ * its acts serve (need ids, for the view's cap). The rest is passed on as sent.
  */
 function optionObject(item: Record<string, unknown>): Record<string, unknown> {
   if (item.room !== undefined) textOf(item.room, 1, ROOM_MAX);
   if (item.near !== undefined && typeof item.near !== "boolean") fail(400, "invalid_body");
   if (item.person !== undefined && typeof item.person !== "boolean") fail(400, "invalid_body");
+  if (item.serves !== undefined) textListOf(item.serves, SERVES_MAX, NEED_ID_MAX);
   // The game's words for an option object: its refusals (the helper caps them), its states (at most four) and the phone
   // acts it left out (at most twelve). Each is a list of text; a wrong shape is refused.
   if (item.refused !== undefined) textListOf(item.refused, Infinity, REFUSED_LINE_MAX);

@@ -669,7 +669,7 @@ describe("views of a whole lot: the choices, and what the game left out", () => 
       options_cut: { objects: 2, rooms: ["Test garden"] },
     }));
     expect(events[1]?.text).toContain("- Test rug: a7 Sit");
-    expect(events[1]?.text?.endsWith("2 more things on the lot are not listed, to keep this view short.")).toBe(true);
+    expect(events[1]?.text).toContain("2 more things on the lot are not listed, to keep this view short. game_list things shows them.");
     expect(events[1]?.data).toMatchObject({ optionsCut: { objects: 2, rooms: ["Test garden"] } });
   });
 });

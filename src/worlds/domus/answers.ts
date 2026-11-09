@@ -44,6 +44,8 @@ export type OptionObject = {
   states?: string[];
   /** The phone acts the game left out of its menu, and the phone acts it refused, each a line (T2). */
   left_out?: string[];
+  /** The game's need ids (for example "bladder") that this object's acts serve; the view keeps these objects first when it is capped (D2). */
+  serves?: string[];
 };
 export type Found = { object: OptionObject; act: OptionAct };
 /** The answer as it is kept and sent to the helper: rows by the game's own option ids, counts resolved, text as typed. */

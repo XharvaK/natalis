@@ -142,7 +142,7 @@ describe("rendering the choices of a whole lot", () => {
     expect(text).toContain("Test attic:\n- Test lamp: a3 All lights on");
     expect(text).toContain("Other rooms:\n- Test door: a4 Open");
     expect(text.indexOf("Test hall:")).toBeLessThan(text.indexOf("Test attic:"));
-    expect(text.endsWith("3 more things on the lot are not listed, to keep this view short.")).toBe(true);
+    expect(text).toContain("3 more things on the lot are not listed, to keep this view short. game_list things shows them.");
   });
 
   it("says the game's choices are still coming, instead of a choices block, until its first whole menu", () => {
@@ -183,7 +183,7 @@ describe("rendering the choices of a whole lot", () => {
     const text = renderView({ world: "slot3", percepts: [], options: moved, optionsCut: { objects: 1, rooms: ["Test garden"] } });
     expect(text).toContain("Test mailbox");
     expect(text).not.toContain("the same as in the last view");
-    expect(text.endsWith("1 more thing on the lot is not listed, to keep this view short.")).toBe(true);
+    expect(text).toContain("1 more thing on the lot is not listed, to keep this view short. game_list things shows them.");
     expect(renderView({ world: "slot3", percepts: [], options: LOT })).toContain("Test mailbox");
   });
 

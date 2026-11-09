@@ -5,7 +5,7 @@
 import type { Found, OptionObject, AnswerRules } from "./answers.js";
 import { answerRulesOf } from "./answers.js";
 import type { OptionsCut, Percept } from "./wire.js";
-import { type AttachmentNow, bodyLines, clockLine, needFeeling, needGradeOfBand, needGradeOfValue } from "./body.js";
+import { type AttachmentNow, type NeedGrade, bodyLines, clockLine, needFeeling, needGradeOfBand, needGradeOfValue } from "./body.js";
 import { DAY_BRIEF_LINE, dayRecordLines } from "./day-record.js";
 import { capitalised, dropTokens, ORIGIN_WORDS, plainName, textOrUndefined, withStop } from "./words.js";
 
@@ -93,6 +93,51 @@ function sentence(value: unknown): string | undefined {
 function numberOf(value: unknown): number | undefined {
   if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
   return typeof value === "string" && /^\d+$/.test(value) ? Number(value) : undefined;
+}
+
+/** One need the portrait shows as felt: its id, its grade, and its value when the game sent one. */
+type FeltNeed = { id: string; grade: NeedGrade; value: number | undefined };
+
+/**
+ * The needs the portrait shows as felt, worst first, as the body block orders them. A need at 60 or more is not felt, and
+ * neither is one with no readable value or band. Undefined-shaped entries and a portrait with no needs give none.
+ */
+function feltNeeds(portrait: unknown): FeltNeed[] {
+  if (portrait === null || typeof portrait !== "object" || Array.isArray(portrait)) return [];
+  const needs = (portrait as Record<string, unknown>).needs;
+  if (needs === null || typeof needs !== "object" || Array.isArray(needs)) return [];
+  const felt: FeltNeed[] = [];
+  for (const [id, entry] of Object.entries(needs)) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const item = entry as Record<string, unknown>;
+    const value = typeof item.value === "number" && Number.isFinite(item.value) ? item.value : undefined;
+    const band = textOrUndefined(item.band);
+    if (value === undefined && band === undefined) continue;
+    const grade = value !== undefined ? needGradeOfValue(value) : needGradeOfBand(band);
+    if (grade !== undefined) felt.push({ id: plainName(id), grade, value });
+  }
+  felt.sort((a, b) => b.grade - a.grade || (a.value ?? 0) - (b.value ?? 0));
+  return felt;
+}
+
+/** The need ids that matter now, most urgent first: an object serving one of them is kept before the rest when capped. */
+function needRanks(portrait: unknown): Map<string, number> {
+  const felt = feltNeeds(portrait);
+  return new Map(felt.map((need, index) => [need.id, felt.length - index]));
+}
+
+/** The needs an object says it serves, from the helper's own ids; anything malformed says none. */
+function servesOf(object: OptionObject): string[] {
+  const value: unknown = object.serves;
+  if (typeof value === "string") return [value];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item !== "") : [];
+}
+
+/** How urgent the need an object serves is: 0 when it serves none that is felt, and higher for the most urgent. */
+function needRankOf(object: OptionObject, ranks: ReadonlyMap<string, number>): number {
+  let rank = 0;
+  for (const need of servesOf(object)) rank = Math.max(rank, ranks.get(plainName(need)) ?? 0);
+  return rank;
 }
 
 /**
@@ -294,7 +339,7 @@ export function renderView(input: {
     lines.push("", input.choicesPending ? "The game has not sent its choices yet. They come with a later view." : "The game offers no choices in this view.");
     return lines.join("\n");
   }
-  const choices = choicesBlock(input.options, input.optionsCut, VIEW_TEXT_MAX - used(lines) - TAIL_RESERVE);
+  const choices = choicesBlock(input.options, input.optionsCut, VIEW_TEXT_MAX - used(lines) - TAIL_RESERVE, needRanks(input.portrait));
   lines.push("", ...choices);
   if (input.choicesPending) lines.push(CHOICES_MORE);
   return lines.join("\n");
@@ -329,17 +374,18 @@ function distanceOf(object: OptionObject): number {
 }
 
 /**
- * The choices block: the heading, the near objects, her queue, then the rest by room. The rest is kept nearest first, and
- * what does not fit the budget is cut farthest first and said in one line (VIEW3-8, item 14). Every object keeps its
- * refs. The view's count line of the game's own cut is added to the count.
+ * The choices block: the heading, the near objects, her queue, then the rest by room. The rest is kept nearest first,
+ * except that objects serving a felt need come first, the most urgent need's objects before the others (D2). What does
+ * not fit the budget is cut farthest first and said in one line (VIEW3-8, item 14). Every object keeps its refs. The
+ * view's count line of the game's own cut is added to the count.
  */
-function choicesBlock(options: readonly OptionObject[], cut: OptionsCut | undefined, budget: number): string[] {
+function choicesBlock(options: readonly OptionObject[], cut: OptionsCut | undefined, budget: number, ranks: ReadonlyMap<string, number>): string[] {
   const near = options.filter(isNear);
   // Her queue is not in a room: it is its own group, right after the near objects, and never under a room heading.
   const queue = options.filter((object) => !isNear(object) && isQueue(object));
   const rest = options.filter((object) => !isNear(object) && !isQueue(object))
-    .map((object, index) => ({ object, index }))
-    .sort((a, b) => distanceOf(a.object) - distanceOf(b.object) || a.index - b.index)
+    .map((object, index) => ({ object, index, rank: needRankOf(object, ranks) }))
+    .sort((a, b) => b.rank - a.rank || distanceOf(a.object) - distanceOf(b.object) || a.index - b.index)
     .map((item) => item.object);
   const block = (kept: readonly OptionObject[]) => {
     const out: string[] = ["Choices you can name with game_act, by ref:"];
@@ -488,7 +534,8 @@ export function choicesSignature(options: readonly OptionObject[]): string {
         const noWay = typeof object.noWay === "string" ? object.noWay : null;
         const opens = typeof act.opens === "string" ? act.opens : null;
         const room = typeof object.room === "string" ? object.room : null;
-        const words = [object.states ?? null, object.refused ?? null, object.left_out ?? null];
+        const serves = servesOf(object);
+        const words = [object.states ?? null, object.refused ?? null, object.left_out ?? null, serves.length ? serves : null];
         rows.add(JSON.stringify([act.ref, act.text, noWay, opens, room, isNear(object), ...words]));
       }
     }
@@ -517,5 +564,5 @@ export function unchangedLookLine(input: {
 /** The line that says how many things on the lot are not in the choices, for the game's cut or the view's own cut. */
 function optionsCutLine(count: number): string | undefined {
   if (count <= 0) return undefined;
-  return `${count} more ${count === 1 ? "thing" : "things"} on the lot ${count === 1 ? "is" : "are"} not listed, to keep this view short.`;
+  return `${count} more ${count === 1 ? "thing" : "things"} on the lot ${count === 1 ? "is" : "are"} not listed, to keep this view short. game_list things shows them.`;
 }

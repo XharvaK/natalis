@@ -299,12 +299,13 @@ describe("the memory answer (v1)", () => {
 describe("option objects: refused, states and left_out (T2, T3)", () => {
   const option = (extra: Record<string, unknown>) => ({ object: "Test Kettle", object_id: "obj-1", acts: [{ ref: "a1", guid64: "1", text: "Boil water" }], ...extra });
 
-  it("keeps the strings of refused, states and left_out as the helper sent them", () => {
+  it("keeps the strings of refused, states, left_out and serves as the helper sent them", () => {
     const parsed = parseObservation(view({
-      options: [option({ refused: ["Boil water: refused: the sink is full"], states: ["dirty"], left_out: ["Call Test Friend: left out: not on your list"] })],
+      options: [option({ refused: ["Boil water: refused: the sink is full"], states: ["dirty"], left_out: ["Call Test Friend: left out: not on your list"], serves: ["bladder"] })],
     }), NOW);
     expect(parsed.options?.[0]).toMatchObject({
       refused: ["Boil water: refused: the sink is full"], states: ["dirty"], left_out: ["Call Test Friend: left out: not on your list"],
+      serves: ["bladder"],
     });
   });
 
@@ -314,6 +315,8 @@ describe("option objects: refused, states and left_out (T2, T3)", () => {
       { states: ["a", "b", "c", "d", "e"] }, { states: [""] }, { states: ["x".repeat(41)] }, { states: "dirty" },
       { left_out: Array.from({ length: 13 }, (_, index) => `Act ${index}: left out: x`) }, { left_out: [""] },
       { left_out: ["x".repeat(161)] }, { left_out: "Call: left out: no" },
+      { serves: "bladder" }, { serves: [1] }, { serves: [""] }, { serves: ["x".repeat(33)] },
+      { serves: Array.from({ length: 9 }, (_, index) => `need-${index}`) },
     ];
     for (const extra of wrong) {
       expect(refusal(() => parseObservation(view({ options: [option(extra)] }), NOW)), JSON.stringify(extra)).toEqual({ status: 400, code: "invalid_body" });
