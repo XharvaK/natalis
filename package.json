@@ -18,7 +18,7 @@
     "chat": "node dist/bin/natalis.js chat"
   },
   "devDependencies": {
-    "@types/node": "^26.6.6",
+    "@types/node": "^22",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"
   },
