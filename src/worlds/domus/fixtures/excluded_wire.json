@@ -1,0 +1,14 @@
+[
+  {
+    "text": "thing_Clean",
+    "reason": "PIE_PICKER"
+  },
+  {
+    "text": "thing_Hide",
+    "reason": "MENU_HIDDEN"
+  },
+  {
+    "text": "thing_Auto",
+    "reason": "NOT_USER_DIRECTED"
+  }
+]

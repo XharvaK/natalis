@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   BODY_LIMIT, canonicalJson, GUID64_PATTERN, gameThreadOf, isActPhase, MAX_SKEW_MS, MAX_WINDOW_MS, MIN_TOKEN_BYTES, observationDigest,
@@ -348,5 +351,13 @@ describe("option objects: refused, states and left_out (T2, T3)", () => {
     for (const extra of wrong) {
       expect(refusal(() => parseObservation(view({ options: [option(extra)] }), NOW)), JSON.stringify(extra)).toEqual({ status: 400, code: "invalid_body" });
     }
+  });
+
+  it("accepts the helper's real excluded output from the shared wire fixture (B-1)", () => {
+    const excluded = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "excluded_wire.json"), "utf8"));
+    const parsed = parseObservation(view({
+      options: [option({ excluded })],
+    }), NOW);
+    expect(parsed.options?.[0]?.excluded).toEqual(excluded);
   });
 });
