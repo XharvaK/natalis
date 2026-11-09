@@ -731,3 +731,23 @@ describe("a refusal says what the clock of her last view read", () => {
   });
 });
 
+describe("D7: a pushed act names what it replaced", () => {
+  it("says what was dropped and whether it was the Sim's own act", () => {
+    const actId = okId(ask(T0, "a1"));
+    const result = sync(T0 + 1, [ev(actId, "pushed", T0 + 1, {
+      replaced: [
+        { name: "fridge_GrabSnack", autonomous: true, state: "queued" },
+        { name: "bookshelf_ReadBook", autonomous: false, state: "running" },
+      ],
+    })]);
+    expect(result.notes[0]?.text).toBe(
+      'Your act "Boil water (Test kettle)" (a1): the game put it in its queue; it replaced queued fridge grab snack (your Sim\'s own) and running bookshelf read book (one that was not your Sim\'s own).',
+    );
+  });
+
+  it("keeps the ordinary pushed sentence when nothing was replaced", () => {
+    const actId = okId(ask(T0, "a1"));
+    const result = sync(T0 + 1, [ev(actId, "pushed", T0 + 1)]);
+    expect(result.notes[0]?.text).toBe('Your act "Boil water (Test kettle)" (a1): the game put it in its queue.');
+  });
+});
