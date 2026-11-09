@@ -138,6 +138,15 @@ describe("N1: a last-edited stamp under each heading", () => {
     expect(editedStamp(NOW - 1000, NOW, "UTC")).toBe("(last edited 2026-11-03, today)");
   });
 
+  it("counts calendar days in the Lar's timezone, not elapsed 24-hour blocks (NB-1)", () => {
+    // 23:00 in Europe/Istanbul (UTC+3) on 2 Nov, checked at 01:00 the next calendar day.
+    const edited = Date.parse("2026-11-02T20:00:00Z");
+    const nextMorning = Date.parse("2026-11-02T22:00:00Z");
+    expect(editedStamp(edited, nextMorning, "Europe/Istanbul")).toBe("(last edited 2026-11-02, 1 day ago)");
+    const sameEvening = Date.parse("2026-11-02T20:30:00Z");
+    expect(editedStamp(edited, sameEvening, "Europe/Istanbul")).toBe("(last edited 2026-11-02, today)");
+  });
+
   it("puts the stamp on the line after each heading in the whole view, and none where the time is not known", () => {
     const view = lifeView(LIFE, "", { switchChars: 10_000, viewChars: 10_000, stampOf });
     expect(view.text).toContain("## Garden\n(last edited 2026-10-26, 8 days ago)\n\nI grow beans");
