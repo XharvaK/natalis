@@ -37,10 +37,17 @@ export type LifeViewOptions = {
   stampOf?: (section: NoteSection) => string | undefined;
 };
 
-/** N1: "(last edited YYYY-MM-DD, N days ago)", the date in the Lar's zone and N in whole days. */
+/** The civil date YYYY-MM-DD of a moment in the given zone. */
+function calendarDate(ms: number, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(ms));
+}
+
+/** N1 / NB-1: "(last edited YYYY-MM-DD, N days ago)", the date in the Lar's zone and N in calendar days there. */
 export function editedStamp(editedMs: number, nowMs: number, timeZone: string): string {
-  const date = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(editedMs));
-  const days = Math.max(0, Math.floor((nowMs - editedMs) / 86_400_000));
+  const date = calendarDate(editedMs, timeZone);
+  const start = Date.parse(`${date}T00:00:00Z`);
+  const end = Date.parse(`${calendarDate(nowMs, timeZone)}T00:00:00Z`);
+  const days = Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, Math.round((end - start) / 86_400_000)) : 0;
   return `(last edited ${date}, ${days === 0 ? "today" : days === 1 ? "1 day ago" : `${days} days ago`})`;
 }
 
