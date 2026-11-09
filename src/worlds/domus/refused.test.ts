@@ -37,11 +37,9 @@ function act(attachment: string, objectId: string, guid64: string, code: string 
   }
 }
 
-describe("an act the game refused twice in this session is not offered again", () => {
-  it("hides after the second refusal, not the first", () => {
-    expect(HIDE_AFTER_REFUSALS).toBe(2);
-    act(SESSION, "queue:her", "201", "NO_INTERACTION");
-    expect(withoutRefused(db, SESSION, [QUEUE, BED], NOW)).toEqual([QUEUE, BED]);
+describe("an act the game refused in this session is not offered again", () => {
+  it("hides after the first refusal", () => {
+    expect(HIDE_AFTER_REFUSALS).toBe(1);
     act(SESSION, "queue:her", "201", "NO_INTERACTION");
     expect(withoutRefused(db, SESSION, [QUEUE, BED], NOW)).toEqual([{ ...QUEUE, acts: [QUEUE.acts[1]] }, BED]);
   });

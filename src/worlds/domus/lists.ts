@@ -216,7 +216,7 @@ function hiddenRefsOf(raw: readonly OptionObject[], shown: readonly OptionObject
 function actLine(act: OptionAct, hidden: boolean): string {
   const marks = `${act.needs_sim === true ? " (needs a Sim: name one with sim)" : ""}${typeof act.opens === "string" ? ` [${act.opens}]` : ""}`;
   return hidden
-    ? `- ${act.ref} ${dropTokens(act.text)}${marks}: left out now, because the game refused it twice lately`
+    ? `- ${act.ref} ${dropTokens(act.text)}${marks}: left out now, because the game refused it lately`
     : `- ${act.ref} ${dropTokens(act.text)}${marks}`;
 }
 

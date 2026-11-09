@@ -403,7 +403,7 @@ export function createDomusWorld(options: DomusWorldOptions): DomusWorld {
         portrait: parsed.normalized.portrait, hasDay: parsed.normalized.day !== undefined,
       });
       const counts = listCountLine(requireDb(), attachmentSession(parsed.fields.attachment));
-      // An act the game refused twice in this session is not offered again for 30 min (refused.ts).
+      // An act the game refused in this session is not offered again for 30 min (refused.ts). Gone objects leave at once (D4).
       const shown = parsed.options === undefined
         ? parsed
         : { ...parsed, options: withoutRefused(requireDb(), parsed.fields.attachment, optionsOf(parsed.options), now) };

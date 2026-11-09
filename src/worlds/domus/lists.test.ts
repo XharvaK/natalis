@@ -235,7 +235,7 @@ describe("game_list acts on one object (D3)", () => {
     expect(receipt.summary).toContain("- Call Test Friend: left out: it is not on your phone list");
   });
 
-  it("names an act the view hides after two refusals as left out now, not as offered", async () => {
+  it("names an act the view hides after a refusal as left out now, not as offered", async () => {
     const refuse = (objectId: string, guid64: string, ref: string, n: number) => {
       const actId = `act-${objectId}-${guid64}-${n}`;
       db.prepare(`INSERT INTO acts (act_id, turn_id, thread, attachment, observation_id, option_ref, object_id, guid64, label, state,
@@ -248,7 +248,7 @@ describe("game_list acts on one object (D3)", () => {
     refuse("toilet-up", "50", "a50", 1);
     refuse("toilet-up", "50", "a50", 2);
     const receipt = await list({ what: "acts", object: "Test toilet upstairs" });
-    expect(receipt.summary).toContain("- a50 Use the toilet: left out now, because the game refused it twice lately");
+    expect(receipt.summary).toContain("- a50 Use the toilet: left out now, because the game refused it lately");
     expect(receipt.summary).toContain("- a51 Clean the toilet");
   });
 
