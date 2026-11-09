@@ -535,7 +535,7 @@ export function choicesSignature(options: readonly OptionObject[]): string {
         const opens = typeof act.opens === "string" ? act.opens : null;
         const room = typeof object.room === "string" ? object.room : null;
         const serves = servesOf(object);
-        const words = [object.states ?? null, object.refused ?? null, object.left_out ?? null, serves.length ? serves : null];
+        const words = [object.states ?? null, object.refused ?? null, object.left_out ?? null, object.excluded ?? null, serves.length ? serves : null];
         rows.add(JSON.stringify([act.ref, act.text, noWay, opens, room, isNear(object), ...words]));
       }
     }
@@ -564,5 +564,5 @@ export function unchangedLookLine(input: {
 /** The line that says how many things on the lot are not in the choices, for the game's cut or the view's own cut. */
 function optionsCutLine(count: number): string | undefined {
   if (count <= 0) return undefined;
-  return `${count} more ${count === 1 ? "thing" : "things"} on the lot ${count === 1 ? "is" : "are"} not listed, to keep this view short. game_list things shows them.`;
+  return `${count} more ${count === 1 ? "thing" : "things"} on the lot ${count === 1 ? "is" : "are"} not listed, to keep this view short. game_list things shows them. game_list acts with one thing's ref or name shows every act on it.`;
 }

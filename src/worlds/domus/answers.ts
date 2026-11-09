@@ -44,6 +44,8 @@ export type OptionObject = {
   states?: string[];
   /** The phone acts the game left out of its menu, and the phone acts it refused, each a line (T2). */
   left_out?: string[];
+  /** The acts the game's side left out for this object, each with the act's words, its ref when one was allocated, and the game's reason code (D3). */
+  excluded?: Array<{ text: string; reason?: string; ref?: string }>;
   /** The game's need ids (for example "bladder") that this object's acts serve; the view keeps these objects first when it is capped (D2). */
   serves?: string[];
 };

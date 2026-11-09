@@ -35,6 +35,10 @@ export const ROOM_MAX = 64;
 const REFUSED_LINE_MAX = 240;
 const LEFT_OUT_LINE_MAX = 160;
 const LEFT_OUT_MAX = 12;
+/** One object's excluded acts (D3): at most this many, each act's words at most 160 and its reason code at most 64. */
+const EXCLUDED_MAX = 32;
+const EXCLUDED_TEXT_MAX = 160;
+const EXCLUDED_REASON_MAX = 64;
 const STATE_MAX = 40;
 const OPTION_STATES_MAX = 4;
 const CUT_ROOMS_MAX = 64;
@@ -147,8 +151,9 @@ export type ParsedObservation = {
 export type OptionsCut = { objects: number; rooms: string[] };
 
 /**
- * An option object's optional fields: a room (a name, up to ROOM_MAX characters), near and person (flags), and the needs
- * its acts serve (need ids, for the view's cap). The rest is passed on as sent.
+ * An option object's optional fields: a room (a name, up to ROOM_MAX characters), near and person (flags), the needs
+ * its acts serve (need ids, for the view's cap), and the acts the game's side left out with their reason codes (D3).
+ * The rest is passed on as sent.
  */
 function optionObject(item: Record<string, unknown>): Record<string, unknown> {
   if (item.room !== undefined) textOf(item.room, 1, ROOM_MAX);
@@ -160,6 +165,17 @@ function optionObject(item: Record<string, unknown>): Record<string, unknown> {
   if (item.refused !== undefined) textListOf(item.refused, Infinity, REFUSED_LINE_MAX);
   if (item.states !== undefined) textListOf(item.states, OPTION_STATES_MAX, STATE_MAX);
   if (item.left_out !== undefined) textListOf(item.left_out, LEFT_OUT_MAX, LEFT_OUT_LINE_MAX);
+  // The acts the game's side left out for this object (D3), each with its words, an optional ref and an optional reason code.
+  if (item.excluded !== undefined) {
+    if (!Array.isArray(item.excluded) || item.excluded.length > EXCLUDED_MAX) fail(400, "invalid_body");
+    for (const entry of item.excluded) {
+      if (!isRecord(entry)) fail(400, "invalid_body");
+      for (const key of Object.keys(entry)) if (key !== "text" && key !== "reason" && key !== "ref") fail(400, "invalid_body");
+      textOf(entry.text, 1, EXCLUDED_TEXT_MAX);
+      if (entry.reason !== undefined) textOf(entry.reason, 1, EXCLUDED_REASON_MAX);
+      if (entry.ref !== undefined) textOf(entry.ref, 1, 16, /^[a-z][0-9]{1,8}$/);
+    }
+  }
   return item;
 }
 
