@@ -281,6 +281,19 @@ describe("game_act: the words she read still name the ref", () => {
     expect(acts()).toEqual([]);
   });
 
+  it("attaches the newest view to a ref_changed refusal (NB-1)", async () => {
+    view(VIEW);
+    const receipt = await run({ option: "a1", expect: "Tidy up" });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "ref_changed" } });
+    expect(receipt.summary).toContain("Newest view:");
+    expect(receipt.refused?.reason).toContain("Newest view:");
+    expect(receipt.summary).toContain("Boil water");
+    const thenChanged = await run({ option: "a1", then: ["a3", "a4"], expect_then: ["sit down", "Sit"] });
+    expect(thenChanged).toMatchObject({ ok: false, refused: { code: "ref_changed" } });
+    expect(thenChanged.summary).toContain("Newest view:");
+    expect(acts()).toEqual([]);
+  });
+
   it("checks each then ref against expect_then, by its place in the list, and names the then ref that changed", async () => {
     view(VIEW);
     const receipt = await run({ option: "a1", then: ["a3", "a4"], expect_then: ["sit down", "Sit"] });
@@ -473,5 +486,34 @@ describe("game_act: an act the game refused twice (S-D)", () => {
     open = { ...open, nowMs: () => T0 + 31 * 60_000 };
     view(VIEW, T0 + 31 * 60_000 - 1000);
     expect(await run({ option: "a1", knowingly: true })).toMatchObject({ ok: true });
+  });
+});
+
+describe("D4: a stale ref after TARGET_DELETED comes with the newest view", () => {
+  function finishedGone(objectId: string, guid64: string): void {
+    const id = `gone${++seq}`;
+    db.prepare(`INSERT INTO acts (act_id, turn_id, thread, attachment, observation_id, option_ref, object_id, guid64, label, state,
+      requested_at_ms, expires_at_ms, updated_at_ms, for_summoner) VALUES (?, 't', ?, ?, NULL, 'a9', ?, ?, 'x', 'finished', ?, ?, ?, 0)`)
+      .run(id, THREAD, HELPER, objectId, guid64, T0 - 100, T0, T0 - 100);
+    db.prepare("INSERT INTO act_events (act_id, phase, at_ms, received_at_ms, detail_json) VALUES (?, 'finished', ?, ?, ?)")
+      .run(id, T0 - 100, T0 - 100, JSON.stringify({ finishing_type: "TARGET_DELETED", started: false }));
+  }
+
+  it("refuses the gone object's ref and shows the newest view without that object", async () => {
+    const food: OptionObject = {
+      object: "Test leftover sandwich",
+      object_id: "obj-food",
+      acts: [{ ref: "a9", guid64: "900", text: "Clean Up" }],
+      refused: ["Clean Up: refused: that object is gone"],
+    };
+    view([food, VIEW[0]!]);
+    finishedGone("obj-food", "900");
+    view([food, VIEW[0]!]);
+    const receipt = await run({ option: "a9" });
+    expect(receipt).toMatchObject({ ok: false, refused: { code: "unknown_option" } });
+    expect(receipt.summary).toContain("Newest view:");
+    expect(receipt.summary).toContain("Boil water");
+    expect(receipt.summary).not.toContain("Test leftover sandwich");
+    expect(acts().filter((row) => row.state !== "finished")).toEqual([]);
   });
 });

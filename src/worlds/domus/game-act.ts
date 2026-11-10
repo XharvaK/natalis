@@ -4,10 +4,10 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
-import { answerFor, isAnswerClaim, type AnswerClaim, type Found } from "./answers.js";
+import { answerFor, isAnswerClaim, type AnswerClaim, type Found, type OptionObject } from "./answers.js";
 import { actRequestedMeanwhile, PLAN_MORE, requestAct, SLOT_HELD_REFUSAL } from "./acts.js";
-import { findOption, labelOf, optionsOf, refsOf } from "./options.js";
-import { HIDE_AFTER_REFUSALS, HIDE_FOR_MS, withoutRefused } from "./refused.js";
+import { findOption, labelOf, optionsOf, refsOf, renderView } from "./options.js";
+import { goneObjectIds, HIDE_AFTER_REFUSALS, HIDE_FOR_MS, withoutRefused } from "./refused.js";
 import { findListed, listedSession } from "./lists.js";
 import { gameThreadNow, isAttachedView, newestObservation, STALE_VIEW_CODE, STALE_VIEW_REASON } from "./store.js";
 import { probeAtLeast, staleRef } from "./tool-context.js";
@@ -30,6 +30,20 @@ export type GameActContext = {
 
 function refused(code: string, reason: string, summary: string = reason): Receipt {
   return { ok: false, summary, refused: { code, reason } };
+}
+
+/** D4: a stale-ref refusal carries the newest view, so the next choice is made from what is there now. */
+function withNewestView(receipt: Receipt, options: readonly OptionObject[]): Receipt {
+  const extra = `\n\nNewest view:\n${renderView({ percepts: [], options })}`;
+  return {
+    ...receipt,
+    summary: `${receipt.summary}${extra}`,
+    refused: receipt.refused === undefined ? undefined : { ...receipt.refused, reason: `${receipt.refused.reason}${extra}` },
+  };
+}
+
+function timesWords(count: number): string {
+  return count === 1 ? "once" : `${count} times`;
 }
 
 /** Whether the words the Lar read for a ref still name it: they equal the act's own words or appear as a whole
@@ -188,24 +202,26 @@ function gameAct(open: () => GameActContext, args: Record<string, unknown>, cont
   const options = withoutRefused(game.db, newest.attachment, offered, game.nowMs());
   const refs = refsOf(options);
   const first = findOption(options, option);
-  if (!first && findOption(offered, option)) {
-    return refused("refused_before", `The game refused ${option} ${HIDE_AFTER_REFUSALS} times lately in this game session, so it is not offered again for ${HIDE_FOR_MS / 60_000} minutes after the last refusal, or until the game starts a new session. ${refsSentence(refs)}`);
-  }
   if (!first) {
-    return refused("unknown_option", `${option} is not a choice in the newest view of this game. ${refsSentence(refs)}`);
+    const raw = findOption(offered, option);
+    const gone = raw !== null && goneObjectIds(game.db, newest.attachment).has(raw.object.object_id);
+    if (raw && !gone) {
+      return withNewestView(refused("refused_before", `The game refused ${option} ${timesWords(HIDE_AFTER_REFUSALS)} lately in this game session, so it is not offered again for ${HIDE_FOR_MS / 60_000} minutes after the last refusal, or until the game starts a new session. ${refsSentence(refs)}`), options);
+    }
+    return withNewestView(refused("unknown_option", `${option} is not a choice in the newest view of this game. ${refsSentence(refs)}`), options);
   }
   if (typeof args.expect === "string") {
     const changed = refChanged(option, first, args.expect, "");
-    if (changed) return changed;
+    if (changed) return withNewestView(changed, options);
   }
   const then: Array<{ ref: string; found: Found }> = [];
   for (const [index, ref] of (thenRefs as string[]).entries()) {
     const found = findOption(options, ref);
-    if (!found) return refused("unknown_option", `${ref} (in then) is not a choice in the newest view of this game. ${refsSentence(refs)}`);
+    if (!found) return withNewestView(refused("unknown_option", `${ref} (in then) is not a choice in the newest view of this game. ${refsSentence(refs)}`), options);
     const expected = Array.isArray(expectThen) ? expectThen[index] : undefined;
     if (typeof expected === "string") {
       const changed = refChanged(ref, found, expected, " (in then)");
-      if (changed) return changed;
+      if (changed) return withNewestView(changed, options);
     }
     // A later step is released with no Sim, so one that opens a Sim's picker could not be done: it is refused now.
     if (found.act.needs_sim === true) {

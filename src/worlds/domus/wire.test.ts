@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   BODY_LIMIT, canonicalJson, GUID64_PATTERN, gameThreadOf, isActPhase, MAX_SKEW_MS, MAX_WINDOW_MS, MIN_TOKEN_BYTES, observationDigest,
@@ -299,12 +302,13 @@ describe("the memory answer (v1)", () => {
 describe("option objects: refused, states and left_out (T2, T3)", () => {
   const option = (extra: Record<string, unknown>) => ({ object: "Test Kettle", object_id: "obj-1", acts: [{ ref: "a1", guid64: "1", text: "Boil water" }], ...extra });
 
-  it("keeps the strings of refused, states and left_out as the helper sent them", () => {
+  it("keeps the strings of refused, states, left_out and serves as the helper sent them", () => {
     const parsed = parseObservation(view({
-      options: [option({ refused: ["Boil water: refused: the sink is full"], states: ["dirty"], left_out: ["Call Test Friend: left out: not on your list"] })],
+      options: [option({ refused: ["Boil water: refused: the sink is full"], states: ["dirty"], left_out: ["Call Test Friend: left out: not on your list"], serves: ["bladder"] })],
     }), NOW);
     expect(parsed.options?.[0]).toMatchObject({
       refused: ["Boil water: refused: the sink is full"], states: ["dirty"], left_out: ["Call Test Friend: left out: not on your list"],
+      serves: ["bladder"],
     });
   });
 
@@ -314,6 +318,8 @@ describe("option objects: refused, states and left_out (T2, T3)", () => {
       { states: ["a", "b", "c", "d", "e"] }, { states: [""] }, { states: ["x".repeat(41)] }, { states: "dirty" },
       { left_out: Array.from({ length: 13 }, (_, index) => `Act ${index}: left out: x`) }, { left_out: [""] },
       { left_out: ["x".repeat(161)] }, { left_out: "Call: left out: no" },
+      { serves: "bladder" }, { serves: [1] }, { serves: [""] }, { serves: ["x".repeat(33)] },
+      { serves: Array.from({ length: 9 }, (_, index) => `need-${index}`) },
     ];
     for (const extra of wrong) {
       expect(refusal(() => parseObservation(view({ options: [option(extra)] }), NOW)), JSON.stringify(extra)).toEqual({ status: 400, code: "invalid_body" });
@@ -328,5 +334,30 @@ describe("option objects: refused, states and left_out (T2, T3)", () => {
     }), NOW);
     expect(parsed.options?.[0]?.states).toHaveLength(4);
     expect(parsed.options?.[0]?.left_out).toHaveLength(12);
+  });
+
+  it("keeps an object's excluded acts and reason codes as the helper sent them, and refuses a wrong shape (D3)", () => {
+    const parsed = parseObservation(view({
+      options: [option({ excluded: [{ text: "Test cheat act", reason: "deny_name", ref: "a333" }, { text: "Test hidden act" }] })],
+    }), NOW);
+    expect(parsed.options?.[0]?.excluded).toEqual([{ text: "Test cheat act", reason: "deny_name", ref: "a333" }, { text: "Test hidden act" }]);
+    const wrong: Array<Record<string, unknown>> = [
+      { excluded: "Test cheat act" }, { excluded: [{ text: 5 }] }, { excluded: [{ text: "" }] },
+      { excluded: [{ text: "x".repeat(161) }] }, { excluded: [{ text: "ok", reason: 5 }] },
+      { excluded: [{ text: "ok", reason: "x".repeat(65) }] }, { excluded: [{ text: "ok", ref: 5 }] },
+      { excluded: [{ text: "ok", ref: "not a ref" }] }, { excluded: [{ text: "ok", extra: 1 }] },
+      { excluded: Array.from({ length: 33 }, (_, index) => ({ text: `Act ${index}` })) },
+    ];
+    for (const extra of wrong) {
+      expect(refusal(() => parseObservation(view({ options: [option(extra)] }), NOW)), JSON.stringify(extra)).toEqual({ status: 400, code: "invalid_body" });
+    }
+  });
+
+  it("accepts the helper's real excluded output from the shared wire fixture (B-1)", () => {
+    const excluded = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "excluded_wire.json"), "utf8"));
+    const parsed = parseObservation(view({
+      options: [option({ excluded })],
+    }), NOW);
+    expect(parsed.options?.[0]?.excluded).toEqual(excluded);
   });
 });

@@ -1,15 +1,19 @@
-// The game's lists on demand: the people she knows, the places she can go, her things and the event types. The helper sends
-// a list only when its content changed (POST /domus/lists), and Natalis keeps the newest one per helper session and kind.
-// The game_list tool reads it and changes nothing. Refs in a list (p, h, t, e) resolve only against the list of the helper
-// session her last list answer named, and only while that session is attached (see listedSession and findListed). Her view
-// carries one count line from these lists (listCountLine).
+// The game's lists on demand: the people she knows, the places she can go, her things and the event types, and every act
+// on one object (D3). The helper sends a list only when its content changed (POST /domus/lists), and Natalis keeps the
+// newest one per helper session and kind. The game_list tool reads it and changes nothing. Refs in a list (p, h, t, e)
+// resolve only against the list of the helper session her last list answer named, and only while that session is attached
+// (see listedSession and findListed). Her view carries one count line from these lists (listCountLine).
 
-import { moneyWords } from "./words.js";
+import { moneyWords, dropTokens } from "./words.js";
 import type { DatabaseSync } from "node:sqlite";
 import type { Receipt, Tool, ToolContext } from "../../contracts.js";
-import { type GameContext, gameGate, refused } from "./tool-context.js";
+import { DETAIL_WORDS, wordsOfCode } from "./acts.js";
+import type { OptionAct, OptionObject } from "./answers.js";
+import { optionsOf } from "./options.js";
+import { withoutRefused } from "./refused.js";
+import { type GameContext, gameGate, refused, staleRef } from "./tool-context.js";
 import { type ListKind, LIST_KINDS } from "./wire.js";
-import type { Row } from "./store.js";
+import { gameThreadNow, isAttachedView, newestObservation, type Row } from "./store.js";
 
 /** A ref as the view and the tools name it: a letter and up to eight digits. */
 export const REF_PATTERN = /^[a-z][0-9]{1,8}$/;
@@ -17,6 +21,11 @@ export const REF_PATTERN = /^[a-z][0-9]{1,8}$/;
 const ROOM_MAX = 64;
 /** Above this many things, and with no room named, the things answer is counts per room and her inventory. */
 const THINGS_IN_FULL = 80;
+/** The kinds game_list answers: the stored lists, and every act on one object (D3). */
+export const GAME_LIST_WHATS = [...LIST_KINDS, "acts"] as const;
+export type GameListWhat = (typeof GAME_LIST_WHATS)[number];
+/** The longest object name the acts answer takes, in characters. */
+const OBJECT_NAME_MAX = 200;
 
 export type ListItem = Record<string, unknown>;
 
@@ -183,6 +192,148 @@ export function listAnswer(kind: ListKind, items: ListItem[], room: string | und
   return body.join("\n");
 }
 
+/** The acts of an object the view can show, read defensively: an act missing its ref or words is left out. */
+function actsOf(object: OptionObject): OptionAct[] {
+  return object.acts.filter((act): act is OptionAct =>
+    !!act && typeof act === "object" && typeof act.ref === "string" && typeof act.text === "string");
+}
+
+/** The act refs the view hides on each object, from the same recent-refusal rule the view uses (refused.ts). */
+function hiddenRefsOf(raw: readonly OptionObject[], shown: readonly OptionObject[]): ReadonlySet<string>[] {
+  const shownRefs = new Map<string, Set<string>>();
+  for (const object of shown) {
+    const refs = shownRefs.get(object.object_id) ?? new Set<string>();
+    for (const act of actsOf(object)) refs.add(act.ref);
+    shownRefs.set(object.object_id, refs);
+  }
+  return raw.map((object) => {
+    const kept = shownRefs.get(object.object_id) ?? new Set<string>();
+    return new Set(actsOf(object).filter((act) => !kept.has(act.ref)).map((act) => act.ref));
+  });
+}
+
+/** One act's line: its ref and words, with the marks the view uses, and why it is not offered when the view hides it. */
+function actLine(act: OptionAct, hidden: boolean): string {
+  const marks = `${act.needs_sim === true ? " (needs a Sim: name one with sim)" : ""}${typeof act.opens === "string" ? ` [${act.opens}]` : ""}`;
+  return hidden
+    ? `- ${act.ref} ${dropTokens(act.text)}${marks}: left out now, because the game refused it lately`
+    : `- ${act.ref} ${dropTokens(act.text)}${marks}`;
+}
+
+/** The place of an object in the acts answer: its room when the view names one, and where it is. */
+function actPlace(object: OptionObject): string {
+  const room = typeof object.room === "string" && object.room !== "" ? dropTokens(object.room) : undefined;
+  const where = typeof object.where === "string" && object.where !== "" ? dropTokens(object.where) : undefined;
+  const parts = room !== undefined && where !== undefined && where.includes(room) ? [where] : [room, where];
+  const kept = parts.filter((part): part is string => part !== undefined);
+  return kept.length ? ` (${kept.join("; ")})` : "";
+}
+
+/** The plain words of an excluded act's reason code; a code it does not know is never shown as a bare code. */
+function excludedReason(reason: unknown): string {
+  if (typeof reason !== "string" || reason.trim() === "") return "the game's side did not give a reason";
+  const code = reason.trim();
+  if (Object.hasOwn(DETAIL_WORDS, code)) return DETAIL_WORDS[code] ?? "the game's side did not give a reason";
+  return wordsOfCode(code) ?? "the game's side did not give a reason in words";
+}
+
+/** A comparable act name: underscores in the probe's name are the spaces she reads. */
+function actNameKey(name: string): string {
+  return name.trim().toLowerCase().replace(/[_]+/g, " ").replace(/\s+/g, " ");
+}
+
+/** The act's words in a left_out line, before ": left out:". The whole line if that mark is missing. */
+function leftOutName(line: string): string {
+  const mark = ": left out:";
+  const at = line.toLowerCase().indexOf(mark);
+  return (at === -1 ? line : line.slice(0, at)).trim();
+}
+
+/**
+ * The acts answer (D3): every act of each matching object with its ref, then the acts the game's side excluded, the
+ * view hides after refusals, or the game left out, each with its reason. No act is both offered and left out.
+ * N-5: an act named in both left_out and excluded is printed once (the excluded form, which may carry a ref).
+ */
+export function actsOnAnswer(objects: readonly OptionObject[], hidden: readonly ReadonlySet<string>[]): string {
+  const blocks: string[] = [];
+  for (const [index, object] of objects.entries()) {
+    const hiddenHere = hidden[index] ?? new Set<string>();
+    const lines = [`Acts on ${dropTokens(object.object)}${actPlace(object)}:`];
+    for (const act of actsOf(object)) lines.push(actLine(act, hiddenHere.has(act.ref)));
+    if (lines.length === 1) lines.push("- The newest view shows no act on it.");
+    for (const line of object.refused ?? []) if (typeof line === "string" && line !== "") lines.push(`- ${dropTokens(line)}`);
+    const excludedNames = new Set<string>();
+    const excludedLines: string[] = [];
+    for (const entry of object.excluded ?? []) {
+      const text = typeof entry?.text === "string" ? dropTokens(entry.text) : "";
+      if (text === "") continue;
+      excludedNames.add(actNameKey(text));
+      const ref = typeof entry.ref === "string" && entry.ref !== "" ? `${entry.ref} ` : "";
+      excludedLines.push(`- ${ref}${text}: left out: ${excludedReason(entry.reason)}`);
+    }
+    for (const line of object.left_out ?? []) {
+      if (typeof line !== "string" || line === "") continue;
+      const words = dropTokens(line);
+      if (excludedNames.has(actNameKey(leftOutName(words)))) continue;
+      lines.push(`- ${words}`);
+    }
+    for (const line of excludedLines) lines.push(line);
+    blocks.push(lines.join("\n"));
+  }
+  return blocks.join("\n\n");
+}
+
+/** How many objects the game's own cut left out of the newest view, when its payload says. */
+function optionsCutObjects(cut: unknown): number {
+  if (cut === null || typeof cut !== "object") return 0;
+  const objects = (cut as Record<string, unknown>).objects;
+  return typeof objects === "number" && Number.isSafeInteger(objects) && objects > 0 ? objects : 0;
+}
+
+/**
+ * Every act on one object of the newest view, whatever the view's own cap: by a t ref from game_list things, or by the
+ * object's name (every object with that name, so none is silently chosen over another). A refusal names game_look.
+ */
+function actsOn(game: NonNullable<GameContext>, session: string, asked: string): Receipt {
+  const nameOrRef = asked.trim();
+  let wantedId: string | undefined;
+  let wantedName = nameOrRef;
+  if (REF_PATTERN.test(nameOrRef)) {
+    if (!nameOrRef.startsWith("t")) {
+      return refused("bad_args", `${nameOrRef} is not a thing ref: use a t ref from game_list things, or the object's name.`);
+    }
+    const item = findListed(game.db, listedSession(game.db, session), "things", nameOrRef);
+    if (!item) return staleRef(nameOrRef, "game_list things");
+    wantedId = String(item.id);
+    wantedName = String(item.name);
+  }
+  const thread = gameThreadNow(game.db, session);
+  const newest = thread === undefined ? undefined : newestObservation(game.db, thread);
+  if (!newest || !isAttachedView(newest.attachment, session)) {
+    return refused("no_view", "The newest view of the game is not here, so its acts are not known. game_look asks for a fresh view.");
+  }
+  const raw = optionsOf(newest.payload.options);
+  const objects = wantedId === undefined
+    ? raw.filter((object) => dropTokens(object.object).toLowerCase() === wantedName.toLowerCase())
+    : raw.filter((object) => object.object_id === wantedId);
+  if (objects.length === 0) {
+    const cut = optionsCutObjects(newest.payload.options_cut);
+    const left = cut > 0 ? ` The game left ${cut} ${cut === 1 ? "thing" : "things"} out of that view.` : "";
+    const what = wantedId === undefined ? `an object named ${wantedName}` : `${wantedName} (${nameOrRef})`;
+    return refused(
+      "unknown_object",
+      `The newest view does not show ${what}, so it lists no acts on it.${left} game_look asks for a fresh view; game_list things shows your things by name.`,
+    );
+  }
+  const shown = withoutRefused(game.db, newest.attachment, raw, game.nowMs());
+  const count = objects.reduce((total, object) => total + actsOf(object).length, 0);
+  return {
+    ok: true,
+    summary: actsOnAnswer(objects, hiddenRefsOf(objects, shown)),
+    data: { kind: "acts", object: dropTokens(objects[0]!.object), count, objects: objects.length },
+  };
+}
+
 export function gameListTool(open: () => GameContext): Tool {
   return {
     spec: {
@@ -191,12 +342,14 @@ export function gameListTool(open: () => GameContext): Tool {
       safeWhenStopped: true,
       description:
         "List what the game knows, with the refs to use in other tools: the people you know (p), the places you can go (h), " +
-        "your things (t) or the kinds of event you can plan (e). It changes nothing in the game.",
+        "your things (t), the kinds of event you can plan (e), or every act on one object (acts), with the refs game_act takes. " +
+        "It changes nothing in the game.",
       parameters: {
         type: "object",
         properties: {
-          what: { type: "string", enum: [...LIST_KINDS] },
+          what: { type: "string", enum: [...GAME_LIST_WHATS] },
           room: { type: "string", description: "Things only: one room's name, as the view names it." },
+          object: { type: "string", description: "Acts only: the object's t ref from game_list things, or its name as the view shows it." },
         },
         required: ["what"],
       },
@@ -211,19 +364,28 @@ function gameList(open: () => GameContext, args: Record<string, unknown>, _conte
   const game = open();
   if (!game) return refused("not_running", "The game is not connected to you right now.");
   for (const key of Object.keys(args)) {
-    if (key !== "what" && key !== "room") return refused("bad_args", `${key} is not a field of game_list.`);
+    if (key !== "what" && key !== "room" && key !== "object") return refused("bad_args", `${key} is not a field of game_list.`);
   }
   const what = args.what;
-  if (typeof what !== "string" || !(LIST_KINDS as readonly string[]).includes(what)) {
-    return refused("bad_args", `what must be one of ${LIST_KINDS.join(", ")}.`);
+  if (typeof what !== "string" || !(GAME_LIST_WHATS as readonly string[]).includes(what)) {
+    return refused("bad_args", `what must be one of ${GAME_LIST_WHATS.join(", ")}.`);
   }
-  const kind = what as ListKind;
-  if (args.room !== undefined && !(kind === "things" && typeof args.room === "string" && args.room.trim() !== "" && args.room.length <= ROOM_MAX)) {
-    return refused("bad_args", `room is one room's name (up to ${ROOM_MAX} characters), and goes with things only.`);
+  const kind = what as GameListWhat;
+  if (kind === "acts") {
+    if (args.room !== undefined) return refused("bad_args", "room goes with things only.");
+    if (typeof args.object !== "string" || args.object.trim() === "" || args.object.length > OBJECT_NAME_MAX) {
+      return refused("bad_args", `object is the thing whose acts you want: its t ref from game_list things, or its name (up to ${OBJECT_NAME_MAX} characters).`);
+    }
+  } else {
+    if (args.object !== undefined) return refused("bad_args", "object goes with acts only.");
+    if (args.room !== undefined && !(kind === "things" && typeof args.room === "string" && args.room.trim() !== "" && args.room.length <= ROOM_MAX)) {
+      return refused("bad_args", `room is one room's name (up to ${ROOM_MAX} characters), and goes with things only.`);
+    }
   }
   const gate = gameGate(game, { probe: true, reads: true });
   if (gate) return gate;
   const session = game.attachedSession(game.nowMs()) as string;
+  if (kind === "acts") return actsOn(game, session, args.object as string);
   const stored = readList(game.db, session, kind);
   if (stored === undefined) {
     return { ok: false, summary: `The game has not sent its list of ${kind} yet.`, refused: { code: "no_list", reason: `The game has not sent its list of ${kind} yet.` } };

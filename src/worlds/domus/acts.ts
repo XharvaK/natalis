@@ -17,6 +17,7 @@ import { endingOf } from "./endings.js";
 import { labelOf } from "./options.js";
 import { inTransaction, type Row } from "./store.js";
 import { isRecord, type DomusActPhase, type SyncEvent } from "./wire.js";
+import { plainName } from "./words.js";
 
 /** A requested act the helper does not pick up within this time expires; the game never sees it. */
 export const ACT_TTL_MS = 90_000;
@@ -521,11 +522,31 @@ function refusedSentence(detail: Record<string, unknown>): string {
   return `${who ?? "it was refused"}${text === undefined ? "" : `: ${text}`}`;
 }
 
+
+function replacedWords(raw: unknown): string | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const parts: string[] = [];
+  for (const item of raw) {
+    if (!isRecord(item)) continue;
+    const name = typeof item.name === "string" && item.name.trim() !== "" ? plainName(item.name.trim()) : "";
+    if (!name) continue;
+    const own = item.autonomous === true ? "your Sim's own" : "one that was not your Sim's own";
+    const state = item.state === "running" ? "running" : item.state === "queued" ? "queued" : undefined;
+    parts.push(state === undefined ? `${name} (${own})` : `${state} ${name} (${own})`);
+  }
+  if (parts.length === 0) return undefined;
+  if (parts.length === 1) return parts[0];
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+
 function phaseSentence(phase: DomusActPhase, detail: Record<string, unknown>, late: boolean): string {
   switch (phase) {
     case "received": return "the link to the game took it up and passed it on to the game";
     case "accepted": return "the game accepted it";
-    case "pushed": return "the game put it in its queue";
+    case "pushed": {
+      const extra = replacedWords(detail.replaced);
+      return extra === undefined ? "the game put it in its queue" : `the game put it in its queue; it replaced ${extra}`;
+    }
     case "waiting": {
       const window = typeof detail.window === "string" && detail.window.trim() !== "" ? ` (${detail.window.trim().slice(0, 80)})` : "";
       return `a window is open on the game${window}, so the game keeps it out of your queue until the window closes`;

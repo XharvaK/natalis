@@ -7,7 +7,8 @@ import type { ToolContext } from "../../contracts.js";
 import { catalogText, expireCatalog, gameCatalogTool, handCatalog, openCatalogAsk, settleCatalog, CATALOG_TTL_MS } from "./catalog.js";
 import { verbTools } from "./verbs.js";
 import { findListed, gameListTool, listCountLine, listDigests, LISTS_KEEP_MS, readList, storeList } from "./lists.js";
-import { openDomusDb } from "./store.js";
+import { renderView } from "./options.js";
+import { admitObservation, openDomusDb } from "./store.js";
 import { parseActSync, parseCatalog, parseLists, RESULT_MAX } from "./wire.js";
 import type { GameContext } from "./tool-context.js";
 
@@ -145,6 +146,143 @@ describe("game_list", () => {
     expect(receipt.summary).not.toContain("Create-a-Sim"); // Q-k: the things answer carries no clothes line
     const room = await list({ what: "things", room: "kitchen" });
     expect(room.summary.split("\n").filter((line) => line.startsWith("- "))).toHaveLength(41);
+  });
+});
+
+describe("game_list acts on one object (D3)", () => {
+  // The long text stands in for a whole lot of ordinary objects, so the view's own cap cuts the toilet off the end.
+  const LONG_ACT = "Look at it very closely and turn it over in your hands, again and again. ".repeat(20);
+  const FILLERS = Array.from({ length: 15 }, (_, index) => ({
+    object: `Test thing ${index + 1}`,
+    object_id: `thing-${index + 1}`,
+    room: "Test hall",
+    where: `elsewhere, ${index + 1}.0 m`,
+    acts: [{ ref: `a${index + 3}`, guid64: `${index + 3}`, text: LONG_ACT }],
+  }));
+  const TOILET = {
+    object: "Test toilet upstairs",
+    object_id: "toilet-up",
+    room: "Test bathroom",
+    where: "elsewhere, 999.0 m",
+    acts: [
+      { ref: "a50", guid64: "50", text: "Use the toilet" },
+      { ref: "a51", guid64: "51", text: "Clean the toilet" },
+    ],
+  };
+  let viewSeq: number;
+
+  beforeEach(() => {
+    viewSeq = 0;
+  });
+
+  function observe(options: unknown[]): void {
+    viewSeq += 1;
+    admitObservation(db, {
+      observationId: `helper-1.${viewSeq}`, digest: "b".repeat(64), thread: "domus:slot3", world: "slot3", branch: "branch-1",
+      session: "telemetry-1", attachment: HELPER, body: "sim-9", snapshot: "7", seq: viewSeq, sourceTimeMs: clock - 1000,
+      expiresAtMs: clock + 30_000, receiptTimeMs: clock, lineageClass: "LIVE", payloadJson: JSON.stringify({ options }),
+    });
+  }
+
+  it("returns every act on an object the view cap left out, with its refs", async () => {
+    expect(renderView({ world: "slot3", percepts: [], options: [...FILLERS, TOILET] })).not.toContain("a50 Use the toilet");
+    storeList(db, { attachment: HELPER, kind: "things", digest: DIGEST, nowMs: clock, items: [
+      { ref: "t263", id: "toilet-up", name: "Test toilet upstairs", where: "Test bathroom" },
+    ] });
+    observe([...FILLERS, TOILET]);
+    expect(await list({ what: "things" })).toMatchObject({ ok: true });
+    const receipt = await list({ what: "acts", object: "t263" });
+    expect(receipt).toMatchObject({ ok: true, data: { kind: "acts", object: "Test toilet upstairs", count: 2 } });
+    expect(receipt.summary).toContain("- a50 Use the toilet");
+    expect(receipt.summary).toContain("- a51 Clean the toilet");
+  });
+
+  it("takes the object's name too, and says it plainly when no object has that name", async () => {
+    observe([TOILET]);
+    const byName = await list({ what: "acts", object: "test toilet upstairs" });
+    expect(byName).toMatchObject({ ok: true, data: { count: 2 } });
+    const missing = await list({ what: "acts", object: "Test missing thing" });
+    expect(missing).toMatchObject({ ok: false, refused: { code: "unknown_object" } });
+    expect(missing.summary).toContain("game_look");
+  });
+
+  it("lists every object with that name, with its room, rather than silently choosing one", async () => {
+    const down = {
+      object: "Test toilet upstairs", object_id: "toilet-down", room: "Test washroom", where: "elsewhere, 60.0 m",
+      acts: [{ ref: "a52", guid64: "52", text: "Use the toilet" }],
+    };
+    observe([TOILET, down]);
+    const receipt = await list({ what: "acts", object: "Test toilet upstairs" });
+    expect(receipt).toMatchObject({ ok: true, data: { count: 3 } });
+    expect(receipt.summary).toContain("Test bathroom");
+    expect(receipt.summary).toContain("Test washroom");
+    expect(receipt.summary).toContain("- a50 Use the toilet");
+    expect(receipt.summary).toContain("- a52 Use the toilet");
+  });
+
+  it("includes the object's excluded acts with plain reasons, and the acts it refused or left out", async () => {
+    observe([{
+      ...TOILET,
+      refused: ["Use the toilet: refused: the toilet is broken"],
+      left_out: ["Call Test Friend: left out: it is not on your phone list"],
+      excluded: [{ text: "Test cheat act", reason: "deny_name", ref: "a333" }, { text: "Test hidden act" }],
+    }]);
+    const receipt = await list({ what: "acts", object: "Test toilet upstairs" });
+    expect(receipt).toMatchObject({ ok: true });
+    expect(receipt.summary).toContain("- a333 Test cheat act: left out: a debug, cheat or test act");
+    expect(receipt.summary).toContain("- Test hidden act: left out: the game's side did not give a reason");
+    expect(receipt.summary).toContain("- Use the toilet: refused: the toilet is broken");
+    expect(receipt.summary).toContain("- Call Test Friend: left out: it is not on your phone list");
+  });
+
+  it("prints each left-out act once when excluded and left_out name the same act (N-5)", async () => {
+    observe([{
+      ...TOILET,
+      left_out: [
+        "Test cheat act: left out: a debug, cheat or test act",
+        "thing Clean: left out: it opens a menu of choices, not an act",
+        "Call Test Friend: left out: it is not on your phone list",
+      ],
+      excluded: [
+        { text: "Test cheat act", reason: "deny_name", ref: "a333" },
+        { text: "thing_Clean", reason: "PIE_PICKER" },
+      ],
+    }]);
+    const receipt = await list({ what: "acts", object: "Test toilet upstairs" });
+    const text = receipt.summary ?? "";
+    expect((text.match(/Test cheat act: left out:/g) ?? []).length).toBe(1);
+    expect((text.match(/thing Clean: left out:|thing_Clean: left out:/g) ?? []).length).toBe(1);
+    expect(text).toContain("- a333 Test cheat act: left out: a debug, cheat or test act");
+    expect(text).toContain("thing_Clean: left out:");
+    expect(text).toContain("- Call Test Friend: left out: it is not on your phone list");
+  });
+
+  it("names an act the view hides after a refusal as left out now, not as offered", async () => {
+    const refuse = (objectId: string, guid64: string, ref: string, n: number) => {
+      const actId = `act-${objectId}-${guid64}-${n}`;
+      db.prepare(`INSERT INTO acts (act_id, turn_id, thread, attachment, observation_id, option_ref, object_id, guid64, label, state,
+        requested_at_ms, expires_at_ms, updated_at_ms, for_summoner) VALUES (?, 't', 'domus:slot3', ?, NULL, ?, ?, ?, 'label', 'rejected', ?, ?, ?, 0)`)
+        .run(actId, HELPER, ref, objectId, guid64, clock - 1000, clock + 60_000, clock - 1000);
+      db.prepare("INSERT INTO act_events (act_id, phase, at_ms, received_at_ms, detail_json) VALUES (?, 'rejected', ?, ?, '{\"code\":\"GAME_REFUSED\"}')")
+        .run(actId, clock - 1000, clock - 1000);
+    };
+    observe([TOILET]);
+    refuse("toilet-up", "50", "a50", 1);
+    refuse("toilet-up", "50", "a50", 2);
+    const receipt = await list({ what: "acts", object: "Test toilet upstairs" });
+    expect(receipt.summary).toContain("- a50 Use the toilet: left out now, because the game refused it lately");
+    expect(receipt.summary).toContain("- a51 Clean the toilet");
+  });
+
+  it("needs an object with acts, and takes no room", async () => {
+    expect(await list({ what: "acts" })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await list({ what: "acts", object: "Test toilet upstairs", room: "Test bathroom" })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+    expect(await list({ what: "things", object: "Test toilet upstairs" })).toMatchObject({ ok: false, refused: { code: "bad_args" } });
+  });
+
+  it("points a capped view to this request", () => {
+    expect(renderView({ world: "slot3", percepts: [], options: FILLERS }))
+      .toContain("game_list acts with one thing's ref or name shows every act on it.");
   });
 });
 
