@@ -96,6 +96,17 @@ export function checkLar(dir: string, env: Readonly<Record<string, string | unde
     (value) => `Discord, ${parseDiscordFile(value).rooms.length} rooms.`,
     (value) => parseDiscordFile(value).tokenEnv,
   );
+  // A window channel, when discord.json names one: one more line. The channel id is never printed.
+  const discordPath = join(dir, DISCORD_FILE);
+  if (existsSync(discordPath)) {
+    try {
+      if (parseDiscordFile(JSON.parse(readFileSync(discordPath, "utf8")) as unknown).window !== undefined) {
+        ok(`${DISCORD_FILE}: a window channel is set, so the Lar's thinking is copied there. Only your summoner should be able to read it.`);
+      }
+    } catch {
+      // The line above already says what is wrong with the file.
+    }
+  }
   world(SANDBOX_FILE, (value) => `the sandbox, network ${parseSandboxFile(value).network ?? "wall"}.`);
   world(WEB_FILE, () => {
     const web = loadWebFile(dir);

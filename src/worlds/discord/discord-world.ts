@@ -124,6 +124,8 @@ export type DiscordWorldOptions = {
   ownerAlias?: string;
   /** Channel ids the Lar lives in. */
   rooms: string[];
+  /** The channel id of the summoner's window. Left out, the world has no window. */
+  windowChannel?: string;
   /** JSON file holding the alias map. Platform ids live only here. */
   aliasesPath: string;
   /**
@@ -712,7 +714,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     },
   };
 
-  return {
+  const world: World = {
     id: WORLD_ID,
 
     async start(emit, worldBody) {
@@ -854,6 +856,22 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       return `Discord: not connected (${statusReason}).`;
     },
   };
+
+  // The summoner's window is a channel of its own: a copy of what the Lar does, never a say. Without a channel there is no show.
+  const windowChannel = options.windowChannel;
+  if (windowChannel !== undefined && windowChannel !== "") {
+    world.show = async (text) => {
+      if (status !== "connected" || !self) throw new Error(`Discord is not connected (${statusReason}).`);
+      for (const part of splitForDiscord(text)) {
+        try {
+          await client.send(windowChannel, part, null, []);
+        } catch (error) {
+          throw new Error(`Discord would not take the window message: ${cleanError(error)}`);
+        }
+      }
+    };
+  }
+  return world;
 }
 
 // ---------------------------------------------------------------------------------------------------

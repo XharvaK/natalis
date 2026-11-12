@@ -36,11 +36,12 @@ import { changedBeyond, CLASS_RANK, partsOfMessage, type MessagePart } from "../
 import { TURN_DEADLINE_MS } from "../model/turn-deadline.js";
 import { isLive, purposeOf, type Purpose } from "../river/purpose.js";
 import { viewKeyOfRow } from "../river/view-index.js";
-import { forgetInStateFile, openEntity, OUTBOX_JOB_TIMEOUT_MS, REFLECT_DEADLINE_MS, STATE_FILE, type Entity, type OpenEntityOptions } from "./runtime.js";
+import { forgetInStateFile, LAST_TURN_HERE, openEntity, OUTBOX_JOB_TIMEOUT_MS, REFLECT_DEADLINE_MS, STATE_FILE, type Entity, type OpenEntityOptions } from "./runtime.js";
 import { COMMITMENTS_STUB, HOUSEHOLD_PATH, OLD_COMMITMENTS_STUB } from "./commitments.js";
-import { isStopOn } from "./stop.js";
+import { isStopOn, writeStop } from "./stop.js";
 import { PRIVACY_UNREADABLE_REASON } from "./privacy.js";
 import { QUOTE_MAX_CHARS } from "./honesty.js";
+import { WINDOW_ABOUT } from "./window.js";
 
 // The fake credential is built from parts at run time, so no token-shaped literal sits in the source.
 const FAKE_KEY = ["sk", "proj", "abcdefghijklmnopqrstuvwxyz0123"].join("-");
@@ -5092,6 +5093,181 @@ describe("U6: her importance marks and reflection", () => {
     for (const key of ["purpose", "phase", "view", "brief", "wakeId", "summonerAct", "bodyNote", "nonLiveDropped", "outcomeUnknown", "retryOf"]) {
       expect(row?.data?.[key]).toBeUndefined();
     }
+  });
+});
+
+/** A world that can show the summoner's window: what it is given is kept in `shown`. */
+function windowWorld(options: { failing?: boolean } = {}): { world: World; shown: string[] } {
+  const shown: string[] = [];
+  const world: World = {
+    id: "window",
+    async start() {},
+    async stop() {},
+    async say(): Promise<Receipt> {
+      return { ok: true, summary: "Delivered." };
+    },
+    tools: () => [],
+    now: () => "window is open.",
+    async show(text) {
+      if (options.failing === true) throw new Error("the window channel is gone");
+      shown.push(text);
+    },
+  };
+  return { world, shown };
+}
+
+describe("the summoner's window", () => {
+  // One turn that thinks in words, calls a tool, and ends.
+  const thinkingTurn = () =>
+    new ScriptedModel([
+      reply({ content: "I will set my mood.", toolCalls: [call("set_mood", { text: "calm" })] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+
+  it("copies a turn's start, thought, call, receipt and end into the window, in that order", async () => {
+    const { world, shown } = windowWorld();
+    const { entity, cli } = await open(thinkingTurn(), {}, [world]);
+    await entity.start();
+    cli.send("Hello.");
+    await entity.idle();
+    await entity.stop();
+
+    const text = shown.join("\n");
+    const at = ["Turn began in ", "thinks: I will set my mood.", "does: set_mood ", "  -> ", "Turn ended ("].map((part) => text.indexOf(part));
+    expect(at.every((index) => index >= 0)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+  });
+
+  it("writes no river row with the window's text", async () => {
+    const { world } = windowWorld();
+    const { entity, cli } = await open(thinkingTurn(), {}, [world]);
+    await entity.start();
+    cli.send("Hello.");
+    await entity.idle();
+    const rows = allRows(entity);
+    await entity.stop();
+    expect(rows.some((row) => row.kind === "turn" && row.data?.["phase"] === "start")).toBe(true);
+    expect(rows.some((row) => (row.text ?? "").startsWith("Turn began in"))).toBe(false);
+  });
+
+  it("is never made in a dry run", async () => {
+    const { world, shown } = windowWorld();
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model, { dryRun: true }, [world]);
+    await entity.start();
+    cli.send("Hello.");
+    await entity.idle();
+    await entity.stop();
+    expect(shown).toEqual([]);
+  });
+
+  it("tells her about the window in who you are only when a world shows one", async () => {
+    const withWindow = windowWorld();
+    const shownModel = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const first = await open(shownModel, {}, [withWindow.world]);
+    await first.entity.start();
+    first.cli.send("Hello.");
+    await first.entity.idle();
+    await first.entity.stop();
+    expect(systemTextOf(shownModel.requests[0])).toContain(WINDOW_ABOUT);
+
+    dir = join(root, "plain");
+    const plainModel = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const second = await open(plainModel);
+    await second.entity.start();
+    second.cli.send("Hello.");
+    await second.entity.idle();
+    await second.entity.stop();
+    expect(systemTextOf(plainModel.requests[0])).not.toContain(WINDOW_ABOUT);
+  });
+
+  it("keeps copying a summoner's turn while the emergency stop is on", async () => {
+    const { world, shown } = windowWorld();
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model, { stopPollMs: 1e9 }, [world]);
+    await entity.start();
+    writeStop(dir, "checking the noise");
+    cli.send("Hello.");
+    await entity.idle();
+    await entity.stop();
+    expect(model.requests).toHaveLength(1);
+    expect(shown.join("\n")).toContain("Turn began in ");
+    expect(shown.join("\n")).toContain("Turn ended (end_turn)");
+  });
+
+  it("does not fail a turn when the window cannot be shown, and writes no river row for the failure", async () => {
+    const { world } = windowWorld({ failing: true });
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model, {}, [world]);
+    await entity.start();
+    cli.send("Hello.");
+    await entity.idle();
+    const rows = allRows(entity);
+    await entity.stop();
+    expect(rows.some((row) => row.kind === "turn" && row.data?.["phase"] === "end" && row.data?.["endedBy"] === "end_turn")).toBe(true);
+    expect(rows.some((row) => (row.text ?? "").includes("could not be shown"))).toBe(false);
+  });
+});
+
+describe("the last-turn meter", () => {
+  const usage = { inputTokens: 1000, outputTokens: 200, totalTokens: 1200, cacheHitTokens: 300 };
+
+  it("has no last-turn line on the first turn in a thread", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    cli.send("Hello.");
+    await entity.idle();
+    await entity.stop();
+    expect(userTextOf(model.requests[0])).not.toContain(LAST_TURN_HERE);
+  });
+
+  it("gives the second turn the first one's calls, tokens and the share of the prompt from cache", async () => {
+    const model = new ScriptedModel([{ ...reply({ toolCalls: [call("end_turn")] }), usage }, reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    cli.send("First.");
+    await entity.idle();
+    cli.send("Second.");
+    await entity.idle();
+    await entity.stop();
+    expect(userTextOf(model.requests[1])).toContain(
+      "Your last turn here: 1 model calls, 1200 tokens as the provider reported them, 30% of the prompt from cache.",
+    );
+  });
+
+  it("says the provider reported no tokens when the model reports no usage", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] }), reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli } = await open(model);
+    await entity.start();
+    cli.send("First.");
+    await entity.idle();
+    cli.send("Second.");
+    await entity.idle();
+    await entity.stop();
+    expect(userTextOf(model.requests[1])).toContain("Your last turn here: 1 model calls; the provider reported no tokens.");
+  });
+
+  it("does not let a turn in another thread change this thread's line", async () => {
+    const room = emitter("fake");
+    const model = new ScriptedModel([
+      { ...reply({ toolCalls: [call("end_turn")] }), usage },
+      { ...reply({ toolCalls: [call("end_turn")] }), usage: { inputTokens: 5000, outputTokens: 0, totalTokens: 5000 } },
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model, {}, [room.world]);
+    await entity.start();
+    cli.send("First.");
+    await entity.idle();
+    room.emit({ place: "fake:room", text: "A line in the room." });
+    await entity.idle();
+    cli.send("Back here.");
+    await entity.idle();
+    await entity.stop();
+    expect(model.requests).toHaveLength(3);
+    expect(userTextOf(model.requests[2])).toContain(
+      "Your last turn here: 1 model calls, 1200 tokens as the provider reported them, 30% of the prompt from cache.",
+    );
   });
 });
 

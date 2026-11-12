@@ -717,6 +717,53 @@ describe("owner places", () => {
   });
 });
 
+describe("the summoner's window", () => {
+  // An invented channel id, built from parts like the others here.
+  const WINDOW_CHANNEL = "4".repeat(17) + "5";
+
+  it("sends a long window text to its channel in parts, each with no reply and no mention", async () => {
+    const { world, fake } = await startWorld({ windowChannel: WINDOW_CHANNEL });
+    const text = "abcdefghi ".repeat(450);
+    await world.show?.(text);
+    const sent = fake.sent.filter((message) => message.channelId === WINDOW_CHANNEL);
+    expect(sent).toHaveLength(3);
+    expect(sent.every((message) => message.replyTo === null && message.mentions.length === 0)).toBe(true);
+    expect(sent.every((message) => message.text.length <= 2000)).toBe(true);
+  });
+
+  it("has no show at all when no window channel is set", async () => {
+    const { world } = await startWorld();
+    expect("show" in world).toBe(false);
+  });
+
+  it("admits a message in the window channel only when that channel is also a room", async () => {
+    const outside = await startWorld({ windowChannel: WINDOW_CHANNEL });
+    outside.fake.deliver(incoming({ channelId: WINDOW_CHANNEL, author: OWNER_AUTHOR, content: "to the window" }));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(outside.events).toHaveLength(0);
+
+    const listed = await startWorld({ rooms: [GENERAL, WINDOW_CHANNEL], windowChannel: WINDOW_CHANNEL });
+    listed.fake.deliver(incoming({ channelId: WINDOW_CHANNEL, channelName: "window", author: OWNER_AUTHOR, content: "to the window" }));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(listed.events).toHaveLength(1);
+  });
+
+  it("refuses a window text before the Lar is connected", async () => {
+    const fake = fakeClient();
+    const world = createDiscordWorld({
+      token: TOKEN,
+      ownerUserId: OWNER,
+      rooms: [GENERAL],
+      aliasesPath,
+      client: fake.client,
+      windowChannel: WINDOW_CHANNEL,
+    });
+    expect(world.show).toBeDefined();
+    await expect(world.show?.("hello")).rejects.toThrow(/not connected/);
+    expect(fake.sent).toHaveLength(0);
+  });
+});
+
 describe("splitForDiscord", () => {
   it("keeps a short reply as one message and an empty reply as none", () => {
     expect(splitForDiscord("  hello there  ")).toEqual(["hello there"]);
