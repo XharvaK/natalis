@@ -9,6 +9,8 @@ export type DiscordFile = {
   ownerUserId: string;
   /** Channel ids the Lar lives in. DMs with known people need no listing. */
   rooms: string[];
+  /** The channel the summoner reads the Lar's window in: a channel id, digits only. Left out, there is no window. */
+  window?: string;
 };
 
 /** Checks an already-parsed discord.json. Throws a plain error naming the first wrong field. */
@@ -16,8 +18,8 @@ export function parseDiscordFile(value: unknown): DiscordFile {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${DISCORD_FILE} must be an object.`);
   const root = value as Record<string, unknown>;
   for (const key of Object.keys(root)) {
-    if (!["tokenEnv", "ownerUserId", "rooms"].includes(key)) {
-      throw new Error(`Unknown field "${key}" in ${DISCORD_FILE}. Allowed: tokenEnv, ownerUserId, rooms.`);
+    if (!["tokenEnv", "ownerUserId", "rooms", "window"].includes(key)) {
+      throw new Error(`Unknown field "${key}" in ${DISCORD_FILE}. Allowed: tokenEnv, ownerUserId, rooms, window.`);
     }
   }
   const tokenEnv = root["tokenEnv"];
@@ -32,6 +34,15 @@ export function parseDiscordFile(value: unknown): DiscordFile {
   if (!Array.isArray(rooms) || !rooms.every((room) => typeof room === "string" && /^\d+$/.test(room))) {
     throw new Error(`${DISCORD_FILE}: rooms must be a list of channel ids, digits only.`);
   }
-  return { tokenEnv, ownerUserId, rooms: rooms as string[] };
+  const windowChannel = root["window"];
+  if (windowChannel !== undefined && (typeof windowChannel !== "string" || !/^\d+$/.test(windowChannel))) {
+    throw new Error(`${DISCORD_FILE}: window must be a channel id, digits only.`);
+  }
+  return {
+    tokenEnv,
+    ownerUserId,
+    rooms: rooms as string[],
+    ...(windowChannel === undefined ? {} : { window: windowChannel as string }),
+  };
 }
 

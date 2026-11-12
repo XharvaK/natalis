@@ -43,7 +43,7 @@ node dist/bin/natalis.js chat --dir ~/lares/iris
 The Lar is born on its first start. To keep it living in its worlds, add the world files you want beside `entity.json`
 (`discord.json`, `sandbox.json`, `web.json`, `domus.json`; a world without its file does not start) and use
 `natalis run --dir ~/lares/iris`. To run it as a systemd user service with daily backups, see
-[deploy/README.md](deploy/README.md). To stop all outward acts at once: `natalis stop --dir ~/lares/iris`.
+[deploy/README.md](deploy/README.md). To stop all outward acts at once: `natalis stop --dir ~/lares/iris`. To watch it think as it lives, give it a window channel (see [deploy/README.md](deploy/README.md)).
 
 Tests: `npm test`. Type check: `npm run typecheck`.
 

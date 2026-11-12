@@ -105,6 +105,7 @@ import { dayKey, hostZone, msUntilNextDay, startOfDayMs } from "./day.js";
 import { FLOOR_TEXT } from "./floor.js";
 import { chosenName, NAME_NOTE, whoYouAre, type Thinking } from "./identity.js";
 import { readNature } from "./nature.js";
+import { createWindow, WINDOW_ABOUT, type Window } from "./window.js";
 import { capQuote, checkHonestyQuotes, headingPhrase, HONESTY_SYSTEM, type HonestyVerdict, parseHonestyReply } from "./honesty.js";
 import {
   createPrivacyWatch,
@@ -319,6 +320,8 @@ export const NON_LIVE_RELEASE_MS = 30_000;
 const RHYTHM_WHY = "Your daily rhythm.";
 const TIMER_LIMIT_MS = 2_147_483_647;
 const ALL_ROWS = 1_000_000;
+/** The start of the now board's line about her last turn in this thread: a meter of what it cost, never a rule. */
+export const LAST_TURN_HERE = "Your last turn here: ";
 /** The rows read at a time when the newest view of a key is looked for, from any thread. */
 const VIEW_SCAN_PAGE = 500;
 const SOURCES: readonly RiverSource[] = ["owner", "outside", "self", "body"];
@@ -807,6 +810,8 @@ class Runtime implements Entity {
   private readonly worldIds: Map<string, World>;
   private readonly nowMs: () => number;
   private readonly scanner: SecretScanner;
+  /** The summoner's window: copies of what the Lar does, shown in a channel her summoner reads. Absent without a world that shows one, and in a dry run. */
+  private readonly window: Window | undefined;
   private readonly delays: number[];
   private readonly quotaRetry: QuotaRetryTuning | undefined;
   /** How long a turn's model calls may run in all before the turn's watchdog stops them. */
@@ -953,7 +958,9 @@ class Runtime implements Entity {
     this.ceiling = init.config.ceiling ?? DEFAULT_CEILING;
     this.viewIndex = new ViewIndex();
     this.viewIndex.build(init.river);
-    this.river = indexedRiver(init.river, this.viewIndex);
+    this.window = this.windowFor(this.worlds);
+    const indexed = indexedRiver(init.river, this.viewIndex);
+    this.river = this.dryRun ? indexed : this.windowedRiver(indexed);
     this.ledger = openLedger(join(init.dir, RIVER_LEDGER_FILE));
     this.grants = openGrants(init.dir);
     this.facts = openFacts(join(init.dir, "river.db"));
@@ -1009,6 +1016,31 @@ class Runtime implements Entity {
     for (const name of Object.keys(this.config.tools ?? {})) {
       if (!names.has(name)) console.error(`natalis: entity.json tools names "${name}", but no connected tool has that name; it has no effect.`);
     }
+  }
+
+  /** The summoner's window, from the first world that can show one. A dry run has none. */
+  private windowFor(worlds: World[]): Window | undefined {
+    if (this.dryRun) return undefined;
+    const world = worlds.find((candidate) => candidate.show !== undefined);
+    const show = world?.show?.bind(world);
+    if (show === undefined) return undefined;
+    return createWindow({ show, redact: (text) => this.scanner.redact(text), nowMs: () => this.nowMs() });
+  }
+
+  /** The river with the window beside it: every row it takes is also handed to the window once it is written. Every other method is the river's own. */
+  private windowedRiver(river: River): River {
+    return {
+      ...river,
+      append: (row) => {
+        const stored = river.append(row);
+        try {
+          this.window?.row(stored);
+        } catch {
+          // The window never holds up the river: a copy that cannot be made is left out.
+        }
+        return stored;
+      },
+    };
   }
 
   /** The river the Lar's tools get. Every method is the river's own, except forget, which also scrubs the state and the worlds' stores. */
@@ -1165,6 +1197,8 @@ class Runtime implements Entity {
     this.abort.abort();
     // Answers already on their way to the summoner go out before the worlds close. The chain never rejects.
     await this.outbox;
+    // The window's copies still waiting go out before the worlds close, which is when they can no longer be shown.
+    await this.window?.close();
 
     const failures: unknown[] = [];
     for (const world of this.worlds) {
@@ -2679,7 +2713,10 @@ class Runtime implements Entity {
       bornMs: this.state.bornMs ?? nowMs,
       timeZone: this.config.timeZone,
       young: character === null || character.trim() === "" || character.trim() === CHARACTER_STUB.trim(),
-      worlds: this.worlds.map((world) => worldSaid(() => world.about?.()) ?? world.id),
+      worlds: [
+        ...this.worlds.map((world) => worldSaid(() => world.about?.()) ?? world.id),
+        ...(this.window === undefined ? [] : [WINDOW_ABOUT]),
+      ],
       summonerAlias: this.config.owner.alias,
       rhythm: (this.config.rhythm ?? DEFAULT_RHYTHM).length > 0,
     });
@@ -2799,6 +2836,8 @@ class Runtime implements Entity {
     const limit = this.config.limits?.turnsPerDay ?? DEFAULT_TURNS_PER_DAY;
     if (limit !== undefined) lines.push(`Turns today: ${this.turnsToday(nowMs)} of ${limit}.`);
     lines.push(...this.tokenLines(nowMs));
+    const lastTurn = this.lastTurnLine(thread);
+    if (lastTurn !== undefined) lines.push(lastTurn);
     if (this.state.proposals.length > 0) {
       lines.push("", "Commitments you proposed, waiting for your summoner:");
       for (const item of this.state.proposals) lines.push(`- ${item.id}: ${firstChars(item.text, PROPOSAL_SHOW)}`);
@@ -2856,6 +2895,35 @@ class Runtime implements Entity {
       `Cost today: ${cost.toFixed(4)} at the prices in your model config.${backupUnpriced ? " The backup's tokens are not priced: no price is set for the backup." : ""}`,
     );
     return lines;
+  }
+
+  /**
+   * What her last turn in this thread cost, as the provider reported it. A meter, not a rule. The turn running now has no end
+   * row yet, so this is the one before it.
+   */
+  private lastTurnLine(thread: string): string | undefined {
+    const end = this.lastEndedTurn(thread);
+    if (end === undefined) return undefined;
+    const calls = end.data?.["modelCalls"];
+    if (typeof calls !== "number") return undefined;
+    const counted = tokenCountOf(end.data?.["tokens"]);
+    if (counted.total === undefined) return `${LAST_TURN_HERE}${calls} model calls; the provider reported no tokens.`;
+    const hits = end.data?.["cacheHitTokens"];
+    if (counted.prompt !== undefined && counted.prompt > 0 && typeof hits === "number") {
+      const pct = Math.round((100 * hits) / counted.prompt);
+      return `${LAST_TURN_HERE}${calls} model calls, ${counted.total} tokens as the provider reported them, ${pct}% of the prompt from cache.`;
+    }
+    return `${LAST_TURN_HERE}${calls} model calls, ${counted.total} tokens as the provider reported them.`;
+  }
+
+  /** The newest turn end row in a thread. It reads in pages that double, so a thread with many turn starts still finds it. */
+  private lastEndedTurn(thread: string): RiverRow | undefined {
+    for (let limit = 8; ; limit *= 2) {
+      const rows = this.river.read({ thread, kinds: ["turn"], newestFirst: true, limit });
+      const end = rows.find((row) => row.data?.["phase"] === "end");
+      if (end !== undefined) return end;
+      if (rows.length < limit) return undefined;
+    }
   }
 
   /** The notebook a turn here sees: whole in the summoner's place and her own thread, without private/ anywhere else. */

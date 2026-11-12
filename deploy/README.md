@@ -99,6 +99,8 @@ and `!contacts remove <@mention or alias>` or `!contacts list` the same way. A r
 members as before. The file holds Discord user ids, so it stays on this host, like the alias file beside it. A damaged
 `contacts.json` admits nobody but you until it is fixed.
 
+To watch the Lar live, add `"window": "<channel id, digits only>"` to `discord.json`. The body then copies her thinking, her tool calls and what they returned into that channel as they happen, a few seconds behind. It shows where she says something, not the words. A call that names `private/` is not shown, and neither is her thinking for the rest of that turn. The Lar is told all of this in her own instructions. The copies are the body's, not her messages: they are not in her river, and the emergency stop does not pause them. Use a channel only you can read: the privacy list is not applied there, though known secrets are still hidden. To have your replies in that channel reach her, list the same channel under `rooms` too.
+
 Check the Lar in a terminal before you run it as a service: `node ~/natalis/dist/bin/natalis.js chat --dir ~/lares/<name>`.
 Ctrl+C stops it.
 

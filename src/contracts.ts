@@ -478,6 +478,11 @@ export interface World {
    * refuses the whole say. The receipt says delivered, or why not.
    */
   say(place: string, text: string, options?: { replyTo?: string; files?: SayFile[] }): Promise<SayResult>;
+  /**
+   * The summoner's window in this world, when it has one: deliver the body's copy of what the Lar is doing there.
+   * Never a say: no river row and no place claim. Rejects when it cannot deliver.
+   */
+  show?(text: string): Promise<void>;
   /** True when a place is the owner's own place in this world (the owner's DM, the command line). Default: not. */
   isOwnerPlace?(place: string): boolean;
   /** Extra tools this world offers (react, act_in_game, ...). */
