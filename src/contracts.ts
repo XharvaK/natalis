@@ -443,6 +443,18 @@ export type WorldEvent = {
   brief?: string;
 };
 
+/**
+ * N9: a moment a world noticed, carried in `WorldEvent.data.sense`. Presence, game and voice are the summoner's only; the
+ * world drops everyone else's before an event exists. An event that carries a sense is never words to answer: it opens
+ * no ask, does not count as the summoner writing, sends no welcome, is never a body command and pre-empts no turn. It is
+ * what the Lar's event wakes match against (`schedule_wake` with `on`).
+ */
+export type Sense =
+  | { kind: "status"; status: "online" | "idle" | "dnd" | "offline"; cameOnline: boolean }
+  | { kind: "game"; game: string; started: boolean }
+  | { kind: "voice"; joined: boolean }
+  | { kind: "reaction"; ref: string; emoji: string; mine: boolean; added: boolean };
+
 export type SayResult = Receipt;
 
 /** A picture to send with words: a file the body holds on its shelf, named as the Lar named it. */
@@ -483,6 +495,11 @@ export interface World {
    * Never a say: no river row and no place claim. Rejects when it cannot deliver.
    */
   show?(text: string): Promise<void>;
+  /**
+   * N9: the Lar's public status line in this world: her mood line, shown beside her name. Set on each change; the world
+   * keeps it across reconnects. Rejects when it cannot set it. A world with no such line does not define it.
+   */
+  status?(text: string): Promise<void>;
   /** True when a place is the owner's own place in this world (the owner's DM, the command line). Default: not. */
   isOwnerPlace?(place: string): boolean;
   /** Extra tools this world offers (react, act_in_game, ...). */

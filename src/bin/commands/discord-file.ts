@@ -11,6 +11,8 @@ export type DiscordFile = {
   rooms: string[];
   /** The channel the summoner reads the Lar's window in: a channel id, digits only. Left out, there is no window. */
   window?: string;
+  /** N9: true to ask Discord for the summoner's presence. Needs Presence Intent switched on in the developer portal. */
+  presence?: boolean;
 };
 
 /** Checks an already-parsed discord.json. Throws a plain error naming the first wrong field. */
@@ -18,8 +20,8 @@ export function parseDiscordFile(value: unknown): DiscordFile {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${DISCORD_FILE} must be an object.`);
   const root = value as Record<string, unknown>;
   for (const key of Object.keys(root)) {
-    if (!["tokenEnv", "ownerUserId", "rooms", "window"].includes(key)) {
-      throw new Error(`Unknown field "${key}" in ${DISCORD_FILE}. Allowed: tokenEnv, ownerUserId, rooms, window.`);
+    if (!["tokenEnv", "ownerUserId", "rooms", "window", "presence"].includes(key)) {
+      throw new Error(`Unknown field "${key}" in ${DISCORD_FILE}. Allowed: tokenEnv, ownerUserId, rooms, window, presence.`);
     }
   }
   const tokenEnv = root["tokenEnv"];
@@ -38,11 +40,16 @@ export function parseDiscordFile(value: unknown): DiscordFile {
   if (windowChannel !== undefined && (typeof windowChannel !== "string" || !/^\d+$/.test(windowChannel))) {
     throw new Error(`${DISCORD_FILE}: window must be a channel id, digits only.`);
   }
+  const presence = root["presence"];
+  if (presence !== undefined && typeof presence !== "boolean") {
+    throw new Error(`${DISCORD_FILE}: presence must be true or false.`);
+  }
   return {
     tokenEnv,
     ownerUserId,
     rooms: rooms as string[],
     ...(windowChannel === undefined ? {} : { window: windowChannel as string }),
+    ...(presence === true ? { presence: true } : {}),
   };
 }
 

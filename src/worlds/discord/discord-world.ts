@@ -124,6 +124,11 @@ export type DiscordWorldOptions = {
   rooms: string[];
   /** The channel id of the summoner's window. Left out, the world has no window. */
   windowChannel?: string;
+  /**
+   * N9: ask Discord for the summoner's presence (a privileged intent the developer portal must allow). Left out, no
+   * presence: a bot that asks for an intent the portal refuses cannot log in at all.
+   */
+  presence?: boolean;
   /** JSON file holding the alias map. Platform ids live only here. */
   aliasesPath: string;
   /**

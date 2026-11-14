@@ -26,7 +26,7 @@ describe("discord.json's window", () => {
 
   it("lists window among the allowed fields when a field is unknown", () => {
     expect(() => parseDiscordFile({ tokenEnv: "TEST_BOT_TOKEN", ownerUserId: "1234", channel: "5678" })).toThrow(
-      'Unknown field "channel" in discord.json. Allowed: tokenEnv, ownerUserId, rooms, window.',
+      'Unknown field "channel" in discord.json. Allowed: tokenEnv, ownerUserId, rooms, window, presence.',
     );
   });
 });
