@@ -103,6 +103,44 @@ To watch the Lar live, add `"window": "<channel id, digits only>"` to `discord.j
 
 What she notices on Discord: reactions and edits in her places, and your voice calls and typing. To let her see your status, the game you play and your music too, switch on **Presence Intent** for the bot in the Discord developer portal, then add `"presence": true` to `discord.json`. Without the portal switch, the bot cannot log in at all with that key set, and the start says so. Her mood line is her status beside her name, visible to everyone in the server.
 
+### Her voice (optional)
+
+With `voice.json` beside `discord.json`, she hears the voice messages people send her, as machine transcripts, and
+she can send her own: a `say` with `as_voice` goes out as a voice message in her own voice. Every check runs on the
+whole text first. No audio is kept. A voice message from anyone but you counts toward the day's limit on pictures and
+files from others.
+
+Her voice is the voice organ, a small Python process the Lar starts and restarts (after 1, 5 and then 30 s) when it
+dies. It speaks with tiny-voca and hears with Parakeet TDT-CTC 110M, each on one core at a lower priority than the Lar,
+and encodes Opus with the system's libopus. Loaded, it takes about 410 MB. It needs Python 3.12 with its venv module,
+and libopus (packages `python3.12-venv` and `libopus0` on Debian and Ubuntu, once, by whoever administers the host).
+Set it up beside the checkout:
+
+```sh
+python3.12 -m venv ~/natalis-voice/venv
+~/natalis-voice/venv/bin/pip install -r ~/natalis/organ/requirements.txt
+```
+
+Put the models in `~/natalis-voice/models` as `organ/PROTOCOL.md` lays them out: tiny-voca (`config.json`, `onnx/` and
+`phonemizer/` from the `n4ze3m/tiny-voca` model page) in `tiny-voca/`, and sherpa-onnx's
+`sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000-int8` (`model.int8.onnx`, `tokens.txt`) in `parakeet/`. Then write
+`~/lares/<name>/voice.json`:
+
+```json
+{
+  "voice": "F2",
+  "speed": 1.0, "pitchShift": 0.0, "pitchRange": 1.0,
+  "organ": { "python": "/home/<you>/natalis-voice/venv/bin/python", "models": "/home/<you>/natalis-voice/models" }
+}
+```
+
+`voice` is `F2` or `M2`. `speed` (1.0 as trained, larger is faster), `pitchShift` (0.058 is about one semitone) and
+`pitchRange` (how much the pitch moves) set how she sounds. They sit on one line, so trying another voice is a one-line change; the six
+samples the design was picked from are listed with their values in `docs/design/n10-voice.md`, section 6.4. `natalis check` names a missing organ file, and a bad
+`voice.json` stops the start with the reason. If the organ dies later, she goes on in text and is told her voice is
+resting. To run the organ's own tests: `NATALIS_ORGAN_PYTHON=~/natalis-voice/venv/bin/python
+NATALIS_ORGAN_MODELS=~/natalis-voice/models npx vitest run src/voice/organ-python.test.ts`.
+
 After each deploy, her start note lists the commit subjects added since her last start. `npm run build` writes them to `dist/changes.json` from the checkout's history, so build from a git checkout.
 
 Check the Lar in a terminal before you run it as a service: `node ~/natalis/dist/bin/natalis.js chat --dir ~/lares/<name>`.

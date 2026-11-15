@@ -76,7 +76,9 @@ Each takes `--dir <entity folder>` (the Lar's own folder) unless noted.
 - `chat`: talk with a Lar in the terminal.
 - `run`: keep a Lar living in its worlds until it is stopped. Each world starts only when its file is beside entity.json:
   `discord.json` (Discord), `sandbox.json` (a Linux shell in Bubblewrap), `web.json` (the `web_request` tool; reads reach
-  public sites, writes only the sites listed there) and `domus.json` (The Sims 4).
+  public sites, writes only the sites listed there) and `domus.json` (The Sims 4). `voice.json` beside `discord.json` gives the Lar a
+  voice: it hears the voice messages people send it and can send its own. Its voice organ is a small Python process
+  (see [deploy/README.md](deploy/README.md)).
 - `stop`: the summoner's emergency stop; pauses outward acts (`--reason "<text>"` optional). It writes a file named
   `STOP` in the Lar's folder. `--off` lifts it.
 - `forget`: erase river rows, or with `--query` every place the words live (note lines, the notebook's git history,

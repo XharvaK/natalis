@@ -1,3 +1,4 @@
+export * from "./frame-codec.js";
 export * from "./ogg.js";
 export * from "./speakable.js";
 export * from "./organ-client.js";

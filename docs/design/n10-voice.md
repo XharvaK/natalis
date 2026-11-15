@@ -221,7 +221,19 @@ Each list item becomes its own chunk. The body never adds or reorders words.
   semitone) and `pitch_range` (scales pitch movement). Its card says the default speed is a little faster than the
   recordings it learned from, and that the same text is always read the same way.
 - `voice.json` holds her starting voice. Six samples of one sentence (`spikes/voice/out/prosody-*.wav`) let the User
-  pick by ear: default, slower, slower and livelier, higher and livelier, lower and calmer, flat.
+  pick by ear: default, slower, slower and livelier, higher and livelier, lower and calmer, flat. Their values were
+  recovered on Mint on 2026-11-15 by matching each file against fresh syntheses of its sentence (correlation 0.986 to
+  0.989 for each match; about 0.1 for the next best). Each row is one line of `voice.json`:
+
+  | Sample | `voice.json` line |
+  |---|---|
+  | `prosody-1-default.wav` | `"speed": 1.0, "pitchShift": 0.0, "pitchRange": 1.0,` |
+  | `prosody-2-slower.wav` | `"speed": 0.925, "pitchShift": 0.0, "pitchRange": 1.0,` |
+  | `prosody-3-slower-livelier.wav` | `"speed": 0.92, "pitchShift": 0.0, "pitchRange": 1.25,` |
+  | `prosody-4-higher-livelier.wav` | `"speed": 0.95, "pitchShift": 0.058, "pitchRange": 1.2,` |
+  | `prosody-5-lower-calmer.wav` | `"speed": 0.95, "pitchShift": -0.058, "pitchRange": 0.85,` |
+  | `prosody-6-flat.wav` | `"speed": 1.0, "pitchShift": 0.0, "pitchRange": 0.6,` |
+
 - Phase 4: `set_voice` lets her change her own voice inside bounds the body keeps: speed 0.85 to 1.15, pitch within
   two semitones, liveliness 0.7 to 1.4. It is kept in her state and shown on the board, like her mood.
 
