@@ -1,7 +1,8 @@
 // The vault queue: while `natalis run` holds the Lar folder lock, it listens on one local channel so
-// `natalis vault --keep` can hand it a value instead of writing the folder itself. There is still one writer.
+// `natalis vault --keep` can hand it a value instead of writing the folder itself, and `natalis proposals --answer`
+// can hand the running Lar one answer to a proposal. There is still one writer.
 // Linux and macOS use <lar>/vault.sock, owner-only; Windows uses a named pipe named from the folder's hash.
-// The channel takes one operation, keep. Each request is one JSON line. It closes when the Lar stops.
+// The channel takes two operations, keep and answer. Each request is one JSON line. It closes when the Lar stops.
 
 import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, realpathSync, unlinkSync } from "node:fs";
@@ -16,11 +17,13 @@ export const VAULT_VALUE_MAX = 4096;
 export const VAULT_CHANNEL_NO_ANSWER_MESSAGE =
   "This Lar is already in use by another natalis process, and its vault channel did not answer. Nothing was kept. " +
   "Stop it, then keep the value again.";
-export const VAULT_CHANNEL_ONLY_KEEP_MESSAGE = "The vault channel takes only a keep. Nothing was kept.";
+export const VAULT_CHANNEL_ONLY_KEEP_MESSAGE = "The channel takes a keep or an answer. Nothing was done.";
 const REQUEST_LINE_MAX = 64 * 1024;
 const HOST = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+const ANSWER_FILE = /^[A-Za-z0-9._-]{1,100}$/;
+const ANSWER_TEXT_MAX = 500;
 
-/** The one operation the channel takes. */
+/** One value handed to the vault. */
 export type VaultKeepRequest = {
   op: "keep";
   name: string;
@@ -29,17 +32,20 @@ export type VaultKeepRequest = {
   replace: boolean;
 };
 
+/** One answer to a proposal, handed to the running Lar. */
+export type VaultAnswerRequest = { op: "answer"; file: string; text: string };
+
 /** The listening side of the channel, held by the running Lar. */
 export type VaultChannel = {
   readonly path: string;
-  /** Stops listening, finishes any keep already under way, and removes the socket. Calling it twice does nothing. */
+  /** Stops listening, finishes any request already under way, and removes the socket. Calling it twice does nothing. */
   close(): Promise<void>;
 };
 
-/** The client side, used by `natalis vault --keep` while the Lar runs. */
+/** The client side, used by `natalis vault --keep` and `natalis proposals --answer` while the Lar runs. */
 export type VaultChannelClient = {
-  /** Sends one keep and resolves with "kept" or the Lar's error text. */
-  send(request: VaultKeepRequest): Promise<string>;
+  /** Sends one keep or answer and resolves with "kept", "answered" or the Lar's error text. */
+  send(request: VaultKeepRequest | VaultAnswerRequest): Promise<string>;
   close(): void;
 };
 
@@ -71,7 +77,7 @@ export function vaultChannelPath(dir: string): string {
  */
 export async function startVaultChannel(
   dir: string,
-  keep: (request: VaultKeepRequest) => void | Promise<void>,
+  handle: (request: VaultKeepRequest | VaultAnswerRequest) => void | Promise<void>,
   options: VaultChannelOptions = {},
 ): Promise<VaultChannel> {
   const folder = resolve(dir);
@@ -183,6 +189,11 @@ export async function startVaultChannel(
     }
     const request = checked.value;
     try {
+      if (request.op === "answer") {
+        await handle(request);
+        if (!socket.destroyed && socket.writable) socket.write("answered\n");
+        return;
+      }
       const existing = readVaultEntry(folder, request.name);
       if (existing !== undefined && !request.replace) {
         replyAndClose(
@@ -191,17 +202,21 @@ export async function startVaultChannel(
         );
         return;
       }
-      await keep(request);
+      await handle(request);
       if (!socket.destroyed && socket.writable) socket.write("kept\n");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (request.op === "answer") {
+        replyAndClose(socket, `The answer could not reach the Lar: ${message}`);
+        return;
+      }
       replyAndClose(socket, withoutValue(`The value could not be kept: ${message} Nothing was kept.`, request.value));
     }
   }
 }
 
-/** Reads one JSON line and checks every field the channel takes. Errors are plain words and never echo the value. */
-function checkRequest(line: string): { ok: true; value: VaultKeepRequest } | { ok: false; error: string } {
+/** Reads one JSON line and checks every field the channel takes. Errors are plain words and never echo a value. */
+function checkRequest(line: string): { ok: true; value: VaultKeepRequest | VaultAnswerRequest } | { ok: false; error: string } {
   let raw: unknown;
   try {
     raw = JSON.parse(line) as unknown;
@@ -212,12 +227,38 @@ function checkRequest(line: string): { ok: true; value: VaultKeepRequest } | { o
     return { ok: false, error: "The request is not one object. Nothing was kept." };
   }
   const root = raw as Record<string, unknown>;
+  if (root["op"] !== "keep" && root["op"] !== "answer") return { ok: false, error: VAULT_CHANNEL_ONLY_KEEP_MESSAGE };
+
+  if (root["op"] === "answer") {
+    for (const key of Object.keys(root)) {
+      if (!["op", "file", "text"].includes(key)) {
+        return { ok: false, error: "The answer had a field the vault channel does not take. Nothing was sent." };
+      }
+    }
+    const file = root["file"];
+    if (typeof file !== "string" || !ANSWER_FILE.test(file) || file === "." || file === "..") {
+      return {
+        ok: false,
+        error: "file is the name of one file in proposals/, such as wake-ids.md. Nothing was sent.",
+      };
+    }
+    const text = root["text"];
+    if (
+      typeof text !== "string" ||
+      text.trim() === "" ||
+      /[\r\n]/.test(text) ||
+      Array.from(text).length > ANSWER_TEXT_MAX
+    ) {
+      return { ok: false, error: "The answer is one line of at most 500 characters. Nothing was sent." };
+    }
+    return { ok: true, value: { op: "answer", file, text } };
+  }
+
   for (const key of Object.keys(root)) {
     if (!["op", "name", "host", "value", "replace"].includes(key)) {
       return { ok: false, error: "The keep had a field the vault channel does not take. Nothing was kept." };
     }
   }
-  if (root["op"] !== "keep") return { ok: false, error: VAULT_CHANNEL_ONLY_KEEP_MESSAGE };
 
   const name = root["name"];
   if (typeof name !== "string" || !validVaultName(name)) {
@@ -338,14 +379,14 @@ export async function openVaultChannel(dir: string, timeoutMs: number = VAULT_CH
   }
 
   return {
-    send(request: VaultKeepRequest): Promise<string> {
+    send(request: VaultKeepRequest | VaultAnswerRequest): Promise<string> {
       return new Promise<string>((resolveSend, rejectSend) => {
         if (closed) {
           rejectSend(new Error("The vault channel is closed."));
           return;
         }
         if (pending !== undefined) {
-          rejectSend(new Error("The vault channel is already answering a keep."));
+          rejectSend(new Error("The vault channel is already answering a request."));
           return;
         }
         const timer = setTimeout(() => {

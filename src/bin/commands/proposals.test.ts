@@ -4,7 +4,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createSecretScanner } from "../../secrets/index.js";
-import { proposalsCommand, proposalsDigest } from "./proposals.js";
+import { proposalsDigest } from "../../notebook/proposals-digest.js";
+import { proposalsCommand } from "./proposals.js";
 
 // Fake credentials and vault values are built from parts at run time, so no token-shaped literal sits in the source.
 const FAKE_KEY = ["sk", "proj", "abcdefghijklmnopqrstuvwxyz0123"].join("-");
@@ -100,6 +101,11 @@ describe("proposalsDigest", () => {
     expect(digest.added).toBe(1);
     expect(digest.changed).toBe(1);
     expect(digest.removed).toBe(1);
+    expect(digest.files).toEqual([
+      { path: "proposals/gone.md", status: "removed", day: "2026-10-08", firstLine: "" },
+      { path: "proposals/keep.md", status: "changed", day: "2026-10-08", firstLine: "Old idea, now refined." },
+      { path: "proposals/new-tool.md", status: "added", day: "2026-10-08", firstLine: "A search tool for my own notes." },
+    ]);
   });
 
   it("leaves out files outside proposals/, and changes made before the window", async () => {
@@ -212,6 +218,15 @@ describe("natalis proposals", () => {
     expect(await proposalsCommand(["--dir", lar, "--since", "last week"], quiet, (line) => err.push(line))).toBe(2);
     expect(await proposalsCommand(["--dir", lar, "--since"], quiet, (line) => err.push(line))).toBe(2);
     expect(await proposalsCommand(["--dir", lar, "--bogus"], quiet, (line) => err.push(line))).toBe(2);
+    expect(err.join("\n")).toContain("Usage: natalis proposals");
+  });
+
+  it("exits 2 when --answer is given without --text, or --text without --answer", async () => {
+    const err: string[] = [];
+    const quiet = (): void => undefined;
+    expect(await proposalsCommand(["--dir", lar, "--answer", "wake-ids.md"], quiet, (line) => err.push(line))).toBe(2);
+    expect(await proposalsCommand(["--dir", lar, "--text", "Yes."], quiet, (line) => err.push(line))).toBe(2);
+    expect(err.join("\n")).toContain("--answer and --text go together.");
     expect(err.join("\n")).toContain("Usage: natalis proposals");
   });
 

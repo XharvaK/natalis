@@ -7,6 +7,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { World } from "../../contracts.js";
 import { loadEntityConfig } from "../../entity/config.js";
+import { parseBodyChanges, type BodyChanges } from "../../entity/body-changes.js";
 import { CopyGuardRefused } from "../../entity/copy-guard.js";
 import { acquireLarLock, LarLockBusy, type LarLock } from "../../entity/lar-lock.js";
 import { type Entity, openEntity } from "../../entity/runtime.js";
@@ -130,11 +131,18 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
     }
 
     let entity: Entity;
+    let bodyChanges: BodyChanges | undefined;
+    try {
+      bodyChanges = parseBodyChanges(JSON.parse(readFileSync(new URL("../../changes.json", import.meta.url), "utf8")));
+    } catch {
+      bodyChanges = undefined;
+    }
     try {
       entity = await openEntity({ dir, config, model: modelFromConfig(config.model),
         worldModels: worldModelsFromConfig(config.model, config.effort, config.worldModels),
         worlds,
         scanner,
+        ...(bodyChanges === undefined ? {} : { bodyChanges }),
         ...(moved ? { moved: true } : {}),
       });
     } catch (error) {
@@ -152,6 +160,10 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
     // The handler is the same vault write a direct keep makes, plus registering the value with this process's scanner.
     try {
       channel = await startVaultChannel(dir, (request) => {
+        if (request.op === "answer") {
+          entity.answerProposal(request.file, request.text);
+          return;
+        }
         scanner.addKnownValue(request.value);
         keepVaultEntry(dir, request.name, { host: request.host, value: request.value });
       }, { onError: (message) => err(`The vault channel reported: ${message}`) });

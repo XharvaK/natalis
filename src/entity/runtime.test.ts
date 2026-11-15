@@ -9,6 +9,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -36,8 +37,7 @@ import { changedBeyond, CLASS_RANK, partsOfMessage, type MessagePart } from "../
 import { TURN_DEADLINE_MS } from "../model/turn-deadline.js";
 import { isLive, purposeOf, type Purpose } from "../river/purpose.js";
 import { viewKeyOfRow } from "../river/view-index.js";
-import { forgetInStateFile, LAST_TURN_HERE, openEntity, OUTBOX_JOB_TIMEOUT_MS, REFLECT_DEADLINE_MS, STATE_FILE, type Entity, type OpenEntityOptions } from "./runtime.js";
-import { MEMORY_TOOLS_LINE } from "./settings-change.js";
+import { forgetInStateFile, LAST_TURN_HERE, openEntity, OUTBOX_JOB_TIMEOUT_MS, REFLECT_DEADLINE_MS, STATE_FILE, type Entity, type OpenEntityOptions } from "./runtime.js";import { MEMORY_TOOLS_LINE } from "./settings-change.js";
 import { COMMITMENTS_STUB, HOUSEHOLD_PATH, OLD_COMMITMENTS_STUB } from "./commitments.js";
 import { isStopOn, writeStop } from "./stop.js";
 import { PRIVACY_UNREADABLE_REASON } from "./privacy.js";
@@ -56,6 +56,16 @@ const CONFIG: EntityConfig = {
   // No daily rhythm here: the rhythm has its own tests below, and the wake tests count the wakes they set.
   rhythm: [],
 };
+
+/** Whether git is on the PATH: the monthly proposals tests make a real notebook history, and skip without it. */
+const GIT_AVAILABLE = (() => {
+  try {
+    execFileSync("git", ["--version"], { windowsHide: true, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 let root: string;
 let dir: string;
@@ -77,7 +87,7 @@ beforeAll(async () => {
   });
   await entity.stop();
   templateNotebook = join(seeded, "notebook");
-}, 60_000);
+}, 180_000);
 
 afterAll(() => {
   rmSync(templateRoot, { recursive: true, force: true, maxRetries: 5 });
@@ -291,9 +301,96 @@ function sourceWorld(id: string): { world: World; push(place: string, text: stri
 }
 
 /**
- * A tool that reports when it started and waits until the test lets it finish; it ignores the turn's abort like a slow
- * commit. Its name can be a built one, so a reflect turn (which may call only the built allowlist) can run it.
+ * A world that reports moments as sense events. Its own place is the summoner's, so a sense there can test that no
+ * owner-place work happens for a sense.
  */
+function senseWorld(id = "sense"): {
+  world: World;
+  emit(event: Partial<WorldEvent> & { place: string; data: Record<string, unknown> }): void;
+} {
+  let next: ((event: WorldEvent) => void) | undefined;
+  const world: World = {
+    id,
+    async start(push) {
+      next = push;
+    },
+    async stop() {
+      next = undefined;
+    },
+    async say(): Promise<Receipt> {
+      return { ok: true, summary: "Delivered." };
+    },
+    isOwnerPlace: (place) => place === `${id}:owner`,
+    tools: () => [],
+    now: () => `${id} is open.`,
+  };
+  return {
+    world,
+    emit(event) {
+      if (next === undefined) throw new Error("the sense world is not started");
+      next({ world: id, source: "outside", ...event } as WorldEvent);
+    },
+  };
+}
+
+/** A world with a public status line, which may be made to reject. */
+function statusWorld(id = "status"): { world: World; statuses: string[]; fail(message: string): void } {
+  let failure: string | undefined;
+  const statuses: string[] = [];
+  const world: World = {
+    id,
+    async start() {
+      // Nothing to connect.
+    },
+    async stop() {
+      // Nothing to close.
+    },
+    async say(): Promise<Receipt> {
+      return { ok: true, summary: "Delivered." };
+    },
+    async status(text) {
+      statuses.push(text);
+      if (failure !== undefined) throw new Error(failure);
+    },
+    tools: () => [],
+    now: () => `${id} is open.`,
+  };
+  return {
+    world,
+    statuses,
+    fail(message) {
+      failure = message;
+    },
+  };
+}
+
+/** A world with a window, which may reject the first monthly proposals list it is shown. */
+function monthlyWorld(options: { rejectFirst?: boolean } = {}): { world: World; shown: string[] } {
+  const shown: string[] = [];
+  let monthlyAttempts = 0;
+  const world: World = {
+    id: "window",
+    async start() {
+      // Nothing to connect.
+    },
+    async stop() {
+      // Nothing to close.
+    },
+    async say(): Promise<Receipt> {
+      return { ok: true, summary: "Delivered." };
+    },
+    async show(text) {
+      shown.push(text);
+      if (!text.startsWith("Her proposals")) return;
+      monthlyAttempts += 1;
+      if (options.rejectFirst === true && monthlyAttempts === 1) throw new Error("the window is closed");
+    },
+    tools: () => [],
+    now: () => "window is open.",
+  };
+  return { world, shown };
+}
+
 function slowWriteTool(name = "slow_write"): { tool: Tool; entered(path: string): Promise<void>; finish(path: string): void } {
   const enteredPaths = new Set<string>();
   const enteredWaiters = new Map<string, () => void>();
@@ -5506,5 +5603,548 @@ describe("V1: whole items, then pointers", () => {
     expect(system).toContain(lines[0]);
     expect(system).toMatch(/\d+ more notes \(list_notes shows them\)/);
     expect(system).not.toContain(lines[19]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------
+// N9: sense events, event wakes, the public mood, news of her body, and answered proposals.
+
+describe("sense events in intake", () => {
+  it("opens no ask, leaves the owner time, sends no welcome, and starts no turn when wake is false", async () => {
+    let clock = Date.parse("2026-10-11T10:00:00Z");
+    const sense = senseWorld();
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity, cli, said } = await open(model, { nowMs: () => clock }, [sense.world]);
+    writeFileSync(join(dir, "welcome.md"), "Welcome to the house.\n", "utf8");
+    await entity.start();
+    cli.send("Hello.");
+    await entity.idle();
+    const before = readStateJson() as {
+      lastOwnerMs?: number;
+      asks: unknown[];
+      summonerPlace?: string;
+    };
+    expect(before.lastOwnerMs).toBe(clock);
+    const asks = JSON.stringify(before.asks);
+    const welcomeSaid = said.length;
+
+    clock += 5 * 60_000;
+    sense.emit({
+      place: "sense:owner",
+      source: "owner",
+      actor: "owner",
+      text: "Your summoner is online.",
+      data: { sense: { kind: "status", status: "online", cameOnline: true } },
+      wake: false,
+    });
+    await entity.idle();
+
+    const after = readStateJson() as { lastOwnerMs?: number; asks: unknown[]; summonerPlace?: string };
+    expect(JSON.stringify(after.asks)).toBe(asks);
+    expect(after.lastOwnerMs).toBe(before.lastOwnerMs);
+    expect(after.summonerPlace).toBe("cli:summoner");
+    expect(said.slice(welcomeSaid)).toEqual([]);
+    expect(model.requests).toHaveLength(1);
+    const row = allRows(entity).find((item) => item.data?.["sense"] !== undefined);
+    expect(row).toMatchObject({ thread: "sense:owner", source: "owner", text: "Your summoner is online." });
+  });
+});
+
+describe("event wakes", () => {
+  const NOW = Date.parse("2026-10-11T10:00:00Z");
+
+  function wakeReceipts(entity: Entity): RiverRow[] {
+    return allRows(entity).filter((row) => row.kind === "receipt" && row.data?.["tool"] === "schedule_wake");
+  }
+
+  function fireRows(entity: Entity): RiverRow[] {
+    return allRows(entity).filter((row) => row.thread === "self" && row.kind === "event" && row.text?.startsWith("Your wake:"));
+  }
+
+  it("sets a wake on the summoner coming online, fires it once into self with what happened, and removes it", async () => {
+    const sense = senseWorld();
+    const model = new ScriptedModel([
+      reply({
+        toolCalls: [
+          call("schedule_wake", { on: "summoner_online", why: "greet them", until: "today is over" }),
+          call("end_turn"),
+        ],
+      }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model, { nowMs: () => NOW, stopPollMs: 1e9 }, [sense.world]);
+    await entity.start();
+    cli.send("Wake when I come online.");
+    await entity.idle();
+
+    expect(wakeReceipts(entity)[0]?.text).toMatch(/^Wake [0-9a-f]{8} set for when your summoner comes online\.$/);
+    expect(readStateJson().eventWakes).toHaveLength(1);
+
+    sense.emit({
+      place: "sense:dm",
+      text: "Your summoner is online.",
+      data: { sense: { kind: "status", status: "online", cameOnline: false } },
+      wake: false,
+    });
+    await entity.idle();
+    expect(model.requests).toHaveLength(1);
+
+    sense.emit({
+      place: "sense:dm",
+      text: "Your summoner is online.",
+      data: { sense: { kind: "status", status: "online", cameOnline: true } },
+      wake: false,
+    });
+    await entity.idle();
+
+    expect(model.requests).toHaveLength(2);
+    const fired = fireRows(entity);
+    expect(fired).toHaveLength(1);
+    expect(fired[0]?.text).toBe(
+      "Your wake: greet them (You said it is no longer needed once: today is over. If so, let it go with cancel_wake.)\nWhat happened: Your summoner is online.",
+    );
+    expect(readStateJson().eventWakes).toEqual([]);
+  });
+
+  it("keeps an each wake with its ten-minute gap, and matches a game without case and a reaction to m3 only", async () => {
+    await withClock(async (advance) => {
+      vi.setSystemTime(NOW);
+      const sense = senseWorld();
+      const model = new ScriptedModel([
+        reply({
+          toolCalls: [
+            call("schedule_wake", { on: "summoner_online", why: "check", repeat: "each" }),
+            call("schedule_wake", { on: "summoner_playing", game: "The Sims 4", why: "watch" }),
+            call("schedule_wake", { on: "reaction", ref: "m3", why: "see who reacted" }),
+            call("end_turn"),
+          ],
+        }),
+        reply({ toolCalls: [call("end_turn")] }),
+        reply({ toolCalls: [call("end_turn")] }),
+        reply({ toolCalls: [call("end_turn")] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ]);
+      const { entity, cli } = await open(model, { stopPollMs: 1e9 }, [sense.world]);
+      await entity.start();
+      cli.send("Set them.");
+      await entity.idle();
+      expect(model.requests).toHaveLength(1);
+
+      const online = (): void =>
+        sense.emit({
+          place: "sense:dm",
+          text: "Online.",
+          data: { sense: { kind: "status", status: "online", cameOnline: true } },
+          wake: false,
+        });
+      online();
+      await entity.idle();
+      expect(model.requests).toHaveLength(2);
+
+      await advance(5 * 60_000);
+      online();
+      await entity.idle();
+      expect(model.requests).toHaveLength(2);
+
+      const game = (name: string): void =>
+        sense.emit({
+          place: "sense:dm",
+          text: `Your summoner started ${name}.`,
+          data: { sense: { kind: "game", game: name, started: true } },
+          wake: false,
+        });
+      game("Sims");
+      await entity.idle();
+      expect(model.requests).toHaveLength(2);
+      game("the sims 4");
+      await entity.idle();
+      expect(model.requests).toHaveLength(3);
+
+      const react = (ref: string, mine: boolean, added: boolean): void =>
+        sense.emit({
+          place: "sense:dm",
+          text: `A reaction to ${ref}.`,
+          data: { sense: { kind: "reaction", ref, emoji: "❤️", mine, added } },
+          wake: false,
+        });
+      react("m3", false, true);
+      await entity.idle();
+      react("m3", true, false);
+      await entity.idle();
+      react("m4", true, true);
+      await entity.idle();
+      expect(model.requests).toHaveLength(3);
+      react("m3", true, true);
+      await entity.idle();
+      expect(model.requests).toHaveLength(4);
+
+      await advance(6 * 60_000);
+      online();
+      await entity.idle();
+      expect(model.requests).toHaveLength(5);
+      expect(fireRows(entity)).toHaveLength(4);
+      const state = readStateJson() as { eventWakes: Array<{ on: string; lastFiredMs?: number }> };
+      expect(state.eventWakes).toHaveLength(1);
+      expect(state.eventWakes[0]?.on).toBe("summoner_online");
+      expect(state.eventWakes[0]?.lastFiredMs).toBe(Date.now());
+    });
+  });
+
+  it("refuses each bad event wake with its plain words", async () => {
+    const model = new ScriptedModel([
+      reply({
+        toolCalls: [
+          call("schedule_wake", { why: "a" }),
+          call("schedule_wake", { in_minutes: 5, on: "summoner_online", why: "b" }),
+          call("schedule_wake", { in_minutes: 5, why: "c", repeat: "each" }),
+          call("schedule_wake", { on: "summoner_online", why: "d", repeat: "daily" }),
+          call("schedule_wake", { on: "summoner_online", why: "e", game: "Chess" }),
+          call("schedule_wake", { on: "summoner_playing", why: "f", game: "x".repeat(101) }),
+          call("schedule_wake", { on: "summoner_online", why: "g", ref: "m3" }),
+          call("schedule_wake", { on: "reaction", why: "h", ref: "note" }),
+          call("end_turn"),
+        ],
+      }),
+    ]);
+    const { entity, cli } = await open(model, { nowMs: () => NOW });
+    await entity.start();
+    cli.send("Try each.");
+    await entity.idle();
+
+    expect(wakeReceipts(entity).map((row) => row.text)).toEqual([
+      "Give one of in_minutes, at_iso or on.",
+      "Give one of in_minutes, at_iso or on.",
+      "repeat each is for a wake on an event; a timed wake repeats daily or weekly.",
+      "A wake on an event repeats with each, or fires once.",
+      "game goes with on summoner_playing.",
+      "game is the game's whole name, at most 100 characters.",
+      "ref goes with on reaction.",
+      "ref is a message ref, such as m12.",
+    ]);
+    expect(readStateJson().eventWakes ?? []).toEqual([]);
+  });
+
+  it("counts event wakes toward the 100 wake ceiling", async () => {
+    const first = await open(new ScriptedModel([]), { nowMs: () => NOW });
+    await first.entity.stop();
+    opened.length = 0;
+    const state = readStateJson();
+    state["wakes"] = Array.from({ length: 99 }, (_, index) => ({
+      id: `held${String(index).padStart(4, "0")}`,
+      atMs: NOW + (index + 1) * 60_000,
+      why: "held",
+      scheduledIn: "self",
+    }));
+    state["eventWakes"] = [{ id: "oneevent", on: "reaction", why: "held too", scheduledIn: "self" }];
+    writeFileSync(join(dir, "state.json"), JSON.stringify(state, null, 2));
+
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("schedule_wake", { on: "summoner_online", why: "one more" }), call("end_turn")] }),
+    ]);
+    const reopened = await open(model, { nowMs: () => NOW });
+    await reopened.entity.start();
+    reopened.cli.send("One more.");
+    await reopened.entity.idle();
+
+    expect(wakeReceipts(reopened.entity)[0]?.text).toBe(
+      "You already hold 100 wakes, the most at once. Cancel one with cancel_wake, by its id, before you set another.",
+    );
+    expect(readStateJson().eventWakes).toHaveLength(1);
+  });
+
+  it("lists an event wake on the board with its id, and cancel_wake ends it", async () => {
+    let id = "";
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("schedule_wake", { on: "reaction", ref: "m3", why: "see who reacted" }), call("end_turn")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+      () => reply({ toolCalls: [call("cancel_wake", { id }), call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model, { nowMs: () => NOW });
+    await entity.start();
+    cli.send("Set it.");
+    await entity.idle();
+    id = (readStateJson().eventWakes as Array<{ id: string }>)[0]?.id ?? "";
+
+    cli.send("What is set?");
+    await entity.idle();
+    expect(userTextOf(model.requests[1])).toContain(
+      `Your event wakes: when someone reacts to your message m3 (id ${id}): see who reacted.`,
+    );
+
+    cli.send("Cancel it.");
+    await entity.idle();
+    expect(readStateJson().eventWakes).toEqual([]);
+    const cancelled = allRows(entity).find(
+      (row) => row.kind === "receipt" && row.data?.["tool"] === "cancel_wake",
+    );
+    expect(cancelled?.text).toBe("Cancelled wake " + id + ": see who reacted");
+  });
+});
+
+describe("the mood line is public", () => {
+  const NOW = Date.parse("2026-10-11T10:00:00Z");
+
+  it("sets the mood in a world that shows a status", async () => {
+    const status = statusWorld("discord");
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("set_mood", { text: "quiet and curious" }), call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model, { nowMs: () => NOW }, [status.world]);
+    await entity.start();
+    cli.send("How are you?");
+    await entity.idle();
+
+    expect(status.statuses).toEqual(["quiet and curious"]);
+    expect(readStateFile().mood).toBe("quiet and curious");
+    expect(readStateJson().moodShown).toBe(true);
+  });
+
+  it("refuses a mood of 129 characters, and holds one with a privacy-list word", async () => {
+    const status = statusWorld("discord");
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("set_mood", { text: "x".repeat(129) }), call("end_turn")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+      reply({ toolCalls: [call("set_mood", { text: "happy at Lantern Yard" }), call("end_turn")] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model, { nowMs: () => NOW }, [status.world]);
+    await entity.start();
+    cli.send("Set the long one.");
+    await entity.idle();
+
+    const moods = (): Array<Record<string, unknown>> =>
+      allRows(entity)
+        .filter((row) => row.kind === "receipt" && row.data?.["tool"] === "set_mood")
+        .map((row) => row.data ?? {});
+    expect(moods()[0]).toMatchObject({ ok: false, refused: { code: "bad_arguments" } });
+    expect(String(allRows(entity).find((row) => row.kind === "receipt" && row.data?.["tool"] === "set_mood")?.text)).toContain(
+      "at most 128 characters",
+    );
+    expect(readStateFile().mood).toBeNull();
+    expect(status.statuses).toEqual([]);
+
+    writeFileSync(join(dir, "privacy.json"), JSON.stringify({ terms: [{ term: "Lantern Yard", category: "home" }] }), "utf8");
+    cli.send("Set the private one.");
+    await entity.idle();
+    expect(moods()[1]).toMatchObject({ ok: false, refused: { code: "held_privacy" } });
+    expect(readStateFile().mood).toBeNull();
+    expect(status.statuses).toEqual([]);
+  });
+
+  it("keeps the mood and says ok when the status cannot be shown", async () => {
+    const status = statusWorld("discord");
+    status.fail("the line is too long");
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("set_mood", { text: "quiet" }), call("end_turn")] }),
+    ]);
+    const { entity, cli } = await open(model, { nowMs: () => NOW }, [status.world]);
+    await entity.start();
+    cli.send("Set it.");
+    await entity.idle();
+
+    const receipt = allRows(entity).find((row) => row.kind === "receipt" && row.data?.["tool"] === "set_mood");
+    expect(receipt?.data).toMatchObject({ ok: true });
+    expect(receipt?.text).toMatch(/ Your status could not be shown in discord: the line is too long\.$/);
+    expect(readStateFile().mood).toBe("quiet");
+  });
+
+  it("keeps an old private mood, notes it once, and does not send it to status", async () => {
+    const first = await open(new ScriptedModel([]), { nowMs: () => NOW });
+    await first.entity.stop();
+    const path = join(dir, "state.json");
+    const state = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    state["mood"] = "an old mood";
+    delete state["moodShown"];
+    delete state["moodPublicNoted"];
+    writeFileSync(path, JSON.stringify(state, null, 2), "utf8");
+
+    const status = statusWorld("discord");
+    const second = await open(new ScriptedModel([]), { nowMs: () => NOW, stopPollMs: 1e9 }, [status.world]);
+    await second.entity.start();
+    await second.entity.idle();
+
+    const notes = allRows(second.entity).filter((row) => row.data?.["bodyNote"] === "mood_public");
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.text).toBe(
+      "Your mood line is now also your Discord status. Your current one stays private until you set a mood again.",
+    );
+    expect(status.statuses).toEqual([]);
+    expect(readStateJson().moodPublicNoted).toBe(true);
+
+    await second.entity.stop();
+    const third = await open(new ScriptedModel([]), { nowMs: () => NOW, stopPollMs: 1e9 }, [status.world]);
+    await third.entity.start();
+    await third.entity.idle();
+    expect(allRows(third.entity).filter((row) => row.data?.["bodyNote"] === "mood_public")).toHaveLength(1);
+    expect(status.statuses).toEqual([]);
+  });
+
+  it("sends a mood set after the change again on the next start", async () => {
+    const firstStatus = statusWorld("discord");
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("set_mood", { text: "bright" }), call("end_turn")] }),
+    ]);
+    const first = await open(model, { nowMs: () => NOW }, [firstStatus.world]);
+    await first.entity.start();
+    first.cli.send("Set it.");
+    await first.entity.idle();
+    expect(firstStatus.statuses).toEqual(["bright"]);
+    await first.entity.stop();
+
+    const secondStatus = statusWorld("discord");
+    const second = await open(new ScriptedModel([]), { nowMs: () => NOW + 60_000, stopPollMs: 1e9 }, [secondStatus.world]);
+    await second.entity.start();
+    expect(secondStatus.statuses).toEqual(["bright"]);
+  });
+});
+
+describe("news of her body", () => {
+  const NOW = Date.parse("2026-10-11T10:00:00Z");
+
+  it("records the first head and says nothing; the next start with a new head writes the note", async () => {
+    const firstChanges = {
+      head: "b",
+      commits: [
+        { hash: "b", parents: ["a"], subject: "Second" },
+        { hash: "a", parents: [], subject: "First" },
+      ],
+    };
+    const first = await open(new ScriptedModel([]), { nowMs: () => NOW, bodyChanges: firstChanges });
+    await first.entity.start();
+    await first.entity.idle();
+    expect(readStateJson().bodySeen).toBe("b");
+    expect(allRows(first.entity).some((row) => row.data?.["bodyNote"] === "changes")).toBe(false);
+    await first.entity.stop();
+
+    const secondChanges = {
+      head: "c",
+      commits: [
+        { hash: "c", parents: ["b"], subject: "A new thing" },
+        { hash: "b", parents: ["a"], subject: "Second" },
+        { hash: "a", parents: [], subject: "First" },
+      ],
+    };
+    const second = await open(new ScriptedModel([]), {
+      nowMs: () => NOW + 60_000,
+      stopPollMs: 1e9,
+      bodyChanges: secondChanges,
+    });
+    await second.entity.start();
+    await second.entity.idle();
+
+    const notes = allRows(second.entity).filter((row) => row.data?.["bodyNote"] === "changes");
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.thread).toBe("self");
+    expect(notes[0]?.text).toBe("Your body changed since your last start (1 changes): A new thing.");
+    expect(readStateJson().bodySeen).toBe("c");
+  });
+});
+
+describe("the monthly proposals list", () => {
+  function gitIn(cwd: string, args: string[], date?: string): string {
+    const env = { ...process.env, ...(date === undefined ? {} : { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date }) };
+    return execFileSync(
+      "git",
+      ["-C", cwd, "-c", "user.name=Test Writer", "-c", "user.email=writer@example.invalid", "-c", "commit.gpgsign=false", ...args],
+      { env, encoding: "utf8", windowsHide: true },
+    ).trim();
+  }
+
+  function commitProposal(date: string, text: string, message = "Write a proposal"): void {
+    mkdirSync(join(dir, "notebook", "proposals"), { recursive: true });
+    writeFileSync(join(dir, "notebook", "proposals", "wake-ids.md"), text, "utf8");
+    gitIn(join(dir, "notebook"), ["add", "-A"]);
+    gitIn(join(dir, "notebook"), ["commit", "-q", "-m", message], date);
+  }
+
+  function monthlyLines(shown: readonly string[]): string[] {
+    return shown.filter((text) => text.startsWith("Her proposals"));
+  }
+
+  it.skipIf(!GIT_AVAILABLE)("posts once on the first start, stays quiet that month, and waits for 09:00 next month", async () => {
+    await withClock(async (advance) => {
+      vi.setSystemTime(Date.parse("2026-11-15T10:00:00Z"));
+      const window = monthlyWorld();
+      const { entity } = await open(new ScriptedModel([]), { stopPollMs: 60_000 }, [window.world]);
+      commitProposal("2026-11-10T12:00:00Z", "# Wake ids\n\nUse the short ids.\n");
+      await entity.start();
+      await entity.idle();
+
+      const first = monthlyLines(window.shown);
+      expect(first).toHaveLength(1);
+      expect(first[0]).toContain("- proposals/wake-ids.md (added, ");
+      expect(first[0]).toContain(": Wake ids");
+      expect(first[0]).toContain("The full text: natalis proposals --dir iris --since 2000-01-01.");
+      expect(readStateJson().proposalsPostedMonth).toBe("2026-11");
+
+      await advance(60_000);
+      await entity.idle();
+      expect(monthlyLines(window.shown)).toHaveLength(1);
+
+      commitProposal("2026-11-20T12:00:00Z", "# Wake ids\n\nUse short ids and names.\n", "Change a proposal");
+
+      vi.setSystemTime(Date.parse("2026-12-01T08:58:00Z"));
+      await advance(60_000);
+      await entity.idle();
+      expect(monthlyLines(window.shown)).toHaveLength(1);
+
+      vi.setSystemTime(Date.parse("2026-12-01T09:00:00Z"));
+      await advance(60_000);
+      await entity.idle();
+      const lines = monthlyLines(window.shown);
+      expect(lines).toHaveLength(2);
+      expect(lines[1]).toContain("Her proposals since 2026-11-15: 1 file changed.");
+      expect(lines[1]).toContain("- proposals/wake-ids.md (changed, 2026-11-20): Wake ids");
+    });
+  });
+
+  it.skipIf(!GIT_AVAILABLE)("retries a rejected show only after an hour", async () => {
+    await withClock(async (advance) => {
+      vi.setSystemTime(Date.parse("2026-11-15T10:00:00Z"));
+      const window = monthlyWorld({ rejectFirst: true });
+      const { entity } = await open(new ScriptedModel([]), { stopPollMs: 60_000 }, [window.world]);
+      commitProposal("2026-11-10T12:00:00Z", "# Wake ids\n");
+      await entity.start();
+      await entity.idle();
+      expect(monthlyLines(window.shown)).toHaveLength(1);
+      expect(readStateJson().proposalsPostedMonth).toBeUndefined();
+
+      await advance(59 * 60_000);
+      await entity.idle();
+      expect(monthlyLines(window.shown)).toHaveLength(1);
+
+      await advance(60_000);
+      await entity.idle();
+      expect(monthlyLines(window.shown)).toHaveLength(2);
+
+      await advance(60_000);
+      await entity.idle();
+      expect(monthlyLines(window.shown)).toHaveLength(2);
+      expect(readStateJson().proposalsPostedMonth).toBe("2026-11");
+    });
+  });
+});
+
+describe("answers to proposals", () => {
+  it("refuses a missing file with the files there, and writes an answer in self to wake that thread", async () => {
+    const model = new ScriptedModel([reply({ toolCalls: [call("end_turn")] })]);
+    const { entity } = await open(model);
+    await entity.start();
+    await entity.notebook.write("proposals/a.md", "# A\n", "Write a proposal", "self");
+    await entity.notebook.write("proposals/b.md", "# B\n", "Write a proposal", "self");
+
+    expect(() => entity.answerProposal("missing.md", "Yes.")).toThrow(
+      "proposals/missing.md is not in her notebook. Files there: a.md, b.md.",
+    );
+
+    await entity.notebook.write("proposals/wake-ids.md", "# Wake ids\n", "Write a proposal", "self");
+    entity.answerProposal("wake-ids.md", "Use the short ids.");
+    await entity.idle();
+
+    const row = allRows(entity).find((item) => item.data?.["bodyNote"] === "proposal_answer");
+    expect(row?.thread).toBe("self");
+    expect(row?.text).toBe("Your summoner answered proposals/wake-ids.md: Use the short ids.");
+    expect(row?.data).toMatchObject({ bodyNote: "proposal_answer", file: "wake-ids.md" });
+    expect(model.requests).toHaveLength(1);
   });
 });

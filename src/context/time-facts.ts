@@ -9,6 +9,9 @@ import type { ContextSection } from "../contracts.js";
  */
 export type WakeFact = { id?: string; atMs: number; why: string; repeat?: string; clock?: string; scheduledIn?: string };
 
+/** An event wake: no time, just the moment it waits for. */
+export type EventWakeFact = { id: string; on: string; game?: string; ref?: string; why: string; each?: boolean };
+
 export type TimeFactsInput = {
   nowMs: number;
   /** IANA zone name, e.g. "Europe/Istanbul". Defaults to the host's zone. */
@@ -16,6 +19,8 @@ export type TimeFactsInput = {
   lastTurnHereMs?: number;
   lastOwnerMessageMs?: number;
   nextWakes?: WakeFact[];
+  /** Wakes that fire when something happens, listed after the timed ones. */
+  eventWakes?: EventWakeFact[];
   /** When the Lar was summoned. Given, the section says its age. */
   bornMs?: number;
 };
@@ -55,7 +60,33 @@ export function timeFacts(input: TimeFactsInput): ContextSection {
     lines.push(`Your next wakes: ${described.join("; ")}.`);
   }
 
+  const eventWakes = input.eventWakes ?? [];
+  if (eventWakes.length > 0) {
+    const described = eventWakes.map((wake) => {
+      const each = wake.each === true ? ", each time" : "";
+      const why = wake.why.trim() === "" ? "" : `: ${wake.why.trim()}`;
+      return `when ${eventWakePhrase(wake.on, wake.game, wake.ref)} (id ${wake.id})${each}${why}`;
+    });
+    lines.push(`Your event wakes: ${described.join("; ")}.`);
+  }
+
   return { name: "time", text: lines.join("\n"), priority: 100, core: true };
+}
+
+/** The words for an event wake's trigger, the same in the receipt and on the board. */
+export function eventWakePhrase(on: string, game?: string, ref?: string): string {
+  switch (on) {
+    case "summoner_online":
+      return "your summoner comes online";
+    case "summoner_playing":
+      return game === undefined ? "your summoner starts a game" : `your summoner starts playing ${game}`;
+    case "summoner_in_voice":
+      return "your summoner joins a voice channel";
+    case "reaction":
+      return ref === undefined ? "someone reacts to one of your messages" : `someone reacts to your message ${ref}`;
+    default:
+      return on;
+  }
 }
 
 /** "under a minute", "25 min", "3 h 12 min", "3 h", "2 d 5 h", "2 d". Negative spans read as under a minute. */

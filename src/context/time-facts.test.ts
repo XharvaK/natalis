@@ -125,6 +125,35 @@ describe("timeFacts", () => {
 
     expect(section.text).toContain("Since your last turn here: under a minute.");
   });
+
+  it("lists event wakes after the timed ones, with their trigger, id and reason", () => {
+    const section = timeFacts({
+      nowMs: NOW,
+      timeZone: ZONE,
+      nextWakes: [{ id: "643c9508", atMs: NOW + HOUR, why: "water the plants" }],
+      eventWakes: [
+        { id: "e1", on: "summoner_online", why: "greet them" },
+        { id: "e2", on: "summoner_playing", game: "The Sims 4", why: "watch", each: true },
+        { id: "e3", on: "summoner_in_voice", why: "join them" },
+        { id: "e4", on: "reaction", ref: "m3", why: "see who reacted", each: true },
+      ],
+    });
+
+    const lines = section.text.split("\n");
+    const at = lines.findIndex((line) => line.startsWith("Your event wakes:"));
+    expect(at).toBeGreaterThan(-1);
+    expect(lines[at - 1]).toContain("Your next wakes:");
+    expect(lines[at]).toBe(
+      "Your event wakes: when your summoner comes online (id e1): greet them; " +
+        "when your summoner starts playing The Sims 4 (id e2), each time: watch; " +
+        "when your summoner joins a voice channel (id e3): join them; " +
+        "when someone reacts to your message m3 (id e4), each time: see who reacted.",
+    );
+  });
+
+  it("has no event wake line when none are set", () => {
+    expect(timeFacts({ nowMs: NOW, timeZone: ZONE }).text).not.toContain("Your event wakes:");
+  });
 });
 
 describe("formatDuration", () => {

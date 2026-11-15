@@ -9,10 +9,12 @@ import { keepVaultEntry, readVaultEntry } from "../worlds/web/vault.js";
 import {
   openVaultChannel,
   startVaultChannel,
+  VAULT_CHANNEL_ONLY_KEEP_MESSAGE,
   VAULT_CHANNEL_TIMEOUT_MS,
   VAULT_SOCKET_FILE,
   vaultChannelPath,
   vaultPipeName,
+  type VaultAnswerRequest,
   type VaultChannel,
   type VaultChannelClient,
   type VaultKeepRequest,
@@ -109,7 +111,18 @@ function untilClosed(path: string, line: string): Promise<string> {
 }
 
 async function start(keep: (request: VaultKeepRequest) => void | Promise<void>): Promise<VaultChannel> {
-  const channel = await startVaultChannel(dir, keep);
+  const channel = await startVaultChannel(dir, (request) => {
+    if (request.op !== "keep") throw new Error("An answer reached a keep-only channel.");
+    return keep(request);
+  });
+  channels.push(channel);
+  return channel;
+}
+
+async function startWith(
+  handle: (request: VaultKeepRequest | VaultAnswerRequest) => void | Promise<void>,
+): Promise<VaultChannel> {
+  const channel = await startVaultChannel(dir, handle);
   channels.push(channel);
   return channel;
 }
@@ -227,6 +240,57 @@ describe("the vault channel", () => {
     }
     expect(readVaultEntry(dir, "board_key")).toEqual({ host: "board.example.org", value });
     expect(channel.path).toBe(stale);
+  });
+
+  it("takes an answer and replies answered", async () => {
+    const seen: VaultAnswerRequest[] = [];
+    await startWith((request) => {
+      if (request.op === "answer") seen.push(request);
+    });
+    const client = await openVaultChannel(dir);
+    try {
+      expect(
+        await client.send({ op: "answer", file: "wake-ids.md", text: "Yes, use the short ids." }),
+      ).toBe("answered");
+    } finally {
+      client.close();
+    }
+    expect(seen).toEqual([{ op: "answer", file: "wake-ids.md", text: "Yes, use the short ids." }]);
+  });
+
+  it("refuses a bad answer file, a two-line or long answer, an extra field, and an unknown op", async () => {
+    await startWith(() => undefined);
+
+    const badFile = await untilClosed(
+      channelPath(),
+      JSON.stringify({ op: "answer", file: "../wake-ids.md", text: "Yes." }),
+    );
+    expect(badFile).toBe("file is the name of one file in proposals/, such as wake-ids.md. Nothing was sent.");
+
+    const dotFile = await untilClosed(channelPath(), JSON.stringify({ op: "answer", file: "..", text: "Yes." }));
+    expect(dotFile).toBe("file is the name of one file in proposals/, such as wake-ids.md. Nothing was sent.");
+
+    const twoLines = await untilClosed(
+      channelPath(),
+      JSON.stringify({ op: "answer", file: "wake-ids.md", text: "One line.\nAnother line." }),
+    );
+    expect(twoLines).toBe("The answer is one line of at most 500 characters. Nothing was sent.");
+
+    const tooLong = await untilClosed(
+      channelPath(),
+      JSON.stringify({ op: "answer", file: "wake-ids.md", text: "x".repeat(501) }),
+    );
+    expect(tooLong).toBe("The answer is one line of at most 500 characters. Nothing was sent.");
+
+    const extra = await untilClosed(
+      channelPath(),
+      JSON.stringify({ op: "answer", file: "wake-ids.md", text: "Yes.", name: "not-taken" }),
+    );
+    expect(extra).not.toBe("answered");
+    expect(extra).toContain("field");
+
+    const unknown = await untilClosed(channelPath(), JSON.stringify({ op: "remove", file: "wake-ids.md" }));
+    expect(unknown).toBe(VAULT_CHANNEL_ONLY_KEEP_MESSAGE);
   });
 
   it("gives up when a channel accepts the connection but never answers", async () => {
