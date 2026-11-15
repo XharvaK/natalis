@@ -3,7 +3,10 @@
 // by auth and only to the host it was kept for, and the reply shown as outside text. The body decides only the
 // mechanics (what may be connected to, what may be sent, how much is read); what a page means is the Lar's to judge.
 
+import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { isIP } from "node:net";
+import { dirname, join, sep } from "node:path";
+import { writeFileAtomic } from "../../fsutil/write-atomic.js";
 import { canonicalAddress, type HostAddresses, sharedHostAddresses } from "../host-addresses.js";
 import type { OutwardHold, Receipt, SecretScanner, Tool, World, WorldBody } from "../../contracts.js";
 import { outwardHoldWords } from "../../entity/privacy.js";
@@ -36,7 +39,12 @@ const HEADER_VALUE_MAX = 2048;
 const HEADER_NAME = /^[A-Za-z0-9-]{1,64}$/;
 const KEEP_MAX = 6;
 const PATH_MAX = 200;
+const SAVE_AS_MAX = 200;
 const WHY_MAX = 300;
+const SAVE_AS_TOO_LONG = "save_as must be a path in your home of at most 200 characters.";
+const SAVE_AS_ESCAPES = "save_as must be a path inside your home, such as inbox/page-1.json, with no .. and no leading slash.";
+const SAVE_AS_NO_HOME = "save_as needs your shell's home, and you have none.";
+const SAVE_AS_LINK = "save_as points outside your home (a link in the way), so nothing was saved.";
 const DEFAULT_ACCEPT = "text/html, application/json, text/plain;q=0.9, */*;q=0.5";
 const USER_AGENT = "Natalis/0.0.1 (web_request)";
 const METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] as const;
@@ -54,11 +62,12 @@ const FORBIDDEN_HEADERS = new Set([
   "expect",
   "proxy-connection",
 ]);
-const TOOL_FIELDS = ["url", "method", "headers", "json", "body", "auth", "keep", "why"];
+const TOOL_FIELDS = ["url", "method", "headers", "json", "body", "auth", "keep", "save_as", "why"];
 
 type Method = (typeof METHODS)[number];
 type Auth = { vault: string; header?: string; scheme?: string };
 type Keep = { path: string; as: string };
+type SaveAs = { segments: string[]; shown: string };
 type Asked = {
   url: string;
   method: Method;
@@ -68,6 +77,7 @@ type Asked = {
   jsonBody: boolean;
   auth?: Auth;
   keep: Keep[];
+  saveAs?: SaveAs;
   why?: string;
 };
 type Checked<T> = { ok: true; value: T } | { ok: false; receipt: Receipt };
@@ -103,7 +113,7 @@ function refused(code: string, reason: string, summary: string, data?: Record<st
   return { ok: false, summary, ...(data ? { data } : {}), refused: { code, reason: `${code}: ${reason}` } };
 }
 
-function bad(reason: string): Checked<never> {
+function bad(reason: string): { ok: false; receipt: Receipt } {
   return {
     ok: false,
     receipt: refused("bad_request", reason, "The web request was not in the form the web takes, so nothing was sent."),
@@ -161,6 +171,46 @@ function messageOf(error: unknown): string {
 function clip(text: string, max: number): string {
   const chars = Array.from(text);
   return chars.length <= max ? text : `${chars.slice(0, max).join("")}...`;
+}
+
+/** True when `path` is the home itself or a folder inside it, by their real paths. */
+function insideHome(path: string, home: string): boolean {
+  return path === home || path.startsWith(home + sep);
+}
+
+/** The nearest folder on the way to `path` that is there now, or undefined when there is none. */
+function nearestExisting(path: string): string | undefined {
+  let current = path;
+  for (;;) {
+    if (existsSync(current)) return current;
+    const up = dirname(current);
+    if (up === current) return undefined;
+    current = up;
+  }
+}
+
+/**
+ * Writes the whole hidden reply into the Lar's home and returns its UTF-8 byte length. Missing folders are made first;
+ * the folder they hang from, then the target's parent, must resolve inside the home, so a link she made in her shell
+ * never sends the body outside it. Throws a plain reason on failure.
+ */
+function saveReply(homeDir: string, saveAs: SaveAs, text: string): number {
+  const target = join(homeDir, ...saveAs.segments);
+  const parent = dirname(target);
+  const homeReal = realpathSync(homeDir);
+  const anchor = nearestExisting(parent);
+  if (anchor !== undefined && !insideHome(realpathSync(anchor), homeReal)) throw new Error(SAVE_AS_LINK);
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  if (!insideHome(realpathSync(parent), homeReal)) throw new Error(SAVE_AS_LINK);
+  let found: ReturnType<typeof lstatSync> | undefined;
+  try {
+    found = lstatSync(target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (found !== undefined && !found.isFile()) throw new Error(SAVE_AS_LINK);
+  writeFileAtomic(target, text, { mode: 0o600 });
+  return Buffer.byteLength(text, "utf8");
 }
 
 /**
@@ -306,6 +356,16 @@ function checkKeep(value: unknown): Checked<Keep[]> {
   return { ok: true, value: out };
 }
 
+/** A save_as that is a plain relative path inside the Lar's home, split into its folders and file name. */
+function checkSaveAs(value: unknown): Checked<SaveAs | undefined> {
+  if (value === undefined) return { ok: true, value: undefined };
+  if (typeof value !== "string" || value.length === 0 || value.length > SAVE_AS_MAX) return bad(SAVE_AS_TOO_LONG);
+  if (/^[A-Za-z]:/.test(value) || value.startsWith("/") || value.startsWith("\\")) return bad(SAVE_AS_ESCAPES);
+  const segments = value.split(/[\\/]/);
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) return bad(SAVE_AS_ESCAPES);
+  return { ok: true, value: { segments, shown: segments.join("/") } };
+}
+
 /** The tool's arguments, checked. Every field is validated here; the body never guesses at a missing one. */
 export function checkArgs(args: Record<string, unknown>): Checked<Asked> {
   for (const key of Object.keys(args)) {
@@ -324,6 +384,8 @@ export function checkArgs(args: Record<string, unknown>): Checked<Asked> {
   if (!auth.ok) return auth;
   const keep = checkKeep(args["keep"]);
   if (!keep.ok) return keep;
+  const saveAs = checkSaveAs(args["save_as"]);
+  if (!saveAs.ok) return saveAs;
   const why = args["why"];
   if (why !== undefined && (typeof why !== "string" || why.length > WHY_MAX)) return bad(`why is a short reason, up to ${WHY_MAX} characters.`);
 
@@ -354,6 +416,7 @@ export function checkArgs(args: Record<string, unknown>): Checked<Asked> {
       jsonBody: json !== undefined,
       ...(auth.value ? { auth: auth.value } : {}),
       keep: keep.value,
+      ...(saveAs.value ? { saveAs: saveAs.value } : {}),
       ...(typeof why === "string" ? { why } : {}),
     },
   };
@@ -467,6 +530,7 @@ export function createWebWorld(options: WebWorldOptions): World {
     const checked = checkArgs(args);
     if (!checked.ok) return checked.receipt;
     const asked = checked.value;
+    if (asked.saveAs !== undefined && !existsSync(join(dir, "home"))) return bad(SAVE_AS_NO_HOME).receipt;
     const first = webUrl(asked.url);
     if (first === undefined) {
       return refused(
@@ -671,6 +735,17 @@ export function createWebWorld(options: WebWorldOptions): World {
     const chars = Array.from(hidden.text);
     const cut = chars.length > SHOWN_CHARS_MAX;
     const shown = cut ? chars.slice(0, SHOWN_CHARS_MAX).join("") : hidden.text;
+    let savedAs: string | undefined;
+    let savedBytes: number | undefined;
+    let saveProblem: string | undefined;
+    if (asked.saveAs !== undefined) {
+      savedAs = `/home/lar/${asked.saveAs.shown}`;
+      try {
+        savedBytes = saveReply(join(dir, "home"), asked.saveAs, hidden.text);
+      } catch (error) {
+        saveProblem = messageOf(error);
+      }
+    }
     const status = response.status;
     const path = `${finalUrl.pathname}${finalUrl.search}`;
     const shownPath = clip(path, 120);
@@ -687,22 +762,34 @@ export function createWebWorld(options: WebWorldOptions): World {
       hidden: hidden.hidden,
       redirects: hops,
       requestsLeftThisHour: left,
+      ...(savedAs !== undefined && savedBytes !== undefined ? { savedAs, savedBytes } : {}),
       ...(kept.length > 0 ? { keptInVault: kept } : {}),
       ...(replaced.length > 0 ? { replacedInVault: replaced } : {}),
       ...(asked.why !== undefined ? { why: scanner.redact(asked.why) } : {}),
     };
     const kindWord = { json: "JSON", html: "web page", text: "text", binary: "binary", none: "no body" }[shaped.kind];
     const summary = `${method} ${finalUrl.host}${shownPath}: the site answered ${status} (${kindWord}, ${response.body.length} bytes)${cut ? ", shown in part" : ""}.`;
+    let saveNote = "";
+    if (savedAs !== undefined) {
+      if (savedBytes !== undefined) {
+        saveNote = response.truncated
+          ? ` Saved to ${savedAs} (${savedBytes} bytes, cut at 512 KiB).`
+          : ` Saved whole to ${savedAs} (${savedBytes} bytes).`;
+      } else {
+        const reason = saveProblem ?? "the reply could not be saved.";
+        saveNote = ` It could not be saved: ${reason.endsWith(".") ? reason : `${reason}.`}`;
+      }
+    }
 
     if (keepProblem) {
       return {
         ok: false,
-        summary: `${summary} ${kept.length > 0 ? `Kept in your vault: ${kept.join(", ")}.` : "Nothing was kept in your vault."}`,
+        summary: `${summary} ${kept.length > 0 ? `Kept in your vault: ${kept.join(", ")}.` : "Nothing was kept in your vault."}${saveNote}`,
         data,
         refused: { code: keepProblem.code, reason: `${keepProblem.code}: ${keepProblem.reason}` },
       };
     }
-    return { ok: status < 400, summary, data };
+    return { ok: status < 400, summary: `${summary}${saveNote}`, data };
   }
 
   /** The next hop of a redirect, as a secure web address, or undefined when the Location is not one. */
@@ -754,6 +841,11 @@ export function createWebWorld(options: WebWorldOptions): World {
               required: ["path", "as"],
             },
             description: `Store values from a JSON reply in your vault, up to ${KEEP_MAX}.`,
+          },
+          save_as: {
+            type: "string",
+            description:
+              "Optional. A path in your home, such as inbox/page-1.json, where the whole reply is saved (up to 512 KiB, keys hidden as in what you are shown). Your shell sees it under /home/lar.",
           },
           why: { type: "string", description: "A short reason, shown in the receipt." },
         },

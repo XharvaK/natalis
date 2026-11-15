@@ -1,11 +1,11 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Receipt, World } from "../../contracts.js";
 import { createSecretScanner } from "../../secrets/scanner.js";
 import type { ResolveHost, WebFetchRequest, WebFetchResponse } from "./network.js";
-import { checkArgs, createWebWorld, HIDDEN_TEXT, REQUEST_BODY_MAX, SHOWN_CHARS_MAX, webUrl } from "./web-world.js";
+import { checkArgs, createWebWorld, HIDDEN_TEXT, REQUEST_BODY_MAX, RESPONSE_MAX_BYTES, SHOWN_CHARS_MAX, webUrl } from "./web-world.js";
 import { saveWebFile } from "./sites.js";
 import { keepVaultEntry, readVaultEntry } from "./vault.js";
 import { privacyBody } from "../../testing/privacy-body.js";
@@ -16,6 +16,21 @@ const SECRET = ["fixture", "secret", "value", "0123456789"].join("-");
 const TOKEN_SHAPED = ["sk", "Q1w2E3r4T5y6U7i8O9p0abcd"].join("-");
 const NOW = Date.parse("2026-10-11T09:00:00Z");
 const HOUR = 3_600_000;
+
+/** Whether this platform lets the tests make a link; Windows uses a junction, which needs no extra right. */
+const canLink = (() => {
+  const base = mkdtempSync(join(tmpdir(), "natalis-web-link-"));
+  const target = join(base, "target");
+  mkdirSync(target);
+  try {
+    symlinkSync(target, join(base, "link"), process.platform === "win32" ? "junction" : undefined);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+})();
 
 // The fake name table: every name the tests use, with public addresses unless a test says otherwise.
 const DNS: Record<string, string[]> = {
@@ -591,6 +606,102 @@ describe("replies", () => {
     queue.push(new Error("socket hang up"));
     const broken = await run({ url: "https://example.org/" });
     expect(broken.refused?.code).toBe("unreachable");
+  });
+});
+
+describe("saving the whole reply in her home", () => {
+  it("saves a reply whole while showing only the first 16,000 characters", async () => {
+    mkdirSync(join(dir, "home"), { recursive: true });
+    const body = "a".repeat(40_000);
+    queue.push(reply(200, body));
+    const r = await run({ url: "https://example.org/inbox", save_as: "inbox/page-1.json" });
+    expect(r.ok).toBe(true);
+    expect(String(r.data?.["body"]).length).toBe(SHOWN_CHARS_MAX);
+    expect(readFileSync(join(dir, "home", "inbox", "page-1.json"), "utf8")).toBe(body);
+    expect(r.summary.endsWith(" Saved whole to /home/lar/inbox/page-1.json (40000 bytes).")).toBe(true);
+    expect(r.data?.["savedAs"]).toBe("/home/lar/inbox/page-1.json");
+    expect(r.data?.["savedBytes"]).toBe(40_000);
+  });
+
+  it("hides a vault value in the saved file exactly as in the shown text", async () => {
+    await seedVault();
+    mkdirSync(join(dir, "home"), { recursive: true });
+    queue.push(reply(200, `before ${SECRET} after`));
+    const r = await run({ url: "https://example.org/me", save_as: "inbox/reply.txt" });
+    const saved = readFileSync(join(dir, "home", "inbox", "reply.txt"), "utf8");
+    expect(saved).toBe(`before ${HIDDEN_TEXT} after`);
+    expect(saved).toBe(String(r.data?.["body"]));
+    expect(saved).not.toContain(SECRET);
+  });
+
+  it("saves the pretty JSON that keep produced", async () => {
+    mkdirSync(join(dir, "home"), { recursive: true });
+    queue.push(reply(200, JSON.stringify({ agent: { api_key: SECRET, name: "lamp" } }), { "content-type": "application/json" }));
+    const r = await run({ url: "https://example.org/login", keep: [{ path: "agent.api_key", as: "site_key" }], save_as: "inbox/login.json" });
+    expect(r.ok).toBe(true);
+    const saved = readFileSync(join(dir, "home", "inbox", "login.json"), "utf8");
+    expect(saved).toBe(String(r.data?.["body"]));
+    expect(saved).toContain("[kept in your vault as site_key]");
+    expect(saved).toContain('"name": "lamp"');
+    expect(saved).not.toContain(SECRET);
+  });
+
+  it("refuses a save_as that is not a short, plain, relative path, before any fetch", async () => {
+    for (const saveAs of ["", "a".repeat(201)]) {
+      const r = await run({ url: "https://example.org/", save_as: saveAs });
+      expect(r.ok).toBe(false);
+      expect(r.refused?.code).toBe("bad_request");
+      expect(r.refused?.reason).toContain("save_as must be a path in your home of at most 200 characters.");
+    }
+    for (const saveAs of ["../x", "/etc/x", "C:\\x", "a//b", "a/./b", "a\\..\\b"]) {
+      const r = await run({ url: "https://example.org/", save_as: saveAs });
+      expect(r.ok, saveAs).toBe(false);
+      expect(r.refused?.code, saveAs).toBe("bad_request");
+      expect(r.refused?.reason).toContain("save_as must be a path inside your home, such as inbox/page-1.json, with no .. and no leading slash.");
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses save_as when her shell's home is not there", async () => {
+    const r = await run({ url: "https://example.org/", save_as: "inbox/page-1.json" });
+    expect(r.ok).toBe(false);
+    expect(r.refused?.code).toBe("bad_request");
+    expect(r.refused?.reason).toContain("save_as needs your shell's home, and you have none.");
+    expect(calls).toHaveLength(0);
+  });
+
+  it.skipIf(!canLink)("refuses to write through a link that leaves her home", async () => {
+    const outside = join(dir, "outside");
+    mkdirSync(outside);
+    mkdirSync(join(dir, "home"), { recursive: true });
+    symlinkSync(outside, join(dir, "home", "out"), process.platform === "win32" ? "junction" : undefined);
+    queue.push(reply(200, "private reply"));
+    const r = await run({ url: "https://example.org/", save_as: "out/x.txt" });
+    expect(r.ok).toBe(true);
+    expect(String(r.data?.["body"])).toBe("private reply");
+    expect(r.summary.endsWith("It could not be saved: save_as points outside your home (a link in the way), so nothing was saved.")).toBe(true);
+    expect(existsSync(join(outside, "x.txt"))).toBe(false);
+    expect(existsSync(join(dir, "home", "out", "x.txt"))).toBe(false);
+  });
+
+  it("replaces an existing file at the target", async () => {
+    mkdirSync(join(dir, "home", "inbox"), { recursive: true });
+    writeFileSync(join(dir, "home", "inbox", "page-1.json"), "old");
+    queue.push(reply(200, "new"));
+    const r = await run({ url: "https://example.org/", save_as: "inbox/page-1.json" });
+    expect(r.ok).toBe(true);
+    expect(readFileSync(join(dir, "home", "inbox", "page-1.json"), "utf8")).toBe("new");
+  });
+
+  it("saves what was read and says when the reply was cut at 512 KiB", async () => {
+    mkdirSync(join(dir, "home"), { recursive: true });
+    const body = new Uint8Array(RESPONSE_MAX_BYTES).fill(97);
+    queue.push({ status: 200, headers: { "content-type": "text/plain" }, body, truncated: true });
+    const r = await run({ url: "https://example.org/big", save_as: "inbox/big.txt" });
+    expect(r.ok).toBe(true);
+    expect(readFileSync(join(dir, "home", "inbox", "big.txt")).length).toBe(RESPONSE_MAX_BYTES);
+    expect(r.data?.["savedBytes"]).toBe(RESPONSE_MAX_BYTES);
+    expect(r.summary.endsWith(` Saved to /home/lar/inbox/big.txt (${RESPONSE_MAX_BYTES} bytes, cut at 512 KiB).`)).toBe(true);
   });
 });
 
