@@ -32,6 +32,7 @@ import { PICTURE_BYTES_MAX } from "../../media/shelf.js";
 import { createAliasStore, OWNER_ALIAS, type AliasStore } from "./aliases.js";
 import { FILE_BYTES_MAX, saveFile, type FilesHome } from "./files.js";
 import { writeFileAtomic } from "../../fsutil/write-atomic.js";
+import type { VoiceMessages } from "../../voice/voice-messages.js";
 
 // ---------------------------------------------------------------------------------------------------
 // Platform port: the few calls this world needs. A fake implements it in tests; discord.js implements it
@@ -207,6 +208,11 @@ export type DiscordWorldOptions = {
    * that folder. Left out, such a file is named in the event and not saved.
    */
   filesHome?: FilesHome;
+  /**
+   * N10: her voice, when voice.json is beside discord.json. Voice messages people send are heard through it, and a say
+   * with asVoice is sent as one. Left out, a voice message is named and not heard, and asVoice is refused.
+   */
+  voice?: VoiceMessages;
 };
 
 const WORLD_ID = "discord";

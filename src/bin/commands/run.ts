@@ -21,6 +21,9 @@ import { createDomusWorld, DOMUS_FILE, parseDomusFile } from "../../worlds/domus
 import { bodyRefusal, createSandboxWorld, defaultBodyRoot, parseSandboxFile, SANDBOX_FILE, SANDBOX_HOME } from "../../worlds/sandbox/index.js";
 import { createWebWorld, loadWebFile, WEB_FILE } from "../../worlds/web/index.js";
 import { keepVaultEntry } from "../../worlds/web/vault.js";
+import { createOrganSupervisor, organCommand, type OrganSupervisor } from "../../voice/organ-client.js";
+import { organProblems, parseVoiceFile, VOICE_FILE } from "../../voice/voice-file.js";
+import { createVoiceMessages, type VoiceMessages } from "../../voice/voice-messages.js";
 import { flagValue } from "./args.js";
 import { DISCORD_FILE, parseDiscordFile } from "./discord-file.js";
 import { heldValues, knownValueList, otherThanHelper } from "./known-values.js";
@@ -51,6 +54,8 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
   }
 
   let channel: VaultChannel | undefined;
+  // N10: her voice organ, when voice.json is beside discord.json. Started before the worlds; stopped last.
+  let organ: OrganSupervisor | undefined;
   try {
     // Every key the body holds is registered with the scanner, so none can reach the model or a say. Created before the
     // worlds, so a world can register its own secrets (the web's vault values) as it starts.
@@ -63,6 +68,32 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
     const lastOwnerMs = (): number | undefined => opened?.lastOwnerMs?.();
     const discordPath = join(dir, DISCORD_FILE);
     const sandboxPath = join(dir, SANDBOX_FILE);
+    // A bad voice.json, or an organ that is not there, stops the start here and says what is wrong. An organ that
+    // starts and then dies does not: it is restarted, and her text life goes on meanwhile.
+    let voiceMessages: VoiceMessages | undefined;
+    const voicePath = join(dir, VOICE_FILE);
+    if (existsSync(voicePath)) {
+      if (!existsSync(discordPath)) {
+        err(`${VOICE_FILE} needs ${DISCORD_FILE} beside it: her voice goes through the Discord world's connection.`);
+        return 1;
+      }
+      let problems: string[];
+      let voice;
+      try {
+        voice = parseVoiceFile(JSON.parse(readFileSync(voicePath, "utf8")) as unknown);
+        problems = organProblems(voice);
+      } catch (error) {
+        err(error instanceof Error ? error.message : String(error));
+        return 1;
+      }
+      if (problems.length > 0) {
+        err(problems.join("\n"));
+        return 1;
+      }
+      organ = createOrganSupervisor({ ...organCommand(voice.organ), log: (line) => err(line) });
+      organ.start();
+      voiceMessages = createVoiceMessages(organ, voice);
+    }
     if (existsSync(discordPath)) {
       const discord = parseDiscordFile(JSON.parse(readFileSync(discordPath, "utf8")) as unknown);
       const token = held.discord;
@@ -83,6 +114,7 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
           contactsPath: join(dir, CONTACTS_FILE),
           // Files that are not pictures go into her home, where her sandbox sees them. Without a sandbox she has no home.
           ...(existsSync(sandboxPath) ? { filesHome: { dir: join(dir, "home"), shownAs: SANDBOX_HOME } } : {}),
+          ...(voiceMessages === undefined ? {} : { voice: voiceMessages }),
         }),
       );
     }
@@ -192,6 +224,13 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
         await channel.close();
       } catch (error) {
         err(`The vault channel did not close cleanly: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (organ !== undefined) {
+      try {
+        await organ.stop();
+      } catch (error) {
+        err(`The voice organ did not stop cleanly: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
     lock.release();

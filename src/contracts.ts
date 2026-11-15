@@ -487,9 +487,10 @@ export interface World {
   onStop?(): void | Promise<void>;
   /**
    * Deliver words to a place in this world. Pictures in `files` go with the words; a world that cannot carry them
-   * refuses the whole say. The receipt says delivered, or why not.
+   * refuses the whole say. N10: `asVoice` sends the words as a voice message in her own voice instead of text; every
+   * check has already run on the whole text, and a world without voice refuses. The receipt says delivered, or why not.
    */
-  say(place: string, text: string, options?: { replyTo?: string; files?: SayFile[] }): Promise<SayResult>;
+  say(place: string, text: string, options?: { replyTo?: string; files?: SayFile[]; asVoice?: boolean }): Promise<SayResult>;
   /**
    * The summoner's window in this world, when it has one: deliver the body's copy of what the Lar is doing there.
    * Never a say: no river row and no place claim. Rejects when it cannot deliver.

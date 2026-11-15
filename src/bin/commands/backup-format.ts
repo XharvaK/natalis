@@ -30,6 +30,7 @@ export const PLAIN_FILES: readonly string[] = [
   "web.json",
   "sandbox.json",
   "domus.json",
+  "voice.json",
 ];
 
 /** The web world's vault: one file per secret, each copied as it is and restored with mode 0600. */

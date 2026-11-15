@@ -16,6 +16,7 @@ import { parseSandboxFile, SANDBOX_FILE } from "../../worlds/sandbox/index.js";
 import { loadWebFile, WEB_FILE } from "../../worlds/web/index.js";
 import { flagValue } from "./args.js";
 import { DISCORD_FILE, parseDiscordFile } from "./discord-file.js";
+import { organProblems, parseVoiceFile, VOICE_FILE } from "../../voice/voice-file.js";
 
 export const CHECK_USAGE = "Usage: natalis check --dir <entity folder>";
 /** The length the design form asks of a nature, in words. Outside it is a note, never a fault. */
@@ -117,6 +118,18 @@ export function checkLar(dir: string, env: Readonly<Record<string, string | unde
     (value) => `Domus, port ${parseDomusFile(value).port ?? 3711}.`,
     (value) => parseDomusFile(value).tokenEnv,
   );
+  // N10: her voice. It needs discord.json, and an organ whose program and models are on this host.
+  if (existsSync(join(dir, VOICE_FILE))) {
+    try {
+      const voice = parseVoiceFile(JSON.parse(readFileSync(join(dir, VOICE_FILE), "utf8")) as unknown);
+      const problems = organProblems(voice);
+      if (!existsSync(discordPath)) fix(`${VOICE_FILE} needs ${DISCORD_FILE} beside it: her voice goes through the Discord world's connection.`);
+      for (const problem of problems) fix(problem);
+      if (problems.length === 0) ok(`${VOICE_FILE}: voice ${voice.voice}, speed ${voice.speed}; the organ's program and models are there.`);
+    } catch (error) {
+      fix(`${VOICE_FILE}: ${messageOf(error)}`);
+    }
+  }
   if (worlds === 0) note("No world file: natalis run needs at least one (discord.json, sandbox.json, web.json, domus.json); natalis chat works without.");
 
   if (existsSync(join(dir, "river.db"))) note("This Lar is already born (it has a river). A file edit reaches it on its next turn or restart.");
