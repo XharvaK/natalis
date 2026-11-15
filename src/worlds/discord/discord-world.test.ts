@@ -478,6 +478,24 @@ describe("the summoner's presence", () => {
     expect(world.now()).not.toContain("Your summoner:");
   });
 
+  it("takes what Discord held before the first change as the baseline, so that change makes a row", async () => {
+    const { world, fake, events } = await startWorld({ presence: true });
+
+    fake.firePresence({
+      userId: OWNER,
+      status: "idle",
+      game: null,
+      music: null,
+      before: { status: "online", game: null, music: null },
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      text: "Your summoner went idle.",
+      data: { sense: { kind: "status", status: "idle", cameOnline: false } },
+    });
+    expect(world.now()).toContain("Your summoner: idle.");
+  });
+
   it("keeps a baseline, makes rows for status and game changes, and keeps music on the board", async () => {
     const { world, fake, events } = await startWorld({ presence: true });
 

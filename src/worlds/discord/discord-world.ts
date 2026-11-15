@@ -117,6 +117,8 @@ export type PlatformPresence = {
   game: string | null;
   /** A Listening activity named Spotify: details is the track, state the artist. Null otherwise. */
   music: { track: string; artist: string } | null;
+  /** What Discord held for this user just before the change, when it had it cached. */
+  before?: { status: PlatformPresence["status"]; game: string | null; music: { track: string; artist: string } | null } | null;
 };
 
 export type PlatformVoice = {
@@ -691,12 +693,14 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     if (options.presence !== true) return;
     const at = nowMs();
     if (presenceState === null) {
+      // The first change after login: what Discord held before it is the baseline, when it held anything.
+      const base = presence.before ?? presence;
       presenceState = {
-        status: presence.status,
-        game: presence.game === null ? null : { name: presence.game, sinceMs: at },
-        music: presence.music,
+        status: base.status,
+        game: base.game === null ? null : { name: base.game, sinceMs: at },
+        music: base.music,
       };
-      return;
+      if (!presence.before) return;
     }
 
     const previous = presenceState;
@@ -1562,17 +1566,20 @@ async function toPlatformReaction(
   }
 }
 
-function toPlatformPresence(presence: Presence): PlatformPresence {
+function presenceParts(presence: Presence): Omit<PlatformPresence, "userId" | "before"> {
   const status: PlatformPresence["status"] =
     presence.status === "online" || presence.status === "idle" || presence.status === "dnd" ? presence.status : "offline";
   const game = presence.activities.find((activity) => activity.type === ActivityType.Playing);
   const spotify = presence.activities.find((activity) => activity.type === ActivityType.Listening && activity.name === "Spotify");
   return {
-    userId: presence.userId,
     status,
     game: game ? game.name : null,
     music: spotify ? { track: spotify.details ?? "", artist: spotify.state ?? "" } : null,
   };
+}
+
+function toPlatformPresence(old: Presence | null, presence: Presence): PlatformPresence {
+  return { userId: presence.userId, ...presenceParts(presence), before: old ? presenceParts(old) : null };
 }
 
 function toPlatformVoice(before: VoiceState, after: VoiceState): PlatformVoice | null {
@@ -1661,7 +1668,7 @@ export function createDiscordJsClient(options: { presence: boolean }): PlatformC
       });
     },
     onPresence(handler) {
-      client.on(Events.PresenceUpdate, (_old, presence) => handler(toPlatformPresence(presence)));
+      client.on(Events.PresenceUpdate, (old, presence) => handler(toPlatformPresence(old, presence)));
     },
     onVoice(handler) {
       client.on(Events.VoiceStateUpdate, (oldState, newState) => {
