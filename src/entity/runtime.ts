@@ -5265,7 +5265,8 @@ export function monthlyProposalsText(
 }
 
 /** The privacy section the Lar sees: the categories only. The words on the list are never shown. */
-function privacyText(load: PrivacyLoad): string {  const head =
+function privacyText(load: PrivacyLoad): string {
+  const head =
     "Your summoner keeps a privacy list. Words on it are held back when you say them anywhere except your summoner's own places, and the receipt names the category. The words themselves are not shown to you.";
   const categories = privacyCategories(load.list);
   return categories.length === 0

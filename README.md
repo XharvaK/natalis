@@ -52,7 +52,8 @@ Tests: `npm test`. Type check: `npm run typecheck`.
 - **Its own identity.** Values, interests and a voice that change only through experience it can trace.
 - **Its own memory.** Everything it lives goes into one append-only river; its notebook is plain text under git. It
   forgets honestly and never invents.
-- **Inner time.** It can wake itself (once, daily or weekly) and writes first only when it has a reason and permission.
+- **Inner time.** It can wake itself (once, daily or weekly, or when its summoner comes online, starts a game, joins a
+  voice call, or someone reacts to its message) and writes first only when it has a reason and permission.
   A wake set in a turn its own wake woke is held to at least 15 minutes, and 15 minutes from its other wakes set there.
 - **A presence.** It lives where you put it: the terminal, Discord, a shell of its own, the web, or The Sims 4.
 - **Your own model.** You bring the key. Nothing goes to a service you did not choose.
@@ -93,8 +94,10 @@ Each takes `--dir <entity folder>` (the Lar's own folder) unless noted.
 - `restore`: rebuild a Lar from a backup (`--from <backup folder>`, `--dir <new folder>`).
 - `unseal`: open one sealed package into a backup folder (`--from <file.natalisbak>`, `--to <new folder>`,
   `--key-env <NAME>`). The key is read from that environment variable and is never a flag value.
-- `proposals`: the weekly digest of what the Lar wrote under `proposals/` in its notebook (`--since <YYYY-MM-DD>`,
-  seven days ago by default). It only reads the notebook's history, and every value the body holds is redacted.
+- `proposals`: the digest of what the Lar wrote under `proposals/` in its notebook (`--since <YYYY-MM-DD>`,
+  seven days ago by default). It only reads the notebook's history, and every value the body holds is redacted. On
+  the 1st of each month the running Lar posts a short list of the changed files to the window channel. To answer one,
+  while the Lar runs: `--answer <file> --text "<one line>"`. She gets it as a note and wakes to read it.
 - `vault`: list the names in the Lar's vault and the host each is bound to, never the values. With
   `--keep <name> --host <host> [--replace]` it keeps one value you type on standard input; it is never a flag value and is
   never printed.
