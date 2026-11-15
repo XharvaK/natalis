@@ -7,10 +7,12 @@
 import { whenText } from "../../entity/when.js";
 import {
   ActivityType,
+  AttachmentBuilder,
   ChannelType,
   Client,
   Events,
   GatewayIntentBits,
+  MessageFlags,
   Partials,
   type Message,
   type MessageReaction,
@@ -32,7 +34,7 @@ import { PICTURE_BYTES_MAX } from "../../media/shelf.js";
 import { createAliasStore, OWNER_ALIAS, type AliasStore } from "./aliases.js";
 import { FILE_BYTES_MAX, saveFile, type FilesHome } from "./files.js";
 import { writeFileAtomic } from "../../fsutil/write-atomic.js";
-import type { VoiceMessages } from "../../voice/voice-messages.js";
+import { VoiceError, type HeardVoiceMessage, type MadeVoiceMessage, type VoiceMessages } from "../../voice/voice-messages.js";
 
 // ---------------------------------------------------------------------------------------------------
 // Platform port: the few calls this world needs. A fake implements it in tests; discord.js implements it
@@ -77,9 +79,10 @@ function writeJsonAtomic(path: string, value: unknown): void {
 }
 
 export type PlatformAuthor = { id: string; displayName: string; bot: boolean };
-export type PlatformAttachment = { name: string; contentType: string | null; url: string };
+export type PlatformAttachment = { name: string; contentType: string | null; url: string; durationSecs?: number | null };
 export type PlatformMention = { id: string; displayName: string };
 export type OutboundFile = { name: string; bytes: Uint8Array };
+export type OutboundVoice = { bytes: Uint8Array; durationSecs: number; waveform: string };
 
 export type PlatformMessage = {
   id: string;
@@ -93,6 +96,8 @@ export type PlatformMessage = {
   attachments: PlatformAttachment[];
   mentionedUsers: PlatformMention[];
   replyToMessageId: string | null;
+  /** True when Discord flags the message as a voice message. */
+  voice?: boolean;
 };
 
 export type PlatformReaction = {
@@ -154,6 +159,8 @@ export type PlatformClient = {
     mentionUserIds?: string[],
     files?: OutboundFile[],
   ): Promise<string>;
+  /** N10: one voice message: an Ogg Opus file with its duration and waveform, and no text. Resolves with its id. */
+  sendVoice(channelId: string, voice: OutboundVoice, replyToMessageId: string | null): Promise<string>;
   react(channelId: string, messageId: string, emoji: string): Promise<void>;
   /** Most recent messages first. */
   history(channelId: string, limit: number): Promise<PlatformMessage[]>;
@@ -225,6 +232,8 @@ const EMOJI_MAX = 32;
 /** Discord's own attachment hosts. A picture is fetched from these over https and from nowhere else. */
 const PICTURE_HOSTS: ReadonlySet<string> = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
 const PICTURE_FETCH_MS = 20_000;
+/** A voice message bigger than this is not fetched; the same cap as pictures. */
+const VOICE_BYTES_MAX = 8 * 1024 * 1024;
 /** Pictures and files from anyone but the summoner that the Lar may ask for in one local day. */
 const OTHERS_PICTURES_PER_DAY = 50;
 /** A loop is a quick back-and-forth. Bots quiet in a channel this long are not in one, so a room of Lares alone is not held for good. */
@@ -350,6 +359,8 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
   const handledIds = new Set<string>();
   /** Bot messages in a row per channel, and when the last one came. A person's message or a quiet gap ends the run. */
   const botRuns = new Map<string, { count: number; lastAtMs: number }>();
+  /** How many times the summoner's emergency stop has turned on, so a voice message being made can tell. */
+  let stopCount = 0;
   function countBotMessage(channelId: string, nowMs: number): number {
     const run = botRuns.get(channelId);
     const count = run !== undefined && nowMs - run.lastAtMs < botQuietMs ? run.count + 1 : 1;
@@ -542,7 +553,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     const entry = {
       ref,
       // A message the flood limit turned away is not fetched and not kept.
-      kept: flooded ? null : keptLines(message.attachments, `${PLACE_PREFIX}${placeAlias}`, isOwner, nowMs),
+      kept: flooded ? null : keptLines(message.attachments, `${PLACE_PREFIX}${placeAlias}`, isOwner, nowMs, message.voice === true),
       text: readable(message.content, message.mentionedUsers),
       attachments: describeAttachments(message.attachments),
       mentionsHer: message.content.includes(`<@${self.id}>`) || message.content.includes(`<@!${self.id}>`),
@@ -837,14 +848,21 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
   }
 
   /**
-   * One line per attachment: a picture kept on the shelf, a file saved in her home, or the reason it was not kept. Null
-   * when there are none.
+   * One line per attachment: a picture kept on the shelf, a file saved in her home, a voice message heard or the reason
+   * it was not. Null when there are none.
    */
-  function keptLines(attachments: PlatformAttachment[], place: string, fromOwner: boolean, nowMs: number): Promise<string[]> | null {
+  function keptLines(
+    attachments: PlatformAttachment[],
+    place: string,
+    fromOwner: boolean,
+    nowMs: number,
+    voiceMessage = false,
+  ): Promise<string[]> | null {
     if (attachments.length === 0) return null;
     const home = options.filesHome;
     return Promise.all(
       attachments.map(async (attachment) => {
+        if (voiceMessage && isVoiceAttachment(attachment)) return heardLine(attachment, fromOwner, nowMs);
         const name = scrubIds(attachment.name);
         const picture = (attachment.contentType ?? "").startsWith("image/");
         if (!picture && home === undefined) return `[file: ${name} (not saved: you have no home folder for files)]`;
@@ -856,6 +874,46 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
         return picture || home === undefined ? keepFromDiscord(attachment, place) : saveFromDiscord(attachment, home);
       }),
     );
+  }
+
+  /**
+   * Fetches one voice message from Discord and hears it, never keeping the audio. Takes one of the day's places for a
+   * message from anyone but the summoner, as a picture or a file does.
+   */
+  async function heardLine(attachment: PlatformAttachment, fromOwner: boolean, nowMs: number): Promise<string> {
+    const known = typeof attachment.durationSecs === "number" && attachment.durationSecs > 0 ? attachment.durationSecs : undefined;
+    const voice = options.voice;
+    if (voice === undefined) return `${voiceMessageLabel(known)} (not heard: you have no voice organ)`;
+    const resting = voice.resting();
+    if (resting !== undefined) return `${voiceMessageLabel(known)} (not heard: ${resting})`;
+    if (!fromOwner && !takeOthersPlace(nowMs)) {
+      return `${voiceMessageLabel(known)} (not heard: today's limit for files from others is reached)`;
+    }
+    const fetched = await fetchAttachment(attachment.url, options.fetch ?? fetch, VOICE_BYTES_MAX);
+    if (!fetched.ok) return `${voiceMessageLabel(known)} (not heard: ${fetched.reason})`;
+    let heard: HeardVoiceMessage;
+    try {
+      heard = await voice.hear(fetched.bytes);
+    } catch (error) {
+      return `${voiceMessageLabel(known)} (not heard: ${error instanceof Error ? error.message : String(error)})`;
+    }
+    const seconds = heard.seconds > 0 ? heard.seconds : known;
+    const label = voiceMessageLabel(seconds);
+    if (heard.text.trim() === "") return `${label} (nothing was heard in it)`;
+    const shortened =
+      seconds !== undefined && heard.heardSeconds + 0.5 < seconds
+        ? ` (only the first ${Math.round(heard.heardSeconds / 60)} min was heard)`
+        : "";
+    return `${label} ${heard.text}${shortened}`;
+  }
+
+  /** The label a voice message shows in an event or in read_history. */
+  function voiceMessageLabel(seconds: number | undefined): string {
+    return seconds === undefined ? "[voice message]" : `[voice message, ${Math.max(1, Math.round(seconds))} s]`;
+  }
+
+  function isVoiceAttachment(attachment: PlatformAttachment): boolean {
+    return (attachment.contentType ?? "").toLowerCase().startsWith("audio/") || attachment.name.toLowerCase().endsWith(".ogg");
   }
 
   /** Fetches one picture from Discord and puts it on the shelf. Never rejects: a picture that is not kept says why. */
@@ -972,9 +1030,16 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       return { ...refused("history_failed", cleanError(error), `Could not read ${place}.`), retryable: true };
     }
     const lines = [...messages].reverse().map((message) => {
+      const voiceMessage = message.voice === true;
       const body = [
         readable(message.content, message.mentionedUsers),
-        ...message.attachments.map((attachment) => `[attachment: ${scrubIds(attachment.name)}]`),
+        ...message.attachments.map((attachment) =>
+          voiceMessage && isVoiceAttachment(attachment)
+            ? voiceMessageLabel(
+                typeof attachment.durationSecs === "number" && attachment.durationSecs > 0 ? attachment.durationSecs : undefined,
+              )
+            : `[attachment: ${scrubIds(attachment.name)}]`,
+        ),
       ]
         .filter(Boolean)
         .join(" ");
@@ -985,6 +1050,98 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       ok: true,
       summary: `Read ${lines.length} message(s) from ${place}.`,
       data: { lines, count: lines.length },
+    };
+  }
+
+  /**
+   * A say with asVoice: the whole text made into a voice message and sent with no text. Every refusal says plainly that
+   * nothing was sent; the words are never split, and mentions are not turned into pings.
+   */
+  async function sayVoice(place: string, text: string, sayOptions: { replyTo?: string; files?: SayFile[] } | undefined): Promise<Receipt> {
+    if (sayOptions?.files !== undefined && sayOptions.files.length > 0) {
+      return refused(
+        "voice_with_files",
+        "a voice message carries nothing else, so pictures cannot go with it.",
+        "A voice message cannot carry pictures, so nothing was sent.",
+      );
+    }
+    const voice = options.voice;
+    if (voice === undefined) {
+      return refused(
+        "no_voice",
+        "you have no voice here: voice.json is not set up beside discord.json.",
+        "You have no voice set up, so nothing was sent.",
+      );
+    }
+    const target = await resolveTarget(place);
+    if (!target.ok) return target.receipt;
+    let replyId: string | null = null;
+    if (sayOptions?.replyTo !== undefined) {
+      const found = messageRefs.get(sayOptions.replyTo);
+      if (!found || found.channelId !== target.channelId) {
+        return refused(
+          "unknown_reply",
+          `${sayOptions.replyTo} is not a message in ${place}.`,
+          `I cannot find ${sayOptions.replyTo} in ${place}, so nothing was sent.`,
+        );
+      }
+      replyId = found.messageId;
+    }
+    const resting = voice.resting();
+    if (resting !== undefined) {
+      return refused("voice_resting", `${resting}, so nothing was sent.`, "Your voice is resting, so nothing was sent.");
+    }
+    const stopsBefore = stopCount;
+    let made: MadeVoiceMessage;
+    try {
+      made = await voice.make(text);
+    } catch (error) {
+      if (error instanceof VoiceError) {
+        const code =
+          error.kind === "resting"
+            ? "voice_resting"
+            : error.kind === "nothing_to_say"
+              ? "nothing_to_say"
+              : error.kind === "too_long"
+                ? "too_long"
+                : "voice_failed";
+        const summary =
+          error.kind === "resting"
+            ? "Your voice is resting, so nothing was sent."
+            : error.kind === "nothing_to_say"
+              ? "Nothing in that can be spoken aloud, so nothing was sent."
+              : error.kind === "too_long"
+                ? "That is too long for a voice message, so nothing was sent."
+                : "Your voice failed, so nothing was sent.";
+        return refused(code, `${error.message}; nothing was sent.`, summary);
+      }
+      return refused("voice_failed", cleanError(error), "Your voice failed, so nothing was sent.");
+    }
+    if (stopCount > stopsBefore && place !== ownerPlace()) {
+      return refused(
+        "stopped",
+        "your summoner's emergency stop turned on while the voice message was being made; nothing was sent.",
+        "The stop turned on, so nothing was sent.",
+      );
+    }
+    let sentId: string;
+    try {
+      sentId = await client.sendVoice(
+        target.channelId,
+        { bytes: made.ogg, durationSecs: made.seconds, waveform: made.waveform },
+        replyId,
+      );
+    } catch (error) {
+      return refused("send_failed", cleanError(error), `Could not deliver to ${place}.`, { refs: [] });
+    }
+    const ref = refFor(target.channelId, sentId);
+    countBotMessage(target.channelId, Date.now());
+    const seconds = Math.max(1, Math.round(made.seconds));
+    const leftOut = made.skipped.length > 0 ? ` Left out of speech: ${made.skipped.join("; ")}.` : "";
+    return {
+      ok: true,
+      summary: `Delivered to ${place} as a voice message, ${seconds} s.${leftOut}`,
+      data: { refs: [ref], voice: { seconds: made.seconds, skipped: made.skipped } },
     };
   }
 
@@ -1115,6 +1272,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     async say(place, text, sayOptions) {
       const down = notConnected();
       if (down) return down;
+      if (sayOptions?.asVoice === true) return sayVoice(place, text, sayOptions);
       const target = await resolveTarget(place);
       if (!target.ok) return target.receipt;
       // "@alias" of a person the Lar knows becomes a real mention; nobody else can be pinged.
@@ -1177,6 +1335,10 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       return place === `${PLACE_PREFIX}dm:${ownerAlias}`;
     },
 
+    onStop() {
+      stopCount += 1;
+    },
+
     async status(text) {
       if (status !== "connected" || !self) throw new Error(`Discord is not connected (${statusReason}).`);
       lastStatus = text;
@@ -1193,13 +1355,19 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
 
     about() {
       const rooms = liveRoomSlugs.map((slug) => `${PLACE_PREFIX}room:${slug}`);
+      const voiceLine =
+        options.voice === undefined
+          ? ""
+          : " Voice messages people send you reach you as machine transcripts, which can be wrong. A say with as_voice: true sends your words as a voice message in your own voice.";
       return (
         `Discord: direct messages with your summoner at ${PLACE_PREFIX}dm:${ownerAlias}, and with people who write to you` +
-        (rooms.length === 0 ? "." : `; rooms: ${rooms.join(", ")}.`)
+        (rooms.length === 0 ? "." : `; rooms: ${rooms.join(", ")}.`) +
+        voiceLine
       );
     },
 
     now() {
+      let line: string;
       if (status === "connected" && self) {
         const at = nowMs();
         const places = [`dm:${ownerAlias}`, ...liveRoomSlugs.map((slug) => `room:${slug}`)];
@@ -1223,9 +1391,13 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
         if (typingState !== null && at - typingState.atMs < TYPING_FRESH_MS) {
           parts.push(`typing in ${typingState.place} now`);
         }
-        return parts.length === 0 ? first : `${first}\nYour summoner: ${parts.join(", ")}.`;
+        line = parts.length === 0 ? first : `${first}\nYour summoner: ${parts.join(", ")}.`;
+      } else {
+        line = `Discord: not connected (${statusReason}).`;
       }
-      return `Discord: not connected (${statusReason}).`;
+      const resting = options.voice?.resting();
+      if (resting !== undefined) line += `\nVoice messages: not now (${resting}).`;
+      return line;
     },
   };
 
@@ -1531,9 +1703,25 @@ function toPlatformMessage(message: Message): PlatformMessage {
       name: attachment.name ?? "file",
       contentType: attachment.contentType ?? null,
       url: attachment.url,
+      durationSecs: attachment.duration ?? null,
     })),
     mentionedUsers: [...message.mentions.users.values()].map((user) => ({ id: user.id, displayName: user.displayName })),
     replyToMessageId: message.reference?.messageId ?? null,
+    voice: message.flags.has(MessageFlags.IsVoiceMessage),
+  };
+}
+
+/** The payload that sends one voice message: an Ogg file with its duration and waveform, flagged, with no text. */
+export function voiceMessagePayload(voice: OutboundVoice, replyToMessageId: string | null) {
+  return {
+    files: [
+      new AttachmentBuilder(Buffer.from(voice.bytes), { name: "voice-message.ogg" })
+        .setDuration(voice.durationSecs)
+        .setWaveform(voice.waveform),
+    ],
+    flags: MessageFlags.IsVoiceMessage as const,
+    allowedMentions: { parse: [], repliedUser: false },
+    ...(replyToMessageId ? { reply: { messageReference: replyToMessageId, failIfNotExists: false } } : {}),
   };
 }
 
@@ -1703,6 +1891,11 @@ export function createDiscordJsClient(options: { presence: boolean }): PlatformC
         ...(replyToMessageId ? { reply: { messageReference: replyToMessageId, failIfNotExists: false } } : {}),
         ...(files.length > 0 ? { files: files.map((file) => ({ attachment: Buffer.from(file.bytes), name: file.name })) } : {}),
       });
+      return sent.id;
+    },
+    async sendVoice(channelId, voice, replyToMessageId) {
+      const channel = await sendable(channelId);
+      const sent = await channel.send(voiceMessagePayload(voice, replyToMessageId));
       return sent.id;
     },
     async react(channelId, messageId, emoji) {

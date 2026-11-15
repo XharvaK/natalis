@@ -2,12 +2,15 @@ import { whenText } from "../../entity/when.js";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { MessageFlags } from "discord.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Receipt, Tool, ToolContext, World, WorldEvent } from "../../contracts.js";
 import {
   createDiscordWorld,
   splitForDiscord,
+  voiceMessagePayload,
   type DiscordWorldOptions,
+  type OutboundVoice,
   type PlatformAttachment,
   type PlatformClient,
   type PlatformEdit,
@@ -21,6 +24,7 @@ import {
 import { openShelf, PICTURE_BYTES_MAX, shelfBody } from "../../media/shelf.js";
 import { FILE_BYTES_MAX } from "./files.js";
 import { CONTACTS_FILE, writeContacts } from "../../entity/contacts.js";
+import { VoiceError, type HeardVoiceMessage, type MadeVoiceMessage, type VoiceMessages } from "../../voice/voice-messages.js";
 
 // Every id here is invented. Tokens are built from parts so no token-shaped literal sits in the source.
 const OWNER = "5".repeat(18);
@@ -39,10 +43,19 @@ const TOKEN = ["fake", "bot", "token"].join(".");
 const CDN_URL = `https://cdn.discordapp.com/attachments/${GENERAL}/${CDN_ATTACHMENT}/pic.png?ex=abc&hm=def`;
 
 type SentRecord = { channelId: string; text: string; replyTo: string | null; id: string; mentions: string[] };
+type SentVoiceRecord = {
+  channelId: string;
+  bytes: Uint8Array;
+  durationSecs: number;
+  waveform: string;
+  replyTo: string | null;
+  id: string;
+};
 
 type Fake = {
   client: PlatformClient;
   sent: SentRecord[];
+  voices: SentVoiceRecord[];
   reactions: Array<{ channelId: string; messageId: string; emoji: string }>;
   /** Pictures sent with a message: the channel, the name Discord gets, and the size. */
   uploads: Array<{ channelId: string; name: string; bytes: number }>;
@@ -50,6 +63,7 @@ type Fake = {
   historyFailures?: number;
   /** Per send: null succeeds, an Error fails that call. Consumed in order. */
   sendScript: Array<Error | null>;
+  sendVoiceError: Error | null;
   loginError: Error | null;
   reactError: Error | null;
   logouts: number;
@@ -75,10 +89,12 @@ function fakeClient(): Fake {
   const fake: Fake = {
     client: undefined as unknown as PlatformClient,
     sent: [],
+    voices: [],
     reactions: [],
     uploads: [],
     history: [],
     sendScript: [],
+    sendVoiceError: null,
     loginError: null,
     reactError: null,
     logouts: 0,
@@ -146,6 +162,20 @@ function fakeClient(): Fake {
       for (const file of files) fake.uploads.push({ channelId, name: file.name, bytes: file.bytes.length });
       return id;
     },
+    async sendVoice(channelId, voice, replyToMessageId) {
+      if (fake.sendVoiceError) throw fake.sendVoiceError;
+      seq += 1;
+      const id = `30${String(seq).padStart(16, "0")}`;
+      fake.voices.push({
+        channelId,
+        bytes: voice.bytes,
+        durationSecs: voice.durationSecs,
+        waveform: voice.waveform,
+        replyTo: replyToMessageId,
+        id,
+      });
+      return id;
+    },
     async react(channelId, messageId, emoji) {
       if (fake.reactError) throw fake.reactError;
       fake.reactions.push({ channelId, messageId, emoji });
@@ -165,6 +195,40 @@ function fakeClient(): Fake {
   return fake;
 }
 
+/** A fake voice organ: resting, make and hear are set by each test; its calls are recorded. */
+type FakeVoice = {
+  voice: VoiceMessages;
+  made: string[];
+  heard: Uint8Array[];
+  resting: string | undefined;
+  make: ((text: string) => Promise<MadeVoiceMessage>) | undefined;
+  hear: ((bytes: Uint8Array) => Promise<HeardVoiceMessage>) | undefined;
+};
+
+function fakeVoice(): FakeVoice {
+  const fake: FakeVoice = {
+    voice: {
+      resting: () => fake.resting,
+      async make(text) {
+        fake.made.push(text);
+        if (fake.make) return fake.make(text);
+        return { ogg: Uint8Array.from([1, 2, 3, 4]), seconds: 7.2, waveform: "AAAA", skipped: [] };
+      },
+      async hear(bytes) {
+        fake.heard.push(bytes);
+        if (fake.hear) return fake.hear(bytes);
+        return { text: "See you at nine.", seconds: 7.2, heardSeconds: 7.2, model: "fake" };
+      },
+    },
+    made: [],
+    heard: [],
+    resting: undefined,
+    make: undefined,
+    hear: undefined,
+  };
+  return fake;
+}
+
 let idSeq = 0;
 function incoming(input: {
   id?: string;
@@ -177,6 +241,7 @@ function incoming(input: {
   mentionedUsers?: PlatformMention[];
   replyTo?: string | null;
   createdAtMs?: number;
+  voice?: boolean;
 }): PlatformMessage {
   idSeq += 1;
   const kind = input.channelKind ?? "room";
@@ -191,6 +256,7 @@ function incoming(input: {
     attachments: input.attachments ?? [],
     mentionedUsers: input.mentionedUsers ?? [],
     replyToMessageId: input.replyTo ?? null,
+    voice: input.voice,
   };
 }
 
@@ -245,6 +311,11 @@ function toolNamed(world: World, name: string): { run(args: Record<string, unkno
 /** The refs file the world keeps beside the aliases file. */
 function refsFilePath(): string {
   return aliasesPath.replace(/\.json$/i, "") + ".refs.json";
+}
+
+/** The day's count of pictures, files and voice messages from others. */
+function picturesFilePath(): string {
+  return aliasesPath.replace(/\.json$/i, "") + ".pictures.json";
 }
 
 /** A reaction from the fake client, with the fields the world reads. */
@@ -1665,5 +1736,270 @@ describe("direct messages and contacts", () => {
     await vi.advanceTimersByTimeAsync(1500);
     expect(world.now()).toContain("Contacts who may write to you directly: mara.");
     expect(world.now()).not.toContain(MARA);
+  });
+});
+
+describe("voice messages", () => {
+  const VOICE_URL = `https://cdn.discordapp.com/attachments/${GENERAL}/${CDN_ATTACHMENT}/voice.ogg?ex=1&hm=2`;
+  const VOICE = { name: "voice.ogg", contentType: "audio/ogg", url: VOICE_URL, durationSecs: 7.2 };
+  const VOICE_BYTES = Uint8Array.from([0x4f, 0x67, 0x67, 0x53, 1, 2, 3, 4]);
+  const voiceResponse = () => new Response(Buffer.from(VOICE_BYTES), { status: 200, headers: { "content-type": "audio/ogg" } });
+  const fetchReturning = (make: () => Response) => vi.fn(async () => make()) as unknown as typeof fetch & ReturnType<typeof vi.fn>;
+  const made = (): MadeVoiceMessage => ({ ogg: Uint8Array.from([9, 8, 7]), seconds: 7.2, waveform: "AAAA", skipped: [] });
+
+  async function settle(check: () => void): Promise<void> {
+    await vi.advanceTimersByTimeAsync(1500);
+    await vi.waitFor(check, { timeout: 2000, interval: 10 });
+  }
+
+  it("hears the summoner's voice message, labels it by its length, and keeps no audio", async () => {
+    const voice = fakeVoice();
+    const fetchFn = fetchReturning(voiceResponse);
+    const home = { dir: join(dir, "home"), shownAs: "/home/lar" };
+    const { fake, events, shelf } = await startWorld({ voice: voice.voice, fetch: fetchFn, filesHome: home });
+    fake.deliver(incoming({ channelKind: "dm", author: OWNER_AUTHOR, content: "", attachments: [VOICE], voice: true }));
+    await settle(() => expect(events).toHaveLength(1));
+
+    expect(events[0]?.text).toBe("[voice message, 7 s] See you at nine.");
+    expect(Array.from(voice.heard[0] ?? [])).toEqual(Array.from(VOICE_BYTES));
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(shelf.list()).toEqual([]);
+    expect(existsSync(join(dir, "home", "files"))).toBe(false);
+  });
+
+  it("counts a voice message from someone else in the day's places, and hears nothing past the limit", async () => {
+    writeFileSync(picturesFilePath(), JSON.stringify({ version: 1, day: localDayOf(Date.now()), others: 49 }));
+    const voice = fakeVoice();
+    const fetchFn = fetchReturning(voiceResponse);
+    const { fake, events } = await startWorld({ voice: voice.voice, fetch: fetchFn, guestLimit: { messages: 1000, perMs: 1000 } });
+    fake.deliver(incoming({ author: MARA_AUTHOR, content: "a voice note", attachments: [VOICE], voice: true }));
+    await settle(() => expect(events).toHaveLength(1));
+
+    expect(events[0]?.text).toBe("a voice note\n[voice message, 7 s] See you at nine.");
+    expect(JSON.parse(readFileSync(picturesFilePath(), "utf8")).others).toBe(50);
+
+    fake.deliver(incoming({ author: MARA_AUTHOR, content: "another", attachments: [VOICE], voice: true }));
+    await settle(() => expect(events).toHaveLength(2));
+    expect(events[1]?.text).toBe(
+      "another\n[voice message, 7 s] (not heard: today's limit for files from others is reached)",
+    );
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("names a voice message as not heard when there is no voice organ, and fetches nothing", async () => {
+    const fetchFn = fetchReturning(voiceResponse);
+    const { fake, events } = await startWorld({ fetch: fetchFn });
+    fake.deliver(incoming({ channelKind: "dm", author: OWNER_AUTHOR, content: "", attachments: [VOICE], voice: true }));
+    await settle(() => expect(events).toHaveLength(1));
+
+    expect(events[0]?.text).toBe("[voice message, 7 s] (not heard: you have no voice organ)");
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("gives the resting reason, fetches nothing, and takes no place in the day's count", async () => {
+    const voice = fakeVoice();
+    voice.resting = "your voice organ is starting";
+    const fetchFn = fetchReturning(voiceResponse);
+    const { fake, events } = await startWorld({ voice: voice.voice, fetch: fetchFn });
+    fake.deliver(incoming({ author: MARA_AUTHOR, content: "a voice note", attachments: [VOICE], voice: true }));
+    await settle(() => expect(events).toHaveLength(1));
+
+    expect(events[0]?.text).toBe("a voice note\n[voice message, 7 s] (not heard: your voice organ is starting)");
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(existsSync(picturesFilePath())).toBe(false);
+  });
+
+  it("gives the reason a voice message could not be read", async () => {
+    const voice = fakeVoice();
+    voice.hear = async () => {
+      throw new VoiceError("the voice message could not be read: it is not an Ogg file", "bad_audio");
+    };
+    const { fake, events } = await startWorld({ voice: voice.voice, fetch: fetchReturning(voiceResponse) });
+    fake.deliver(incoming({ channelKind: "dm", author: OWNER_AUTHOR, content: "", attachments: [VOICE], voice: true }));
+    await settle(() => expect(events).toHaveLength(1));
+
+    expect(events[0]?.text).toBe(
+      "[voice message, 7 s] (not heard: the voice message could not be read: it is not an Ogg file)",
+    );
+  });
+
+  it("says when nothing was heard in a voice message", async () => {
+    const voice = fakeVoice();
+    voice.hear = async () => ({ text: "", seconds: 7.2, heardSeconds: 7.2, model: "fake" });
+    const { fake, events } = await startWorld({ voice: voice.voice, fetch: fetchReturning(voiceResponse) });
+    fake.deliver(incoming({ channelKind: "dm", author: OWNER_AUTHOR, content: "", attachments: [VOICE], voice: true }));
+    await settle(() => expect(events).toHaveLength(1));
+
+    expect(events[0]?.text).toBe("[voice message, 7 s] (nothing was heard in it)");
+  });
+
+  it("says when only the first part of a long voice message was heard", async () => {
+    const voice = fakeVoice();
+    voice.hear = async () => ({ text: "Long story.", seconds: 412, heardSeconds: 300, model: "fake" });
+    const { fake, events } = await startWorld({ voice: voice.voice, fetch: fetchReturning(voiceResponse) });
+    fake.deliver(incoming({ channelKind: "dm", author: OWNER_AUTHOR, content: "", attachments: [VOICE], voice: true }));
+    await settle(() => expect(events).toHaveLength(1));
+
+    expect(events[0]?.text).toBe("[voice message, 412 s] Long story. (only the first 5 min was heard)");
+  });
+
+  it("treats an audio attachment on a message without the flag as a file, and never hears it", async () => {
+    const voice = fakeVoice();
+    const fetchFn = fetchReturning(voiceResponse);
+    const { fake, events } = await startWorld({ voice: voice.voice, fetch: fetchFn });
+    fake.deliver(incoming({ author: MARA_AUTHOR, content: "a file", attachments: [VOICE] }));
+    await settle(() => expect(events).toHaveLength(1));
+
+    expect(events[0]?.text).toBe("a file\n[file: voice.ogg (not saved: you have no home folder for files)]");
+    expect(voice.heard).toEqual([]);
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("sends a voice message with asVoice, with its duration, waveform and what was left out", async () => {
+    const voice = fakeVoice();
+    voice.make = async () => ({ ogg: Uint8Array.from([9, 8, 7]), seconds: 7.2, waveform: "AAAA", skipped: ["an emoji"] });
+    const { world, fake } = await startWorld({ voice: voice.voice });
+    const receipt = await world.say("discord:dm:owner", "See you at nine.", { asVoice: true });
+
+    expect(fake.sent).toEqual([]);
+    expect(fake.voices).toHaveLength(1);
+    expect(fake.voices[0]).toMatchObject({
+      channelId: DM_OWNER,
+      durationSecs: 7.2,
+      waveform: "AAAA",
+      replyTo: null,
+    });
+    expect(Array.from(fake.voices[0]?.bytes ?? [])).toEqual([9, 8, 7]);
+    expect(receipt).toMatchObject({
+      ok: true,
+      summary: "Delivered to discord:dm:owner as a voice message, 7 s. Left out of speech: an emoji.",
+      data: { refs: ["m1"], voice: { seconds: 7.2, skipped: ["an emoji"] } },
+    });
+  });
+
+  it("refuses before synthesis for files, an unknown reply, no voice organ or a resting voice", async () => {
+    const voice = fakeVoice();
+    const withVoice = await startWorld({ voice: voice.voice });
+    const files = await withVoice.world.say("discord:dm:owner", "Look.", {
+      asVoice: true,
+      files: [{ path: join(dir, "gone.png"), name: "gone.png", mime: "image/png" }],
+    });
+    expect(files).toMatchObject({ ok: false, refused: { code: "voice_with_files" } });
+    const reply = await withVoice.world.say("discord:dm:owner", "Answer.", { asVoice: true, replyTo: "m99" });
+    expect(reply).toMatchObject({ ok: false, refused: { code: "unknown_reply" } });
+    voice.resting = "your voice organ is starting";
+    const resting = await withVoice.world.say("discord:dm:owner", "Hello.", { asVoice: true });
+    expect(resting).toMatchObject({ ok: false, refused: { code: "voice_resting" } });
+    expect(voice.made).toEqual([]);
+    expect(withVoice.fake.voices).toEqual([]);
+
+    const withoutVoice = await startWorld({ aliasesPath: join(dir, "without-voice.json") });
+    const none = await withoutVoice.world.say("discord:dm:owner", "Hello.", { asVoice: true });
+    expect(none).toMatchObject({ ok: false, refused: { code: "no_voice" } });
+    expect(voice.made).toEqual([]);
+  });
+
+  it("refuses too_long from make, and send_failed when delivery fails", async () => {
+    const voice = fakeVoice();
+    voice.make = async () => {
+      throw new VoiceError("the words are too long for one message", "too_long");
+    };
+    const { world, fake } = await startWorld({ voice: voice.voice });
+    const tooLong = await world.say("discord:dm:owner", "A long say.", { asVoice: true });
+    expect(tooLong).toMatchObject({
+      ok: false,
+      refused: { code: "too_long", reason: "too_long: the words are too long for one message; nothing was sent." },
+    });
+
+    voice.make = async () => {
+      throw new VoiceError("the organ is not ready yet", "resting");
+    };
+    const voiceResting = await world.say("discord:dm:owner", "Hello.", { asVoice: true });
+    expect(voiceResting).toMatchObject({
+      ok: false,
+      refused: { code: "voice_resting", reason: "voice_resting: the organ is not ready yet; nothing was sent." },
+    });
+
+    voice.make = async () => made();
+    fake.sendVoiceError = new Error("Missing Access");
+    const failed = await world.say("discord:dm:owner", "Hello.", { asVoice: true });
+    expect(failed).toMatchObject({
+      ok: false,
+      summary: "Could not deliver to discord:dm:owner.",
+      data: { refs: [] },
+      refused: { code: "send_failed", reason: "send_failed: Missing Access" },
+    });
+  });
+
+  it("refuses a stop during synthesis in a room, and still sends in the summoner's DM", async () => {
+    const roomVoice = fakeVoice();
+    let releaseRoom: (value: MadeVoiceMessage) => void = () => {};
+    const roomStarted = new Promise<void>((resolve) => {
+      roomVoice.make = () =>
+        new Promise<MadeVoiceMessage>((resolveMade) => {
+          releaseRoom = resolveMade;
+          resolve();
+        });
+    });
+    const roomWorld = await startWorld({ voice: roomVoice.voice, aliasesPath: join(dir, "room-voice.json") });
+    const roomSay = roomWorld.world.say("discord:room:general", "See you.", { asVoice: true });
+    await roomStarted;
+    roomWorld.world.onStop?.();
+    releaseRoom(made());
+    expect(await roomSay).toMatchObject({ ok: false, refused: { code: "stopped" } });
+    expect(roomWorld.fake.voices).toEqual([]);
+
+    const dmVoice = fakeVoice();
+    let releaseDm: (value: MadeVoiceMessage) => void = () => {};
+    const dmStarted = new Promise<void>((resolve) => {
+      dmVoice.make = () =>
+        new Promise<MadeVoiceMessage>((resolveMade) => {
+          releaseDm = resolveMade;
+          resolve();
+        });
+    });
+    const dmWorld = await startWorld({ voice: dmVoice.voice, aliasesPath: join(dir, "dm-voice.json") });
+    const dmSay = dmWorld.world.say("discord:dm:owner", "See you.", { asVoice: true });
+    await dmStarted;
+    dmWorld.world.onStop?.();
+    releaseDm(made());
+    expect(await dmSay).toMatchObject({ ok: true });
+    expect(dmWorld.fake.voices).toHaveLength(1);
+  });
+
+  it("builds a voice message payload with the voice flag, no text, and the file's name, duration and waveform", () => {
+    const voice: OutboundVoice = { bytes: Uint8Array.from([1, 2, 3]), durationSecs: 7.2, waveform: "AAAA" };
+    const payload = voiceMessagePayload(voice, null);
+    expect(payload.flags).toBe(MessageFlags.IsVoiceMessage);
+    expect("content" in payload).toBe(false);
+    expect(payload.files).toHaveLength(1);
+    const file = payload.files[0] as unknown as { name: string; duration: number; waveform: string };
+    expect(file.name).toBe("voice-message.ogg");
+    expect(file.duration).toBe(7.2);
+    expect(file.waveform).toBe("AAAA");
+    expect("reply" in payload).toBe(false);
+
+    const withReply = voiceMessagePayload(voice, "1".repeat(18)) as unknown as {
+      reply?: { messageReference: string };
+    };
+    expect(withReply.reply?.messageReference).toBe("1".repeat(18));
+  });
+
+  it("names voice messages in about and the now board only with a voice organ, and shows their label in read_history", async () => {
+    const without = await startWorld({ aliasesPath: join(dir, "about-none.json") });
+    expect(without.world.about?.()).not.toContain("Voice messages people send you");
+
+    const voice = fakeVoice();
+    const { world, fake } = await startWorld({ voice: voice.voice, aliasesPath: join(dir, "about-voice.json") });
+    expect(world.about?.()).toContain("Voice messages people send you reach you as machine transcripts, which can be wrong.");
+    expect(world.about?.()).toContain("A say with as_voice: true sends your words as a voice message in your own voice.");
+    voice.resting = "your voice organ is starting";
+    expect(world.now()).toContain("Voice messages: not now (your voice organ is starting).");
+
+    fake.history.push(incoming({ author: MARA_AUTHOR, content: "", attachments: [VOICE], voice: true }));
+    const receipt = await toolNamed(world, "read_history").run({ place: "discord:room:general", limit: 5 });
+    const lines = receipt.data?.lines as string[];
+    expect(lines[0]).toContain("[voice message, 7 s]");
+    expect(lines[0]).not.toContain("[attachment:");
   });
 });

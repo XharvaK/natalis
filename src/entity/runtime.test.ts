@@ -301,6 +301,46 @@ function sourceWorld(id: string): { world: World; push(place: string, text: stri
 }
 
 /**
+ * A Discord world for the as_voice tests: its say records the place, the whole text and the options it got, and a voice
+ * say answers as the real world would, with its length and what speech left out.
+ */
+type SayOptions = NonNullable<Parameters<World["say"]>[2]>;
+function voiceWorld(): {
+  world: World;
+  said: Array<{ place: string; text: string; options: SayOptions | undefined }>;
+  push(place: string, text: string, source?: WorldEvent["source"]): void;
+} {
+  let emit: ((event: WorldEvent) => void) | undefined;
+  const said: Array<{ place: string; text: string; options: SayOptions | undefined }> = [];
+  const world: World = {
+    id: "discord",
+    async start(next) {
+      emit = next;
+    },
+    async stop() {
+      emit = undefined;
+    },
+    async say(place, text, options): Promise<Receipt> {
+      said.push({ place, text, options });
+      if (options?.asVoice === true) {
+        return { ok: true, summary: "Delivered.", data: { refs: ["m1"], voice: { seconds: 7.2, skipped: ["an emoji"] } } };
+      }
+      return { ok: true, summary: "Delivered." };
+    },
+    tools: () => [],
+    now: () => "discord is open.",
+  };
+  return {
+    world,
+    said,
+    push(place, text, source = "outside") {
+      if (emit === undefined) throw new Error("the voice world is not started");
+      emit({ world: "discord", place, actor: source === "owner" ? "owner" : "mara", source, text });
+    },
+  };
+}
+
+/**
  * A world that reports moments as sense events. Its own place is the summoner's, so a sense there can test that no
  * owner-place work happens for a sense.
  */
@@ -6146,5 +6186,118 @@ describe("answers to proposals", () => {
     expect(row?.text).toBe("Your summoner answered proposals/wake-ids.md: Use the short ids.");
     expect(row?.data).toMatchObject({ bodyNote: "proposal_answer", file: "wake-ids.md" });
     expect(model.requests).toHaveLength(1);
+  });
+});
+
+describe("as_voice on say", () => {
+  it("as_voice sends the whole text as a voice message and keeps its length in the river", async () => {
+    const room = voiceWorld();
+    const model = new ScriptedModel([
+      reply({
+        toolCalls: [call("say", { place: "discord:room:general", text: "See you at nine. 😀", as_voice: true })],
+      }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity } = await open(model, {}, [room.world]);
+    await entity.start();
+    room.push("discord:room:general", "Are we still on?", "owner");
+    await entity.idle();
+
+    expect(room.said).toHaveLength(1);
+    expect(room.said[0]).toMatchObject({
+      place: "discord:room:general",
+      text: "See you at nine. 😀",
+      options: { asVoice: true },
+    });
+    const sayRow = allRows(entity).find((row) => row.kind === "say" && row.thread === "discord:room:general");
+    expect(sayRow?.text).toBe("See you at nine. 😀");
+    expect(sayRow?.data).toEqual({ voiceMessage: { seconds: 7.2 } });
+    const receipt = receiptsShownIn(model.requests[1]).find((item) => item["ok"] === true);
+    expect(receipt?.summary).toBe(
+      "Said to discord:room:general as a voice message (7 s). Left out of speech: an emoji.",
+    );
+    expect(receipt?.data).toMatchObject({ voiceMessage: { seconds: 7.2, skipped: ["an emoji"] } });
+  });
+
+  it("as_voice with attach is refused with bad_arguments and the world is never called", async () => {
+    const room = voiceWorld();
+    const model = new ScriptedModel([
+      reply({
+        toolCalls: [
+          call("say", {
+            place: "discord:room:general",
+            text: "Look at this.",
+            as_voice: true,
+            attach: ["m-ABCD2345"],
+          }),
+        ],
+      }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity } = await open(model, {}, [room.world]);
+    await entity.start();
+    room.push("discord:room:general", "Show me.", "owner");
+    await entity.idle();
+
+    expect(room.said).toEqual([]);
+    const refused = receiptsShownIn(model.requests[1]).find((item) => item["ok"] === false);
+    expect(refused).toMatchObject({
+      refused: { code: "bad_arguments", reason: "as_voice with attach" },
+    });
+  });
+
+  it("as_voice in a place outside Discord is refused and the world is never called", async () => {
+    const room = fakeWorld("fake");
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("say", { place: "fake:room", text: "Hello.", as_voice: true })] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity } = await open(model, {}, [room.world]);
+    await entity.start();
+    room.push("fake:room", "Say hello.", "owner");
+    await entity.idle();
+
+    expect(room.said).toEqual([]);
+    const refused = receiptsShownIn(model.requests[1]).find((item) => item["ok"] === false);
+    expect(refused).toMatchObject({
+      refused: { code: "bad_arguments", reason: "as_voice outside Discord" },
+    });
+  });
+
+  it("as_voice that is not true or false is refused", async () => {
+    const room = voiceWorld();
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("say", { place: "discord:room:general", text: "Hello.", as_voice: "yes" })] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity } = await open(model, {}, [room.world]);
+    await entity.start();
+    room.push("discord:room:general", "Say hello.", "owner");
+    await entity.idle();
+
+    expect(room.said).toEqual([]);
+    const refused = receiptsShownIn(model.requests[1]).find((item) => item["ok"] === false);
+    expect(refused).toMatchObject({
+      refused: { code: "bad_arguments", reason: "as_voice is not true or false" },
+    });
+  });
+
+  it("as_voice holds a phrase on the privacy list and the world is never called", async () => {
+    const room = voiceWorld();
+    const model = new ScriptedModel([
+      reply({
+        toolCalls: [call("say", { place: "discord:room:general", text: "I live near Lantern Yard.", as_voice: true })],
+      }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity } = await open(model, {}, [room.world]);
+    await entity.start();
+    writeFileSync(join(dir, "privacy.json"), JSON.stringify({ terms: [{ term: "Lantern Yard", category: "home" }] }), "utf8");
+    room.push("discord:room:general", "Where do you live?", "owner");
+    await entity.idle();
+
+    expect(room.said).toEqual([]);
+    const refused = receiptsShownIn(model.requests[1]).find((item) => item["ok"] === false);
+    expect(refused).toMatchObject({ refused: { code: "held_privacy" } });
   });
 });

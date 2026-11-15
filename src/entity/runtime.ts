@@ -3604,6 +3604,10 @@ class Runtime implements Entity {
                 maxItems: SAY_PICTURES_MAX,
                 description: "Optional. Up to four picture ids from your shelf (such as m-ABCD2345), sent with the words.",
               },
+              as_voice: {
+                type: "boolean",
+                description: "Optional. True sends the words as a voice message in your own voice instead of text. Discord places only, and nothing can go with it (no attach). At most about two minutes of speech. Code, emoji and link addresses are not read aloud; the receipt says what was left out.",
+              },
               knowingly: {
                 type: "boolean",
                 description: "Optional. True sends words your record contradicts, or words held because another thread spoke there meanwhile, as they are. Leave it out otherwise.",
@@ -3807,6 +3811,17 @@ class Runtime implements Entity {
       return refuse("bad_arguments", "knowingly must be true or false.", "knowingly is not true or false");
     }
     const knowingly = args["knowingly"] === true;
+    if (args["as_voice"] !== undefined && typeof args["as_voice"] !== "boolean") {
+      return refuse("bad_arguments", "as_voice must be true or false.", "as_voice is not true or false");
+    }
+    const asVoice = args["as_voice"] === true;
+    if (asVoice && !place.value.startsWith(DISCORD_PLACE_PREFIX)) {
+      return refuse("bad_arguments", "as_voice works only in Discord places.", "as_voice outside Discord");
+    }
+    const attach = args["attach"];
+    if (asVoice && Array.isArray(attach) && attach.length > 0) {
+      return refuse("bad_arguments", "A voice message carries nothing else: leave out attach, or leave out as_voice.", "as_voice with attach");
+    }
     const ownerPlace = this.isOwnerPlace(place.value);
     const misplaced = this.discordPlaceHold(place.value, context);
     if (misplaced !== undefined) return misplaced;
@@ -3847,6 +3862,7 @@ class Runtime implements Entity {
       const options = {
         ...(replyTo.value === undefined ? {} : { replyTo: replyTo.value }),
         ...(files.length === 0 ? {} : { files }),
+        ...(asVoice ? { asVoice: true } : {}),
       };
       let receipt: Receipt;
       try {
@@ -3855,6 +3871,20 @@ class Runtime implements Entity {
         return refuse("world_error", "The world could not deliver that.", messageOf(err));
       }
       if (!receipt.ok) return receipt;
+
+      // A voice say's receipt says how long it was and what speech left out; the river keeps the length only.
+      let voiceSeconds: number | undefined;
+      let voiceSkipped: string[] = [];
+      if (asVoice) {
+        const voiceData = receipt.data?.["voice"];
+        if (typeof voiceData === "object" && voiceData !== null) {
+          const record = voiceData as Record<string, unknown>;
+          if (typeof record["seconds"] === "number") voiceSeconds = record["seconds"];
+          if (Array.isArray(record["skipped"])) {
+            voiceSkipped = record["skipped"].filter((item): item is string => typeof item === "string");
+          }
+        }
+      }
 
       const nowMs = this.nowMs();
       // Read before this say is recorded, so the claim it leaves is not counted against itself.
@@ -3868,7 +3898,11 @@ class Runtime implements Entity {
         source: "self",
         place: place.value,
         text: [text.value, ...pictureLines].join("\n"),
-        ...(ids.length === 0 ? {} : { data: { pictures: ids } }),
+        ...(asVoice
+          ? { data: { voiceMessage: voiceSeconds === undefined ? {} : { seconds: voiceSeconds } } }
+          : ids.length === 0
+            ? {}
+            : { data: { pictures: ids } }),
         atMs: nowMs,
       });
       // Only the asks the turn saw are answered: a message that came in during the turn is still waiting.
@@ -3880,13 +3914,24 @@ class Runtime implements Entity {
         text: this.scanner.redact(clip(oneLine(text.value), SAY_CLIP)),
       };
       this.saveState();
+      const leftOut = voiceSkipped.length > 0 ? ` Left out of speech: ${voiceSkipped.join("; ")}.` : "";
+      const summary = asVoice
+        ? voiceSeconds === undefined
+          ? `Said to ${place.value} as a voice message.${leftOut}`
+          : `Said to ${place.value} as a voice message (${Math.round(voiceSeconds)} s).${leftOut}`
+        : ids.length === 0
+          ? `Said to ${place.value}.`
+          : `Said to ${place.value} with ${ids.length} picture(s).`;
       return {
         ok: true,
-        summary: ids.length === 0 ? `Said to ${place.value}.` : `Said to ${place.value} with ${ids.length} picture(s).`,
+        summary,
         data: {
           place: place.value,
           chars: text.value.length,
           ...(ids.length === 0 ? {} : { pictures: ids }),
+          ...(asVoice
+            ? { voiceMessage: { ...(voiceSeconds === undefined ? {} : { seconds: voiceSeconds }), skipped: voiceSkipped } }
+            : {}),
           ...(others === undefined ? {} : { othersSpokeHere: others }),
         },
       };
