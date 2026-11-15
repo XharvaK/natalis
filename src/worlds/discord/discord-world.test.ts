@@ -10,8 +10,13 @@ import {
   type DiscordWorldOptions,
   type PlatformAttachment,
   type PlatformClient,
+  type PlatformEdit,
   type PlatformMention,
   type PlatformMessage,
+  type PlatformPresence,
+  type PlatformReaction,
+  type PlatformTyping,
+  type PlatformVoice,
 } from "./discord-world.js";
 import { openShelf, PICTURE_BYTES_MAX, shelfBody } from "../../media/shelf.js";
 import { FILE_BYTES_MAX } from "./files.js";
@@ -48,11 +53,24 @@ type Fake = {
   loginError: Error | null;
   reactError: Error | null;
   logouts: number;
+  /** The texts setStatus was called with. */
+  statuses: string[];
+  statusError: Error | null;
   deliver(message: PlatformMessage): void;
+  fireReaction(reaction: PlatformReaction): void;
+  fireEdit(edit: PlatformEdit): void;
+  firePresence(presence: PlatformPresence): void;
+  fireVoice(voice: PlatformVoice): void;
+  fireTyping(typing: PlatformTyping): void;
 };
 
 function fakeClient(): Fake {
   const handlers: Array<(message: PlatformMessage) => void> = [];
+  const reactionHandlers: Array<(reaction: PlatformReaction) => void> = [];
+  const editHandlers: Array<(edit: PlatformEdit) => void> = [];
+  const presenceHandlers: Array<(presence: PlatformPresence) => void> = [];
+  const voiceHandlers: Array<(voice: PlatformVoice) => void> = [];
+  const typingHandlers: Array<(typing: PlatformTyping) => void> = [];
   let seq = 0;
   const fake: Fake = {
     client: undefined as unknown as PlatformClient,
@@ -64,8 +82,25 @@ function fakeClient(): Fake {
     loginError: null,
     reactError: null,
     logouts: 0,
+    statuses: [],
+    statusError: null,
     deliver(message) {
       for (const handler of handlers) handler(message);
+    },
+    fireReaction(reaction) {
+      for (const handler of reactionHandlers) handler(reaction);
+    },
+    fireEdit(edit) {
+      for (const handler of editHandlers) handler(edit);
+    },
+    firePresence(presence) {
+      for (const handler of presenceHandlers) handler(presence);
+    },
+    fireVoice(voice) {
+      for (const handler of voiceHandlers) handler(voice);
+    },
+    fireTyping(typing) {
+      for (const handler of typingHandlers) handler(typing);
     },
   };
   fake.client = {
@@ -78,6 +113,21 @@ function fakeClient(): Fake {
     },
     onMessage(handler) {
       handlers.push(handler);
+    },
+    onReaction(handler) {
+      reactionHandlers.push(handler);
+    },
+    onEdit(handler) {
+      editHandlers.push(handler);
+    },
+    onPresence(handler) {
+      presenceHandlers.push(handler);
+    },
+    onVoice(handler) {
+      voiceHandlers.push(handler);
+    },
+    onTyping(handler) {
+      typingHandlers.push(handler);
     },
     async fetchRoom(channelId) {
       if (channelId === GENERAL) return { name: "general" };
@@ -106,6 +156,10 @@ function fakeClient(): Fake {
         throw new Error("socket hang up");
       }
       return fake.history.filter((message) => message.channelId === channelId).slice(0, limit);
+    },
+    async setStatus(text) {
+      if (fake.statusError) throw fake.statusError;
+      fake.statuses.push(text);
     },
   };
   return fake;
@@ -187,6 +241,429 @@ function toolNamed(world: World, name: string): { run(args: Record<string, unkno
   const context = {} as ToolContext;
   return { run: (args) => tool.run(args, context) };
 }
+
+/** The refs file the world keeps beside the aliases file. */
+function refsFilePath(): string {
+  return aliasesPath.replace(/\.json$/i, "") + ".refs.json";
+}
+
+/** A reaction from the fake client, with the fields the world reads. */
+function reactionOf(input: {
+  channelId: string;
+  channelKind?: PlatformReaction["channelKind"];
+  messageId: string;
+  messageAuthorId?: string | null;
+  userId: string;
+  userDisplayName: string;
+  userBot?: boolean;
+  emoji?: string;
+  added?: boolean;
+}): PlatformReaction {
+  return {
+    channelId: input.channelId,
+    channelKind: input.channelKind ?? "dm",
+    messageId: input.messageId,
+    messageAuthorId: input.messageAuthorId ?? null,
+    userId: input.userId,
+    userDisplayName: input.userDisplayName,
+    userBot: input.userBot ?? false,
+    emoji: input.emoji ?? "❤️",
+    added: input.added ?? true,
+  };
+}
+
+/** One of her own sent messages in the owner's DM, with the ref the world gave it. */
+async function herDmMessage(world: World, fake: Fake): Promise<{ ref: string; id: string }> {
+  const receipt = await world.say("discord:dm:owner", "her line");
+  const refs = (receipt.data?.refs as string[] | undefined) ?? [];
+  const sent = fake.sent[fake.sent.length - 1];
+  return { ref: refs[0] ?? "", id: sent?.id ?? "" };
+}
+
+describe("reactions", () => {
+  it("turns the owner's reaction to her message into a quiet owner event", async () => {
+    const { world, fake, events } = await startWorld();
+    const { id } = await herDmMessage(world, fake);
+    fake.fireReaction(
+      reactionOf({
+        channelId: DM_OWNER,
+        channelKind: "dm",
+        messageId: id,
+        messageAuthorId: SELF,
+        userId: OWNER,
+        userDisplayName: "Xharv",
+      }),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      world: "discord",
+      place: "discord:dm:owner",
+      actor: "owner",
+      source: "owner",
+      wake: false,
+      text: "owner reacted ❤️ to your message m1.",
+      data: {
+        sense: { kind: "reaction", ref: "m1", emoji: "❤️", mine: true, added: true },
+        messageRef: "m1",
+      },
+    });
+  });
+
+  it("turns a removed reaction into a 'took back' row with added false", async () => {
+    const { world, fake, events } = await startWorld();
+    const { id } = await herDmMessage(world, fake);
+    const base = {
+      channelId: DM_OWNER,
+      channelKind: "dm" as const,
+      messageId: id,
+      messageAuthorId: SELF,
+      userId: OWNER,
+      userDisplayName: "Xharv",
+    };
+    fake.fireReaction(reactionOf({ ...base, added: true }));
+    fake.fireReaction(reactionOf({ ...base, added: false }));
+    expect(events).toHaveLength(2);
+    expect(events[1]).toMatchObject({
+      text: "owner took back ❤️ on your message m1.",
+      wake: false,
+      data: {
+        sense: { kind: "reaction", ref: "m1", emoji: "❤️", mine: true, added: false },
+        messageRef: "m1",
+      },
+    });
+  });
+
+  it("makes nothing from a reaction on a message with no ref, and writes no new ref", async () => {
+    const { fake, events } = await startWorld();
+    fake.deliver(incoming({ id: MSG_MARA, author: MARA_AUTHOR, content: "a line" }));
+    await vi.advanceTimersByTimeAsync(1500);
+    const before = readFileSync(refsFilePath(), "utf8");
+    fake.fireReaction(
+      reactionOf({
+        channelId: GENERAL,
+        channelKind: "room",
+        messageId: "1".repeat(17) + "9",
+        messageAuthorId: MARA,
+        userId: MARA,
+        userDisplayName: "Mara",
+      }),
+    );
+    expect(events).toHaveLength(1);
+    expect(readFileSync(refsFilePath(), "utf8")).toBe(before);
+  });
+
+  it("makes nothing from a room it does not live in, a DM stranger, or her own reaction", async () => {
+    writeFileSync(
+      refsFilePath(),
+      JSON.stringify({
+        version: 1,
+        seq: 2,
+        refs: {
+          m1: [OFF_TOPIC, "1".repeat(16) + "23"],
+          m2: [DM_MARA, MSG_MARA],
+        },
+      }),
+    );
+    const { world, fake, events } = await startWorld();
+    fake.fireReaction(
+      reactionOf({
+        channelId: OFF_TOPIC,
+        channelKind: "room",
+        messageId: "1".repeat(16) + "23",
+        messageAuthorId: MARA,
+        userId: MARA,
+        userDisplayName: "Mara",
+      }),
+    );
+    fake.fireReaction(
+      reactionOf({
+        channelId: DM_MARA,
+        channelKind: "dm",
+        messageId: MSG_MARA,
+        messageAuthorId: MARA,
+        userId: MARA,
+        userDisplayName: "Mara",
+      }),
+    );
+    const { id } = await herDmMessage(world, fake);
+    fake.fireReaction(
+      reactionOf({
+        channelId: DM_OWNER,
+        channelKind: "dm",
+        messageId: id,
+        messageAuthorId: SELF,
+        userId: SELF,
+        userDisplayName: "Natalis",
+        userBot: true,
+      }),
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  it("drops a guest's reactions past the guest limit", async () => {
+    const { world, fake, events } = await startWorld({ guestLimit: { messages: 1, perMs: 20_000 } });
+    const receipt = await world.say("discord:room:general", "her line");
+    const refs = (receipt.data?.refs as string[] | undefined) ?? [];
+    const id = fake.sent[fake.sent.length - 1]?.id ?? "";
+    const reaction = reactionOf({
+      channelId: GENERAL,
+      channelKind: "room",
+      messageId: id,
+      messageAuthorId: SELF,
+      userId: MARA,
+      userDisplayName: "Mara",
+    });
+    fake.fireReaction(reaction);
+    fake.fireReaction(reaction);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      place: "discord:room:general",
+      actor: "mara",
+      source: "outside",
+      text: `mara reacted ❤️ to your message ${refs[0]}.`,
+      data: { sense: { kind: "reaction", ref: refs[0], mine: true, added: true } },
+    });
+  });
+});
+
+describe("edits", () => {
+  it("turns an edit of a known message into one woke event, once per edit time", async () => {
+    const { fake, events } = await startWorld();
+    const message = incoming({ id: MSG_MARA, author: MARA_AUTHOR, content: "before" });
+    fake.deliver(message);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(events).toHaveLength(1);
+
+    fake.fireEdit({ ...message, content: "after", editedAtMs: 1000 });
+    expect(events).toHaveLength(2);
+    expect(events[1]).toMatchObject({
+      place: "discord:room:general",
+      actor: "mara",
+      source: "outside",
+      text: "mara edited m1: after",
+      wake: true,
+      data: { messageRef: "m1", edited: true },
+    });
+    expect(events[1]?.data).not.toHaveProperty("sense");
+
+    fake.fireEdit({ ...message, content: "again", editedAtMs: 1000 });
+    expect(events).toHaveLength(2);
+
+    fake.fireEdit({ ...message, content: "a link preview loaded", editedAtMs: null });
+    expect(events).toHaveLength(2);
+
+    fake.fireEdit({
+      ...incoming({ id: "1".repeat(17) + "9", author: MARA_AUTHOR, content: "never seen" }),
+      editedAtMs: 2000,
+    });
+    expect(events).toHaveLength(2);
+  });
+
+  it("does not wake the Lar for a bot's edit", async () => {
+    const { fake, events } = await startWorld();
+    const message = incoming({ author: { id: BOT, displayName: "Crier", bot: true }, content: "before" });
+    fake.deliver(message);
+    await vi.advanceTimersByTimeAsync(1500);
+    fake.fireEdit({ ...message, content: "after", editedAtMs: 1000 });
+    expect(events).toHaveLength(2);
+    expect(events[1]).toMatchObject({ actor: "crier", text: "crier edited m1: after", wake: false });
+  });
+});
+
+describe("the summoner's presence", () => {
+  it("makes nothing from presence when it is off, and leaves the now line without a status", async () => {
+    const { world, fake, events } = await startWorld();
+    fake.firePresence({ userId: OWNER, status: "online", game: "Chess", music: null });
+    expect(events).toHaveLength(0);
+    expect(world.now()).not.toContain("Your summoner:");
+  });
+
+  it("keeps a baseline, makes rows for status and game changes, and keeps music on the board", async () => {
+    const { world, fake, events } = await startWorld({ presence: true });
+
+    fake.firePresence({ userId: OWNER, status: "online", game: null, music: null });
+    expect(events).toHaveLength(0);
+    expect(world.now()).toContain("Your summoner: online.");
+
+    fake.firePresence({ userId: OWNER, status: "offline", game: null, music: null });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      place: "discord:dm:owner",
+      actor: "owner",
+      source: "body",
+      wake: false,
+      text: "Your summoner went offline.",
+      data: { sense: { kind: "status", status: "offline", cameOnline: false } },
+    });
+
+    fake.firePresence({ userId: OWNER, status: "online", game: null, music: null });
+    expect(events).toHaveLength(2);
+    expect(events[1]).toMatchObject({
+      text: "Your summoner came online.",
+      data: { sense: { kind: "status", status: "online", cameOnline: true } },
+    });
+
+    fake.firePresence({ userId: OWNER, status: "idle", game: null, music: null });
+    expect(events).toHaveLength(3);
+    expect(events[2]).toMatchObject({
+      text: "Your summoner went idle.",
+      data: { sense: { kind: "status", status: "idle", cameOnline: false } },
+    });
+
+    fake.firePresence({ userId: OWNER, status: "online", game: null, music: null });
+    expect(events).toHaveLength(4);
+    expect(events[3]).toMatchObject({
+      text: "Your summoner is back online.",
+      data: { sense: { kind: "status", status: "online", cameOnline: false } },
+    });
+
+    fake.firePresence({ userId: OWNER, status: "dnd", game: null, music: null });
+    expect(events).toHaveLength(5);
+    expect(events[4]).toMatchObject({
+      text: "Your summoner set do not disturb.",
+      data: { sense: { kind: "status", status: "dnd", cameOnline: false } },
+    });
+
+    fake.firePresence({ userId: OWNER, status: "online", game: null, music: null });
+    expect(events).toHaveLength(6);
+    expect(events[5]).toMatchObject({
+      text: "Your summoner is back online.",
+      data: { sense: { kind: "status", status: "online", cameOnline: false } },
+    });
+
+    fake.firePresence({ userId: OWNER, status: "online", game: "The Sims 4", music: null });
+    expect(events).toHaveLength(7);
+    expect(events[6]).toMatchObject({
+      text: "Your summoner started playing The Sims 4.",
+      data: { sense: { kind: "game", game: "The Sims 4", started: true } },
+    });
+    expect(world.now()).toContain("playing The Sims 4 for ");
+
+    fake.firePresence({ userId: OWNER, status: "online", game: "Chess", music: null });
+    expect(events).toHaveLength(9);
+    expect(events[7]).toMatchObject({
+      text: "Your summoner stopped playing The Sims 4.",
+      data: { sense: { kind: "game", game: "The Sims 4", started: false } },
+    });
+    expect(events[8]).toMatchObject({
+      text: "Your summoner started playing Chess.",
+      data: { sense: { kind: "game", game: "Chess", started: true } },
+    });
+
+    fake.firePresence({ userId: OWNER, status: "online", game: "Chess", music: { track: "T", artist: "A" } });
+    expect(events).toHaveLength(9);
+    expect(world.now()).toContain("listening to T by A");
+
+    const before = world.now();
+    fake.firePresence({ userId: MARA, status: "offline", game: null, music: null });
+    expect(events).toHaveLength(9);
+    expect(world.now()).toBe(before);
+  });
+});
+
+describe("the summoner's voice state", () => {
+  it("makes rows for joins, moves and leaves even with presence off, and ignores anyone else", async () => {
+    const { world, fake, events } = await startWorld();
+
+    fake.fireVoice({ userId: OWNER, before: null, after: { channelName: "General", othersCount: 2 } });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      place: "discord:dm:owner",
+      actor: "owner",
+      source: "body",
+      wake: false,
+      text: "Your summoner joined the voice channel General, with 2 others there.",
+      data: { sense: { kind: "voice", joined: true } },
+    });
+    expect(world.now()).toContain("in the voice channel General");
+
+    fake.fireVoice({ userId: OWNER, before: { channelName: "General" }, after: { channelName: "Lounge", othersCount: 1 } });
+    expect(events).toHaveLength(2);
+    expect(events[1]).toMatchObject({
+      text: "Your summoner moved to the voice channel Lounge, with 1 other there.",
+    });
+    expect(events[1]?.data).toBeUndefined();
+    expect(world.now()).toContain("in the voice channel Lounge");
+
+    fake.fireVoice({ userId: OWNER, before: { channelName: "Lounge" }, after: { channelName: "Quiet", othersCount: 0 } });
+    expect(events).toHaveLength(3);
+    expect(events[2]).toMatchObject({
+      text: "Your summoner moved to the voice channel Quiet, with nobody else there.",
+    });
+
+    fake.fireVoice({ userId: OWNER, before: { channelName: "Quiet" }, after: null });
+    expect(events).toHaveLength(4);
+    expect(events[3]).toMatchObject({
+      text: "Your summoner left the voice channel Quiet.",
+      data: { sense: { kind: "voice", joined: false } },
+    });
+    expect(world.now()).not.toContain("in the voice channel");
+
+    fake.fireVoice({ userId: MARA, before: null, after: { channelName: "General", othersCount: 0 } });
+    expect(events).toHaveLength(4);
+  });
+});
+
+describe("the summoner's typing", () => {
+  it("shows the owner's typing for ten seconds and ignores anyone else", async () => {
+    const { world, fake } = await startWorld();
+    fake.fireTyping({ userId: OWNER, channelId: DM_OWNER, channelKind: "dm" });
+    expect(world.now()).toContain("typing in dm:owner now");
+
+    const before = world.now();
+    fake.fireTyping({ userId: MARA, channelId: DM_MARA, channelKind: "dm" });
+    expect(world.now()).toBe(before);
+
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(world.now()).not.toContain("typing in");
+  });
+});
+
+describe("her status line", () => {
+  it("sets the status, refuses before start, and sets it again after a new login", async () => {
+    const fake = fakeClient();
+    const world = createDiscordWorld({
+      token: TOKEN,
+      ownerUserId: OWNER,
+      rooms: [GENERAL],
+      aliasesPath,
+      client: fake.client,
+    });
+    await expect(world.status?.("quiet")).rejects.toThrow("Discord is not connected (not started).");
+
+    const shelf = openShelf(join(dir, "media"));
+    await world.start(() => {}, shelfBody(shelf, () => Date.now()));
+    await world.status?.("quiet");
+    expect(fake.statuses).toEqual(["quiet"]);
+
+    await world.stop();
+    await world.start(() => {}, shelfBody(shelf, () => Date.now()));
+    expect(fake.statuses).toEqual(["quiet", "quiet"]);
+  });
+
+  it("says why Discord would not set the status, with no ids in the reason", async () => {
+    const { world, fake } = await startWorld();
+    fake.statusError = new Error(`bad status for ${OWNER}`);
+    await expect(world.status?.("quiet")).rejects.toThrow("Discord would not set the status: bad status for [id]");
+    expect(fake.statuses).toEqual([]);
+  });
+
+  it("names the portal switch when login is refused for the presence intent", async () => {
+    const fake = fakeClient();
+    fake.loginError = new Error("Used disallowed intents");
+    const world = createDiscordWorld({
+      token: TOKEN,
+      ownerUserId: OWNER,
+      rooms: [GENERAL],
+      aliasesPath,
+      client: fake.client,
+      presence: true,
+    });
+    await expect(world.start(() => {})).rejects.toThrow(
+      'Discord login failed: Discord refused the presence intent. Switch on Presence Intent for this bot in the Discord developer portal, or remove "presence" from discord.json.',
+    );
+  });
+});
 
 /** The local day as the world counts it. */
 function localDayOf(ms: number): string {

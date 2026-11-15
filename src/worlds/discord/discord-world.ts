@@ -6,18 +6,28 @@
 
 import { whenText } from "../../entity/when.js";
 import {
+  ActivityType,
   ChannelType,
   Client,
   Events,
   GatewayIntentBits,
   Partials,
   type Message,
+  type MessageReaction,
+  type PartialMessage,
+  type PartialMessageReaction,
+  type PartialUser,
+  type Presence,
   type SendableChannels,
+  type Typing,
+  type User,
+  type VoiceState,
 } from "discord.js";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { readContacts } from "../../entity/contacts.js";
-import type { Receipt, RiverSource, SayFile, Tool, World, WorldBody, WorldEvent } from "../../contracts.js";
+import type { Receipt, RiverSource, SayFile, Sense, Tool, World, WorldBody, WorldEvent } from "../../contracts.js";
+import { formatDuration } from "../../context/time-facts.js";
 import { PICTURE_BYTES_MAX } from "../../media/shelf.js";
 import { createAliasStore, OWNER_ALIAS, type AliasStore } from "./aliases.js";
 import { FILE_BYTES_MAX, saveFile, type FilesHome } from "./files.js";
@@ -84,12 +94,50 @@ export type PlatformMessage = {
   replyToMessageId: string | null;
 };
 
+export type PlatformReaction = {
+  channelId: string;
+  channelKind: "dm" | "room" | "other";
+  messageId: string;
+  /** The reacted message's author, fetched when the message was not cached. Null when it cannot be read. */
+  messageAuthorId: string | null;
+  userId: string;
+  userDisplayName: string;
+  userBot: boolean;
+  /** A unicode emoji as is; a custom emoji as :name:. */
+  emoji: string;
+  added: boolean;
+};
+
+export type PlatformEdit = PlatformMessage & { editedAtMs: number | null };
+
+export type PlatformPresence = {
+  userId: string;
+  status: "online" | "idle" | "dnd" | "offline";
+  /** The name of a Playing activity, or null. */
+  game: string | null;
+  /** A Listening activity named Spotify: details is the track, state the artist. Null otherwise. */
+  music: { track: string; artist: string } | null;
+};
+
+export type PlatformVoice = {
+  userId: string;
+  before: { channelName: string } | null;
+  after: { channelName: string; othersCount: number } | null;
+};
+
+export type PlatformTyping = { userId: string; channelId: string; channelKind: "dm" | "room" | "other" };
+
 export type PlatformClient = {
   /** Connect and resolve with the bot's own identity once ready. */
   login(token: string): Promise<{ id: string; displayName: string }>;
   logout(): Promise<void>;
   /** Every message the bot can see, unfiltered. The world decides what is in its places. */
   onMessage(handler: (message: PlatformMessage) => void): void;
+  onReaction(handler: (reaction: PlatformReaction) => void): void;
+  onEdit(handler: (edit: PlatformEdit) => void): void;
+  onPresence(handler: (presence: PlatformPresence) => void): void;
+  onVoice(handler: (voice: PlatformVoice) => void): void;
+  onTyping(handler: (typing: PlatformTyping) => void): void;
   /** A room by channel id: its name, or null when it cannot be seen. */
   fetchRoom(channelId: string): Promise<{ name: string } | null>;
   /** The direct-message channel with a user. */
@@ -106,6 +154,8 @@ export type PlatformClient = {
   react(channelId: string, messageId: string, emoji: string): Promise<void>;
   /** Most recent messages first. */
   history(channelId: string, limit: number): Promise<PlatformMessage[]>;
+  /** The Lar's own public status line, beside her name. */
+  setStatus(text: string): Promise<void>;
 };
 
 // ---------------------------------------------------------------------------------------------------
@@ -171,6 +221,8 @@ const PICTURE_FETCH_MS = 20_000;
 const OTHERS_PICTURES_PER_DAY = 50;
 /** A loop is a quick back-and-forth. Bots quiet in a channel this long are not in one, so a room of Lares alone is not held for good. */
 const BOT_QUIET_MS = 10 * 60 * 1000;
+/** Typing shows on the now board this long after the last keypress. */
+const TYPING_FRESH_MS = 10_000;
 
 /** One line in the body's log for a refused direct message, at most once an hour per author. Never the words or an id. */
 const REFUSED_DM_LOG = "[discord] a DM from someone who is not a contact was not admitted.";
@@ -222,7 +274,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
 
   const ownerAlias = options.ownerAlias ?? OWNER_ALIAS;
   const aliases: AliasStore = createAliasStore({ path: options.aliasesPath, ownerUserId: options.ownerUserId, ownerAlias });
-  const client: PlatformClient = options.client ?? createDiscordJsClient();
+  const client: PlatformClient = options.client ?? createDiscordJsClient({ presence: options.presence === true });
 
   let status: Status = "idle";
   let statusReason = "not started";
@@ -231,6 +283,20 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
   let handlersRegistered = false;
   let liveRoomSlugs: string[] = [];
   let unreachableRooms = 0;
+  /** The Lar's public status line, kept so a reconnect sets it again. */
+  let lastStatus: string | null = null;
+  /** The summoner's presence as last seen after login; null until the first presence event. */
+  let presenceState: {
+    status: PlatformPresence["status"];
+    game: { name: string; sinceMs: number } | null;
+    music: { track: string; artist: string } | null;
+  } | null = null;
+  /** The summoner's voice channel, for the now board. */
+  let voiceChannel: string | null = null;
+  /** Where the summoner was last seen typing, and when. */
+  let typingState: { place: string; atMs: number } | null = null;
+  /** The edit time last handled for each message id, oldest dropped first. */
+  const lastEditAtMs = new Map<string, number>();
 
   // Opaque refs for messages. They are kept in a file beside the aliases, so a ref the entity remembers
   // means the same message after a restart. Only the newest MAX_KEPT_REFS are kept; numbers are never reused.
@@ -505,6 +571,248 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     }
   }
 
+  /** The world is ready to take an event: starting or connected, with an identity and somewhere to send it. */
+  function liveWorld(): { emit: (event: WorldEvent) => void; self: { id: string; name: string } } | null {
+    if ((status !== "starting" && status !== "connected") || !self || !emitter) return null;
+    return { emit: emitter, self };
+  }
+
+  function ownerPlace(): string {
+    return `${PLACE_PREFIX}dm:${ownerAlias}`;
+  }
+
+  /** "with nobody else there", "with 1 other there", "with N others there". */
+  function othersPhrase(count: number): string {
+    if (count === 0) return "with nobody else there";
+    if (count === 1) return "with 1 other there";
+    return `with ${count} others there`;
+  }
+
+  function rememberEdit(messageId: string, editedAtMs: number): void {
+    lastEditAtMs.delete(messageId);
+    lastEditAtMs.set(messageId, editedAtMs);
+    while (lastEditAtMs.size > HANDLED_IDS_CAP) {
+      const oldest = lastEditAtMs.keys().next().value as string;
+      lastEditAtMs.delete(oldest);
+    }
+  }
+
+  function statusWord(value: PlatformPresence["status"]): string {
+    return value === "dnd" ? "do not disturb" : value;
+  }
+
+  /** A reaction makes a row only on a message she already has a ref for, in an admitted place. */
+  function handleReaction(reaction: PlatformReaction): void {
+    const live = liveWorld();
+    if (!live) return;
+    const ref = refOfMessage.get(`${reaction.channelId}|${reaction.messageId}`);
+    if (!ref) return;
+    if (reaction.channelKind === "room") {
+      if (!roomIds.has(reaction.channelId)) return;
+    } else if (reaction.channelKind === "dm") {
+      const isOwner = reaction.userId === options.ownerUserId;
+      if (!isOwner && !currentContacts().ids.includes(reaction.userId)) return;
+    } else {
+      return;
+    }
+    if (reaction.userId === live.self.id) return;
+    const isOwner = reaction.userId === options.ownerUserId;
+    const at = nowMs();
+    if (!isOwner && !admitGuest(`${reaction.channelId}|${reaction.userId}`, at)) return;
+
+    const actor = aliases.userAlias(reaction.userId, reaction.userDisplayName || "person");
+    const place =
+      reaction.channelKind === "dm"
+        ? `dm:${actor}`
+        : `room:${roomSlugOf(reaction.channelId, null)}`;
+    const mine = reaction.messageAuthorId === live.self.id;
+    const target = mine ? `your message ${ref}` : ref;
+    const text = reaction.added
+      ? `${actor} reacted ${reaction.emoji} to ${target}.`
+      : `${actor} took back ${reaction.emoji} on ${target}.`;
+    live.emit({
+      world: WORLD_ID,
+      place: `${PLACE_PREFIX}${place}`,
+      actor,
+      source: isOwner ? "owner" : "outside",
+      text,
+      atMs: at,
+      wake: false,
+      data: {
+        sense: { kind: "reaction", ref, emoji: reaction.emoji, mine, added: reaction.added },
+        messageRef: ref,
+      },
+    });
+  }
+
+  /** An edit makes a row only on a message she has a ref for, once per edit time. */
+  function handleEdit(edit: PlatformEdit): void {
+    const live = liveWorld();
+    if (!live) return;
+    const ref = refOfMessage.get(`${edit.channelId}|${edit.id}`);
+    if (!ref) return;
+    if (edit.editedAtMs === null) return;
+    if (lastEditAtMs.get(edit.id) === edit.editedAtMs) return;
+    if (edit.author.id === live.self.id) return;
+    const isOwner = edit.author.id === options.ownerUserId;
+    if (edit.channelKind === "room") {
+      if (!roomIds.has(edit.channelId)) return;
+    } else if (edit.channelKind === "dm") {
+      if (!isOwner && !currentContacts().ids.includes(edit.author.id)) return;
+    } else {
+      return;
+    }
+    const at = nowMs();
+    if (!isOwner && !admitGuest(`${edit.channelId}|${edit.author.id}`, at)) return;
+    rememberEdit(edit.id, edit.editedAtMs);
+
+    const actor = aliases.userAlias(edit.author.id, edit.author.displayName || "person");
+    const place =
+      edit.channelKind === "dm"
+        ? `dm:${actor}`
+        : `room:${roomSlugOf(edit.channelId, edit.channelName)}`;
+    live.emit({
+      world: WORLD_ID,
+      place: `${PLACE_PREFIX}${place}`,
+      actor,
+      source: isOwner ? "owner" : "outside",
+      text: `${actor} edited ${ref}: ${readable(edit.content, edit.mentionedUsers)}`,
+      atMs: at,
+      wake: !edit.author.bot,
+      data: { messageRef: ref, edited: true },
+    });
+  }
+
+  /** Only the summoner's presence, and only with the option on. The first one after login is the baseline. */
+  function handlePresence(presence: PlatformPresence): void {
+    const live = liveWorld();
+    if (!live) return;
+    if (presence.userId !== options.ownerUserId) return;
+    if (options.presence !== true) return;
+    const at = nowMs();
+    if (presenceState === null) {
+      presenceState = {
+        status: presence.status,
+        game: presence.game === null ? null : { name: presence.game, sinceMs: at },
+        music: presence.music,
+      };
+      return;
+    }
+
+    const previous = presenceState;
+    const rows: Array<{ text: string; sense: Sense }> = [];
+    if ((previous.game?.name ?? null) !== presence.game) {
+      if (previous.game !== null) {
+        rows.push({
+          text: `Your summoner stopped playing ${previous.game.name}.`,
+          sense: { kind: "game", game: previous.game.name, started: false },
+        });
+      }
+      if (presence.game !== null) {
+        rows.push({
+          text: `Your summoner started playing ${presence.game}.`,
+          sense: { kind: "game", game: presence.game, started: true },
+        });
+      }
+    }
+    if (previous.status !== presence.status) {
+      const next = presence.status;
+      if (next === "online") {
+        const cameOnline = previous.status === "offline";
+        rows.push({
+          text: cameOnline ? "Your summoner came online." : "Your summoner is back online.",
+          sense: { kind: "status", status: "online", cameOnline },
+        });
+      } else if (next === "idle") {
+        rows.push({ text: "Your summoner went idle.", sense: { kind: "status", status: "idle", cameOnline: false } });
+      } else if (next === "dnd") {
+        rows.push({ text: "Your summoner set do not disturb.", sense: { kind: "status", status: "dnd", cameOnline: false } });
+      } else {
+        rows.push({ text: "Your summoner went offline.", sense: { kind: "status", status: "offline", cameOnline: false } });
+      }
+    }
+
+    const game =
+      presence.game === null
+        ? null
+        : previous.game?.name === presence.game
+          ? previous.game
+          : { name: presence.game, sinceMs: at };
+    presenceState = { status: presence.status, game, music: presence.music };
+
+    for (const row of rows) {
+      live.emit({
+        world: WORLD_ID,
+        place: ownerPlace(),
+        actor: ownerAlias,
+        source: "body",
+        text: row.text,
+        atMs: at,
+        wake: false,
+        data: { sense: row.sense },
+      });
+    }
+  }
+
+  /** Only the summoner's voice state. Joins, leaves and moves are rows; a mute or deafen is nothing. */
+  function handleVoice(voice: PlatformVoice): void {
+    const live = liveWorld();
+    if (!live) return;
+    if (voice.userId !== options.ownerUserId) return;
+    const at = nowMs();
+    if (voice.before === null) {
+      if (voice.after === null) return;
+      voiceChannel = voice.after.channelName;
+      live.emit({
+        world: WORLD_ID,
+        place: ownerPlace(),
+        actor: ownerAlias,
+        source: "body",
+        text: `Your summoner joined the voice channel ${voice.after.channelName}, ${othersPhrase(voice.after.othersCount)}.`,
+        atMs: at,
+        wake: false,
+        data: { sense: { kind: "voice", joined: true } },
+      });
+      return;
+    }
+    if (voice.after === null) {
+      voiceChannel = null;
+      live.emit({
+        world: WORLD_ID,
+        place: ownerPlace(),
+        actor: ownerAlias,
+        source: "body",
+        text: `Your summoner left the voice channel ${voice.before.channelName}.`,
+        atMs: at,
+        wake: false,
+        data: { sense: { kind: "voice", joined: false } },
+      });
+      return;
+    }
+    voiceChannel = voice.after.channelName;
+    live.emit({
+      world: WORLD_ID,
+      place: ownerPlace(),
+      actor: ownerAlias,
+      source: "body",
+      text: `Your summoner moved to the voice channel ${voice.after.channelName}, ${othersPhrase(voice.after.othersCount)}.`,
+      atMs: at,
+      wake: false,
+    });
+  }
+
+  /** Only the summoner's typing, and only in an admitted place. It makes no row. */
+  function handleTyping(typing: PlatformTyping): void {
+    if (!liveWorld()) return;
+    if (typing.userId !== options.ownerUserId) return;
+    const at = nowMs();
+    if (typing.channelKind === "dm") {
+      typingState = { place: `dm:${ownerAlias}`, atMs: at };
+    } else if (typing.channelKind === "room" && roomIds.has(typing.channelId)) {
+      typingState = { place: `room:${roomSlugOf(typing.channelId, null)}`, atMs: at };
+    }
+  }
+
   /**
    * Takes one place in today's count for a picture from anyone but the summoner. It counts when it is asked for, kept or
    * not, so a burst cannot fetch past the day's limit. False when the day's limit is reached.
@@ -729,6 +1037,11 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       statusReason = "connecting";
       if (!handlersRegistered) {
         client.onMessage(handleMessage);
+        client.onReaction(handleReaction);
+        client.onEdit(handleEdit);
+        client.onPresence(handlePresence);
+        client.onVoice(handleVoice);
+        client.onTyping(handleTyping);
         handlersRegistered = true;
       }
       let identity: { id: string; displayName: string };
@@ -738,9 +1051,17 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
         const reason = cleanError(error);
         status = "failed";
         statusReason = `login failed: ${reason}`;
+        if (options.presence === true && /disallowed intents/i.test(reason)) {
+          throw new Error(
+            'Discord login failed: Discord refused the presence intent. Switch on Presence Intent for this bot in the Discord developer portal, or remove "presence" from discord.json.',
+          );
+        }
         throw new Error(`Discord login failed: ${reason}`);
       }
       self = { id: identity.id, name: identity.displayName || "Natalis" };
+      presenceState = null;
+      voiceChannel = null;
+      typingState = null;
       liveRoomSlugs = [];
       unreachableRooms = 0;
       for (const channelId of roomIds) {
@@ -760,6 +1081,13 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       }
       status = "connected";
       statusReason = "connected";
+      if (lastStatus !== null) {
+        try {
+          await client.setStatus(lastStatus);
+        } catch (error) {
+          console.error(`[discord] the status could not be set again after login: ${cleanError(error)}`);
+        }
+      }
     },
 
     async stop() {
@@ -839,6 +1167,16 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       return place === `${PLACE_PREFIX}dm:${ownerAlias}`;
     },
 
+    async status(text) {
+      if (status !== "connected" || !self) throw new Error(`Discord is not connected (${statusReason}).`);
+      lastStatus = text;
+      try {
+        await client.setStatus(text);
+      } catch (error) {
+        throw new Error(`Discord would not set the status: ${cleanError(error)}`);
+      }
+    },
+
     tools() {
       return [reactTool, readHistoryTool];
     },
@@ -853,9 +1191,29 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
 
     now() {
       if (status === "connected" && self) {
+        const at = nowMs();
         const places = [`dm:${ownerAlias}`, ...liveRoomSlugs.map((slug) => `room:${slug}`)];
         const missing = unreachableRooms > 0 ? ` ${unreachableRooms} room(s) not reachable.` : "";
-        return `Discord: connected as ${self.name}; places: ${places.join(", ")}.${missing} ${whoMayWrite()}`;
+        const first = `Discord: connected as ${self.name}; places: ${places.join(", ")}.${missing} ${whoMayWrite()}`;
+        const parts: string[] = [];
+        if (options.presence === true) {
+          if (presenceState === null) {
+            parts.push("presence not known yet");
+          } else {
+            parts.push(statusWord(presenceState.status));
+            if (presenceState.game !== null) {
+              parts.push(`playing ${presenceState.game.name} for ${formatDuration(at - presenceState.game.sinceMs)}`);
+            }
+            if (presenceState.music !== null) {
+              parts.push(`listening to ${presenceState.music.track} by ${presenceState.music.artist}`);
+            }
+          }
+        }
+        if (voiceChannel !== null) parts.push(`in the voice channel ${voiceChannel}`);
+        if (typingState !== null && at - typingState.atMs < TYPING_FRESH_MS) {
+          parts.push(`typing in ${typingState.place} now`);
+        }
+        return parts.length === 0 ? first : `${first}\nYour summoner: ${parts.join(", ")}.`;
       }
       return `Discord: not connected (${statusReason}).`;
     },
@@ -1169,15 +1527,89 @@ function toPlatformMessage(message: Message): PlatformMessage {
   };
 }
 
-export function createDiscordJsClient(): PlatformClient {
+function logDropped(what: string, error: unknown): void {
+  const reason = error instanceof Error ? error.message : String(error);
+  console.error(`[discord] ${what}: ${reason}`);
+}
+
+async function fetchedMessage(message: Message | PartialMessage): Promise<Message> {
+  return message.partial ? await message.fetch() : (message as Message);
+}
+
+async function toPlatformReaction(
+  reaction: MessageReaction | PartialMessageReaction,
+  user: User | PartialUser,
+  added: boolean,
+): Promise<PlatformReaction | null> {
+  try {
+    const full = reaction.partial ? await reaction.fetch() : (reaction as MessageReaction);
+    const message = await fetchedMessage(full.message);
+    const base = toPlatformMessage(message);
+    return {
+      channelId: base.channelId,
+      channelKind: base.channelKind,
+      messageId: base.id,
+      messageAuthorId: message.author?.id ?? null,
+      userId: user.id,
+      userDisplayName: user.displayName || user.username || "person",
+      userBot: user.bot ?? false,
+      emoji: full.emoji.id ? `:${full.emoji.name ?? "emoji"}:` : (full.emoji.name ?? ""),
+      added,
+    };
+  } catch (error) {
+    logDropped("a reaction could not be read", error);
+    return null;
+  }
+}
+
+function toPlatformPresence(presence: Presence): PlatformPresence {
+  const status: PlatformPresence["status"] =
+    presence.status === "online" || presence.status === "idle" || presence.status === "dnd" ? presence.status : "offline";
+  const game = presence.activities.find((activity) => activity.type === ActivityType.Playing);
+  const spotify = presence.activities.find((activity) => activity.type === ActivityType.Listening && activity.name === "Spotify");
+  return {
+    userId: presence.userId,
+    status,
+    game: game ? game.name : null,
+    music: spotify ? { track: spotify.details ?? "", artist: spotify.state ?? "" } : null,
+  };
+}
+
+function toPlatformVoice(before: VoiceState, after: VoiceState): PlatformVoice | null {
+  if (before.channelId === after.channelId) return null;
+  const beforeChannel = before.channel;
+  const afterChannel = after.channel;
+  const othersCount =
+    afterChannel === null ? 0 : afterChannel.members.size - (afterChannel.members.has(after.id) ? 1 : 0);
+  return {
+    userId: after.id,
+    before: beforeChannel ? { channelName: beforeChannel.name } : null,
+    after: afterChannel ? { channelName: afterChannel.name, othersCount } : null,
+  };
+}
+
+function toPlatformTyping(typing: Typing): PlatformTyping {
+  const channel = typing.channel;
+  const channelKind: PlatformTyping["channelKind"] =
+    channel.type === ChannelType.DM ? "dm" : channel.type === ChannelType.GuildText ? "room" : "other";
+  return { userId: typing.user.id, channelId: channel.id, channelKind };
+}
+
+export function createDiscordJsClient(options: { presence: boolean }): PlatformClient {
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.DirectMessages,
       GatewayIntentBits.MessageContent,
+      GatewayIntentBits.GuildMessageReactions,
+      GatewayIntentBits.DirectMessageReactions,
+      GatewayIntentBits.GuildVoiceStates,
+      GatewayIntentBits.GuildMessageTyping,
+      GatewayIntentBits.DirectMessageTyping,
+      ...(options.presence ? [GatewayIntentBits.GuildPresences] : []),
     ],
-    partials: [Partials.Channel],
+    partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User],
   });
 
   async function sendable(channelId: string): Promise<SendableChannels> {
@@ -1201,6 +1633,44 @@ export function createDiscordJsClient(): PlatformClient {
     },
     onMessage(handler) {
       client.on(Events.MessageCreate, (message) => handler(toPlatformMessage(message)));
+    },
+    onReaction(handler) {
+      client.on(Events.MessageReactionAdd, (reaction, user) => {
+        void toPlatformReaction(reaction, user, true).then((mapped) => {
+          if (mapped) handler(mapped);
+        });
+      });
+      client.on(Events.MessageReactionRemove, (reaction, user) => {
+        void toPlatformReaction(reaction, user, false).then((mapped) => {
+          if (mapped) handler(mapped);
+        });
+      });
+    },
+    onEdit(handler) {
+      client.on(Events.MessageUpdate, (_old, message) => {
+        void (async () => {
+          let full: Message;
+          try {
+            full = await fetchedMessage(message);
+          } catch (error) {
+            logDropped("an edit could not be read", error);
+            return;
+          }
+          handler({ ...toPlatformMessage(full), editedAtMs: full.editedTimestamp ?? null });
+        })();
+      });
+    },
+    onPresence(handler) {
+      client.on(Events.PresenceUpdate, (_old, presence) => handler(toPlatformPresence(presence)));
+    },
+    onVoice(handler) {
+      client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+        const voice = toPlatformVoice(oldState, newState);
+        if (voice) handler(voice);
+      });
+    },
+    onTyping(handler) {
+      client.on(Events.TypingStart, (typing) => handler(toPlatformTyping(typing)));
     },
     async fetchRoom(channelId) {
       const channel = await client.channels.fetch(channelId);
@@ -1231,6 +1701,14 @@ export function createDiscordJsClient(): PlatformClient {
       const channel = await sendable(channelId);
       const page = await channel.messages.fetch({ limit });
       return [...page.values()].map(toPlatformMessage);
+    },
+    async setStatus(text) {
+      const user = client.user;
+      if (!user) throw new Error("not connected");
+      user.setPresence({
+        status: "online",
+        activities: [{ type: ActivityType.Custom, name: "Custom Status", state: text }],
+      });
     },
   };
 }

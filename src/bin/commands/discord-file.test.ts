@@ -29,4 +29,19 @@ describe("discord.json's window", () => {
       'Unknown field "channel" in discord.json. Allowed: tokenEnv, ownerUserId, rooms, window, presence.',
     );
   });
+
+  it("keeps presence true when it is on", () => {
+    expect(parseDiscordFile({ tokenEnv: "TEST_BOT_TOKEN", ownerUserId: "1234", presence: true })).toEqual({
+      tokenEnv: "TEST_BOT_TOKEN",
+      ownerUserId: "1234",
+      rooms: [],
+      presence: true,
+    });
+  });
+
+  it("refuses a presence that is not true or false", () => {
+    expect(() => parseDiscordFile({ tokenEnv: "TEST_BOT_TOKEN", ownerUserId: "1234", presence: "yes" })).toThrow(
+      "discord.json: presence must be true or false.",
+    );
+  });
 });
