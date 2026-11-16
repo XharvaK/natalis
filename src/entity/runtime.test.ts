@@ -5026,6 +5026,35 @@ describe("messages that come in during a turn", () => {
     expect(second).not.toContain("A passer-by says hi.");
     // The next turn here shows the message again under New.
     expect(userTextOf(model.requests.at(-1))).toMatch(/New:[^]*One more thing, while you think\./);
+    // No game view came in during this turn, so the arrivals line says nothing about one.
+    expect(second).not.toContain("The game's view changed since this turn began");
+  });
+
+  it("names the game's view when a new one comes in mid-turn", async () => {
+    let entity: Entity | undefined;
+    const model = new ScriptedModel([
+      async () => {
+        entity?.river.append({
+          thread: "domus:slot8",
+          kind: "event",
+          source: "outside",
+          text: "A view.\nThe game is running.",
+          data: { view: "domus:game" },
+        });
+        return reply({ toolCalls: [call("say", { place: "cli:summoner", text: "On it." })] });
+      },
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const opened = await open(model);
+    entity = opened.entity;
+    await entity.start();
+
+    opened.cli.send("Hello, Iris.");
+    await entity.idle();
+
+    const second = lastUserText(model.requests[1]);
+    expect(second).toContain("The game's view changed since this turn began");
+    expect(second).toContain("game_act works on the newest view: look again with game_look before you choose a ref.");
   });
 });
 
