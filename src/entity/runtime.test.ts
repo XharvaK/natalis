@@ -5026,6 +5026,35 @@ describe("messages that come in during a turn", () => {
     expect(second).not.toContain("A passer-by says hi.");
     // The next turn here shows the message again under New.
     expect(userTextOf(model.requests.at(-1))).toMatch(/New:[^]*One more thing, while you think\./);
+    // No game view came in during this turn, so the arrivals line says nothing about one.
+    expect(second).not.toContain("The game's view changed since this turn began");
+  });
+
+  it("names the game's view when a new one comes in mid-turn", async () => {
+    let entity: Entity | undefined;
+    const model = new ScriptedModel([
+      async () => {
+        entity?.river.append({
+          thread: "domus:slot8",
+          kind: "event",
+          source: "outside",
+          text: "A view.\nThe game is running.",
+          data: { view: "domus:game" },
+        });
+        return reply({ toolCalls: [call("say", { place: "cli:summoner", text: "On it." })] });
+      },
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const opened = await open(model);
+    entity = opened.entity;
+    await entity.start();
+
+    opened.cli.send("Hello, Iris.");
+    await entity.idle();
+
+    const second = lastUserText(model.requests[1]);
+    expect(second).toContain("The game's view changed since this turn began");
+    expect(second).toContain("game_act works on the newest view: look again with game_look before you choose a ref.");
   });
 });
 
@@ -6035,6 +6064,32 @@ describe("the mood line is public", () => {
     const second = await open(new ScriptedModel([]), { nowMs: () => NOW + 60_000, stopPollMs: 1e9 }, [secondStatus.world]);
     await second.entity.start();
     expect(secondStatus.statuses).toEqual(["bright"]);
+  });
+
+  it("does not send a shown mood with a privacy-list word again at start", async () => {
+    const firstStatus = statusWorld("discord");
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("set_mood", { text: "bright by the harbour" }), call("end_turn")] }),
+    ]);
+    const first = await open(model, { nowMs: () => NOW }, [firstStatus.world]);
+    await first.entity.start();
+    first.cli.send("Set it.");
+    await first.entity.idle();
+    expect(firstStatus.statuses).toEqual(["bright by the harbour"]);
+    await first.entity.stop();
+
+    writeFileSync(join(dir, "privacy.json"), JSON.stringify({ terms: [{ term: "harbour", category: "home" }] }), "utf8");
+
+    const secondStatus = statusWorld("discord");
+    const second = await open(new ScriptedModel([]), { nowMs: () => NOW + 60_000, stopPollMs: 1e9 }, [secondStatus.world]);
+    await second.entity.start();
+    await second.entity.idle();
+
+    expect(secondStatus.statuses).toEqual([]);
+    const note = noteRows(second.entity).find(
+      (row) => row.data?.["held"] === "privacy" && row.data?.["place"] === "status",
+    );
+    expect(note).toBeDefined();
   });
 });
 

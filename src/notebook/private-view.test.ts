@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Notebook, NotebookEntry } from "../contracts.js";
+import { openNotebook } from "./git-notebook.js";
 import { withoutPrivate } from "./private-view.js";
 
 function fake(): Notebook {
@@ -24,5 +28,47 @@ describe("withoutPrivate", () => {
     expect(view.search("words").map((h) => h.path)).toEqual(["self/a.md"]);
     expect(view.read("private/b.md")).toBeNull();
     expect(view.read("self/a.md")).toBe("open words");
+  });
+});
+
+const hiddenPaths = ["private/diary.md", "./private/diary.md", ".//private/diary.md", "self/../private/a.md", "private"];
+
+describe("withoutPrivate over a real notebook (B-1)", () => {
+  let dir: string;
+  let nb: Notebook;
+
+  beforeEach(async () => {
+    dir = mkdtempSync(path.join(tmpdir(), "natalis-private-view-"));
+    nb = await openNotebook(path.join(dir, "entity"));
+    await nb.write("private/diary.md", "Dear diary, close words.\n", "Keep a diary", "body");
+    await nb.write("notes/privateer.md", "open words\n", "Keep a note on the privateer", "body");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+  });
+
+  it("reads null for a private path however it is spelled", () => {
+    const view = withoutPrivate(nb);
+    for (const p of hiddenPaths) expect(view.read(p)).toBeNull();
+  });
+
+  it("gives no line times for a private path however it is spelled", () => {
+    const view = withoutPrivate(nb);
+    if (view.lineTimes) {
+      for (const p of hiddenPaths) expect(view.lineTimes(p)).toBeNull();
+    }
+  });
+
+  it("still reads an open note spelled with ./", () => {
+    const view = withoutPrivate(nb);
+    expect(view.read("notes/privateer.md")).toContain("open words");
+    expect(view.read("./notes/privateer.md")).toContain("open words");
+  });
+
+  it("lists no path that starts with private", () => {
+    const view = withoutPrivate(nb);
+    const paths = view.list().map((entry) => entry.path);
+    expect(paths.some((p) => p.startsWith("private"))).toBe(false);
   });
 });
