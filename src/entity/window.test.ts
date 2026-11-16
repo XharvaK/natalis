@@ -150,6 +150,33 @@ describe("the window's lines", () => {
   });
 });
 
+describe("NB-1 private paths", () => {
+  it("hides a call whose path is private, with or without a slash, and whatever the escape", async () => {
+    const { win, shown } = windowWith();
+    win.row(turnStart("t1"));
+    win.row(toolCall("t1", "c1", "read_note", '{"path":"private"}'));
+    win.row(receipt("t1", "c1", "secret listing"));
+    win.row(toolCall("t1", "c2", "read_note", '{"path":"\\u0070rivate/diary.md"}'));
+    win.row(receipt("t1", "c2", "Dear diary"));
+    win.row(toolCall("t1", "c3", "read_note", '{"path":"private/diary.md"}'));
+    win.row(receipt("t1", "c3", "Dear diary, kept close."));
+    win.row(toolCall("t1", "c4", "read_note", '{"path":"notes/privateer.md"}'));
+    win.row(receipt("t1", "c4", "A note anyone may read."));
+    win.row(turnEnd("t1"));
+    await win.flush();
+    const batch = shown.join("\n");
+    expect(batch).toContain("does: read_note (in private/, not shown)");
+    expect(batch).toContain("  -> (not shown)");
+    expect(batch).not.toContain("secret listing");
+    expect(batch).not.toContain('{"path":"private"}');
+    expect(batch).not.toContain("u0070");
+    expect(batch).not.toContain("diary.md");
+    expect(batch).not.toContain("Dear diary");
+    expect(batch).toContain('does: read_note {"path":"notes/privateer.md"}');
+    expect(batch).toContain("  -> A note anyone may read.");
+  });
+});
+
 describe("sending", () => {
   it("sends three rows inside the flush time as one call, in order", async () => {
     const show = vi.fn(async () => {});
