@@ -4093,6 +4093,28 @@ describe("the daily rhythm", () => {
     });
   });
 
+  it("names the memory tools on a wake the Lar set for itself too", async () => {
+    await withClock(async (advance) => {
+      vi.setSystemTime(Date.parse("2026-10-11T10:00:00Z"));
+      const model = new ScriptedModel([
+        reply({ toolCalls: [call("schedule_wake", { in_minutes: 1, why: "check the kettle" }, "w1")] }),
+        reply({ toolCalls: [call("end_turn")] }),
+        reply({ toolCalls: [call("end_turn")] }),
+      ]);
+      const { entity, cli } = await open(model, { stopPollMs: 1e9 });
+      await entity.start();
+      cli.send("Wake yourself later.");
+      await entity.idle();
+      await advance(60_000);
+      await entity.idle();
+
+      const fired = allRows(entity).find((row) => row.thread === "self" && row.text?.startsWith("Your wake:"));
+      expect(fired?.text).toContain("check the kettle");
+      expect(fired?.text).toContain(MEMORY_TOOLS_LINE);
+      expect((fired?.text ?? "").split(MEMORY_TOOLS_LINE)).toHaveLength(2);
+    });
+  });
+
   it("is not given again after the Lar cancels its rhythm and starts again", async () => {
     const { entity } = await open(new ScriptedModel([]), { nowMs: () => NOW, config: RHYTHM_CONFIG });
     await entity.start();
