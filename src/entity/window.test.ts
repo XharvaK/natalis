@@ -177,6 +177,26 @@ describe("NB-1 private paths", () => {
   });
 });
 
+describe("NB-2 hidden turns", () => {
+  it("hides every later call and receipt of a turn that opened private/, until the turn ends", async () => {
+    const { win, shown } = windowWith();
+    win.row(turnStart("t1"));
+    win.row(toolCall("t1", "c1", "read_note", '{"path":"private/diary.md"}'));
+    win.row(receipt("t1", "c1", "Dear diary, the secret words."));
+    win.row(toolCall("t1", "c2", "write_note", '{"path":"notes/public.md","text":"Dear diary, the secret words."}'));
+    win.row(receipt("t1", "c2", "Wrote notes/public.md: Dear diary, the secret words."));
+    win.row(turnEnd("t1"));
+    win.row(turnStart("t2"));
+    win.row(toolCall("t2", "c3", "read_note", '{"path":"notes/today.md"}'));
+    win.row(receipt("t2", "c3", "Read the note."));
+    await win.flush();
+    const batch = shown.join("\n");
+    expect(batch).not.toContain("secret words");
+    expect(batch).toContain("does: write_note (not shown: this turn opened private/)");
+    expect(batch).toContain('does: read_note {"path":"notes/today.md"}');
+  });
+});
+
 describe("sending", () => {
   it("sends three rows inside the flush time as one call, in order", async () => {
     const show = vi.fn(async () => {});
