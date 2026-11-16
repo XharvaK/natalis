@@ -257,6 +257,27 @@ describe("game_list acts on one object (D3)", () => {
     expect(text).toContain("- Call Test Friend: left out: it is not on your phone list");
   });
 
+  it("gives the helper's own excluded codes their words, and takes a left_out line's words for an unknown code (N-5)", async () => {
+    observe([{
+      ...TOILET,
+      excluded: [
+        { text: "thing_Clean", reason: "PIE_PICKER" },
+        { text: "Sit", reason: "FOLDED" },
+        { text: "Odd", reason: "NEW_CODE" },
+      ],
+      left_out: [
+        "thing Clean: left out: it opens a menu of choices, not an act",
+        "Odd: left out: the helper's own words",
+      ],
+    }]);
+    const receipt = await list({ what: "acts", object: "Test toilet upstairs" });
+    const text = receipt.summary ?? "";
+    expect((text.match(/thing_Clean: left out: it opens a menu of choices, not an act/g) ?? []).length).toBe(1);
+    expect(text).toContain("Sit: left out: the same words as another act here");
+    expect(text).toContain("Odd: left out: the helper's own words");
+    expect(text).not.toContain("did not give a reason in words");
+  });
+
   it("names an act the view hides after a refusal as left out now, not as offered", async () => {
     const refuse = (objectId: string, guid64: string, ref: string, n: number) => {
       const actId = `act-${objectId}-${guid64}-${n}`;
