@@ -108,9 +108,9 @@ function fileStamp(path: string): string | undefined {
   }
 }
 
-/** The form words are compared in: compatibility letters folded, case folded, spaces collapsed. */
+/** The form words are compared in: compatibility letters folded, format characters dropped, case folded, spaces collapsed. */
 export function holdForm(text: string): string {
-  return text.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
+  return text.normalize("NFKC").replace(/\p{Default_Ignorable_Code_Point}/gu, "").toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 /**
