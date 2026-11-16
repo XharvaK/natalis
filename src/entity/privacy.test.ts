@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createPrivacyWatch,
   EMPTY_PRIVACY_LIST,
+  holdForm,
   parsePrivacyList,
   privacyCategories,
   privacyHit,
@@ -115,6 +116,18 @@ describe("matching a say against the list", () => {
 
   it("matches a phrase with its spaces collapsed", () => {
     expect(privacyHit("by   Lantern\nYard", LIST)?.term).toBe("Lantern Yard");
+  });
+
+  it("matches a term with a format character inside it", () => {
+    expect(privacyHit("I live near Lan\u200Btern Yard.", LIST)?.term).toBe("Lantern Yard");
+    expect(privacyHit("Lan\u00ADtern Yard", LIST)?.term).toBe("Lantern Yard");
+    expect(privacyHit("Lantern\u2060 Yard", LIST)?.term).toBe("Lantern Yard");
+    expect(privacyHit("Lanterns Yardley", LIST)).toBeUndefined();
+    expect(privacyHit("Lantern Yard", LIST)?.term).toBe("Lantern Yard");
+  });
+
+  it("drops format characters when it folds text for comparison", () => {
+    expect(holdForm("A\u200BB\uFEFFc")).toBe("abc");
   });
 
   it("answers with the first matching term in list order, as the owner wrote it", () => {
