@@ -3377,22 +3377,24 @@ class Runtime implements Entity {
 
   /**
    * What came in from outside since a turn's snapshot, for the line its next model call shows: this thread's messages in
-   * full, the last few of them, and a count for each other thread. Game views are left out: the game's newest view is
-   * read with its own tools. Undefined when nothing came in.
+   * full, the last few of them, and a count for each other thread. Game views are left out of those lines: the game's
+   * newest view is read with its own tools. A new view gets one line at the end, since game_act works on the newest view.
+   * Undefined when nothing came in.
    */
   private arrivedSince(thread: string, snapshot: number): string | undefined {
     let rows: RiverRow[];
+    let views: RiverRow[];
     try {
-      rows = this.river
-        .read({ kinds: ["event"], sinceSeq: snapshot, limit: ALL_ROWS })
-        .filter((row) => (row.source === "owner" || row.source === "outside") && viewKeyOf(row) === undefined);
+      const since = this.river.read({ kinds: ["event"], sinceSeq: snapshot, limit: ALL_ROWS });
+      views = since.filter((row) => viewKeyOf(row) !== undefined);
+      rows = since.filter((row) => (row.source === "owner" || row.source === "outside") && viewKeyOf(row) === undefined);
     } catch (err) {
       return `Could not check for messages that came in during this turn: ${messageOf(err)}`;
     }
     const here = rows.filter((row) => row.thread === thread && !this.hiddenHere(row, thread));
     const elsewhere = new Map<string, number>();
     for (const row of rows) if (row.thread !== thread) elsewhere.set(row.thread, (elsewhere.get(row.thread) ?? 0) + 1);
-    if (here.length === 0 && elsewhere.size === 0) return undefined;
+    if (here.length === 0 && elsewhere.size === 0 && views.length === 0) return undefined;
     const lines: string[] = [];
     if (here.length > 0) {
       const shown = here.slice(-ARRIVED_SHOWN);
@@ -3404,6 +3406,10 @@ class Runtime implements Entity {
     if (elsewhere.size > 0) {
       const counts = [...elsewhere].map(([place, n]) => `${place} (${n} ${n === 1 ? "message" : "messages"})`);
       lines.push(`New elsewhere since this turn began: ${counts.join(", ")}. Each place gets its own turn after this one.`);
+    }
+    if (views.length > 0) {
+      const newest = views[views.length - 1]!;
+      lines.push(`The game's view changed since this turn began (newest seen at ${this.stamp(newest.atMs).slice(-5)}). game_act works on the newest view: look again with game_look before you choose a ref.`);
     }
     return lines.join("\n");
   }
