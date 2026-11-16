@@ -426,6 +426,24 @@ describe("applying", () => {
     });
   });
 
+  it("writes state.json even when a stale state.json.tmp folder is in the folder", async () => {
+    const dir = join(root, "stale-temp");
+    mkdirSync(dir, { recursive: true });
+    // A crashed write can leave a folder under the temp name; the write must not need that name.
+    mkdirSync(join(dir, `${STATE_FILE}.tmp`));
+    const outcome = await runImport({ dir, bundleDir: writeBundle(), apply: true, skipRefused: false });
+    expect(outcome.applied).toBe(true);
+    const state = JSON.parse(readFileSync(join(dir, STATE_FILE), "utf8")) as Record<string, unknown>;
+    expect(state).toMatchObject({
+      lastSeq: 5,
+      threads: { "cli:owner": { seenSeq: 5 }, "room:harbour": { seenSeq: 5 } },
+      asks: [],
+      wakes: [],
+      mood: null,
+      lastOwnerMs: T0,
+    });
+  });
+
   it("starts with no scripted replies and runs no turn: imported history never starts a turn", async () => {
     const dir = join(root, "started");
     await runImport({ dir, bundleDir: writeBundle({ notes: { "people/mara.md": "Mara.\n", "self/constitution.md": "Mine.\n" } }), apply: true, skipRefused: false });

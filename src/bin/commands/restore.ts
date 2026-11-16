@@ -7,7 +7,7 @@
 // with the backup's time. The env file that holds its keys is not in the backup and is kept on the host beside the
 // folder.
 
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import { FOLDER_HASH_KEY, folderHash } from "../../entity/copy-guard.js";
@@ -15,6 +15,7 @@ import { GRANTS_FILE, grantsPath, openGrants } from "../../entity/grants.js";
 import { acquireLarLock, LAR_LOCK_DATABASE_FILE, LAR_LOCK_INFO_FILE, type LarLock } from "../../entity/lar-lock.js";
 import { STATE_FILE } from "../../entity/runtime.js";
 import { writeStop } from "../../entity/stop.js";
+import { writeFileAtomic } from "../../fsutil/write-atomic.js";
 import { NOTEBOOK_DIR, RIVER_FILE } from "../../import/folder.js";
 import { openRiver } from "../../river/index.js";
 import {
@@ -173,9 +174,7 @@ function recordRestoredFolder(dir: string): void {
   if (!existsSync(statePath)) return;
   const state = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>;
   state[FOLDER_HASH_KEY] = folderHash(dir);
-  const tmp = `${statePath}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, "utf8");
-  renameSync(tmp, statePath);
+  writeFileAtomic(statePath, `${JSON.stringify(state, null, 2)}\n`);
 }
 
 /**

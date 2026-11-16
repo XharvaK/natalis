@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { OrganError, type OrganCaller, type OrganReady, type OrganReply } from "./organ-client.js";
 import { oggPage, readOggOpus, waveform, writeOggOpus } from "./ogg.js";
 import {
@@ -214,8 +214,25 @@ describe("make", () => {
     const voice = createVoiceMessages(fake, SETTINGS);
     const error = voiceError(await rejection(voice.make("Hello there.")));
     expect(error.kind).toBe("organ");
-    expect(error.message).toBe("your voice organ failed: no voice model");
+    expect(error.message).toBe("your voice organ failed");
     expect(fake.calls.map((entry) => entry.header["op"])).toEqual(["speak", "flush"]);
+  });
+
+  it("keeps an organ error's own words in the host log, not in the reason", async () => {
+    const fake = new FakeOrgan();
+    fake.speakError = new OrganError("Traceback: /home/x/organ.py line 9 secret-detail", "failed");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const voice = createVoiceMessages(fake, SETTINGS);
+      const error = voiceError(await rejection(voice.make("Hello there.")));
+      expect(error.kind).toBe("organ");
+      expect(error.message).toBe("your voice organ failed");
+      expect(error.message).not.toContain("Traceback");
+      expect(error.message).not.toContain("secret-detail");
+      expect(logged).toHaveBeenCalledWith("natalis: the voice organ failed: Traceback: /home/x/organ.py line 9 secret-detail");
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   it("takes a resting OrganError as resting", async () => {

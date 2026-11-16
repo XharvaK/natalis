@@ -5,6 +5,7 @@
 
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { isIP } from "node:net";
 import { join } from "node:path";
 import { writeFileAtomic } from "../../fsutil/write-atomic.js";
 
@@ -24,10 +25,13 @@ export function validVaultName(name: string): boolean {
  * subdomain of it, so a value kept for api.example.org never goes to example.org, but a value kept for example.org may
  * go to api.example.org and www.example.org. A value kept for www.example.org goes to www.example.org, its subdomains,
  * and the bare example.org; never to another subdomain of example.org (the "www." is not dropped from the bound host).
+ * A value kept for an IP address goes only to that same address, because a name is not a subdomain of an IP.
  */
 export function hostsMatch(requestHost: string, boundHost: string): boolean {
-  const a = requestHost.toLowerCase().replace(/\.+$/, "");
-  const b = boundHost.toLowerCase().replace(/\.+$/, "");
+  const bare = (host: string): string => (host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host);
+  const a = bare(requestHost.toLowerCase().replace(/\.+$/, ""));
+  const b = bare(boundHost.toLowerCase().replace(/\.+$/, ""));
+  if (isIP(b) !== 0) return a === b;
   if (a === b || a.endsWith(`.${b}`)) return true;
   return b.startsWith("www.") && a === b.slice(4);
 }

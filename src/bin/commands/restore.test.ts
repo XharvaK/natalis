@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FOLDER_HASH_KEY, folderHash } from "../../entity/copy-guard.js";
 import type { EntityConfig } from "../../entity/config.js";
 import { ANYWHERE, GRANTS_FILE, grantsPath, openGrants } from "../../entity/grants.js";
 import { acquireLarLock, LAR_LOCK_BUSY_MESSAGE, LAR_LOCK_DATABASE_FILE, LAR_LOCK_INFO_FILE } from "../../entity/lar-lock.js";
@@ -153,6 +154,22 @@ describe("natalis restore", () => {
     await restored.start();
     await restored.stop();
     running.length = 0;
+  }, 60_000);
+
+  it("writes the restored state even when a stale state.json.tmp folder is in the target", async () => {
+    const lar = join(root, "iris");
+    const backup = await backupOf(lar);
+    const target = join(root, "restored", "iris");
+    // The target must be empty when a restore starts, so the stale temp name is planted once the restore is past that
+    // check. A crashed write can leave a folder under the temp name; the write must not need that name.
+    const say = (line: string): void => {
+      if (line.endsWith(" files.")) mkdirSync(join(target, "state.json.tmp"), { recursive: true });
+    };
+
+    await restoreEntity({ from: backup, dir: target, say });
+
+    const state = JSON.parse(readFileSync(join(target, "state.json"), "utf8")) as Record<string, unknown>;
+    expect(state[FOLDER_HASH_KEY]).toBe(folderHash(target));
   }, 60_000);
 
   it("carries the worlds' things: world files, the home without caches or env names, the game's database", async () => {
