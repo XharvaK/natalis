@@ -229,12 +229,50 @@ function actPlace(object: OptionObject): string {
   return kept.length ? ` (${kept.join("; ")})` : "";
 }
 
+/** The reason she prints when the game's side sent a code she has no words for. */
+const NO_REASON_IN_WORDS = "the game's side did not give a reason in words";
+
+/**
+ * The helper's own words for the reason codes it sends beside an excluded act. It sends them in upper case, and these are
+ * exactly the words of its left_out lines, so she says the same thing the helper does.
+ */
+const EXCLUDED_CODE_WORDS: Readonly<Record<string, string>> = {
+  PIE_PICKER: "it opens a menu of choices, not an act",
+  DENY_NAME: "a debug, cheat or test act",
+  TRAVEL: "it can take you off the lot",
+  NOT_USER_DIRECTED: "only the game starts it, not you",
+  MENU_HIDDEN: "the game keeps it out of your menu",
+  SOCIAL: "it is a social act, not an action on this thing",
+  PICKER: "it opens a picker, not an act",
+  FOLDED: "the same words as another act here",
+  CAP: "the menu is full",
+  NO_NAME: "the game gives it no name",
+  NO_GUID: "the game gives it no id",
+  PIE_EMPTY: "it has no choices now",
+  GAME_REFUSED: "the game refused it",
+  PHONE: "it is one of your phone's acts",
+  POSTURE_SOURCE: "it only changes how you stand or sit",
+};
+
 /** The plain words of an excluded act's reason code; a code it does not know is never shown as a bare code. */
 function excludedReason(reason: unknown): string {
   if (typeof reason !== "string" || reason.trim() === "") return "the game's side did not give a reason";
   const code = reason.trim();
-  if (Object.hasOwn(DETAIL_WORDS, code)) return DETAIL_WORDS[code] ?? "the game's side did not give a reason";
-  return wordsOfCode(code) ?? "the game's side did not give a reason in words";
+  if (Object.hasOwn(DETAIL_WORDS, code)) return DETAIL_WORDS[code] ?? NO_REASON_IN_WORDS;
+  const upper = code.toUpperCase();
+  if (Object.hasOwn(EXCLUDED_CODE_WORDS, upper)) return EXCLUDED_CODE_WORDS[upper] ?? NO_REASON_IN_WORDS;
+  const lower = code.toLowerCase();
+  if (Object.hasOwn(DETAIL_WORDS, lower)) return DETAIL_WORDS[lower] ?? NO_REASON_IN_WORDS;
+  return wordsOfCode(code) ?? NO_REASON_IN_WORDS;
+}
+
+/** The words after ": left out:" in a left_out line, or undefined when the line has none. */
+function leftOutWords(line: string): string | undefined {
+  const mark = ": left out:";
+  const at = line.toLowerCase().indexOf(mark);
+  if (at === -1) return undefined;
+  const words = line.slice(at + mark.length).trim();
+  return words === "" ? undefined : words;
 }
 
 /** A comparable act name: underscores in the probe's name are the spaces she reads. */
@@ -262,18 +300,29 @@ export function actsOnAnswer(objects: readonly OptionObject[], hidden: readonly 
     for (const act of actsOf(object)) lines.push(actLine(act, hiddenHere.has(act.ref)));
     if (lines.length === 1) lines.push("- The newest view shows no act on it.");
     for (const line of object.refused ?? []) if (typeof line === "string" && line !== "") lines.push(`- ${dropTokens(line)}`);
+    const leftOutSaid = new Map<string, string>();
+    const leftOutLines: string[] = [];
+    for (const line of object.left_out ?? []) {
+      if (typeof line !== "string" || line === "") continue;
+      const words = dropTokens(line);
+      const key = actNameKey(leftOutName(words));
+      const said = leftOutWords(words);
+      if (said !== undefined && !leftOutSaid.has(key)) leftOutSaid.set(key, said);
+      leftOutLines.push(words);
+    }
     const excludedNames = new Set<string>();
     const excludedLines: string[] = [];
     for (const entry of object.excluded ?? []) {
       const text = typeof entry?.text === "string" ? dropTokens(entry.text) : "";
       if (text === "") continue;
-      excludedNames.add(actNameKey(text));
+      const key = actNameKey(text);
+      excludedNames.add(key);
       const ref = typeof entry.ref === "string" && entry.ref !== "" ? `${entry.ref} ` : "";
-      excludedLines.push(`- ${ref}${text}: left out: ${excludedReason(entry.reason)}`);
+      const known = excludedReason(entry.reason);
+      const reason = known === NO_REASON_IN_WORDS ? leftOutSaid.get(key) ?? known : known;
+      excludedLines.push(`- ${ref}${text}: left out: ${reason}`);
     }
-    for (const line of object.left_out ?? []) {
-      if (typeof line !== "string" || line === "") continue;
-      const words = dropTokens(line);
+    for (const words of leftOutLines) {
       if (excludedNames.has(actNameKey(leftOutName(words)))) continue;
       lines.push(`- ${words}`);
     }
