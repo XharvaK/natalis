@@ -11,9 +11,12 @@ After=network-online.target
 Type=simple
 # The Lar's keys: one file per Lar, beside its folder, chmod 600. Never in the repository and never in a backup.
 EnvironmentFile=%h/lares/%i.env
+# A user unit cannot reach network-online.target, so it waits for DNS itself before the first login.
+ExecStartPre=/bin/sh %h/natalis/deploy/wait-for-dns.sh discord.com 90
 ExecStart=/usr/bin/env node %h/natalis/dist/bin/natalis.js run --dir %h/lares/%i
 Restart=on-failure
 RestartSec=20
+TimeoutStartSec=120
 # SIGTERM makes the Lar finish its turn, then close its river and notebook cleanly.
 KillSignal=SIGTERM
 TimeoutStopSec=300
