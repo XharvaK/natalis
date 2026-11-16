@@ -28,12 +28,12 @@ function fakeGetent(body: string): void {
   chmodSync(path, 0o755);
 }
 
-function runScript(host: string, seconds: string): Run {
+function runScript(host: string, seconds: string, timeout = 10_000): Run {
   const started = Date.now();
   const result = spawnSync("sh", [SCRIPT, host, seconds], {
     cwd: REPO,
     encoding: "utf8",
-    timeout: 10_000,
+    timeout,
     env: { ...process.env, PATH: [root, "/bin", "/usr/bin"].join(delimiter) },
     windowsHide: true,
   });
@@ -83,4 +83,17 @@ describe("deploy/wait-for-dns.sh", () => {
     expect(run.stderr).toBe("");
     expect(readFileSync(counter, "utf8").trim()).toBe("2");
   });
+
+  it.skipIf(process.platform === "win32")(
+    "ends by its deadline even when one lookup hangs",
+    () => {
+      fakeGetent("sleep 30\nexit 2");
+      // The spawn timeout is a backstop; the script must finish well under it.
+      const run = runScript("example.invalid", "2", 35_000);
+      expect(run.ms).toBeLessThan(8_000);
+      expect(run.code).toBe(0);
+      expect(run.stderr).toContain("natalis: DNS for example.invalid not ready after 2 s; starting anyway");
+    },
+    40_000,
+  );
 });
