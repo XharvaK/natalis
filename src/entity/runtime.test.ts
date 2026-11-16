@@ -6036,6 +6036,32 @@ describe("the mood line is public", () => {
     await second.entity.start();
     expect(secondStatus.statuses).toEqual(["bright"]);
   });
+
+  it("does not send a shown mood with a privacy-list word again at start", async () => {
+    const firstStatus = statusWorld("discord");
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("set_mood", { text: "bright by the harbour" }), call("end_turn")] }),
+    ]);
+    const first = await open(model, { nowMs: () => NOW }, [firstStatus.world]);
+    await first.entity.start();
+    first.cli.send("Set it.");
+    await first.entity.idle();
+    expect(firstStatus.statuses).toEqual(["bright by the harbour"]);
+    await first.entity.stop();
+
+    writeFileSync(join(dir, "privacy.json"), JSON.stringify({ terms: [{ term: "harbour", category: "home" }] }), "utf8");
+
+    const secondStatus = statusWorld("discord");
+    const second = await open(new ScriptedModel([]), { nowMs: () => NOW + 60_000, stopPollMs: 1e9 }, [secondStatus.world]);
+    await second.entity.start();
+    await second.entity.idle();
+
+    expect(secondStatus.statuses).toEqual([]);
+    const note = noteRows(second.entity).find(
+      (row) => row.data?.["held"] === "privacy" && row.data?.["place"] === "status",
+    );
+    expect(note).toBeDefined();
+  });
 });
 
 describe("news of her body", () => {
