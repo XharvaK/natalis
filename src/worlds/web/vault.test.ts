@@ -45,6 +45,14 @@ describe("hostsMatch", () => {
     expect(hostsMatch("example.org.", "EXAMPLE.org")).toBe(true);
   });
 
+  it("matches an IP-bound value to that exact address only, never to a name around it", () => {
+    expect(hostsMatch("1.2.3.4", "1.2.3.4")).toBe(true);
+    expect(hostsMatch("x.1.2.3.4", "1.2.3.4")).toBe(false);
+    expect(hostsMatch("evil.10.0.0.5", "10.0.0.5")).toBe(false);
+    expect(hostsMatch("[::1]", "::1")).toBe(true);
+    expect(hostsMatch("a.::1", "::1")).toBe(false);
+  });
+
   it("refuses other hosts, including names that only end the same way", () => {
     expect(hostsMatch("example.org", "api.example.org")).toBe(false);
     expect(hostsMatch("example.org", "www.api.example.org")).toBe(false);
