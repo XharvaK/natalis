@@ -3,12 +3,13 @@
 // and state.json is made to match. Otherwise the replay would meet events and notes it is about to produce itself.
 
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseEntityConfig, ENTITY_FILE } from "../entity/config.js";
 import { openGrants } from "../entity/grants.js";
 import { STATE_FILE } from "../entity/runtime.js";
+import { writeFileAtomic } from "../fsutil/write-atomic.js";
 import { NOTEBOOK_DIR, RIVER_FILE } from "../import/folder.js";
 
 export type CopyOptions = {
@@ -153,9 +154,7 @@ function writeState(fromState: string, toState: string, riverFile: string, lastS
   };
   const lastOwnerMs = newestOwnerMs(riverFile);
   if (lastOwnerMs !== undefined) state["lastOwnerMs"] = lastOwnerMs;
-  const tmp = `${toState}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, "utf8");
-  renameSync(tmp, toState);
+  writeFileAtomic(toState, `${JSON.stringify(state, null, 2)}\n`);
 }
 
 function newestOwnerMs(riverFile: string): number | undefined {

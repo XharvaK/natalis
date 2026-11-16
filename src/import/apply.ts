@@ -2,11 +2,12 @@
 // forgotten list, and state.json last. If the import stops early, state.json is missing, so the entity refuses
 // to start (the runtime's own check) instead of running on half an import.
 
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { openNotebook, seedNotebook } from "../notebook/index.js";
 import { openRiver } from "../river/index.js";
 import { ENTITY_STUBS, seedStub, STATE_FILE } from "../entity/runtime.js";
+import { writeFileAtomic } from "../fsutil/write-atomic.js";
 import type { Notebook } from "../contracts.js";
 import type { Bundle, BundleRow, BundleTombstone } from "./bundle.js";
 import { FORGOTTEN_NOTE } from "./bundle.js";
@@ -153,7 +154,5 @@ export function buildState(lastSeq: number, rows: BundleRow[]): ImportedState {
 }
 
 function writeStateFile(path: string, state: unknown): void {
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, "utf8");
-  renameSync(tmp, path);
+  writeFileAtomic(path, `${JSON.stringify(state, null, 2)}\n`);
 }
