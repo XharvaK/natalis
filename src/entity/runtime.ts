@@ -2099,6 +2099,21 @@ class Runtime implements Entity {
   /** After the worlds start: a mood already made public is set again in every world that shows one. */
   private async announceMood(): Promise<void> {
     if (this.state.moodShown !== true || this.state.mood === null) return;
+    const secret = this.secretHold(this.state.mood, "your status was not set again");
+    const held = secret === undefined ? this.privacyHold("status", [this.state.mood], "self") : undefined;
+    if (secret !== undefined) {
+      // privacyHold writes its own note; a held secret needs one so she knows why the status was not set again.
+      this.river.append({
+        thread: "self",
+        kind: "note",
+        source: "body",
+        place: "status",
+        text: "Your mood was not set again as your status: it looked like it holds a secret. Set a new mood when you like.",
+        data: { held: "secret", place: "status" },
+        atMs: this.nowMs(),
+      });
+    }
+    if (secret !== undefined || held !== undefined) return;
     for (const world of this.worlds) {
       if (world.status === undefined) continue;
       try {
