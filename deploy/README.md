@@ -176,6 +176,8 @@ systemctl --user enable --now natalis@<name>.service
 systemctl --user enable --now natalis-backup@<name>.timer
 ```
 
+Before it starts the Lar, the unit waits up to 90 s for DNS, so a boot that comes up before the network does not fail its Discord login.
+
 Services stop when you log out unless the host keeps your user's services running. Turn that on once:
 
 ```sh
