@@ -149,6 +149,27 @@ describe("copyForReplay", () => {
     });
   });
 
+  it("writes the state even when a stale state.json.tmp folder is in the copy", async () => {
+    const source = join(root, "source");
+    buildSource(source);
+    const copy = join(root, "copy");
+    mkdirSync(copy);
+    // The copy refuses a folder that is not empty, so the stale temp name is planted while the copy waits for git.
+    // A crashed write can leave a folder under the temp name; the write must not need that name.
+    queueMicrotask(() => mkdirSync(join(copy, `${STATE_FILE}.tmp`)));
+
+    await copyForReplay({ from: source, to: copy, cutAtMs: CUT });
+
+    const state = JSON.parse(readFileSync(join(copy, STATE_FILE), "utf8")) as Record<string, unknown>;
+    expect(state).toMatchObject({
+      lastSeq: 2,
+      asks: [{ place: "cli:owner", seq: 2, atMs: T0 }],
+      wakes: [],
+      mood: "calm",
+      lastOwnerMs: T0,
+    });
+  });
+
   it("the copy opens as a normal entity with no turn to run", async () => {
     const source = join(root, "source");
     buildSource(source);
