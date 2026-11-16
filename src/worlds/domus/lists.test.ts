@@ -257,6 +257,22 @@ describe("game_list acts on one object (D3)", () => {
     expect(text).toContain("- Call Test Friend: left out: it is not on your phone list");
   });
 
+  it("pairs one excluded entry with one left_out line, not every line with its words (N-7)", async () => {
+    observe([{
+      ...TOILET,
+      excluded: [{ text: "an act", reason: "NO_NAME" }],
+      left_out: [
+        "an act: left out: the game gives it no name",
+        "an act: left out: a debug, cheat or test act",
+      ],
+    }]);
+    const receipt = await list({ what: "acts", object: "Test toilet upstairs" });
+    const text = receipt.summary ?? "";
+    expect((text.match(/an act: left out:/g) ?? []).length).toBe(2);
+    expect((text.match(/the game gives it no name/g) ?? []).length).toBe(1);
+    expect(text).toContain("an act: left out: a debug, cheat or test act");
+  });
+
   it("gives the helper's own excluded codes their words, and takes a left_out line's words for an unknown code (N-5)", async () => {
     observe([{
       ...TOILET,
