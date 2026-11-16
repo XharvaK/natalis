@@ -214,7 +214,7 @@ describe("make", () => {
     const voice = createVoiceMessages(fake, SETTINGS);
     const error = voiceError(await rejection(voice.make("Hello there.")));
     expect(error.kind).toBe("organ");
-    expect(error.message).toBe("your voice organ failed: no voice model");
+    expect(error.message).toBe("your voice organ failed");
     expect(fake.calls.map((entry) => entry.header["op"])).toEqual(["speak", "flush"]);
   });
 

@@ -123,7 +123,9 @@ export function createVoiceMessages(organ: OrganCaller, settings: VoiceSettings)
       return await organ.call(header, body, options);
     } catch (error) {
       if (error instanceof OrganError) {
-        throw error.kind === "resting" ? new VoiceError(error.message, "resting") : new VoiceError(`your voice organ failed: ${error.message}`, "organ");
+        if (error.kind === "resting") throw new VoiceError(error.message, "resting");
+        console.error(`natalis: the voice organ failed: ${error.message}`);
+        throw new VoiceError("your voice organ failed", "organ");
       }
       throw error;
     }
