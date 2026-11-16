@@ -160,9 +160,11 @@ describe("NB-1 private paths", () => {
     win.row(receipt("t1", "c2", "Dear diary"));
     win.row(toolCall("t1", "c3", "read_note", '{"path":"private/diary.md"}'));
     win.row(receipt("t1", "c3", "Dear diary, kept close."));
-    win.row(toolCall("t1", "c4", "read_note", '{"path":"notes/privateer.md"}'));
-    win.row(receipt("t1", "c4", "A note anyone may read."));
     win.row(turnEnd("t1"));
+    win.row(turnStart("t2"));
+    win.row(toolCall("t2", "c4", "read_note", '{"path":"notes/privateer.md"}'));
+    win.row(receipt("t2", "c4", "A note anyone may read."));
+    win.row(turnEnd("t2"));
     await win.flush();
     const batch = shown.join("\n");
     expect(batch).toContain("does: read_note (in private/, not shown)");
@@ -276,7 +278,7 @@ describe("sending", () => {
 describe("the text the summoner reads about the window", () => {
   it("is the exact sentence the Lar is told", () => {
     expect(WINDOW_ABOUT).toBe(
-      "Your summoner's window: the body copies your thinking, your tool calls and what they returned to a channel your summoner reads, as they happen. It names where you say something, not the words. A call that names private/ is not shown, and neither is your thinking for the rest of that turn.",
+      "Your summoner's window: the body copies your thinking, your tool calls and what they returned to a channel your summoner reads, as they happen. It names where you say something, not the words. A call that names private/ is not shown, and neither are your thinking and your tool calls for the rest of that turn.",
     );
   });
 });

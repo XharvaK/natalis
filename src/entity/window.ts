@@ -9,7 +9,7 @@ import { isPrivatePath } from "../notebook/private-view.js";
 export const WINDOW_FLUSH_MS = 2000;
 
 export const WINDOW_ABOUT =
-  "Your summoner's window: the body copies your thinking, your tool calls and what they returned to a channel your summoner reads, as they happen. It names where you say something, not the words. A call that names private/ is not shown, and neither is your thinking for the rest of that turn.";
+  "Your summoner's window: the body copies your thinking, your tool calls and what they returned to a channel your summoner reads, as they happen. It names where you say something, not the words. A call that names private/ is not shown, and neither are your thinking and your tool calls for the rest of that turn.";
 
 export type WindowOptions = {
   /** Deliver one batch of text to the window. Rejects when it cannot. */
@@ -100,6 +100,10 @@ export function createWindow(options: WindowOptions): Window {
           if (turnId !== undefined) hiddenTurns.add(turnId);
           if (callId !== undefined) hiddenCalls.add(callId);
           return [plain(`does: ${text} (in private/, not shown)`)];
+        }
+        if (turnId !== undefined && hiddenTurns.has(turnId)) {
+          if (callId !== undefined) hiddenCalls.add(callId);
+          return [plain(`does: ${text} (not shown: this turn opened private/)`)];
         }
         const shown = args === "" ? "" : ` ${clip(oneLine(args), ARGS_CLIP)}`;
         return [plain(`does: ${text}${shown}`)];
