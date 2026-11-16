@@ -1199,7 +1199,7 @@ describe("what the Lar sends and what it is shown", () => {
       expect(model.requests).toHaveLength(3);
       expect(userTextOf(model.requests[2])).toContain("Your wake: look at the garden");
       const wake = allRows(entity).find((row) => row.thread === "self" && row.kind === "event");
-      expect(wake).toMatchObject({ source: "body", text: "Your wake: look at the garden" });
+      expect(wake).toMatchObject({ source: "body", text: `Your wake: look at the garden\n${MEMORY_TOOLS_LINE}` });
       expect(readStateFile().wakes).toHaveLength(0);
     });
   });
@@ -1224,7 +1224,7 @@ describe("what the Lar sends and what it is shown", () => {
       const [first, second, ...rest] = (wake?.text ?? "").split("\n");
       expect(first).toBe("Your wake: whether Domus attached (dark since 2026-10-13)");
       expect(second).toMatch(new RegExp(`^Body note \\(receipt\\): Domus: attached from .* \\(seq ${seen.seq}\\) to the last view at .* \\(seq ${seen.seq}\\); not attached since .* \\(seq ${gone.seq}\\)\\.$`));
-      expect(rest).toEqual([]);
+      expect(rest).toEqual([MEMORY_TOOLS_LINE]);
     });
   });
 
@@ -3237,10 +3237,10 @@ describe("repeating wakes", () => {
     const reopened = await open(model, { nowMs: () => NOW });
     await reopened.entity.start();
     // A wake that is already due fires on a zero-length timer, so wait for its event before the turn settles.
-    await waitFor(() => allRows(reopened.entity).some((row) => row.thread === "self" && row.text === "Your wake: check the plants"));
+    await waitFor(() => allRows(reopened.entity).some((row) => row.thread === "self" && row.text?.startsWith("Your wake: check the plants")));
     await reopened.entity.idle();
 
-    const fired = allRows(reopened.entity).filter((row) => row.thread === "self" && row.text === "Your wake: check the plants");
+    const fired = allRows(reopened.entity).filter((row) => row.thread === "self" && row.text?.startsWith("Your wake: check the plants"));
     expect(fired).toHaveLength(1);
     expect(readStateFile().wakes).toEqual([
       expect.objectContaining({ id: "down0001", atMs: Date.parse("2026-10-12T09:00:00Z"), repeat: "daily", clock: "09:00" }),
