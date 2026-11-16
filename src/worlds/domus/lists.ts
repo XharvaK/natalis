@@ -291,6 +291,7 @@ function leftOutName(line: string): string {
  * The acts answer (D3): every act of each matching object with its ref, then the acts the game's side excluded, the
  * view hides after refusals, or the game left out, each with its reason. No act is both offered and left out.
  * N-5: an act named in both left_out and excluded is printed once (the excluded form, which may carry a ref).
+ * N-7: each excluded entry pairs with one left_out line of its words, by count, since the wire has no id on either.
  */
 export function actsOnAnswer(objects: readonly OptionObject[], hidden: readonly ReadonlySet<string>[]): string {
   const blocks: string[] = [];
@@ -310,20 +311,25 @@ export function actsOnAnswer(objects: readonly OptionObject[], hidden: readonly 
       if (said !== undefined && !leftOutSaid.has(key)) leftOutSaid.set(key, said);
       leftOutLines.push(words);
     }
-    const excludedNames = new Set<string>();
+    const excludedCounts = new Map<string, number>();
     const excludedLines: string[] = [];
     for (const entry of object.excluded ?? []) {
       const text = typeof entry?.text === "string" ? dropTokens(entry.text) : "";
       if (text === "") continue;
       const key = actNameKey(text);
-      excludedNames.add(key);
+      excludedCounts.set(key, (excludedCounts.get(key) ?? 0) + 1);
       const ref = typeof entry.ref === "string" && entry.ref !== "" ? `${entry.ref} ` : "";
       const known = excludedReason(entry.reason);
       const reason = known === NO_REASON_IN_WORDS ? leftOutSaid.get(key) ?? known : known;
       excludedLines.push(`- ${ref}${text}: left out: ${reason}`);
     }
     for (const words of leftOutLines) {
-      if (excludedNames.has(actNameKey(leftOutName(words)))) continue;
+      const key = actNameKey(leftOutName(words));
+      const count = excludedCounts.get(key) ?? 0;
+      if (count > 0) {
+        excludedCounts.set(key, count - 1);
+        continue;
+      }
       lines.push(`- ${words}`);
     }
     for (const line of excludedLines) lines.push(line);
