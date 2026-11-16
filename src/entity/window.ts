@@ -3,6 +3,7 @@
 // they claim no place. The river is the record; the window is a copy, so a copy that cannot be shown is logged and dropped.
 
 import type { RiverRow } from "../contracts.js";
+import { isPrivatePath } from "../notebook/private-view.js";
 
 /** Lines wait this long for company before they go out together. */
 export const WINDOW_FLUSH_MS = 2000;
@@ -44,7 +45,6 @@ const BODY_SAID_CLIP = 300;
 const ERROR_CLIP = 200;
 const LOG_EVERY_MS = 60 * 60 * 1000;
 const CLOSE_WAIT_MS = 5000;
-const PRIVATE = "private/";
 
 /** One line of the window. `blank` puts an empty line before it when it is not the first in its batch. */
 type Line = { text: string; blank: boolean };
@@ -96,7 +96,7 @@ export function createWindow(options: WindowOptions): Window {
       case "tool_call": {
         const args = typeof data["args"] === "string" ? data["args"] : "";
         const callId = typeof data["callId"] === "string" ? data["callId"] : undefined;
-        if (args.includes(PRIVATE)) {
+        if (namesPrivate(args)) {
           if (turnId !== undefined) hiddenTurns.add(turnId);
           if (callId !== undefined) hiddenCalls.add(callId);
           return [plain(`does: ${text} (in private/, not shown)`)];
@@ -197,6 +197,27 @@ export function createWindow(options: WindowOptions): Window {
       clearTimeout(giveUp);
     },
   };
+}
+
+/** True when any string value in the call's arguments names a private path. Hidden is safer than shown. */
+function namesPrivate(args: string): boolean {
+  let value: unknown;
+  try {
+    value = JSON.parse(args);
+  } catch {
+    return args.includes("private");
+  }
+  return holdsPrivate(value);
+}
+
+function holdsPrivate(value: unknown): boolean {
+  if (typeof value === "string") {
+    const path = value.trim().replace(/^(\.\/|\/)+/, "").replace(/\/+/g, "/");
+    return isPrivatePath(path) || path.includes("private/");
+  }
+  if (Array.isArray(value)) return value.some(holdsPrivate);
+  if (value !== null && typeof value === "object") return Object.values(value).some(holdsPrivate);
+  return false;
 }
 
 function oneLine(text: string): string {
