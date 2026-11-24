@@ -3,14 +3,16 @@
 // and what to do with the output are the Lar's own judgment.
 
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, delimiter, isAbsolute, join, resolve, sep } from "node:path";
 import { type HostAddresses, sharedHostAddresses } from "../host-addresses.js";
-import type { Receipt, Tool, ToolContext, World, WorldBody } from "../../contracts.js";
+import type { Receipt, Tool, ToolContext, World, WorldBody, WorldEvent } from "../../contracts.js";
 import { outwardHoldWords } from "../../entity/privacy.js";
+import { PICTURE_BYTES_MAX, sniffPicture } from "../../media/shelf.js";
 import { BODY_MOUNT, bodyRefusal, defaultBodyRoot } from "./body.js";
 import { buildBwrapArgs, SANDBOX_HOME } from "./bwrap.js";
-import { SANDBOX_DEFAULT_NETWORK, type SandboxSettings } from "./config.js";
+import { SANDBOX_DEFAULT_MAX_BACKGROUND_JOBS, SANDBOX_DEFAULT_MAX_JOB_MINUTES, SANDBOX_DEFAULT_NETWORK, type SandboxSettings } from "./config.js";
+import { createJobRunner, type JobLaunch } from "./jobs.js";
 import { OUTPUT_CAP_BYTES, OutputCollector } from "./output.js";
 import { WALL_DNS, wallCommand, withoutPastaNotice } from "./wall.js";
 
@@ -153,6 +155,26 @@ function refusal(code: string, summary: string, reason: string): Receipt {
   return { ok: false, summary, refused: { code, reason } };
 }
 
+/** True when `path` is the home itself or a file inside it, by their real paths. */
+function insideHome(path: string, home: string): boolean {
+  return path === home || path.startsWith(home + sep);
+}
+
+/**
+ * A path as the Lar means it, read inside the Lar's home: a leading /home/lar/ is dropped, since that is where the
+ * sandbox shows the home. Other absolute paths and any ".." segment are refused, so a command can never ask the body
+ * for a file outside its own home. Undefined when the path cannot be read as one inside the home.
+ */
+export function homeRelativePath(requested: string): string[] | undefined {
+  let rest = requested.trim();
+  if (rest === SANDBOX_HOME || rest === `${SANDBOX_HOME}/`) return undefined;
+  if (rest.startsWith(`${SANDBOX_HOME}/`)) rest = rest.slice(SANDBOX_HOME.length + 1);
+  if (rest === "" || isAbsolute(rest)) return undefined;
+  const segments = rest.split(/[\\/]/);
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) return undefined;
+  return segments;
+}
+
 export function createSandboxWorld(options: SandboxWorldOptions): World {
   const { config } = options;
   const homeDir = resolve(options.dir, "home");
@@ -171,6 +193,8 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
   let status: Status = "idle";
   /** The body the runtime gives the world at start. Its privacy check is the only way a command is checked. */
   let outward: WorldBody | undefined;
+  /** The world's way in, kept from start: a background job's end is told to the Lar's own thread through it. */
+  let emitEvent: ((event: WorldEvent) => void) | undefined;
   let bwrapPath: string | undefined;
   /** The resolver file a walled command uses, written at start. Only set in "wall" mode. */
   let resolvPath: string | undefined;
@@ -346,10 +370,23 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
     if (context.signal?.aborted) {
       return refusal("stopped", "The turn ended before the command started.", "The turn was stopped first.");
     }
+    const built = launchFor(command);
+    if ("refused" in built) return built.refused;
+    return execute(built.program, built.args, timeoutSeconds, context.signal);
+  }
+
+  /**
+   * The program and arguments that run one command in this sandbox, walled when the network is "wall". Both `run` and
+   * `run_background` come through here, so a job runs in exactly the sandbox a command does.
+   */
+  function launchFor(command: string): JobLaunch | { refused: Receipt } {
+    if (bwrapPath === undefined) {
+      return { refused: refusal("not_ready", "The sandbox is not running, so the command did not run.", "The sandbox world is not started on this host.") };
+    }
     try {
       mkdirSync(homeDir, { recursive: true, mode: 0o700 });
     } catch (err) {
-      return refusal("home_unavailable", "Your home folder could not be made, so the command did not run.", errorText(err));
+      return { refused: refusal("home_unavailable", "Your home folder could not be made, so the command did not run.", errorText(err)) };
     }
     const bwrapArgs = buildBwrapArgs({
       homeDir,
@@ -358,7 +395,7 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
       ...(bodyPath === undefined ? {} : { bodyDir: bodyPath }),
       ...(resolvPath === undefined ? {} : { resolvPath }),
     });
-    if (network !== "wall") return execute(bwrapPath, bwrapArgs, timeoutSeconds, context.signal);
+    if (network !== "wall") return { program: bwrapPath, args: bwrapArgs };
     // The wall is never skipped: when pasta or ip is missing the command does not run, and the receipt says so.
     const pastaPath = locatePasta(config.pastaPath);
     const ipPath = locateIp(config.ipPath);
@@ -367,12 +404,14 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
       ...(ipPath === undefined ? ["ip (iproute2)"] : []),
     ];
     if (pastaPath === undefined || ipPath === undefined) {
-      return refusal(
-        "network_not_walled",
-        `The command did not run, because the network wall needs ${missing.join(" and ")}, and it is not installed here. ` +
-          'Your summoner can install the passt package, or set "network": "host" in sandbox.json to share the host\'s network without the wall.',
-        `not found: ${missing.join(", ")}`,
-      );
+      return {
+        refused: refusal(
+          "network_not_walled",
+          `The command did not run, because the network wall needs ${missing.join(" and ")}, and it is not installed here. ` +
+            'Your summoner can install the passt package, or set "network": "host" in sandbox.json to share the host\'s network without the wall.',
+          `not found: ${missing.join(", ")}`,
+        ),
+      };
     }
     let own: string[];
     try {
@@ -381,18 +420,46 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
       if (hostAddresses.publicState() === "unknown") {
         void hostAddresses.refresh();
         console.error("[sandbox] a wall-mode command was refused: the host's public IPv4 address is not known yet.");
-        return refusal(
-          "network_not_walled",
-          "The command did not run, because the network wall needs this host's public address and it is not known yet. Try again in a minute.",
-          "the host's public IPv4 address is not known (the lookup has not answered), so the wall cannot block it",
-        );
+        return {
+          refused: refusal(
+            "network_not_walled",
+            "The command did not run, because the network wall needs this host's public address and it is not known yet. Try again in a minute.",
+            "the host's public IPv4 address is not known (the lookup has not answered), so the wall cannot block it",
+          ),
+        };
       }
     } catch (err) {
-      return refusal("network_not_walled", "The command did not run, because this host's own addresses could not be read for the wall.", errorText(err));
+      return {
+        refused: refusal("network_not_walled", "The command did not run, because this host's own addresses could not be read for the wall.", errorText(err)),
+      };
     }
     const walled = wallCommand({ pastaPath, ipPath, bwrapPath, bwrapArgs, hostAddresses: own });
-    return execute(walled.command, walled.args, timeoutSeconds, context.signal);
+    return { program: walled.command, args: walled.args };
   }
+
+  const jobs = createJobRunner({
+    worldId: SANDBOX_WORLD_ID,
+    homeDir,
+    maxJobs: config.maxBackgroundJobs ?? SANDBOX_DEFAULT_MAX_BACKGROUND_JOBS,
+    maxMinutes: config.maxJobMinutes ?? SANDBOX_DEFAULT_MAX_JOB_MINUTES,
+    spawn: spawnProcess,
+    killGroup,
+    nowMs,
+    emit: (event) => emitEvent?.(event),
+    launch: launchFor,
+    checkCommand: (command) => {
+      if (outward === undefined) {
+        return refusal("not_started", "The sandbox has not started yet, so the job did not start.", "The sandbox world is not started, so nothing was run.");
+      }
+      const hold = outward.outwardHold([command]);
+      if (hold === undefined) return undefined;
+      const words = outwardHoldWords(hold, "the command");
+      return refusal(words.code, words.summary, words.reason);
+    },
+    // The same cleaning the run tool gives its error output: pasta's start-up notice is the body's noise, not the job's.
+    cleanText: (text) => (network === "wall" ? withoutPastaNotice(text) : text),
+    ready: () => status === "ready" && bwrapPath !== undefined,
+  });
 
   const runTool: Tool = {
     spec: {
@@ -420,11 +487,104 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
     },
   };
 
+  async function keepPicture(args: Record<string, unknown>): Promise<Receipt> {
+    if (outward === undefined) {
+      return refusal("not_started", "The sandbox has not started yet, so the picture was not kept.", "The sandbox world is not started.");
+    }
+    const requested = args["path"];
+    if (typeof requested !== "string" || requested.trim() === "" || requested.includes("\0")) {
+      return refusal("bad_arguments", "path must be the path to a picture in your home folder.", "The path is missing or is not text.");
+    }
+    const rawName = args["name"];
+    if (rawName !== undefined && (typeof rawName !== "string" || rawName.trim() === "")) {
+      return refusal("bad_arguments", "name must be text, when you give one.", "The name is not text.");
+    }
+    const display = requested.trim();
+    const segments = homeRelativePath(display);
+    if (segments === undefined) {
+      return refusal(
+        "bad_arguments",
+        `${display} is not a path in your home folder. Give a path such as plots/week.png or ${SANDBOX_HOME}/plots/week.png.`,
+        "The path is outside the home folder, or it climbs out of it with ..",
+      );
+    }
+    const target = join(homeDir, ...segments);
+    let found: ReturnType<typeof lstatSync>;
+    try {
+      found = lstatSync(target);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT" || (err as NodeJS.ErrnoException).code === "ENOTDIR") {
+        return refusal("not_found", `${display} is not there.`, "No file is at that path.");
+      }
+      return refusal("not_found", `${display} could not be read.`, errorText(err));
+    }
+    if (!found.isFile()) {
+      return refusal("not_a_file", `${display} is not a regular file.`, found.isSymbolicLink() ? "It is a link." : "It is not a regular file.");
+    }
+    let real: string;
+    let homeReal: string;
+    try {
+      homeReal = realpathSync(homeDir);
+      real = realpathSync(target);
+    } catch (err) {
+      return refusal("not_found", `${display} could not be read.`, errorText(err));
+    }
+    if (!insideHome(real, homeReal)) {
+      return refusal("not_a_file", `${display} is not inside your home folder.`, "Its real path lies outside the home folder.");
+    }
+    if (found.size > PICTURE_BYTES_MAX) {
+      return refusal("too_big", `${display} is ${formatBytes(found.size)}; a picture can be at most 8 MiB.`, "The file is larger than 8 MiB.");
+    }
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(real);
+    } catch (err) {
+      return refusal("not_found", `${display} could not be read.`, errorText(err));
+    }
+    if (bytes.length > PICTURE_BYTES_MAX) {
+      return refusal("too_big", `${display} is ${formatBytes(bytes.length)}; a picture can be at most 8 MiB.`, "The file is larger than 8 MiB.");
+    }
+    if (sniffPicture(bytes) === undefined) {
+      return refusal("not_a_picture", `${display} is not a PNG, JPEG, GIF or WebP picture.`, "Its bytes are not one of the four picture types.");
+    }
+    const name = typeof rawName === "string" ? rawName.trim() : basename(real);
+    const ref = outward.keepPicture({ bytes, name, from: { world: SANDBOX_WORLD_ID, place: `${SANDBOX_WORLD_ID}:home` } });
+    return {
+      ok: true,
+      summary: `Kept ${ref.name} on your shelf as ${ref.id}. look shows it; say's attach sends it.`,
+      data: { id: ref.id, name: ref.name, bytes: ref.bytes },
+    };
+  }
+
+  const keepPictureSpec: Tool = {
+    spec: {
+      name: "keep_picture",
+      description:
+        "Put a picture from your home folder on your shelf, so you can look at it or send it with say. Give its path, such as plots/week.png or /home/lar/plots/week.png.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "The picture's path in your home folder." },
+          name: {
+            type: "string",
+            description: "The name it is kept under. Defaults to the file's base name.",
+          },
+        },
+        required: ["path"],
+      },
+    },
+    run(args) {
+      return keepPicture(args);
+    },
+  };
+
   return {
     id: SANDBOX_WORLD_ID,
 
-    async start(_emit, body): Promise<void> {
+    async start(emit, body): Promise<void> {
       outward = body;
+      emitEvent = emit;
+      jobs.reset();
       if (network === "wall") await hostAddresses.refresh();
       if (platform !== "linux") {
         throw new Error(
@@ -463,11 +623,13 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
     async stop(): Promise<void> {
       status = "stopped";
       for (const end of [...running.values()]) end("world");
+      await jobs.stopAll();
     },
 
-    /** The summoner's emergency stop turned on: every command still running is ended now. */
-    onStop(): void {
+    /** The summoner's emergency stop turned on: every command and background job still running is ended now. */
+    async onStop(): Promise<void> {
       for (const end of [...running.values()]) end("stop");
+      await jobs.stopAll();
     },
 
     async say(place: string): Promise<Receipt> {
@@ -475,7 +637,7 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
     },
 
     tools() {
-      return [runTool];
+      return [runTool, keepPictureSpec, jobs.startTool, jobs.checkTool, jobs.stopTool];
     },
 
     about() {
@@ -494,7 +656,9 @@ export function createSandboxWorld(options: SandboxWorldOptions): World {
       const size = measureHome(homeDir);
       const approx = size.complete ? "" : "about ";
       const files = `${approx}${size.files} ${size.files === 1 ? "file" : "files"}`;
-      return `Sandbox: ready. Your home at ${SANDBOX_HOME} holds ${approx}${formatBytes(size.bytes)}, in ${files}.`;
+      const head = `Sandbox: ready. Your home at ${SANDBOX_HOME} holds ${approx}${formatBytes(size.bytes)}, in ${files}.`;
+      const jobLine = jobs.nowLine();
+      return jobLine === undefined ? head : `${head} ${jobLine}`;
     },
   };
 }

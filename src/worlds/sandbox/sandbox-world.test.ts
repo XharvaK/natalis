@@ -1,14 +1,16 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { EventEmitter } from "node:events";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Receipt, Tool, ToolContext, World } from "../../contracts.js";
+import type { Receipt, Tool, ToolContext, World, WorldBody, WorldEvent } from "../../contracts.js";
 import { buildBwrapArgs } from "./bwrap.js";
 import { PASTA_ARGS, routeScript } from "./wall.js";
 import { createSandboxWorld, formatBytes, measureHome, type SpawnFn } from "./sandbox-world.js";
+import { JOB_CUT_LINE, JOB_LOG_CAP_BYTES } from "./jobs.js";
 import { OUTPUT_CAP_BYTES } from "./output.js";
+import { PICTURE_BYTES_MAX } from "../../media/shelf.js";
 import { privacyBody } from "../../testing/privacy-body.js";
 import { PRIVACY_UNREADABLE_REASON } from "../../entity/privacy.js";
 
@@ -20,6 +22,8 @@ type SandboxConfigOverride = {
   network?: "wall" | "host" | "none";
   pastaPath?: string;
   ipPath?: string;
+  maxBackgroundJobs?: number;
+  maxJobMinutes?: number;
 };
 
 // A child process the tests drive by hand: its output and its exit are the test's to decide.
@@ -54,6 +58,7 @@ function makeHarness(
     locateIp: (configured: string | undefined) => string | undefined;
     hostAddresses: string[];
     publicState: "known" | "unknown" | "off";
+    nowMs: () => number;
   }> = {},
 ): Harness {
   const children: FakeChild[] = [];
@@ -82,7 +87,7 @@ function makeHarness(
       refresh: async () => undefined,
       publicState: () => overrides.publicState ?? "known",
     },
-    nowMs: () => (nowValues.length > 1 ? (nowValues.shift() as number) : nowValues[0] as number),
+    nowMs: overrides.nowMs ?? (() => (nowValues.length > 1 ? (nowValues.shift() as number) : nowValues[0] as number)),
   });
   return { world, spawn, killGroup, children, dir, nowValues };
 }
@@ -102,6 +107,31 @@ async function started(overrides: Parameters<typeof makeHarness>[0] = {}): Promi
   const h = makeHarness(overrides);
   await h.world.start(() => undefined, privacyBody(dir));
   return h;
+}
+
+type KeptPicture = { bytes: Uint8Array; name: string; from: { world: string; place: string } };
+
+/** A tiny PNG built from its signature and a few bytes. */
+function pngBytes(extra = 8): Uint8Array {
+  return Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...Array.from({ length: extra }, (_, i) => i)]);
+}
+
+/** A body that keeps pictures the test can inspect, and checks privacy the way the runtime's body does. */
+function pictureBody(kept: KeptPicture[]): WorldBody {
+  const base = privacyBody(dir);
+  return {
+    keepPicture(input) {
+      kept.push(input);
+      return { id: "m-ABCD2345", mime: "image/png", bytes: input.bytes.length, name: input.name };
+    },
+    outwardHold: base.outwardHold,
+  };
+}
+
+function toolNamed(world: World, name: string): Tool {
+  const tool = world.tools().find((candidate) => candidate.spec.name === name);
+  if (tool === undefined) throw new Error(`no ${name} tool`);
+  return tool;
 }
 
 beforeEach(() => {
@@ -405,17 +435,327 @@ describe("now, about and say", () => {
     expect(about).toMatch(/\/home\/lar keeps what you make; installs go there/);
   });
 
-  it("offers one tool, run, with command required", async () => {
+  it("offers run with command required, and keep_picture with a path required", async () => {
     harness = makeHarness();
     const tool = runTool(harness.world);
     expect(tool.spec.parameters).toMatchObject({ required: ["command"] });
     expect(tool.spec.safeWhenStopped).toBeUndefined();
+    expect(harness.world.tools().map((item) => item.spec.name)).toEqual(["run", "keep_picture", "run_background", "check_job", "stop_job"]);
+    expect(toolNamed(harness.world, "keep_picture").spec.parameters).toMatchObject({ required: ["path"] });
+    expect(toolNamed(harness.world, "run_background").spec.description).toContain("At most 2 at once.");
   });
 
   it("refuses to say anything to a place, since the sandbox has none", async () => {
     harness = makeHarness();
     const receipt = await harness.world.say("sandbox:anywhere", "hello");
     expect(receipt).toMatchObject({ ok: false, refused: { code: "no_place" } });
+  });
+});
+
+describe("background jobs", () => {
+  /** Starts a world that records its events, with the job ceilings the test asks for. */
+  async function jobWorld(
+    overrides: { nowMs?: () => number } & Partial<SandboxConfigOverride> = {},
+  ): Promise<{ world: World; spawn: ReturnType<typeof vi.fn>; killGroup: ReturnType<typeof vi.fn>; children: FakeChild[]; events: WorldEvent[] }> {
+    const { nowMs, ...config } = overrides;
+    const h = makeHarness({
+      config: { timeoutSeconds: 120, maxTimeoutSeconds: 900, network: "host", ...config },
+      ...(nowMs === undefined ? {} : { nowMs }),
+    });
+    const events: WorldEvent[] = [];
+    await h.world.start((event) => events.push(event), privacyBody(dir));
+    return { world: h.world, spawn: h.spawn, killGroup: h.killGroup, children: h.children, events };
+  }
+
+  function tool(world: World, name: string): Tool {
+    return toolNamed(world, name);
+  }
+
+  it("starts a job in the sandbox and names the log it writes", async () => {
+    const j = await jobWorld();
+    const receipt = await tool(j.world, "run_background").run({ command: "sleep 60", why: "a slow build" }, context());
+    expect(receipt.ok).toBe(true);
+    expect(receipt.summary).toBe("Started job j1. Its output goes to /home/lar/.natalis-jobs/j1.log.");
+    expect(receipt.data).toEqual({ id: "j1", log: "/home/lar/.natalis-jobs/j1.log" });
+    const [program, args, options] = j.spawn.mock.calls[0] as [string, string[], SpawnOptions];
+    expect(program).toBe("/usr/bin/bwrap");
+    expect(args).toEqual(buildBwrapArgs({ homeDir: resolve(dir, "home"), command: "sleep 60", bodyDir: checkout }));
+    expect(options).toMatchObject({ detached: true, env: {}, stdio: ["ignore", "pipe", "pipe"] });
+    expect(existsSync(join(dir, "home", ".natalis-jobs", "j1.log"))).toBe(true);
+  });
+
+  it("tells the Lar's own thread once when the job ends, with its exit code and last lines", async () => {
+    const j = await jobWorld();
+    await tool(j.world, "run_background").run({ command: "make", why: "a slow build" }, context());
+    const child = j.children[0] as FakeChild;
+    child.stdout.emit("data", Buffer.from("first line\n"));
+    child.stderr.emit("data", Buffer.from("last line\n"));
+    child.emit("exit", 0, null);
+    child.emit("close", 0, null);
+    await vi.waitFor(() => expect(j.events).toHaveLength(1));
+    const event = j.events[0]!;
+    expect(event).toMatchObject({ world: "sandbox", place: "sandbox:jobs", thread: "self", source: "body" });
+    expect(event.text).toContain("Your background job j1 (a slow build) ended with exit code 0 after 2.5 s.");
+    expect(event.text).toContain("Its last lines:");
+    expect(event.text).toContain("first line");
+    expect(event.text).toContain("last line");
+    expect(event.data).toEqual({ job: "j1", exitCode: 0, seconds: 2.5 });
+  });
+
+  it("checks a job while it runs and after it ends", async () => {
+    const j = await jobWorld();
+    const check = tool(j.world, "check_job");
+    await tool(j.world, "run_background").run({ command: "sleep 60", why: "a crawl" }, context());
+    const child = j.children[0] as FakeChild;
+    child.stdout.emit("data", Buffer.from("working\n"));
+    const running = await check.run({ id: "j1" }, context());
+    expect(running.ok).toBe(true);
+    expect(running.data).toMatchObject({ id: "j1", running: true, exitCode: null, tail: "working\n" });
+    expect(running.summary).toContain("still running");
+    child.emit("exit", 0, null);
+    child.emit("close", 0, null);
+    const ended = await check.run({ id: "j1" }, context());
+    expect(ended.data).toMatchObject({ running: false, exitCode: 0 });
+    expect(ended.summary).toContain("ended with exit code 0");
+  });
+
+  it("answers an unknown job with not_found, naming the jobs that exist", async () => {
+    const j = await jobWorld();
+    const receipt = await tool(j.world, "check_job").run({ id: "j9" }, context());
+    expect(receipt.refused?.code).toBe("not_found");
+    expect(receipt.summary).toContain("No background job has run.");
+    await tool(j.world, "run_background").run({ command: "sleep 60", why: "a crawl" }, context());
+    expect((await tool(j.world, "check_job").run({ id: "j9" }, context())).summary).toContain("The jobs are j1.");
+  });
+
+  it("stops a job's process group, and its end says it was stopped", async () => {
+    const j = await jobWorld();
+    await tool(j.world, "run_background").run({ command: "sleep 999", why: "a crawl" }, context());
+    const stopped = tool(j.world, "stop_job").run({ id: "j1", why: "no longer needed" }, context());
+    expect(j.killGroup).toHaveBeenCalledWith(4242, "SIGTERM");
+    (j.children[0] as FakeChild).emit("close", null, "SIGTERM");
+    const receipt = await stopped;
+    expect(receipt.ok).toBe(true);
+    await vi.waitFor(() => expect(j.events).toHaveLength(1));
+    expect(j.events[0]?.text).toContain("It was stopped.");
+    expect(j.events[0]?.data).toMatchObject({ job: "j1", stopped: true });
+  });
+
+  it("kills a job that runs past its ceiling and says how long it got", async () => {
+    vi.useFakeTimers();
+    const j = await jobWorld({ maxJobMinutes: 1 });
+    await tool(j.world, "run_background").run({ command: "sleep 999", why: "a crawl" }, context());
+    vi.advanceTimersByTime(59_000);
+    expect(j.killGroup).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1_000);
+    expect(j.killGroup).toHaveBeenCalledWith(4242, "SIGTERM");
+    (j.children[0] as FakeChild).emit("exit", null, "SIGTERM");
+    (j.children[0] as FakeChild).emit("close", null, "SIGTERM");
+    expect(j.events).toHaveLength(1);
+    expect(j.events[0]?.text).toContain("It ran out of time (1 min).");
+    expect(j.events[0]?.data).toMatchObject({ job: "j1", timedOut: true });
+  });
+
+  it("caps max_minutes at the world's ceiling, and takes a shorter one as given", async () => {
+    vi.useFakeTimers();
+    const j = await jobWorld({ maxJobMinutes: 2 });
+    const start = tool(j.world, "run_background");
+    await start.run({ command: "a", why: "one", max_minutes: 5000 }, context());
+    vi.advanceTimersByTime(2 * 60_000);
+    expect(j.killGroup).toHaveBeenCalledWith(4242, "SIGTERM");
+    (j.children[0] as FakeChild).emit("close", null, "SIGTERM");
+    expect(j.events[0]?.data).toMatchObject({ timedOut: true });
+    expect(j.events[0]?.text).toContain("It ran out of time (2 min).");
+    j.killGroup.mockClear();
+    await start.run({ command: "b", why: "two", max_minutes: 1 }, context());
+    vi.advanceTimersByTime(60_000);
+    expect(j.killGroup).toHaveBeenCalledWith(4242, "SIGTERM");
+  });
+
+  it("refuses a third job when two are running, and names the two", async () => {
+    const j = await jobWorld({ maxBackgroundJobs: 2 });
+    const start = tool(j.world, "run_background");
+    expect((await start.run({ command: "a", why: "one" }, context())).ok).toBe(true);
+    expect((await start.run({ command: "b", why: "two" }, context())).ok).toBe(true);
+    const third = await start.run({ command: "c", why: "three" }, context());
+    expect(third.refused?.code).toBe("too_many_jobs");
+    expect(third.summary).toContain("j1, j2");
+    (j.children[0] as FakeChild).emit("close", 0, null);
+    const again = await start.run({ command: "c", why: "three" }, context());
+    expect(again.ok).toBe(true);
+    expect(again.data?.["id"]).toBe("j3");
+  });
+
+  it("cuts the log at 2 MiB once and keeps the job running", async () => {
+    const j = await jobWorld();
+    await tool(j.world, "run_background").run({ command: "make", why: "a slow build" }, context());
+    const child = j.children[0] as FakeChild;
+    child.stdout.emit("data", Buffer.alloc(JOB_LOG_CAP_BYTES));
+    child.stdout.emit("data", Buffer.from("more\n"));
+    child.stdout.emit("data", Buffer.from("still more\n"));
+    const check = await tool(j.world, "check_job").run({ id: "j1" }, context());
+    expect(check.data?.["running"]).toBe(true);
+    expect((check.data?.["tail"] as string).split(JOB_CUT_LINE)).toHaveLength(2);
+    expect(check.data?.["tail"] as string).toContain(JOB_CUT_LINE);
+  });
+
+  it("kills running jobs when the world stops, and reports each end", async () => {
+    const j = await jobWorld();
+    await tool(j.world, "run_background").run({ command: "sleep 999", why: "a crawl" }, context());
+    const stopping = j.world.stop();
+    expect(j.killGroup).toHaveBeenCalledWith(4242, "SIGTERM");
+    (j.children[0] as FakeChild).emit("close", null, "SIGTERM");
+    await stopping;
+    expect(j.events).toHaveLength(1);
+  });
+
+  it("kills running jobs at the summoner's stop, and waits at most five seconds for them", async () => {
+    vi.useFakeTimers();
+    const j = await jobWorld();
+    await tool(j.world, "run_background").run({ command: "sleep 999", why: "a crawl" }, context());
+    const stopping = j.world.onStop?.() ?? Promise.resolve();
+    expect(j.killGroup).toHaveBeenCalledWith(4242, "SIGTERM");
+    // The group never reports an exit: the world still returns once its wait is up.
+    vi.advanceTimersByTime(5_000);
+    await stopping;
+    expect(j.events).toHaveLength(1);
+    expect(j.events[0]?.text).toContain("It was stopped.");
+  });
+
+  it("names a running job on the now board", async () => {
+    let clock = 0;
+    const j = await jobWorld({ nowMs: () => clock });
+    await tool(j.world, "run_background").run({ command: "sleep 999", why: "a long crawl" }, context());
+    clock = 12 * 60_000;
+    expect(j.world.now()).toContain("Background jobs running: j1 (12 min, a long crawl).");
+    (j.children[0] as FakeChild).emit("close", 0, null);
+    expect(j.events).toHaveLength(1);
+    expect(j.world.now()).not.toContain("Background jobs running");
+  });
+
+  it("refuses to start a job before the world is started, and on bad arguments", async () => {
+    const world = makeHarness().world;
+    expect((await tool(world, "run_background").run({ command: "a", why: "b" }, context())).refused?.code).toBe("not_ready");
+    const j = await jobWorld();
+    const start = tool(j.world, "run_background");
+    for (const args of [{ why: "b" }, { command: "a" }, { command: "a", why: "" }, { command: "a", why: "b", max_minutes: 0 }]) {
+      expect((await start.run(args, context())).refused?.code).toBe("bad_arguments");
+    }
+    expect(j.spawn).not.toHaveBeenCalled();
+  });
+
+  it("refuses a job whose command carries a listed term, and starts nothing", async () => {
+    writeFileSync(join(dir, "privacy.json"), JSON.stringify({ terms: [{ term: "Lantern Yard", category: "home" }] }));
+    const j = await jobWorld();
+    const receipt = await tool(j.world, "run_background").run({ command: "echo 'the Lantern Yard gate'", why: "a test" }, context());
+    expect(receipt.refused?.code).toBe("held_privacy");
+    expect(j.spawn).not.toHaveBeenCalled();
+  });
+});
+
+describe("keep_picture", () => {
+  /** Starts a world whose body records what it keeps, and returns the tool with the kept list. */
+  async function pictureWorld(): Promise<{ tool: Tool; kept: KeptPicture[] }> {
+    const kept: KeptPicture[] = [];
+    const world = makeHarness().world;
+    await world.start(() => undefined, pictureBody(kept));
+    return { tool: toolNamed(world, "keep_picture"), kept };
+  }
+
+  function homeFile(name: string, bytes: Uint8Array | string): string {
+    const folder = join(dir, "home", "plots");
+    mkdirSync(folder, { recursive: true });
+    const path = join(folder, name);
+    writeFileSync(path, bytes);
+    return path;
+  }
+
+  it("keeps a PNG from the home folder and names the id it was kept under", async () => {
+    const { tool, kept } = await pictureWorld();
+    homeFile("week.png", pngBytes());
+    const receipt = await tool.run({ path: "plots/week.png" }, context());
+    expect(receipt.ok).toBe(true);
+    expect(receipt.summary).toBe("Kept week.png on your shelf as m-ABCD2345. look shows it; say's attach sends it.");
+    expect(receipt.data).toMatchObject({ id: "m-ABCD2345", name: "week.png", bytes: 16 });
+    expect(kept).toHaveLength(1);
+    expect(kept[0]?.from).toEqual({ world: "sandbox", place: "sandbox:home" });
+    expect(kept[0]?.name).toBe("week.png");
+    expect(Array.from(kept[0]?.bytes ?? [])).toEqual(Array.from(pngBytes()));
+  });
+
+  it("resolves a path given with the sandbox home at its front the same way", async () => {
+    const { tool, kept } = await pictureWorld();
+    homeFile("x.png", pngBytes());
+    const receipt = await tool.run({ path: "/home/lar/plots/x.png" }, context());
+    expect(receipt.ok).toBe(true);
+    expect(kept[0]?.name).toBe("x.png");
+  });
+
+  it("keeps a picture under the name it is given", async () => {
+    const { tool, kept } = await pictureWorld();
+    homeFile("x.png", pngBytes());
+    const receipt = await tool.run({ path: "plots/x.png", name: "last week" }, context());
+    expect(receipt.summary).toContain("Kept last week on your shelf");
+    expect(kept[0]?.name).toBe("last week");
+  });
+
+  it("refuses a text file as not a picture", async () => {
+    const { tool, kept } = await pictureWorld();
+    homeFile("notes.txt", "these are words\n");
+    const receipt = await tool.run({ path: "plots/notes.txt" }, context());
+    expect(receipt.ok).toBe(false);
+    expect(receipt.refused?.code).toBe("not_a_picture");
+    expect(receipt.summary).toBe("plots/notes.txt is not a PNG, JPEG, GIF or WebP picture.");
+    expect(kept).toEqual([]);
+  });
+
+  it("refuses a path that climbs out of the home, and any other absolute path", async () => {
+    const { tool, kept } = await pictureWorld();
+    homeFile("x.png", pngBytes());
+    for (const path of ["../x.png", "plots/../../x.png", "/etc/x.png", "/home/lar/../x.png", "/home/lar"]) {
+      const receipt = await tool.run({ path }, context());
+      expect(receipt.ok).toBe(false);
+      expect(receipt.refused?.code).toBe("bad_arguments");
+    }
+    expect(kept).toEqual([]);
+  });
+
+  it("refuses a missing file and a folder", async () => {
+    const { tool } = await pictureWorld();
+    const missing = await tool.run({ path: "plots/gone.png" }, context());
+    expect(missing.refused?.code).toBe("not_found");
+    mkdirSync(join(dir, "home", "plots", "folder.png"), { recursive: true });
+    const folder = await tool.run({ path: "plots/folder.png" }, context());
+    expect(folder.refused?.code).toBe("not_a_file");
+  });
+
+  it("refuses a file over 8 MiB", async () => {
+    const { tool, kept } = await pictureWorld();
+    const big = Buffer.alloc(PICTURE_BYTES_MAX + 1);
+    pngBytes().forEach((byte, index) => (big[index] = byte));
+    homeFile("huge.png", big);
+    const receipt = await tool.run({ path: "plots/huge.png" }, context());
+    expect(receipt.ok).toBe(false);
+    expect(receipt.refused?.code).toBe("too_big");
+    expect(kept).toEqual([]);
+  });
+
+  it("refuses before the world is started", async () => {
+    const tool = toolNamed(makeHarness().world, "keep_picture");
+    const receipt = await tool.run({ path: "plots/x.png" }, context());
+    expect(receipt.refused?.code).toBe("not_started");
+  });
+
+  it.skipIf(process.platform === "win32")("refuses a symlink that points outside the home", async () => {
+    const { tool, kept } = await pictureWorld();
+    mkdirSync(join(dir, "home"), { recursive: true });
+    const outside = join(dir, "outside.png");
+    writeFileSync(outside, pngBytes());
+    symlinkSync(outside, join(dir, "home", "link.png"));
+    const receipt = await tool.run({ path: "link.png" }, context());
+    expect(receipt.ok).toBe(false);
+    expect(receipt.refused?.code).toBe("not_a_file");
+    expect(kept).toEqual([]);
   });
 });
 

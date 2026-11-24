@@ -1,9 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { parseSandboxFile, SANDBOX_DEFAULT_MAX_TIMEOUT_S, SANDBOX_DEFAULT_TIMEOUT_S } from "./config.js";
+import {
+  parseSandboxFile,
+  SANDBOX_DEFAULT_MAX_BACKGROUND_JOBS,
+  SANDBOX_DEFAULT_MAX_JOB_MINUTES,
+  SANDBOX_DEFAULT_MAX_TIMEOUT_S,
+  SANDBOX_DEFAULT_TIMEOUT_S,
+} from "./config.js";
 
 describe("sandbox.json", () => {
   it("fills in the defaults from the design", () => {
-    expect(parseSandboxFile({})).toEqual({ timeoutSeconds: 120, maxTimeoutSeconds: 900, body: true, network: "wall" });
+    expect(parseSandboxFile({})).toEqual({
+      timeoutSeconds: 120,
+      maxTimeoutSeconds: 900,
+      body: true,
+      network: "wall",
+      maxBackgroundJobs: 2,
+      maxJobMinutes: 120,
+    });
     expect(SANDBOX_DEFAULT_TIMEOUT_S).toBe(120);
     expect(SANDBOX_DEFAULT_MAX_TIMEOUT_S).toBe(900);
   });
@@ -14,6 +27,8 @@ describe("sandbox.json", () => {
       maxTimeoutSeconds: 900,
       body: true,
       network: "wall",
+      maxBackgroundJobs: 2,
+      maxJobMinutes: 120,
     });
     expect(parseSandboxFile({ bwrapPath: "  /opt/bin/bwrap " })).toEqual({
       timeoutSeconds: 120,
@@ -21,11 +36,20 @@ describe("sandbox.json", () => {
       bwrapPath: "/opt/bin/bwrap",
       body: true,
       network: "wall",
+      maxBackgroundJobs: 2,
+      maxJobMinutes: 120,
     });
   });
 
   it("keeps the default timeout within a lower maximum when only the maximum is set", () => {
-    expect(parseSandboxFile({ maxTimeoutSeconds: 60 })).toEqual({ timeoutSeconds: 60, maxTimeoutSeconds: 60, body: true, network: "wall" });
+    expect(parseSandboxFile({ maxTimeoutSeconds: 60 })).toEqual({
+      timeoutSeconds: 60,
+      maxTimeoutSeconds: 60,
+      body: true,
+      network: "wall",
+      maxBackgroundJobs: 2,
+      maxJobMinutes: 120,
+    });
   });
 
   it("turns the body off only when it says false, and refuses anything but true or false", () => {
@@ -52,6 +76,30 @@ describe("sandbox.json", () => {
     expect(() => parseSandboxFile({ bwrapPath: "   " })).toThrow(/bwrapPath/);
     expect(() => parseSandboxFile({ bwrapPath: 7 })).toThrow(/bwrapPath/);
     expect(() => parseSandboxFile({ bwrapPath: "/usr/bin/bwrap\0" })).toThrow(/bwrapPath/);
+  });
+});
+
+describe("sandbox.json: the background job ceilings", () => {
+  it("defaults to 2 jobs and 120 minutes", () => {
+    const settings = parseSandboxFile({});
+    expect(settings.maxBackgroundJobs).toBe(2);
+    expect(settings.maxJobMinutes).toBe(120);
+    expect(SANDBOX_DEFAULT_MAX_BACKGROUND_JOBS).toBe(2);
+    expect(SANDBOX_DEFAULT_MAX_JOB_MINUTES).toBe(120);
+  });
+
+  it("reads both keys within their ranges", () => {
+    expect(parseSandboxFile({ maxBackgroundJobs: 4, maxJobMinutes: 720 })).toMatchObject({ maxBackgroundJobs: 4, maxJobMinutes: 720 });
+    expect(parseSandboxFile({ maxBackgroundJobs: 1, maxJobMinutes: 1 })).toMatchObject({ maxBackgroundJobs: 1, maxJobMinutes: 1 });
+  });
+
+  it("refuses a job count outside 1 to 4, and minutes outside 1 to 720", () => {
+    for (const bad of [0, 5, 1.5, "2", null, Number.NaN]) {
+      expect(() => parseSandboxFile({ maxBackgroundJobs: bad })).toThrow(/maxBackgroundJobs must be a whole number from 1 to 4/);
+    }
+    for (const bad of [0, 721, 2.5, "60", null, Number.NaN]) {
+      expect(() => parseSandboxFile({ maxJobMinutes: bad })).toThrow(/maxJobMinutes must be a whole number from 1 to 720/);
+    }
   });
 });
 

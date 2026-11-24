@@ -14,7 +14,22 @@ export const SANDBOX_NETWORKS = ["wall", "host", "none"] as const;
 export type SandboxNetwork = (typeof SANDBOX_NETWORKS)[number];
 export const SANDBOX_DEFAULT_NETWORK: SandboxNetwork = "wall";
 
-const ALLOWED = ["timeoutSeconds", "maxTimeoutSeconds", "bwrapPath", "body", "network", "pastaPath", "ipPath"];
+/** The most background jobs the Lar may have running at once, when the file leaves it out. */
+export const SANDBOX_DEFAULT_MAX_BACKGROUND_JOBS = 2;
+/** The most minutes a background job may run, when the file leaves it out. */
+export const SANDBOX_DEFAULT_MAX_JOB_MINUTES = 120;
+
+const ALLOWED = [
+  "timeoutSeconds",
+  "maxTimeoutSeconds",
+  "bwrapPath",
+  "body",
+  "network",
+  "pastaPath",
+  "ipPath",
+  "maxBackgroundJobs",
+  "maxJobMinutes",
+];
 
 export type SandboxSettings = {
   /** The default timeout for a command, in seconds. */
@@ -31,6 +46,10 @@ export type SandboxSettings = {
   pastaPath?: string;
   /** Where to find ip (iproute2), used in "wall" mode. Left out, /usr/sbin/ip, then /sbin/ip. */
   ipPath?: string;
+  /** How many background jobs may run at once, from 1 to 4. Defaults to 2. */
+  maxBackgroundJobs?: number;
+  /** How long one background job may run, in whole minutes, from 1 to 720. Defaults to 120. */
+  maxJobMinutes?: number;
 };
 
 /** Checks an already-parsed sandbox.json and fills in the defaults. Throws a plain error naming the first wrong field. */
@@ -64,7 +83,20 @@ export function parseSandboxFile(value: unknown): SandboxSettings {
   if (pasta !== undefined) settings.pastaPath = pasta;
   const ip = programPath(root, "ipPath");
   if (ip !== undefined) settings.ipPath = ip;
+  // The job ceilings are always filled in, so the world never has to guess one.
+  settings.maxBackgroundJobs = wholeInRange(root, "maxBackgroundJobs", 1, 4) ?? SANDBOX_DEFAULT_MAX_BACKGROUND_JOBS;
+  settings.maxJobMinutes = wholeInRange(root, "maxJobMinutes", 1, 720) ?? SANDBOX_DEFAULT_MAX_JOB_MINUTES;
   return settings;
+}
+
+/** A whole number from `low` to `high`, when the file gives one; undefined when the key is left out. */
+function wholeInRange(root: Record<string, unknown>, key: string, low: number, high: number): number | undefined {
+  const value = root[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < low || value > high) {
+    throw new Error(`${SANDBOX_FILE}: ${key} must be a whole number from ${low} to ${high}.`);
+  }
+  return value;
 }
 
 /** A program's path, trimmed, when the file gives one; undefined when the key is left out. */
