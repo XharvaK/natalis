@@ -5,6 +5,7 @@ Frame: u32 header length, header JSON (utf-8), u32 body length, body bytes.
 The protocol is organ/PROTOCOL.md.
 """
 
+import collections
 import ctypes
 import ctypes.util
 import json
@@ -65,18 +66,22 @@ def _opus():
 class Encoder:
     def __init__(self, channels, bitrate):
         op = _opus()
+        self.op = op
+        self.h = None
         err = ctypes.c_int()
         self.h = op.opus_encoder_create(SR_OUT, channels, OPUS_APPLICATION_AUDIO, ctypes.byref(err))
         if not self.h or err.value != 0:
+            self.h = None
             raise RuntimeError(f"opus_encoder_create failed: {err.value}")
         result = op.opus_encoder_ctl(ctypes.c_void_p(self.h), OPUS_SET_BITRATE, ctypes.c_int(int(bitrate)))
         if result != 0:
             raise RuntimeError(f"opus_encoder_ctl failed: {result}")
-        self.op = op
         self.channels = channels
         self.out = ctypes.create_string_buffer(4000)
 
     def encode(self, mono_int16):
+        if self.h is None:
+            raise RuntimeError("encoder is closed")
         pcm = np.repeat(mono_int16, self.channels) if self.channels == 2 else mono_int16
         pcm = np.ascontiguousarray(pcm, dtype=np.int16)
         n = self.op.opus_encode(self.h, pcm.ctypes.data_as(ctypes.POINTER(ctypes.c_int16)), FRAME, self.out, 4000)
@@ -84,24 +89,50 @@ class Encoder:
             raise RuntimeError(f"opus_encode failed: {n}")
         return self.out.raw[:n]
 
+    def close(self):
+        if self.h is not None:
+            h, self.h = self.h, None
+            self.op.opus_encoder_destroy(h)
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
 
 class Decoder:
     def __init__(self, channels=2):
         op = _opus()
+        self.op = op
+        self.h = None
         err = ctypes.c_int()
         self.h = op.opus_decoder_create(SR_OUT, channels, ctypes.byref(err))
         if not self.h or err.value != 0:
+            self.h = None
             raise RuntimeError(f"opus_decoder_create failed: {err.value}")
-        self.op = op
         self.channels = channels
         self.buf = (ctypes.c_int16 * (5760 * channels))()
 
     def decode(self, packet):
+        if self.h is None:
+            raise RuntimeError("decoder is closed")
         n = self.op.opus_decode(self.h, packet, len(packet), self.buf, 5760, 0)
         if n < 0:
             raise RuntimeError(f"opus_decode failed: {n}")
         pcm = np.frombuffer(self.buf, dtype=np.int16, count=n * self.channels).astype(np.float32) / 32768
         return pcm.reshape(-1, self.channels).mean(axis=1)
+
+    def close(self):
+        if self.h is not None:
+            h, self.h = self.h, None
+            self.op.opus_decoder_destroy(h)
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 def lookahead():
@@ -283,8 +314,9 @@ class Utterance:
         self.pos = 0  # samples already encoded
 
 
+CANCELLED_MAX = 256
 utts = {}
-cancelled = set()  # utterances flushed by a barge-in: chunks still queued for them are dropped
+cancelled = collections.OrderedDict()  # the newest utterances flushed by a barge-in
 
 LOCK = threading.Lock()  # guards the utterance queues and the pipe
 
@@ -427,12 +459,17 @@ def op_frames(header, body):
 
 def op_flush(header, body):
     utt = _str_field(header, "utt")
-    cancelled.add(utt)
+    cancelled[utt] = None
+    cancelled.move_to_end(utt)
+    while len(cancelled) > CANCELLED_MAX:
+        cancelled.popitem(last=False)
     u = utts.pop(utt, None)
     if u is None:
         return {"op": "flushed", "utt": utt, "pos_ms": 0, "dropped_ms": 0}, b""
-    return {"op": "flushed", "utt": utt, "pos_ms": round(u.pos / SR_OUT * 1000),
-            "dropped_ms": round(len(u.pcm) / SR_OUT * 1000)}, b""
+    reply = {"op": "flushed", "utt": utt, "pos_ms": round(u.pos / SR_OUT * 1000),
+             "dropped_ms": round(len(u.pcm) / SR_OUT * 1000)}
+    u.enc.close()
+    return reply, b""
 
 
 def op_transcribe(header, body):
@@ -446,30 +483,33 @@ def op_transcribe(header, body):
     # One decoder for the whole message: Opus carries state from packet to packet. Only the first max_s seconds are
     # kept in memory; the rest is decoded to count the message's length, then dropped.
     decoder = Decoder(channels)
-    keep = int(max_s * SR_OUT)
-    parts, kept, total = [], 0, 0
-    for packet in packets:
-        pcm = decoder.decode(packet)
-        total += len(pcm)
-        if kept < keep:
-            parts.append(pcm[:keep - kept])
-            kept += len(parts[-1])
-    audio = np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
-    audio16 = Down3().push(audio) if len(audio) else np.zeros(0, dtype=np.float32)
-    audio16 = audio16[:int(max_s * SR_HEAR)]
-    t1 = time.perf_counter()
-    texts = []
-    for piece in cut_pieces(audio16):
-        s = RECOGNIZER.create_stream()
-        s.accept_waveform(SR_HEAR, np.asarray(piece, dtype=np.float32))
-        RECOGNIZER.decode_stream(s)
-        text = s.result.text.strip()
-        if text:
-            texts.append(text)
-    t2 = time.perf_counter()
-    return {"op": "transcript", "text": " ".join(texts), "audio_ms": round(total / 48),
-            "heard_ms": round(len(audio16) / 16), "model": MODEL_NAME,
-            "ms": {"decode": round((t1 - t0) * 1000, 1), "recognize": round((t2 - t1) * 1000, 1)}}, b""
+    try:
+        keep = int(max_s * SR_OUT)
+        parts, kept, total = [], 0, 0
+        for packet in packets:
+            pcm = decoder.decode(packet)
+            total += len(pcm)
+            if kept < keep:
+                parts.append(pcm[:keep - kept])
+                kept += len(parts[-1])
+        audio = np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
+        audio16 = Down3().push(audio) if len(audio) else np.zeros(0, dtype=np.float32)
+        audio16 = audio16[:int(max_s * SR_HEAR)]
+        t1 = time.perf_counter()
+        texts = []
+        for piece in cut_pieces(audio16):
+            s = RECOGNIZER.create_stream()
+            s.accept_waveform(SR_HEAR, np.asarray(piece, dtype=np.float32))
+            RECOGNIZER.decode_stream(s)
+            text = s.result.text.strip()
+            if text:
+                texts.append(text)
+        t2 = time.perf_counter()
+        return {"op": "transcript", "text": " ".join(texts), "audio_ms": round(total / 48),
+                "heard_ms": round(len(audio16) / 16), "model": MODEL_NAME,
+                "ms": {"decode": round((t1 - t0) * 1000, 1), "recognize": round((t2 - t1) * 1000, 1)}}, b""
+    finally:
+        decoder.close()
 
 
 # ---------------------------------------------------------------- the pipe

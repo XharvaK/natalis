@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -48,7 +49,19 @@ def _read_exact(stream, n):
     return data
 
 
+def _libopus_available():
+    try:
+        voice_organ._opus()
+    except OSError:
+        return False
+    return True
+
+
+HAS_LIBOPUS = _libopus_available()
+
+
 class PureTests(unittest.TestCase):
+    @unittest.skipUnless(HAS_LIBOPUS, "libopus is not installed")
     def test_opus_round_trip(self):
         self._round_trip(1, 32000)
         self._round_trip(2, 64000)
@@ -126,6 +139,141 @@ class PureTests(unittest.TestCase):
         self.assertEqual(voice_organ.split_packets(body), [b"a", b"b" * 300, b""])
         with self.assertRaises(ValueError):
             voice_organ.split_packets(body[:-1])
+
+
+@unittest.skipUnless(HAS_LIBOPUS, "libopus is not installed")
+class CodecCloseTests(unittest.TestCase):
+    def test_encoder_close_twice_is_safe_and_encode_after_close_raises(self):
+        enc = voice_organ.Encoder(1, 32000)
+        enc.close()
+        enc.close()
+        self.assertIsNone(enc.h)
+        with self.assertRaisesRegex(RuntimeError, "encoder is closed"):
+            enc.encode(np.zeros(FRAME, dtype=np.int16))
+
+    def test_decoder_close_twice_is_safe_and_decode_after_close_raises(self):
+        dec = voice_organ.Decoder(1)
+        dec.close()
+        dec.close()
+        self.assertIsNone(dec.h)
+        with self.assertRaisesRegex(RuntimeError, "decoder is closed"):
+            dec.decode(b"")
+
+
+class _FakeDecoder:
+    def __init__(self, channels=2):
+        self.channels = channels
+        self.closed = False
+
+    def decode(self, packet):
+        return np.zeros(64, dtype=np.float32)
+
+    def close(self):
+        self.closed = True
+
+
+class _FailingDecoder(_FakeDecoder):
+    def decode(self, packet):
+        raise RuntimeError("a packet libopus cannot decode")
+
+
+class _FakeResult:
+    text = ""
+
+
+class _FakeStream:
+    result = _FakeResult()
+
+    def accept_waveform(self, sample_rate, audio):
+        pass
+
+
+class _FakeRecognizer:
+    def create_stream(self):
+        return _FakeStream()
+
+    def decode_stream(self, stream):
+        pass
+
+
+class EncoderLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        voice_organ.utts.clear()
+        voice_organ.cancelled.clear()
+
+    def tearDown(self):
+        for u in voice_organ.utts.values():
+            u.enc.close()
+        voice_organ.utts.clear()
+        voice_organ.cancelled.clear()
+
+    @unittest.skipUnless(HAS_LIBOPUS, "libopus is not installed")
+    def test_a_final_drain_keeps_the_utterance_for_the_hosts_empty_poll(self):
+        utt = "final-drain"
+        u = voice_organ.Utterance(1, 32000)
+        u.pcm = _tone(SR_OUT, 440.0, seconds=0.1)
+        voice_organ.utts[utt] = u
+
+        reply, _ = voice_organ.op_frames({"utt": utt, "n": 1000, "final": True}, b"")
+        self.assertEqual(len(reply["lens"]), 5)
+        self.assertEqual(reply["left_ms"], 0)
+        self.assertIn(utt, voice_organ.utts)
+
+        again, _ = voice_organ.op_frames({"utt": utt, "n": 1000, "final": True}, b"")
+        self.assertEqual(again["lens"], [])
+        self.assertIn(utt, voice_organ.utts)
+
+    @unittest.skipUnless(HAS_LIBOPUS, "libopus is not installed")
+    def test_flush_closes_the_utterance_encoder(self):
+        utt = "flush-closes"
+        u = voice_organ.Utterance(1, 32000)
+        u.pcm = _tone(SR_OUT, 440.0, seconds=0.05)
+        enc = u.enc
+        voice_organ.utts[utt] = u
+
+        reply, _ = voice_organ.op_flush({"utt": utt}, b"")
+        self.assertEqual(reply["op"], "flushed")
+        self.assertNotIn(utt, voice_organ.utts)
+        self.assertIsNone(enc.h)
+        with self.assertRaisesRegex(RuntimeError, "encoder is closed"):
+            enc.encode(np.zeros(FRAME, dtype=np.int16))
+
+    def test_cancelled_keeps_the_newest_256(self):
+        for i in range(300):
+            voice_organ.op_flush({"utt": f"u{i}"}, b"")
+        self.assertEqual(len(voice_organ.cancelled), 256)
+        self.assertEqual(list(voice_organ.cancelled), [f"u{i}" for i in range(44, 300)])
+        self.assertNotIn("u43", voice_organ.cancelled)
+        self.assertIn("u299", voice_organ.cancelled)
+
+    def test_transcribe_closes_its_decoder(self):
+        made = []
+
+        def make_decoder(channels=2):
+            decoder = _FakeDecoder(channels)
+            made.append(decoder)
+            return decoder
+
+        with mock.patch.object(voice_organ, "Decoder", make_decoder), \
+                mock.patch.object(voice_organ, "RECOGNIZER", _FakeRecognizer()):
+            reply, _ = voice_organ.op_transcribe({"channels": 1}, struct.pack(">H", 1) + b"x")
+        self.assertEqual(reply["op"], "transcript")
+        self.assertEqual(len(made), 1)
+        self.assertTrue(made[0].closed)
+
+    def test_transcribe_closes_its_decoder_when_a_packet_fails(self):
+        made = []
+
+        def make_decoder(channels=2):
+            decoder = _FailingDecoder(channels)
+            made.append(decoder)
+            return decoder
+
+        with mock.patch.object(voice_organ, "Decoder", make_decoder):
+            with self.assertRaisesRegex(RuntimeError, "cannot decode"):
+                voice_organ.op_transcribe({"channels": 1}, struct.pack(">H", 1) + b"x")
+        self.assertEqual(len(made), 1)
+        self.assertTrue(made[0].closed)
 
 
 @unittest.skipUnless(os.environ.get("NATALIS_ORGAN_MODELS"),
