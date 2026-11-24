@@ -501,6 +501,11 @@ export interface World {
    * keeps it across reconnects. Rejects when it cannot set it. A world with no such line does not define it.
    */
   status?(text: string): Promise<void>;
+  /**
+   * Optional: told when a live turn for one of this world's places starts (true) and ends (false). A world may show it,
+   * as Discord shows typing. It never changes what the turn does.
+   */
+  turnRunning?(place: string, running: boolean): void;
   /** True when a place is the owner's own place in this world (the owner's DM, the command line). Default: not. */
   isOwnerPlace?(place: string): boolean;
   /** Extra tools this world offers (react, act_in_game, ...). */

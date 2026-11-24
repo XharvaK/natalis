@@ -6288,10 +6288,10 @@ describe("as_voice on say", () => {
     });
     const sayRow = allRows(entity).find((row) => row.kind === "say" && row.thread === "discord:room:general");
     expect(sayRow?.text).toBe("See you at nine. 😀");
-    expect(sayRow?.data).toEqual({ voiceMessage: { seconds: 7.2 } });
+    expect(sayRow?.data).toEqual({ voiceMessage: { seconds: 7.2 }, refs: ["m1"] });
     const receipt = receiptsShownIn(model.requests[1]).find((item) => item["ok"] === true);
     expect(receipt?.summary).toBe(
-      "Said to discord:room:general as a voice message (7 s). Left out of speech: an emoji.",
+      "Said to discord:room:general as a voice message (m1) (7 s). Left out of speech: an emoji.",
     );
     expect(receipt?.data).toMatchObject({ voiceMessage: { seconds: 7.2, skipped: ["an emoji"] } });
   });

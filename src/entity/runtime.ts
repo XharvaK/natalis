@@ -145,6 +145,7 @@ export const WELCOME_FILE = "welcome.md";
 // Written the way a Lar is asked to write (nature.ts): one fact per sentence, plain words. A model copies the register it reads.
 export const HOW_YOU_ACT = [
   "You act only through your tools. To talk somewhere, call say with that place.",
+  "Each line of your river starts with its row number, such as #1234; mark, record_fact and recall take those numbers. A Discord line also names its messages, such as m42; react and say's reply_to take those.",
   "Silence is fine. When there is nothing to do now, call end_turn. You may call it in the same reply as your last " +
     "acts. If one of those acts is refused or held, the turn stays open so you can see why.",
   "You can wake yourself at any time, for any reason: once, every day or every week. You can also wake when your summoner comes online, starts a game, joins a voice channel, or when someone reacts to your message.",
@@ -1435,7 +1436,11 @@ class Runtime implements Entity {
           }
           this.due.delete(thread);
           this.cancelRetry(thread);
+          // A world may show that a turn is running in its place, as Discord shows typing. It never changes the turn.
+          const world = this.worldFor(thread);
+          if (world !== undefined) worldSaid(() => world.turnRunning?.(thread, true));
           const run = this.runThread(thread).finally(() => {
+            if (world !== undefined) worldSaid(() => world.turnRunning?.(thread, false));
             this.running.delete(thread);
             this.pump();
           });
@@ -3332,7 +3337,7 @@ class Runtime implements Entity {
     }));
     const ranked = rankRecall(candidates, this.nowMs()).slice(0, RECALL_LIMIT);
     const items: SectionItems = {
-      items: ranked.map(({ row }) => `[${this.stamp(row.atMs)} ${row.thread} ${who(row)}] ${shownRow(row)}`),
+      items: ranked.map(({ row }) => `[#${row.seq} ${this.stamp(row.atMs)} ${row.thread} ${who(row)}] ${shownRow(row)}`),
       keys: ranked.map(({ row }) => String(row.seq)),
       pointer: recallPointer,
     };
@@ -3499,7 +3504,13 @@ class Runtime implements Entity {
     // A bot's line says so, and a line a flood or loop hold kept from waking the Lar says what held it.
     const bot = row.data?.["bot"] === true ? " (bot)" : "";
     const held = typeof row.data?.["heldBy"] === "string" ? ` (held: ${row.data["heldBy"]})` : "";
-    return `[${this.clock(row.atMs)} ${who(row)}${outside}${bot}${held}] ${brief ? briefOf(row) : row.text ?? ""}`;
+    // The world's message refs: an event's own, or the refs a say came back with, so she can react and reply by them.
+    const named = stringsOf(row.kind === "say" ? row.data?.["refs"] : row.data?.["messageRefs"]);
+    const refs = named === undefined ? "" : ` ${named.join(" ")}`;
+    const replying = typeof row.data?.["replyToRef"] === "string" && row.data["replyToRef"] !== "" ? `, replying to ${row.data["replyToRef"]}` : "";
+    // A mention of her name in a room: in a DM every line is to her, so only a room says it.
+    const mentioned = row.data?.["mentionsHer"] === true && row.thread.startsWith("discord:room:") ? ", mentioned you" : "";
+    return `[#${row.seq} ${this.clock(row.atMs)} ${who(row)}${outside}${bot}${held}${refs}${replying}${mentioned}] ${brief ? briefOf(row) : row.text ?? ""}`;
   }
 
   /**
@@ -3612,13 +3623,13 @@ class Runtime implements Entity {
         {
           name: "say",
           description:
-            "Say words to a place. Give the place exactly as the event you answer named it (such as discord:room:<name> or discord:dm:<person>); a Discord say goes only to the place this turn answers. Before anything is sent the words are checked: secrets, your summoner's privacy list, and claims your own record contradicts are held back, and the receipt says why. If another of your threads said something in that place after this turn began, the say is held and the receipt says what was said and when. Set knowingly to true only to send words your record contradicts exactly as they are, or to send words anyway after a held say; it skips the honesty check and the check for another thread's words, never the others.",
+            "Say words to a place. Give the place exactly as the event you answer named it (such as discord:room:<name> or discord:dm:<person>); a turn woken by a Discord place says only there; any other turn (your own time, a game) may say in one Discord place. Before anything is sent the words are checked: secrets, your summoner's privacy list, and claims your own record contradicts are held back, and the receipt says why. If another of your threads said something in that place after this turn began, the say is held and the receipt says what was said and when. Set knowingly to true only to send words your record contradicts exactly as they are, or to send words anyway after a held say; it skips the honesty check and the check for another thread's words, never the others.",
           parameters: {
             type: "object",
             properties: {
               place: { type: "string", description: "The place to say it in." },
               text: { type: "string", description: "What to say." },
-              reply_to: { type: "string", description: "Optional. The id of the message you answer, if the world gives one." },
+              reply_to: { type: "string", description: "Optional. The message you answer, such as m42 (Discord) or the id another world gives." },
               attach: {
                 type: "array",
                 items: { type: "string" },
@@ -3893,6 +3904,8 @@ class Runtime implements Entity {
       }
       if (!receipt.ok) return receipt;
 
+      // The refs the world gave what it sent, so she can react to or reply to her own words without reading for them.
+      const refs = stringsOf(receipt.data?.["refs"]);
       // A voice say's receipt says how long it was and what speech left out; the river keeps the length only.
       let voiceSeconds: number | undefined;
       let voiceSkipped: string[] = [];
@@ -3920,10 +3933,17 @@ class Runtime implements Entity {
         place: place.value,
         text: [text.value, ...pictureLines].join("\n"),
         ...(asVoice
-          ? { data: { voiceMessage: voiceSeconds === undefined ? {} : { seconds: voiceSeconds } } }
+          ? {
+              data: {
+                voiceMessage: voiceSeconds === undefined ? {} : { seconds: voiceSeconds },
+                ...(refs === undefined ? {} : { refs }),
+              },
+            }
           : ids.length === 0
-            ? {}
-            : { data: { pictures: ids } }),
+            ? refs === undefined
+              ? {}
+              : { data: { refs } }
+            : { data: { pictures: ids, ...(refs === undefined ? {} : { refs }) } }),
         atMs: nowMs,
       });
       // Only the asks the turn saw are answered: a message that came in during the turn is still waiting.
@@ -3936,19 +3956,21 @@ class Runtime implements Entity {
       };
       this.saveState();
       const leftOut = voiceSkipped.length > 0 ? ` Left out of speech: ${voiceSkipped.join("; ")}.` : "";
+      const named = refs === undefined ? "" : ` (${refs.join(", ")})`;
       const summary = asVoice
         ? voiceSeconds === undefined
-          ? `Said to ${place.value} as a voice message.${leftOut}`
-          : `Said to ${place.value} as a voice message (${Math.round(voiceSeconds)} s).${leftOut}`
+          ? `Said to ${place.value} as a voice message${named}.${leftOut}`
+          : `Said to ${place.value} as a voice message${named} (${Math.round(voiceSeconds)} s).${leftOut}`
         : ids.length === 0
-          ? `Said to ${place.value}.`
-          : `Said to ${place.value} with ${ids.length} picture(s).`;
+          ? `Said to ${place.value}${named}.`
+          : `Said to ${place.value} with ${ids.length} picture(s)${named}.`;
       return {
         ok: true,
         summary,
         data: {
           place: place.value,
           chars: text.value.length,
+          ...(refs === undefined ? {} : { refs }),
           ...(ids.length === 0 ? {} : { pictures: ids }),
           ...(asVoice
             ? { voiceMessage: { ...(voiceSeconds === undefined ? {} : { seconds: voiceSeconds }), skipped: voiceSkipped } }
@@ -5417,6 +5439,12 @@ function shownRow(row: RiverRow): string {
 function who(row: RiverRow): string {
   if (row.kind === "say" && row.source === "self") return "you";
   return row.actor ?? row.source;
+}
+
+/** A world's message refs, when the value is a non-empty list of strings; undefined for anything else. */
+function stringsOf(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  return value.every((item): item is string => typeof item === "string") ? value : undefined;
 }
 
 /** U6: the weight a mark row carries, or undefined for every other note. */
