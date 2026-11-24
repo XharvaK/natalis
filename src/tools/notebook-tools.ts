@@ -328,6 +328,13 @@ const renameNote = (links: LinkStore | undefined): Tool => ({
     const from = notebookPathOf(path.value) ?? path.value;
     const target = notebookPathOf(to.value) ?? to.value;
     for (const note of [from, target]) {
+      if (FIXED_PLACE_NOTES.has(note.toLowerCase())) {
+        return refuse(
+          "fixed_place",
+          `${note} stays where it is, because the body reads it there. Edit it in place.`,
+          `${note} cannot be renamed or replaced by a rename.`,
+        );
+      }
       if (note === "trash" || note.startsWith("trash/")) {
         return refuse(
           "bad_arguments",
@@ -605,6 +612,10 @@ export function nearbyNotes(notebook: Notebook, path: string, text: string): str
  * Size cap on the core self note that is always in her context: character.md only (life.md has no cap, by the Owner's ruling). A change that would make one longer than its cap is
  * refused; a change that leaves it no longer is allowed, so a note already over the cap can still be trimmed.
  */
+/** Notes the body reads at a fixed path every turn. A rename may not move them away or put another note in their place
+ * (that would also skip the size cap on self/character.md). */
+const FIXED_PLACE_NOTES: ReadonlySet<string> = new Set(["self/character.md", "self/life.md"]);
+
 export const CORE_NOTE_CAPS: Readonly<Record<string, number>> = { "self/character.md": 8000 };
 
 /** Characters as Unicode code points: an emoji or an accented letter counts as one, whatever its bytes. */

@@ -229,6 +229,19 @@ describe("rename_note", () => {
     expect(notebook.log.some((entry) => entry.op === "rename")).toBe(false);
   });
 
+  it("keeps the character and life notes where the body reads them", async () => {
+    await notebook.write("notes/old.md", "Old words.\n", "fixture", "test");
+    await notebook.write("self/life.md", "# Life\n", "fixture", "test");
+
+    expect(
+      await run({ links }, "rename_note", { path: "self/life.md", to: "notes/life.md", why: "Move it." }),
+    ).toMatchObject({ ok: false, refused: { code: "fixed_place" } });
+    expect(
+      await run({ links }, "rename_note", { path: "notes/old.md", to: "SELF/Character.md", why: "Move it." }),
+    ).toMatchObject({ ok: false, refused: { code: "fixed_place" } });
+    expect(notebook.log.some((entry) => entry.op === "rename")).toBe(false);
+  });
+
   it("refuses a path in trash/ on either side", async () => {
     const out = await run({ links }, "rename_note", { path: "trash/kept.md", to: "notes/kept.md", why: "Bring it back." });
     expect(out).toMatchObject({ ok: false, refused: { code: "bad_arguments" } });

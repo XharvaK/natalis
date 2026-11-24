@@ -1,5 +1,6 @@
 // A notebook as a turn outside the summoner's place and her own thread sees it: private/ is left out of the list,
-// search and reads. Writes pass through unchanged; she can still keep things close from anywhere.
+// search and reads. Writes pass through unchanged; she can still keep things close from anywhere. A rename whose
+// source is hidden is refused as not found, so a private note cannot be moved into the open from here.
 
 import { NotebookError, type Notebook } from "../contracts.js";
 import { notebookPathOf } from "./git-notebook.js";

@@ -75,7 +75,7 @@ describe("runTurn: the two-turn tool loop", () => {
     expect(model.requests).toHaveLength(2);
     expect(model.requests[0]?.toolChoice).toBe("auto");
     expect(model.requests[0]?.effort).toBe("high");
-    expect(model.requests[0]?.tools?.map((t) => t.name)).toEqual(["read_note", "write_note", "edit_note", "append_note", "list_notes", "trash_note", "recall", "forget", END_TURN]);
+    expect(model.requests[0]?.tools?.map((t) => t.name)).toEqual(["read_note", "write_note", "edit_note", "append_note", "list_notes", "trash_note", "rename_note", "recall", "forget", END_TURN]);
     const second = model.requests[1]?.messages ?? [];
     const tools = toolMessages(second);
     expect(tools).toHaveLength(1);
