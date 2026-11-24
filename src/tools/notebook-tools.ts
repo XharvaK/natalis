@@ -578,7 +578,7 @@ function linksOf(
 const NEARBY_LIMIT = 5;
 
 /** Common words that say nothing about what a note is about (NIT-2). */
-const COMMON_WORDS: ReadonlySet<string> = new Set([
+export const COMMON_WORDS: ReadonlySet<string> = new Set([
   "about", "after", "again", "also", "back", "been", "before", "being", "come", "could", "does", "done", "down", "each",
   "even", "from", "have", "here", "into", "just", "know", "like", "made", "make", "many", "more", "most", "much", "must",
   "need", "note", "notes", "only", "other", "over", "said", "same", "some", "such", "than", "that", "their", "them", "then",

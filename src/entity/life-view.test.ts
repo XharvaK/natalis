@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { noteSections } from "../notebook/sections.js";
-import { editedStamp, lifeView } from "./life-view.js";
+import { editedStamp, lifeView, splitSectionCount } from "./life-view.js";
 
 // Invented people and places only.
 const LIFE = [
@@ -114,6 +114,25 @@ describe("the life view", () => {
     expect(view.hiddenSections.map((section) => section.heading)).toEqual(["## Work"]);
     expect(view.text).toContain(view.firstPart);
     expect(view.text).toContain("read_note self/life.md section: ## Work");
+  });
+
+  it("keeps a file with one heading whole over the switch, and says its view needs headings", () => {
+    const one = `# Life\n\n${"n".repeat(200)}`;
+    const view = lifeView(one, "Anything.", { switchChars: 100, viewChars: 50 });
+
+    expect(view.mode).toBe("whole");
+    expect(view.needsHeadings).toBe(true);
+    expect(view.text).toBe(one.trim());
+    expect(view.firstPart).toBe(one.trim());
+    expect(view.shownSections).toEqual([]);
+    expect(view.hiddenSections).toEqual([]);
+  });
+
+  it("counts the sections the switched view could split by", () => {
+    expect(splitSectionCount(`# Life\n\n${"n".repeat(200)}`)).toBe(0);
+    expect(splitSectionCount("# Life\n\nMy brief.\n\n## Work\n\nI bake bread.\n\n## Garden\n\nI grow beans.\n")).toBe(2);
+    expect(splitSectionCount("My brief.\n\n## Work\n\nI bake bread.\n\n## Garden\n\nI grow beans.\n")).toBe(2);
+    expect(splitSectionCount("My brief.\n")).toBe(0);
   });
 
   it("keeps a file with no headings whole and says the view needs headings", () => {

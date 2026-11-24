@@ -93,6 +93,16 @@ export function lifeView(source: string, query: string, options: LifeViewOptions
   const firstEnd = startsWithHeading ? (sections[1]?.start ?? source.length) : preambleEnd;
   const firstPart = source.slice(0, firstEnd).trim();
   const remaining = startsWithHeading ? sections.slice(1) : sections;
+  if (remaining.length === 0) {
+    return {
+      text: stampWhole(whole, sections, options.stampOf),
+      mode: "whole",
+      firstPart: whole,
+      shownSections: [],
+      hiddenSections: [],
+      needsHeadings: over,
+    };
+  }
   const ranked = rankSections(remaining, query);
 
   const shown: NoteSection[] = [];
@@ -124,6 +134,18 @@ export function lifeView(source: string, query: string, options: LifeViewOptions
     hiddenSections: hidden,
     needsHeadings: false,
   };
+}
+
+/**
+ * The number of sections `lifeView` could split by: every section, minus the first when the file starts with a
+ * heading, which is the first part it always shows whole.
+ */
+export function splitSectionCount(source: string): number {
+  const sections = noteSections(source);
+  if (sections.length === 0) return 0;
+  const preambleEnd = sections[0]?.start ?? source.length;
+  const startsWithHeading = source.slice(0, preambleEnd).trim() === "";
+  return startsWithHeading ? sections.length - 1 : sections.length;
 }
 
 /**

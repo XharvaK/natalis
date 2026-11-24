@@ -42,6 +42,11 @@ export interface SqliteRiver extends River {
   read(query: RiverQuery): StoredRiverRow[];
   search(text: string, options?: { limit?: number; thread?: string }): StoredRiverHit[];
   /**
+   * How many river rows each term appears in, read from the index. Terms not found are absent, so a caller counts them
+   * as 0. The LIKE mode has no index to count and returns an empty map.
+   */
+  termCounts(terms: readonly string[]): Map<string, number>;
+  /**
    * Writes one tombstone row with an explicit time, for an importer that carries forgets over from another
    * system. The row has no text; its data says what was forgotten. Ordinary code uses forget(), not this.
    */
@@ -174,6 +179,13 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
         db.exec("ROLLBACK");
         throw error;
       }
+    }
+
+    // The index's own term table: one row per term, with the number of indexed rows that hold it. It follows every
+    // insert and delete of river_fts, so a count is always current. It lives in the connection's temp schema: the
+    // river file's own tables are read by tools that refuse one they do not know.
+    if (fts && options.forceNoFts !== true) {
+      db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS temp.river_fts_vocab USING fts5vocab(main, river_fts, 'row')");
     }
 
     // Derived stores live in this same file, so their erase is in the forget transaction. The river's own version
@@ -330,6 +342,23 @@ export function openRiver(path: string | ":memory:", options: OpenRiverOptions =
           const records = db.prepare(sql).all(...params) as unknown as RowRecord[];
           // No relevance score in this mode; results are newest first.
           return records.map((record) => ({ row: toStored(record), score: 0 }));
+        },
+
+        termCounts(terms: readonly string[]): Map<string, number> {
+          ensureOpen();
+          const counts = new Map<string, number>();
+          if (!useFts) return counts;
+          const wanted = [...new Set(terms)];
+          // The FTS5 vocab table is read in chunks, so one call never binds more than 50 terms to one query.
+          for (let at = 0; at < wanted.length; at += 50) {
+            const chunk = wanted.slice(at, at + 50);
+            const marks = chunk.map(() => "?").join(", ");
+            const rows = db
+              .prepare(`SELECT term, doc FROM temp.river_fts_vocab WHERE term IN (${marks})`)
+              .all(...chunk) as unknown as Array<{ term: string; doc: number }>;
+            for (const row of rows) counts.set(row.term, Number(row.doc));
+          }
+          return counts;
         },
 
         forget(match: { seqs?: number[]; text?: string }, by: "owner" | "self", reason: string): number {

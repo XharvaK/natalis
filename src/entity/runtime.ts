@@ -66,6 +66,7 @@ import { checkRiver } from "../river/integrity.js";
 import { indexedRiver, ViewIndex, viewKeyOfRow } from "../river/view-index.js";
 import { createSecretScanner, guardModel, guardNotebook, guardRiver, KNOWN_VALUE_KIND } from "../secrets/index.js";
 import { notebookTools } from "../tools/index.js";
+import { COMMON_WORDS } from "../tools/notebook-tools.js";
 import { factsTools } from "../tools/facts-tools.js";
 import { linksTools } from "../tools/links-tools.js";
 import { observationsTools } from "../tools/observations-tools.js";
@@ -130,10 +131,9 @@ import { isStopOn, readStop } from "./stop.js";
 import { clockOf, firstDailyOccurrence, localMinuteOf, instantOfLocal, isWakeRepeat, nextOccurrence, parseAtIso, parseClock, WAKE_LIMIT, type WakeRepeat } from "./wake-schedule.js";
 import { DEFAULT_LIFE_VIEW_CHARS, DEFAULT_LIFE_WARN_CHARS, DEFAULT_RHYTHM } from "./config.js";
 import { MEMORY_TOOLS_LINE, settingsChanges, settingsNoteText, settingsView } from "./settings-change.js";
-import { charCount, editedStamp, lifeView } from "./life-view.js";
+import { charCount, editedStamp, lifeView, splitSectionCount } from "./life-view.js";
 import { bodyNotesBlock, domusReceipts } from "./body-notes.js";
 import type { NoteSection } from "../notebook/sections.js";
-import { noteSections } from "../notebook/sections.js";
 import { proposalsDigest, PROPOSALS_FOLDER, type ProposalDigest } from "../notebook/proposals-digest.js";
 import { bodyChangesNote, type BodyChanges } from "./body-changes.js";
 import { writeFileAtomic } from "../fsutil/write-atomic.js";
@@ -292,7 +292,14 @@ type MarkedEntry = { row: RiverRow; weight: number };
 /** U6: the marked rows a reflection turn shows, and when the oldest mark in this budget window was written. */
 type MarkedWindow = { entries: MarkedEntry[]; windowStartAtMs: number };
 const RECALL_LIMIT = 8;
-const RECALL_WORDS = 4;
+const RECALL_WORDS = 8;
+/** Conversational words a message brings that say nothing about what to remember (Q19). */
+const RECALL_STOP: ReadonlySet<string> = new Set([
+  "yeah", "okay", "really", "think", "thought", "maybe", "something", "anything", "everything", "nothing", "going",
+  "doing", "getting", "look", "looked", "looking", "tell", "told", "says", "still", "well", "good", "great", "right",
+  "sure", "because", "though", "since", "until", "ever", "never", "always", "pretty", "kind", "sort", "stuff",
+  "yours", "ours", "hers", "didn", "doesn", "wasn", "haven", "isn", "aren", "won", "can", "let", "got", "get", "yes",
+]);
 /** How much of a receipt's returned data recall shows. */
 const RECEIPT_SHOW = 200;
 const MOOD_LIMIT = 128;
@@ -417,7 +424,8 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
     else if (guard.action === "refuse" && worlds.length > 0) throw new CopyGuardRefused();
   }
   // Credentials never enter memory or a model request: the river, notebook and model are guarded at the boundary.
-  const guarded = guardRiver(openRiver(join(dir, "river.db"), { nowMs }), scanner);
+  const opened = openRiver(join(dir, "river.db"), { nowMs });
+  const guarded = guardRiver(opened, scanner);
   // H: hooks observe outside the guard, so they see only scanned rows. A hook's failure goes to stderr, never back
   // into the river, so a hook that always throws cannot feed itself.
   const river =
@@ -481,6 +489,7 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
     dir,
     privacy,
     river,
+    termCounts: (terms) => opened.termCounts(terms),
     notebook,
     state,
     shelf,
@@ -870,6 +879,11 @@ type RuntimeInit = {
   dir: string;
   privacy: PrivacyWatch;
   river: River;
+  /**
+   * Q19: how many river rows each word appears in. The guard and observer wrappers keep a fixed list of river methods,
+   * so the count is passed from the river as it was opened.
+   */
+  termCounts: (terms: readonly string[]) => Map<string, number>;
   notebook: Notebook;
   state: EntityState;
   shelf: Shelf;
@@ -902,6 +916,8 @@ type NonLiveRun = {
 
 class Runtime implements Entity {
   readonly river: River;
+  /** Q19: how many river rows each recall word appears in. */
+  private readonly termCountsOf: (terms: readonly string[]) => Map<string, number>;
   readonly notebook: Notebook;
   /** The newest view rows of each view key, in memory (see newestViews). */
   private readonly viewIndex: ViewIndex;
@@ -958,6 +974,8 @@ class Runtime implements Entity {
   private readonly due = new Set<string>();
   /** The turn running now, per thread. One at a time per thread; threads run in parallel. */
   private readonly running = new Map<string, Promise<void>>();
+  /** When each thread's running turn started, so the board can name the threads in a turn now. */
+  private readonly runningSince = new Map<string, number>();
   /** Non-live turns waiting for the mind lock, by thread: when each was queued and its drop timer. */
   private readonly pendingNonLive = new Map<string, { atMs: number; waitMs: number; timer: ReturnType<typeof setTimeout> }>();
   /** The non-live turn running now. While it runs, pump starts nothing until it is released. */
@@ -1068,6 +1086,7 @@ class Runtime implements Entity {
     this.window = this.windowFor(this.worlds);
     const indexed = indexedRiver(init.river, this.viewIndex);
     this.river = this.dryRun ? indexed : this.windowedRiver(indexed);
+    this.termCountsOf = init.termCounts;
     this.ledger = openLedger(join(init.dir, RIVER_LEDGER_FILE));
     this.grants = openGrants(init.dir);
     this.facts = openFacts(join(init.dir, "river.db"));
@@ -1092,7 +1111,7 @@ class Runtime implements Entity {
       return withWorld(world.id, own);
     }).map((tool) => this.gateWorldTool(tool));
     this.tools = [
-      ...withWorld(BODY_WORLD, notebookTools({ links: this.links })),
+      ...withWorld(BODY_WORLD, notebookTools({ links: this.links, privateView: (thread) => this.seesPrivate(thread) })),
       ...withWorld(
         BODY_WORLD,
         factsTools(this.facts, {
@@ -1442,9 +1461,11 @@ class Runtime implements Entity {
           const run = this.runThread(thread).finally(() => {
             if (world !== undefined) worldSaid(() => world.turnRunning?.(thread, false));
             this.running.delete(thread);
+            this.runningSince.delete(thread);
             this.pump();
           });
           this.running.set(thread, run);
+          this.runningSince.set(thread, this.nowMs());
         }
         if (this.nonLiveRunning === undefined && this.running.size === 0) this.startPendingNonLive();
       }
@@ -1488,6 +1509,7 @@ class Runtime implements Entity {
     const run = this.runNonLive(state);
     state.run = run;
     this.running.set(thread, run);
+    this.runningSince.set(thread, this.nowMs());
   }
 
   /** Never rejects: a failed non-live turn is recorded like a live one, so the scheduler stays up. */
@@ -1503,6 +1525,7 @@ class Runtime implements Entity {
       }
     } finally {
       this.running.delete(state.thread);
+      this.runningSince.delete(state.thread);
       if (this.nonLiveRunning === state) {
         this.nonLiveRunning = undefined;
         this.nonLiveWaitMs = NON_LIVE_WAIT_MS;
@@ -2277,7 +2300,7 @@ class Runtime implements Entity {
     const limit = this.config.limits?.lifeWarnChars ?? DEFAULT_LIFE_WARN_CHARS;
     const headsUpAt = Math.ceil((limit * 4) / 5);
     const over = chars >= limit;
-    const headings = noteSections(text).length;
+    const headings = splitSectionCount(text);
     const note = (phase: string, body: string): void => {
       this.river.append({
         thread: "self",
@@ -2308,7 +2331,7 @@ class Runtime implements Entity {
           this.lifeHeadingsNoted = true;
           note(
             "needs_headings",
-            `Your life file is ${withCommas(chars)} characters, at or over the switch size of ${withCommas(limit)}, but it has no headings, so it is still shown whole. Add headings so it can show its first part and the parts that matter to each conversation instead of the whole file.`,
+            `Your life file is ${withCommas(chars)} characters, at or over the switch size of ${withCommas(limit)}, but it has no ## sections below its title, so it is still shown whole. Add ## headings so it can show its first part and the parts that matter to each conversation instead of the whole file.`,
           );
         }
       } else {
@@ -2373,9 +2396,7 @@ class Runtime implements Entity {
       viewChars: this.config.limits?.lifeViewChars ?? DEFAULT_LIFE_VIEW_CHARS,
       stampOf: this.lifeStamps(body),
     });
-    const text = view.text === "" ? LIFE_STUB.trim() : view.text;
-    const notes = bodyNotesBlock(this.receiptLines());
-    return notes === "" ? text : `${text}\n\n${notes}`;
+    return view.text === "" ? LIFE_STUB.trim() : view.text;
   }
 
   /** N2c and N3a: the host's receipts for the states it can check, cached until the river grows. */
@@ -2891,9 +2912,15 @@ class Runtime implements Entity {
       { name: "privacy list", text: privacyText(this.privacyNow()), priority: 100, core: true, cls: "notes" },
       this.indexSection(thread),
     ];
+    // N2c: the host's receipts change as the river grows, so they belong in the turn part with the now board, not in
+    // the cached "your life" section: one new receipt would otherwise spend the prompt cache on every thread.
+    const bodyNotes = bodyNotesBlock(this.receiptLines());
     // What changes every turn goes in the user message, after the new rows: the now board, the time facts, then recall.
     const changing: Section[] = [
       { name: "now", text: this.nowBoard(thread, nowMs, snapshot), priority: 100, core: true, cls: "turn" },
+      ...(bodyNotes === ""
+        ? []
+        : [{ name: "body notes", text: bodyNotes, priority: 100, core: true, cls: "turn" as const }]),
       {
         ...timeFacts({
           nowMs,
@@ -3099,6 +3126,16 @@ class Runtime implements Entity {
       const lastSay = this.river.read({ thread: name, kinds: ["say"], newestFirst: true, limit: 1 })[0];
       const what = lastSay?.text ? `last said: "${clip(oneLine(lastSay.text), SAY_CLIP)}"` : "thinking";
       lines.push(`- ${name}, ${formatDuration(nowMs - atMs)} ago: ${what}`);
+    }
+
+    // A say is held while another thread's turn runs, so the board says which threads are mid-turn right now.
+    const inTurn = [...this.runningSince].filter(([name]) => name !== thread).sort((a, b) => a[1] - b[1]);
+    if (inTurn.length > 0) {
+      lines.push("", "Threads in a turn right now:");
+      for (const [name, since] of inTurn) {
+        const quiet = this.nonLiveRunning?.thread === name ? " (a quiet reflect turn)" : "";
+        lines.push(`- ${name}, started ${formatDuration(nowMs - since)} ago${quiet}`);
+      }
     }
 
     lines.push("", "Places another thread spoke in lately (last 2 minutes):");
@@ -3309,16 +3346,28 @@ class Runtime implements Entity {
   /** Q19: recall rows in recall's own score order, each whole, with a seq pointer for the rows that do not fit. */
   private recallSection(thread: string, fresh: RiverRow[], shown: Set<number>): Section | undefined {
     // River search ANDs its terms, so each word is searched on its own and the rows that match most words win.
+    // Words that say nothing about the message are left out, and the rarest words are searched first.
+    const name = this.config.name?.toLowerCase();
     const words: string[] = [];
     for (const row of fresh) {
       if (viewKeyOf(row) !== undefined) continue;
       for (const match of (row.text ?? "").toLowerCase().matchAll(/[\p{L}\p{N}]{4,}/gu)) {
         const word = match[0];
+        if (word === name || COMMON_WORDS.has(word) || RECALL_STOP.has(word)) continue;
         if (!words.includes(word)) words.push(word);
       }
     }
+    const counts = this.termCountsOf(words);
+    const ordered =
+      counts.size === 0
+        ? words
+        : words
+            .map((word, index) => ({ word, index, count: counts.get(word) ?? 0 }))
+            .filter((entry) => entry.count > 0)
+            .sort((a, b) => a.count - b.count || a.index - b.index)
+            .map((entry) => entry.word);
     const found = new Map<number, { row: RiverRow; score: number }>();
-    for (const word of words.slice(0, RECALL_WORDS)) {
+    for (const word of ordered.slice(0, RECALL_WORDS)) {
       for (const hit of this.river.search(word, { limit: RECALL_LIMIT })) {
         if (shown.has(hit.row.seq) || this.hiddenHere(hit.row, thread)) continue;
         const entry = found.get(hit.row.seq);

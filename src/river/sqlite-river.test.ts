@@ -224,6 +224,32 @@ describe.each(modes)("search ($label)", ({ forceNoFts }) => {
   });
 });
 
+describe("termCounts", () => {
+  it("counts the rows each term appears in, and an unknown term is not in the map", () => {
+    const river = open();
+    river.append({ thread: "dm:owner", kind: "event", source: "owner", text: "The harbour is quiet." });
+    river.append({ thread: "dm:owner", kind: "event", source: "owner", text: "A boat by the harbour." });
+    river.append({ thread: "room:one", kind: "event", source: "outside", text: "The lighthouse is dark." });
+
+    if (river.searchMode === "like") {
+      expect(river.termCounts(["harbour", "lighthouse"]).size).toBe(0);
+      return;
+    }
+    const counts = river.termCounts(["harbour", "lighthouse", "sextant"]);
+    expect(counts.get("harbour")).toBe(2);
+    expect(counts.get("lighthouse")).toBe(1);
+    expect(counts.get("sextant") ?? 0).toBe(0);
+  });
+
+  it("gives an empty map in the LIKE fallback", () => {
+    const river = open({ forceNoFts: true });
+    river.append({ thread: "dm:owner", kind: "event", source: "owner", text: "The harbour is quiet." });
+
+    expect(river.searchMode).toBe("like");
+    expect(river.termCounts(["harbour"])).toEqual(new Map());
+  });
+});
+
 describe("ranking", () => {
   it.runIf(ftsAvailable())("ranks the denser match first (bm25)", () => {
     const river = open();

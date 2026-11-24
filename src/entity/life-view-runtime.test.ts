@@ -243,27 +243,31 @@ describe("N1: the life view in a turn carries a last-edited stamp per section", 
   });
 });
 
-describe("N2c: the body notes block after her life", () => {
+describe("N2c: the body notes block in the turn part", () => {
   it("shows no block when the river has no Domus receipt", async () => {
     const { entity, model, cli } = await startWithLife(CONFIG, lifeOf(500));
     try {
       cli.send("Hello.");
       await entity.idle();
       expect(rawSystemTextOf(model.requests[0])).not.toContain("Body notes (receipts");
+      expect(userTextOf(model.requests[0])).not.toContain("Body notes (receipts");
     } finally {
       await entity.stop();
     }
   });
 
-  it("states the last Domus view with its seq after her life", async () => {
+  it("states the last Domus view with its seq in a body notes section of the turn", async () => {
     const { entity, model, cli } = await startWithLife(CONFIG, lifeOf(500));
     try {
       const seen = entity.river.append({ thread: "domus:slot8", kind: "event", source: "outside", text: "A view.\nGame time: Monday 08:00, running (clock speed NORMAL).", data: { view: "domus" } });
       cli.send("Hello.");
       await entity.idle();
-      const system = rawSystemTextOf(model.requests[0]);
-      expect(system).toContain("Body notes (receipts the host keeps; yours to compare):");
-      expect(system).toContain(`Domus clock at the last view (seq ${seen.seq}): Game time: Monday 08:00, running (clock speed NORMAL).`);
+      // The receipts change with the river, so they are in the turn's own part, not in the cached system text.
+      expect(rawSystemTextOf(model.requests[0])).not.toContain("Body notes (receipts");
+      const user = userTextOf(model.requests[0]);
+      expect(user).toContain("## body notes");
+      expect(user).toContain("Body notes (receipts the host keeps; yours to compare):");
+      expect(user).toContain(`Domus clock at the last view (seq ${seen.seq}): Game time: Monday 08:00, running (clock speed NORMAL).`);
     } finally {
       await entity.stop();
     }
