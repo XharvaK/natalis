@@ -16,8 +16,8 @@ import { CLI_WORLD_ID } from "../worlds/cli.js";
 import { createEventBus, observeRiver, type EventType, type Hook } from "../river/events.js";
 import { purposeOf, type Purpose } from "../river/purpose.js";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
 import { assembleSystem, droppedNote, eventWakePhrase, formatDuration, itemsText, layoutRequest, timeFacts, type Assembled, type LayoutPart, type SectionItems } from "../context/index.js";
 import { addTokens, runTurnWithMessages, type InFlightTool } from "../loop/index.js";
 import { TURN_DEADLINE_MS, withTurnDeadline } from "../model/turn-deadline.js";
@@ -136,6 +136,7 @@ import { bodyNotesBlock, domusReceipts } from "./body-notes.js";
 import type { NoteSection } from "../notebook/sections.js";
 import { proposalsDigest, PROPOSALS_FOLDER, type ProposalDigest } from "../notebook/proposals-digest.js";
 import { bodyChangesNote, type BodyChanges } from "./body-changes.js";
+import { isEnvFileName } from "../worlds/sandbox/body.js";
 import { writeFileAtomic } from "../fsutil/write-atomic.js";
 
 export const STATE_FILE = "state.json";
@@ -157,6 +158,7 @@ export const HOW_YOU_ACT = [
     "a claim your own record contradicts. The receipt says why.",
   "Your summoner's emergency stop pauses your outward acts. It never pauses your replies to your summoner.",
   "Your summoner can read your notebook and your river, except what is in private/.",
+  "What you make in your home folder can reach people: keep_picture puts a picture on your shelf, and say's files sends a file to a Discord place.",
 ].join("\n");
 
 const DISCORD_PLACE_PREFIX = "discord:";
@@ -192,9 +194,47 @@ const OUTAGE_DETAIL_CLIP = 240;
 const FAILED_TURNS_ALERT = 5;
 /** The river file holds the ledger table too: a backup of the river carries it. */
 const RIVER_LEDGER_FILE = "river.db";
-/** How many pictures one say may carry, and how many of the newest shelf ids a refusal lists. */
+/** How many pictures and files one say may carry together, and how many of the newest shelf ids a refusal lists. */
 const SAY_PICTURES_MAX = 4;
 const SHELF_LIST = 10;
+/** How the sandbox shows the Lar's home folder when a say names a file from it. */
+const HOME_MOUNT = "/home/lar/";
+/** The most bytes one file from her home folder may hold in a say. */
+const SAY_FILE_BYTES_MAX = 8 * 1024 * 1024;
+/** How much of a file is read to tell a text file from a binary one. */
+const SAY_FILE_SNIFF_BYTES = 4_096;
+/** The mime of each kind of file a say may carry; anything else is application/octet-stream. */
+const SAY_FILE_MIMES: Readonly<Record<string, string>> = {
+  ".txt": "text/plain",
+  ".md": "text/markdown",
+  ".html": "text/html",
+  ".csv": "text/csv",
+  ".json": "application/json",
+  ".xml": "application/xml",
+  ".py": "text/x-python",
+  ".js": "text/javascript",
+  ".ts": "text/plain",
+  ".pdf": "application/pdf",
+  ".zip": "application/zip",
+  ".mp3": "audio/mpeg",
+  ".ogg": "audio/ogg",
+  ".wav": "audio/wav",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
+
+/** One file from her home folder, checked and ready to go with a say. */
+type HomeSayFile = {
+  file: SayFile;
+  /** The path as her home shows it, such as notes/essay.md. */
+  relative: string;
+  bytes: number;
+  /** The whole text, for a text file; undefined for a binary one. */
+  text?: string;
+};
 
 const DEFAULT_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 300_000, 600_000];
 /** How often the stop file is looked at while the entity runs. A check is one existence test. */
@@ -1705,7 +1745,14 @@ class Runtime implements Entity {
     // A world with a model of its own runs its turns on that model. A place is named for its world ("domus:...").
     const world = this.worldFor(thread)?.id ?? "";
     const worldModel = this.worldModels[world];
-    const effort = worldModel === undefined ? this.config.effort : (this.config.worldModels?.[world]?.effort ?? this.config.effort);
+    // A world model's own effort wins for its world. Otherwise the kind of thread decides, then the entity's effort. A
+    // reflection turn keeps the entity's effort: it is the body's quiet turn, not a live one.
+    const effort =
+      purpose === "reflect"
+        ? this.config.effort
+        : worldModel === undefined
+          ? (this.config.threadEffort?.[this.threadKind(thread)] ?? this.config.effort)
+          : (this.config.worldModels?.[world]?.effort ?? this.config.effort);
     const turnModel = worldModel ?? this.model;
     const mainName = worldModel === undefined ? this.config.model.model : (this.config.worldModels?.[world]?.model ?? turnModel.info.id);
     // Views in Recent always show their brief. Of the views of a key, only the newest shows its full text: the newest may
@@ -3685,9 +3732,15 @@ class Runtime implements Entity {
                 maxItems: SAY_PICTURES_MAX,
                 description: "Optional. Up to four picture ids from your shelf (such as m-ABCD2345), sent with the words.",
               },
+              files: {
+                type: "array",
+                items: { type: "string" },
+                maxItems: SAY_PICTURES_MAX,
+                description: "Optional. Up to 4 files from your home folder to send with the words, such as notes/essay.md. Text files are checked like your words.",
+              },
               as_voice: {
                 type: "boolean",
-                description: "Optional. True sends the words as a voice message in your own voice instead of text. Discord places only, and nothing can go with it (no attach). At most about two minutes of speech. Code, emoji and link addresses are not read aloud; the receipt says what was left out.",
+                description: "Optional. True sends the words as a voice message in your own voice instead of text. Discord places only, and nothing can go with it (no attach, no files). At most about two minutes of speech. Code, emoji and link addresses are not read aloud; the receipt says what was left out.",
               },
               knowingly: {
                 type: "boolean",
@@ -3900,8 +3953,13 @@ class Runtime implements Entity {
       return refuse("bad_arguments", "as_voice works only in Discord places.", "as_voice outside Discord");
     }
     const attach = args["attach"];
+    const filePaths = this.sayFilePaths(args, place.value);
+    if (!filePaths.ok) return filePaths.receipt;
     if (asVoice && Array.isArray(attach) && attach.length > 0) {
       return refuse("bad_arguments", "A voice message carries nothing else: leave out attach, or leave out as_voice.", "as_voice with attach");
+    }
+    if (asVoice && filePaths.value.length > 0) {
+      return refuse("bad_arguments", "A voice message carries nothing else: leave out files, or leave out as_voice.", "as_voice with files");
     }
     const ownerPlace = this.isOwnerPlace(place.value);
     const misplaced = this.discordPlaceHold(place.value, context);
@@ -3923,6 +3981,31 @@ class Runtime implements Entity {
     }
     const pictures = this.pictureFiles(args);
     if (!pictures.ok) return pictures.receipt;
+    const fromHome = this.homeSayFiles(filePaths.value);
+    if (!fromHome.ok) return fromHome.receipt;
+    if (pictures.value.files.length + fromHome.value.length > SAY_PICTURES_MAX) {
+      return refuse(
+        "bad_arguments",
+        `A say carries at most ${SAY_PICTURES_MAX} pictures and files together.`,
+        "attach and files together are more than four",
+      );
+    }
+    // A text file is held like her words. Its name, and its whole text, pass the privacy list in a place that is not the
+    // owner's; a binary file passes its name alone. Any hold refuses the whole say.
+    for (const entry of fromHome.value) {
+      if (entry.text !== undefined) {
+        const secret = this.secretHold(entry.text, "nothing was sent");
+        if (secret !== undefined) return secret;
+      }
+      if (!ownerPlace) {
+        const held = this.privacyHold(
+          place.value,
+          entry.text === undefined ? [entry.file.name] : [entry.file.name, entry.text],
+          context.thread,
+        );
+        if (held !== undefined) return held;
+      }
+    }
     if (!knowingly) {
       const held = await this.honestyHold(text.value, context.thread);
       if (held !== undefined) return held;
@@ -3939,7 +4022,9 @@ class Runtime implements Entity {
         if (meanwhile !== undefined) return meanwhile;
       }
 
-      const { files, ids } = pictures.value;
+      const { ids } = pictures.value;
+      const homeFiles = fromHome.value;
+      const files = [...pictures.value.files, ...homeFiles.map((entry) => entry.file)];
       const options = {
         ...(replyTo.value === undefined ? {} : { replyTo: replyTo.value }),
         ...(files.length === 0 ? {} : { files }),
@@ -3972,15 +4057,21 @@ class Runtime implements Entity {
       const nowMs = this.nowMs();
       // Read before this say is recorded, so the claim it leaves is not counted against itself.
       const others = this.othersSpokeHere(place.value, context.thread, nowMs);
-      // The river keeps what was sent: the words, and which pictures went with them.
+      // The river keeps what was sent: the words, the pictures and the files, each named as her home shows it.
       const pictureLines = ids.map((id) => `[picture ${id}: ${this.shelf.get(id)?.name ?? "picture"}]`);
+      const fileLines = homeFiles.map((entry) => `[file ${entry.relative}, ${Math.ceil(entry.bytes / 1024)} KB]`);
+      const sayData: Record<string, unknown> = {
+        ...(ids.length === 0 ? {} : { pictures: ids }),
+        ...(homeFiles.length === 0 ? {} : { files: homeFiles.map((entry) => entry.relative) }),
+        ...(refs === undefined ? {} : { refs }),
+      };
       if (place.value.startsWith(DISCORD_PLACE_PREFIX)) this.turnDiscordPlaces.set(context.turnId, place.value);
       this.river.append({
         thread: place.value,
         kind: "say",
         source: "self",
         place: place.value,
-        text: [text.value, ...pictureLines].join("\n"),
+        text: [text.value, ...pictureLines, ...fileLines].join("\n"),
         ...(asVoice
           ? {
               data: {
@@ -3988,11 +4079,9 @@ class Runtime implements Entity {
                 ...(refs === undefined ? {} : { refs }),
               },
             }
-          : ids.length === 0
-            ? refs === undefined
-              ? {}
-              : { data: { refs } }
-            : { data: { pictures: ids, ...(refs === undefined ? {} : { refs }) } }),
+          : Object.keys(sayData).length === 0
+            ? {}
+            : { data: sayData }),
         atMs: nowMs,
       });
       // Only the asks the turn saw are answered: a message that came in during the turn is still waiting.
@@ -4006,13 +4095,15 @@ class Runtime implements Entity {
       this.saveState();
       const leftOut = voiceSkipped.length > 0 ? ` Left out of speech: ${voiceSkipped.join("; ")}.` : "";
       const named = refs === undefined ? "" : ` (${refs.join(", ")})`;
+      const carried = [
+        ...(ids.length === 0 ? [] : [`${ids.length} picture(s)`]),
+        ...(homeFiles.length === 0 ? [] : [`${homeFiles.length} file(s)`]),
+      ];
       const summary = asVoice
         ? voiceSeconds === undefined
           ? `Said to ${place.value} as a voice message${named}.${leftOut}`
           : `Said to ${place.value} as a voice message${named} (${Math.round(voiceSeconds)} s).${leftOut}`
-        : ids.length === 0
-          ? `Said to ${place.value}${named}.`
-          : `Said to ${place.value} with ${ids.length} picture(s)${named}.`;
+        : `Said to ${place.value}${carried.length === 0 ? "" : ` with ${carried.join(" and ")}`}${named}.`;
       return {
         ok: true,
         summary,
@@ -4021,6 +4112,7 @@ class Runtime implements Entity {
           chars: text.value.length,
           ...(refs === undefined ? {} : { refs }),
           ...(ids.length === 0 ? {} : { pictures: ids }),
+          ...(homeFiles.length === 0 ? {} : { files: homeFiles.map((entry) => entry.relative) }),
           ...(asVoice
             ? { voiceMessage: { ...(voiceSeconds === undefined ? {} : { seconds: voiceSeconds }), skipped: voiceSkipped } }
             : {}),
@@ -4075,6 +4167,94 @@ class Runtime implements Entity {
 
   private newestPictureIds(): string[] {
     return this.shelf.list().slice(0, SHELF_LIST).map((meta) => meta.id);
+  }
+
+  /**
+   * The file paths a say carries: up to four, each written as her home shows it (notes/essay.md) or as the sandbox
+   * shows it (/home/lar/notes/essay.md). Files go only to Discord places; an empty list is fine anywhere.
+   */
+  private sayFilePaths(args: Args, place: string): Checked<string[]> {
+    const raw = args["files"];
+    if (raw === undefined) return { ok: true, value: [] };
+    if (!Array.isArray(raw) || raw.length > SAY_PICTURES_MAX || !raw.every((path) => typeof path === "string")) {
+      return {
+        ok: false,
+        receipt: refuse("bad_arguments", `files is a list of up to ${SAY_PICTURES_MAX} paths in your home folder.`, "files is not a list of paths"),
+      };
+    }
+    const paths = (raw as string[]).map((path) => path.trim());
+    if (paths.some((path) => path === "")) {
+      return { ok: false, receipt: refuse("bad_arguments", "Each file needs a path in your home folder.", "files holds an empty path") };
+    }
+    if (paths.length > 0 && !place.startsWith(DISCORD_PLACE_PREFIX)) {
+      return { ok: false, receipt: refuse("bad_arguments", "Files go only to Discord places.", "files outside Discord") };
+    }
+    return { ok: true, value: paths };
+  }
+
+  /**
+   * The files themselves, each one resolved inside the real home folder: a regular file, not a link, up to 8 MiB, and
+   * never an env file. A text file (no NUL byte in its first 4 KiB) brings its whole text for the secret and privacy
+   * checks. A missing file refuses the whole say.
+   */
+  private homeSayFiles(paths: readonly string[]): Checked<HomeSayFile[]> {
+    if (paths.length === 0) return { ok: true, value: [] };
+    const notAFile = (shown: string): Checked<HomeSayFile[]> => ({
+      ok: false,
+      receipt: refuse("no_file", `There is no file ${shown} in your home folder, so nothing was sent.`, `no home file ${shown}`),
+    });
+    let homeReal: string;
+    try {
+      homeReal = realpathSync(join(this.dir, "home"));
+    } catch {
+      return notAFile(paths[0] ?? "");
+    }
+    const found: HomeSayFile[] = [];
+    for (const shown of paths) {
+      const withoutMount = shown.startsWith(HOME_MOUNT) ? shown.slice(HOME_MOUNT.length) : shown;
+      const parts = withoutMount.split(/[\\/]/);
+      if (withoutMount === "" || isAbsolute(withoutMount) || parts.some((part) => part === "..")) return notAFile(shown);
+      const candidate = join(homeReal, withoutMount);
+      let item;
+      try {
+        item = lstatSync(candidate);
+      } catch {
+        return notAFile(shown);
+      }
+      if (item.isSymbolicLink()) return notAFile(shown);
+      let real: string;
+      try {
+        real = realpathSync(candidate);
+      } catch {
+        return notAFile(shown);
+      }
+      const inside = relative(homeReal, real);
+      if (inside === "" || inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside)) return notAFile(shown);
+      const stats = statSync(real);
+      if (!stats.isFile()) return notAFile(shown);
+      const name = basename(real);
+      if (isEnvFileName(name)) {
+        return {
+          ok: false,
+          receipt: refuse("bad_arguments", `${shown} looks like a file of secrets; it stays home.`, "an env file is not sent"),
+        };
+      }
+      if (stats.size > SAY_FILE_BYTES_MAX) {
+        return {
+          ok: false,
+          receipt: refuse("file_too_large", `${shown} is larger than 8 MiB, so nothing was sent.`, "the file is too large for a say"),
+        };
+      }
+      const bytes = readFileSync(real);
+      const text = bytes.subarray(0, SAY_FILE_SNIFF_BYTES).includes(0) ? undefined : bytes.toString("utf8");
+      found.push({
+        file: { path: real, name, mime: sayFileMime(name) },
+        relative: withoutMount.replace(/\\/g, "/"),
+        bytes: stats.size,
+        ...(text === undefined ? {} : { text }),
+      });
+    }
+    return { ok: true, value: found };
   }
 
   // --- holds ------------------------------------------------------------------------------------
@@ -5603,6 +5783,11 @@ function checkWorlds(worlds: World[]): void {
 
 function refuse(code: string, summary: string, reason: string = summary): Receipt {
   return { ok: false, summary, refused: { code, reason } };
+}
+
+/** The mime a file goes out as: by its extension, or application/octet-stream when the extension is not known. */
+function sayFileMime(name: string): string {
+  return SAY_FILE_MIMES[extname(name).toLowerCase()] ?? "application/octet-stream";
 }
 
 function requireText(args: Args, key: string, label: string): Checked<string> {

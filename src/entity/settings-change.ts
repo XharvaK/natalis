@@ -14,7 +14,7 @@ export const VISIBLE_SETTING_KEYS: ReadonlySet<string> = new Set([
   "alias", "api", "cacheMarks", "ceiling", "contextTokens", "effort", "effortMap", "effortParam", "fallback", "holds",
   "honesty", "idleTimeoutMs", "impersonation", "incremental", "inputPerMillion", "lifeViewChars", "lifeWarnChars",
   "limits", "maxModelCalls", "maxToolCalls", "model", "name", "nativeTools", "outputPerMillion", "owner", "price",
-  "reflectBudget", "rhythm", "stream", "summoner", "timeZone", "timeoutMs", "tools", "turnsPerDay", "vision",
+  "reflectBudget", "rhythm", "stream", "summoner", "threadEffort", "timeZone", "timeoutMs", "tools", "turnsPerDay", "vision",
   "wholeResultsChars", "worldModels",
 ]);
 

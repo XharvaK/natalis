@@ -6,11 +6,15 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Ceiling } from "../contracts.js";
 import type { EffortMap, FallbackModelConfig, ModelConfig, ModelPrice } from "../model/from-config.js";
+import type { ThreadKind } from "../river/ledger.js";
 import { parseClock } from "./wake-schedule.js";
 import { parseToolPolicy, type ToolTable } from "./tool-policy.js";
 
 export const EFFORTS = ["low", "medium", "high", "xhigh"] as const;
 export type Effort = (typeof EFFORTS)[number];
+
+/** The kinds of thread a turn can run in (see ThreadKind in river/ledger.ts). */
+export const THREAD_KINDS = ["summoner", "contact", "room", "game", "self", "other"] as const;
 
 export const DEFAULT_CEILING: Ceiling = { maxModelCalls: 24, maxToolCalls: 48 };
 /** No preset rhythm: a Lar keeps whatever wakes it sets itself. A summoner may give times in entity.json rhythm. */
@@ -27,6 +31,11 @@ export type EntityConfig = {
   timeZone?: string;
   model: ModelConfig;
   effort?: Effort;
+  /**
+   * An effort for one kind of thread, so a chat in the summoner's DM need not run at the effort of her long turns. A
+   * world model's own effort wins for its world; a kind left out uses the entity's effort.
+   */
+  threadEffort?: Partial<Record<ThreadKind, Effort>>;
   /** Defaults to DEFAULT_CEILING when left out. */
   ceiling?: Ceiling;
   /** The summoner: the alias they appear under. Written as "summoner" in entity.json ("owner" is still read). */
@@ -108,7 +117,7 @@ export function parseEntityConfig(value: unknown): EntityConfig {
   const root = objectOf(value, ENTITY_FILE);
   onlyKeys(
     root,
-    ["name", "timeZone", "model", "effort", "ceiling", "summoner", "owner", "holds", "tools", "limits", "rhythm", "worldModels"],
+    ["name", "timeZone", "model", "effort", "threadEffort", "ceiling", "summoner", "owner", "holds", "tools", "limits", "rhythm", "worldModels"],
     ENTITY_FILE,
   );
   if (root["summoner"] !== undefined && root["owner"] !== undefined) {
@@ -133,11 +142,26 @@ export function parseEntityConfig(value: unknown): EntityConfig {
     }
     config.effort = root["effort"];
   }
+  if (root["threadEffort"] !== undefined) config.threadEffort = parseThreadEffort(root["threadEffort"]);
   if (root["holds"] !== undefined) config.holds = parseHolds(root["holds"]);
   if (root["tools"] !== undefined) config.tools = parseToolPolicy(root["tools"]);
   if (root["limits"] !== undefined) config.limits = parseLimits(root["limits"]);
   if (root["worldModels"] !== undefined) config.worldModels = parseWorldModels(root["worldModels"]);
   return config;
+}
+
+/** An effort per kind of thread. Each key is a thread kind, each value an effort. */
+function parseThreadEffort(value: unknown): Partial<Record<ThreadKind, Effort>> {
+  const block = objectOf(value, "threadEffort");
+  const efforts: Partial<Record<ThreadKind, Effort>> = {};
+  for (const [kind, effort] of Object.entries(block)) {
+    if (!(THREAD_KINDS as readonly string[]).includes(kind)) {
+      throw new Error(`threadEffort: ${kind} is not a thread kind (${THREAD_KINDS.join(", ")}).`);
+    }
+    if (!isEffort(effort)) throw new Error(`threadEffort.${kind} must be one of ${EFFORTS.join(", ")}.`);
+    efforts[kind as ThreadKind] = effort;
+  }
+  return efforts;
 }
 
 function parseWorldModels(value: unknown): Record<string, WorldModelConfig> {

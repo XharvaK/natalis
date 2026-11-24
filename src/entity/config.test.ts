@@ -118,6 +118,20 @@ describe("parseEntityConfig", () => {
     expect(() => parseEntityConfig({ ...MINIMAL, effort: "max" })).toThrow(/effort must be one of/);
   });
 
+  it("keeps an effort for each kind of thread", () => {
+    const config = parseEntityConfig({ ...MINIMAL, threadEffort: { summoner: "high", self: "xhigh" } });
+    expect(config.threadEffort).toEqual({ summoner: "high", self: "xhigh" });
+  });
+
+  it("refuses a thread effort for an unknown kind, and an effort it does not know", () => {
+    expect(() => parseEntityConfig({ ...MINIMAL, threadEffort: { friend: "high" } })).toThrow(
+      "threadEffort: friend is not a thread kind (summoner, contact, room, game, self, other).",
+    );
+    expect(() => parseEntityConfig({ ...MINIMAL, threadEffort: { room: "max" } })).toThrow(
+      "threadEffort.room must be one of low, medium, high, xhigh.",
+    );
+  });
+
   it("refuses counts that are not positive whole numbers", () => {
     expect(() => parseEntityConfig({ ...MINIMAL, model: { ...MINIMAL.model, contextTokens: 0 } })).toThrow(
       /model.contextTokens must be a whole number/,
