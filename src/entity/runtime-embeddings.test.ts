@@ -169,6 +169,7 @@ describe("the index pass", () => {
     eventRow(entity, "game:slot1", "A view of the game.", { view: "domus", brief: "The game." });
     entity.river.append({ kind: "event", thread: "self", source: "body", text: "Your summoner answered a request: yes.", data: { summonerAct: true }, atMs: Date.now() });
     bodyNoteRow(entity, "The host restarted.");
+    entity.river.append({ kind: "event", thread: "self", source: "body", text: "Your background job j1 ended.", atMs: Date.now() });
 
     await runPass(entity, embeddings);
 
@@ -180,6 +181,7 @@ describe("the index pass", () => {
     expect(sent.join("\n")).not.toContain("Your summoner answered a request");
     expect(sent.join("\n")).not.toContain("The host restarted.");
     expect(sent.join("\n")).not.toContain("A private line.");
+    expect(sent.some((text) => text.includes("Your background job j1 ended."))).toBe(false);
     expect(embeddings.store.search(new Float32Array([1, 0]), { model: EMBED_MODEL, includePrivate: true, limit: 100 })).not.toHaveLength(0);
   });
 
@@ -190,6 +192,8 @@ describe("the index pass", () => {
     await entity.start();
 
     eventRow(entity, "cli:summoner", "Only one interesting thing happened.");
+    // Two sections of one heading share a key, and must not be embedded in turn on every pass.
+    await entity.notebook.write("notes/twice.md", "# Log\n\nMonday.\n\n# Log\n\nTuesday.\n", "A note", "body");
     await runPass(entity, embeddings);
     const afterFirst = calls.flat().length;
     await runPass(entity, embeddings);

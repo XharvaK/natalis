@@ -352,6 +352,8 @@ const RECALL_NOTE_SHOW = 300;
 /** One index pass: the most rows it reads and the most note items it embeds. */
 const INDEX_ROWS_MAX = 1_000;
 const INDEX_NOTES_MAX = 500;
+/** The most items embedded and put at once. */
+const INDEX_SLICE = 128;
 /** How much of one row or one note section is sent to make its vector. */
 const INDEX_ROW_CHARS = 4_000;
 const INDEX_NOTE_CHARS = 6_000;
@@ -1352,6 +1354,7 @@ class Runtime implements Entity {
     this.queueOutbox(() => this.postProposalsIfDue());
     await this.outbox;
     this.resumeUnseen();
+    this.startIndexPass();
   }
 
   /**
@@ -1798,7 +1801,7 @@ class Runtime implements Entity {
             kind: "row",
             key: String(row.seq),
             seq: row.seq,
-            text: clip(row.text ?? "", INDEX_ROW_CHARS),
+            text: clip(this.scanner.redact(row.text ?? ""), INDEX_ROW_CHARS),
             private: false,
             atMs: row.atMs,
           });
@@ -1808,6 +1811,8 @@ class Runtime implements Entity {
         after = last;
       }
 
+      const rowsFull = items.length >= INDEX_ROWS_MAX;
+
       // Every note the notebook holds, except private/, trash/ and README files. A note with no headings is one item.
       // The store's hashes skip an unchanged section, so the 500 limit is over the items this pass will really embed.
       const noteItems: IndexItem[] = [];
@@ -1816,8 +1821,9 @@ class Runtime implements Entity {
       const atMs = this.nowMs();
       for (const entry of this.notebook.list()) {
         if (!indexableNotePath(entry.path)) continue;
-        const source = this.notebook.read(entry.path);
-        if (source === null) continue;
+        const raw = this.notebook.read(entry.path);
+        if (raw === null) continue;
+        const source = this.scanner.redact(raw);
         const sections = noteSections(source);
         if (sections.length === 0) {
           seenNotes.add(noteKey(entry.path, ""));
@@ -1825,20 +1831,30 @@ class Runtime implements Entity {
           continue;
         }
         for (const section of sections) {
+          const key = noteKey(entry.path, section.title);
+          // Two sections of one heading share a key; the first is kept, or each pass would embed them in turn for ever.
+          if (seenNotes.has(key)) continue;
+          seenNotes.add(key);
           noteItems.push(noteItem(entry.path, section.title, section.text, atMs));
-          seenNotes.add(noteKey(entry.path, section.title));
         }
       }
       // An unchanged section costs nothing to see; only the changed ones count against the pass's limit.
       const pendingNotes = noteItems.filter((item) => storedNoteHashes.get(item.key) !== indexHash(item));
       items.push(...pendingNotes.slice(0, INDEX_NOTES_MAX));
 
-      await indexItems(embeddings.store, embeddings.client, items, { signal });
-      if (signal.aborted) return;
+      // Stale entries go first, so a failing service cannot keep the vectors of a note that became private.
       // A renamed, trashed or private note leaves the index: its keys are the ones the store holds that this pass did not see.
       const stale = [...storedNoteHashes.keys()].filter((key) => !seenNotes.has(key));
       if (stale.length > 0) embeddings.store.remove("note", stale);
+      // Put in slices, so what was embedded before a failure is kept and not paid for again.
+      for (let at = 0; at < items.length; at += INDEX_SLICE) {
+        await indexItems(embeddings.store, embeddings.client, items.slice(at, at + INDEX_SLICE), { signal });
+        if (signal.aborted) return;
+      }
+      // A full pass leaves more to do: one more follows it.
+      if (rowsFull || pendingNotes.length > INDEX_NOTES_MAX) this.indexAgain = true;
     } catch (error) {
+      if (signal.aborted) return;
       this.noteEmbeddingFailure("index", `Recall by meaning could not update its index: ${shortReason(error)}.`);
     }
   }
@@ -1862,9 +1878,9 @@ class Runtime implements Entity {
         atMs: now,
       });
     } catch {
-      // A river that cannot be written has nowhere to record this; the failure still reached the log below.
+      // A river that cannot be written has nowhere to record this; the failure still reaches the log below.
     }
-    console.error(`[natalis] ${text}`);
+    console.error(`[natalis] ${this.scanner.redact(text)}`);
   }
 
   /** The query vector for this turn's recall, or undefined when it cannot be had within its timeout. */
@@ -1880,8 +1896,9 @@ class Runtime implements Entity {
         resolve(undefined);
       }, RECALL_QUERY_TIMEOUT_MS);
     });
+    const signal = AbortSignal.any([abort.signal, this.abort.signal]);
     try {
-      const answer = embeddings.client.embed([clip(text, RECALL_QUERY_CHARS)], abort.signal).then((vectors) => vectors[0]);
+      const answer = embeddings.client.embed([clip(text, RECALL_QUERY_CHARS)], signal).then((vectors) => vectors[0]);
       const vec = await Promise.race([answer, timeout]);
       if (vec === undefined) {
         if (abort.signal.aborted) this.noteEmbeddingFailure("recall", "Recall by meaning was not used this turn: the query took too long.");
@@ -1889,7 +1906,8 @@ class Runtime implements Entity {
       }
       return vec;
     } catch (error) {
-      this.noteEmbeddingFailure("recall", `Recall by meaning was not used this turn: ${shortReason(error)}.`);
+      if (this.abort.signal.aborted) return undefined;
+      this.noteEmbeddingFailure("recall", `Recall by meaning was not used this turn: ${abort.signal.aborted ? "the query took too long" : shortReason(error)}.`);
       return undefined;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
@@ -1904,7 +1922,7 @@ class Runtime implements Entity {
   private async meaningRecall(fresh: readonly RiverRow[]): Promise<MeaningRecall | undefined> {
     const embeddings = this.embeddings;
     if (embeddings === undefined) return undefined;
-    const text = fresh.filter((row) => viewKeyOf(row) === undefined).map((row) => row.text ?? "").join("\n");
+    const text = this.scanner.redact(fresh.filter(indexableRow).map((row) => row.text ?? "").join("\n"));
     if (text.trim() === "") return undefined;
     const model = embeddings.client.model;
     try {
@@ -5935,13 +5953,13 @@ function viewKeyOf(row: RiverRow): string | undefined {
 
 /**
  * True when a river row may be sent to the embeddings service: an event or a say with words, not a view, not a
- * summoner act, and not a body note. The rule lives here so every caller of the index pass obeys the same one.
+ * summoner act, and nothing the body wrote (a wake, a job's end). The index and the turn's own query obey this one rule.
  */
 function indexableRow(row: RiverRow): boolean {
   if (row.kind !== "event" && row.kind !== "say") return false;
   if (viewKeyOf(row) !== undefined) return false;
   if (row.data?.["summonerAct"] === true) return false;
-  if (row.data?.["bodyNote"] !== undefined) return false;
+  if (row.source === "body") return false;
   return (row.text ?? "").trim() !== "";
 }
 
