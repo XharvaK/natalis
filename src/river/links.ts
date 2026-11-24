@@ -65,6 +65,10 @@ export type RenameRepair = { repaired: number; dropped: number };
 
 export interface LinkStore {
   record(link: NewLink): LinkRecord;
+  /** The active links that name this note on either side, newest first, at most 20. Private ones only when asked. */
+  forNote(note: string, includePrivate: boolean): LinkRecord[];
+  /** The newest active links, private ones only when asked, at most `limit`. */
+  recent(includePrivate: boolean, limit: number): LinkRecord[];
   /** Drops every active link to or from a note moved to trash/. Returns how many were dropped. */
   dropForNote(note: string): number;
   /** Repoints links that named a renamed note; drops the ones that break or would duplicate another link. */
@@ -123,6 +127,16 @@ export function openLinks(riverPath: string): LinkStore {
      SET from_note = NULL, to_note = NULL, relation = NULL, reason = NULL, forgotten = 1, forgotten_why = ?
      WHERE id = ?`,
   );
+  const forNoteRows = db.prepare(
+    `SELECT * FROM ${LINKS_TABLE}
+     WHERE forgotten = 0 AND (from_note = ? OR to_note = ?) AND (? = 1 OR private = 0)
+     ORDER BY at_ms DESC, id DESC LIMIT 20`,
+  );
+  const recentRows = db.prepare(
+    `SELECT * FROM ${LINKS_TABLE}
+     WHERE forgotten = 0 AND (? = 1 OR private = 0)
+     ORDER BY at_ms DESC, id DESC LIMIT ?`,
+  );
   let closed = false;
 
   const ensureOpen = (): void => {
@@ -159,6 +173,22 @@ export function openLinks(riverPath: string): LinkStore {
       const row = get.get(Number(info.lastInsertRowid)) as StoredLink | undefined;
       if (row === undefined) throw new LinksError("the link was written but could not be read back");
       return toRecord(row);
+    },
+
+    forNote(note: string, includePrivate: boolean): LinkRecord[] {
+      ensureOpen();
+      checkNote(note, "note");
+      checkPrivate(includePrivate);
+      const rows = forNoteRows.all(note, note, includePrivate ? 1 : 0) as unknown as StoredLink[];
+      return rows.map(toRecord);
+    },
+
+    recent(includePrivate: boolean, limit: number): LinkRecord[] {
+      ensureOpen();
+      checkPrivate(includePrivate);
+      checkLimit(limit);
+      const rows = recentRows.all(includePrivate ? 1 : 0, limit) as unknown as StoredLink[];
+      return rows.map(toRecord);
     },
 
     dropForNote(note: string): number {
@@ -289,6 +319,16 @@ function checkNewLink(link: NewLink): void {
 
 function checkNote(note: unknown, name: string): asserts note is string {
   if (typeof note !== "string" || note.trim() === "") throw new LinksError(`${name} must be a note path`);
+}
+
+function checkPrivate(includePrivate: unknown): asserts includePrivate is boolean {
+  if (typeof includePrivate !== "boolean") throw new LinksError("includePrivate must be true or false");
+}
+
+function checkLimit(limit: unknown): asserts limit is number {
+  if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 0) {
+    throw new LinksError("limit must be a whole number of zero or more");
+  }
 }
 
 function checkSeq(seq: unknown, name: string): asserts seq is number {

@@ -1,7 +1,7 @@
 // A notebook as a turn outside the summoner's place and her own thread sees it: private/ is left out of the list,
 // search and reads. Writes pass through unchanged; she can still keep things close from anywhere.
 
-import type { Notebook } from "../contracts.js";
+import { NotebookError, type Notebook } from "../contracts.js";
 import { notebookPathOf } from "./git-notebook.js";
 
 export function isPrivatePath(path: string): boolean {
@@ -26,7 +26,11 @@ export function withoutPrivate(notebook: Notebook): Notebook {
     write: (...args) => notebook.write(...args),
     edit: (...args) => notebook.edit(...args),
     append: (...args) => notebook.append(...args),
-    rename: (...args) => notebook.rename(...args),
+    rename: (path, to, reason, author) => {
+      // A hidden note cannot be moved from here, or the thread would learn it exists and could bring it into the open.
+      if (hidden(path)) throw new NotebookError(`${notebookPathOf(path) ?? path} does not exist.`, "not_found");
+      return notebook.rename(path, to, reason, author);
+    },
     remove: (...args) => notebook.remove(...args),
     list: (dir) => notebook.list(dir).filter((entry) => !hiddenEntry(entry.path)),
     search: (text, limit) => notebook.search(text, limit === undefined ? undefined : limit * 4).filter((hit) => !hiddenEntry(hit.path)).slice(0, limit),

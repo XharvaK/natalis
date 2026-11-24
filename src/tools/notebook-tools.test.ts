@@ -26,7 +26,7 @@ async function fixture() {
 }
 
 describe("notebookTools", () => {
-  it("offers the eight core memory tools, each with an object schema and a plain description", () => {
+  it("offers the nine core memory tools, each with an object schema and a plain description", () => {
     const tools = notebookTools();
 
     expect(tools.map((t) => t.spec.name)).toEqual([
@@ -36,6 +36,7 @@ describe("notebookTools", () => {
       "append_note",
       "list_notes",
       "trash_note",
+      "rename_note",
       "recall",
       "forget",
     ]);

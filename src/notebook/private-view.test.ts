@@ -71,4 +71,31 @@ describe("withoutPrivate over a real notebook (B-1)", () => {
     const paths = view.list().map((entry) => entry.path);
     expect(paths.some((p) => p.startsWith("private"))).toBe(false);
   });
+
+  it("refuses to rename a private note out, as if it were not there", async () => {
+    const view = withoutPrivate(nb);
+    let error: unknown;
+    try {
+      await view.rename("private/diary.md", "notes/leak.md", "Move it out", "body");
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toMatchObject({
+      name: "NotebookError",
+      kind: "not_found",
+      message: "private/diary.md does not exist.",
+    });
+    expect(nb.read("private/diary.md")).toContain("Dear diary");
+    expect(nb.read("notes/leak.md")).toBeNull();
+  });
+
+  it("still lets a thread keep an open note by moving it into private/", async () => {
+    const view = withoutPrivate(nb);
+
+    await view.rename("notes/privateer.md", "private/kept.md", "Keep it close", "body");
+
+    expect(nb.read("notes/privateer.md")).toBeNull();
+    expect(nb.read("private/kept.md")).toContain("open words");
+  });
 });

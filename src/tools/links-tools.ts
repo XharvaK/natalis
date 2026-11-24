@@ -14,8 +14,49 @@ export type LinksToolOptions = {
 };
 
 export function linksTools(links: LinkStore, options: LinksToolOptions): Tool[] {
-  return [linkNotes(links, options)].map((tool) => ({ ...tool, settles: true }));
+  return [linkNotes(links, options), listLinks(links, options)].map((tool) => ({ ...tool, settles: true }));
 }
+
+const LIST_RECENT_LIMIT = 30;
+
+const listLinks = (links: LinkStore, options: LinksToolOptions): Tool => ({
+  spec: {
+    name: "list_links",
+    description:
+      "List the links you made between your notes. Give a path to see only that note's links; leave it out to see your newest links.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Optional: the note whose links you want. Leave it out for your newest links." },
+      },
+    },
+  },
+  async run(args, context) {
+    let note: string | undefined;
+    if (args["path"] !== undefined) {
+      const path = requireNotePath(args, "path", "The note path");
+      if (!path.ok) return path.receipt;
+      note = path.value;
+    }
+    const includePrivate = options.privateView(context.thread);
+    const found = note === undefined ? links.recent(includePrivate, LIST_RECENT_LIMIT) : links.forNote(note, includePrivate);
+    const summary =
+      found.length === 0 ? (note === undefined ? "No links." : `No links for ${note}.`) : `${found.length} link(s).`;
+    return {
+      ok: true,
+      summary,
+      data: {
+        links: found.map((link) => ({
+          from: link.from,
+          to: link.to,
+          relation: link.relation,
+          reason: link.reason,
+          atMs: link.atMs,
+        })),
+      },
+    };
+  },
+});
 
 const linkNotes = (links: LinkStore, options: LinksToolOptions): Tool => ({
   spec: {

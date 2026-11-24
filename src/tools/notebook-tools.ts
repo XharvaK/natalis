@@ -24,23 +24,26 @@ type Checked<T> = { ok: true; value: T } | { ok: false; receipt: Receipt };
 export type NotebookToolOptions = {
   /** When given, trashing a note also drops every saved link to or from it (U10). */
   links?: LinkStore;
+  /** True when this thread sees private/. Absent means no, so private links stay hidden. */
+  privateView?: (thread: string) => boolean;
 };
 
 export function notebookTools(options: NotebookToolOptions = {}): Tool[] {
   // Notebook calls are local and short: after a turn deadline they are let finish, so a retry never repeats a write.
   return [
-    readNote,
+    readNote(options),
     capLocked(writeNote),
     capLocked(editNote),
     capLocked(appendNote),
     listNotes,
     trashNote(options.links),
+    renameNote(options.links),
     recall,
     forget,
   ].map((tool) => ({ ...tool, settles: true }));
 }
 
-const readNote: Tool = {
+const readNote = (options: NotebookToolOptions): Tool => ({
   spec: {
     name: "read_note",
     description:
@@ -62,22 +65,31 @@ const readNote: Tool = {
     if (wanted.value !== undefined && wanted.value === "") {
       return refuse("bad_arguments", "The section heading cannot be empty.", "section is empty");
     }
+    const note = notebookPathOf(path.value) ?? path.value;
     return guarded(async () => {
       const body = context.notebook.read(path.value);
       if (body === null) return refuse("not_found", "There is no note at that path.");
-      if (wanted.value !== undefined) {
-        const section = sectionOf(body, wanted.value);
-        if (section === undefined) {
-          return refuse(
-            "section_not_found",
-            `There is no heading "${wanted.value}" in ${path.value}.`,
-            `the note has no heading "${wanted.value}"`,
-          );
-        }
+      const section = wanted.value === undefined ? undefined : sectionOf(body, wanted.value);
+      if (wanted.value !== undefined && section === undefined) {
+        return refuse(
+          "section_not_found",
+          `There is no heading "${wanted.value}" in ${path.value}.`,
+          `the note has no heading "${wanted.value}"`,
+        );
+      }
+      const linked = linksOf(options, context.thread, note);
+      if (section !== undefined) {
         return {
           ok: true,
-          summary: `Read ${path.value}, section ${section.heading}.`,
-          data: { path: path.value, section: section.heading, text: section.text, chars: charCount(section.text), truncated: false },
+          summary: `Read ${path.value}, section ${section.heading}.${linked.summary}`,
+          data: {
+            path: path.value,
+            section: section.heading,
+            text: section.text,
+            chars: charCount(section.text),
+            truncated: false,
+            ...linked.data,
+          },
         };
       }
       const truncated = body.length > READ_LIMIT;
@@ -86,12 +98,12 @@ const readNote: Tool = {
         : body;
       return {
         ok: true,
-        summary: `Read ${path.value}.`,
-        data: { path: path.value, text, chars: body.length, truncated },
+        summary: `Read ${path.value}.${linked.summary}`,
+        data: { path: path.value, text, chars: body.length, truncated, ...linked.data },
       };
     });
   },
-};
+});
 
 const writeNote: Tool = {
   spec: {
@@ -292,6 +304,60 @@ const trashNote = (links: LinkStore | undefined): Tool => ({
   },
 });
 
+const renameNote = (links: LinkStore | undefined): Tool => ({
+  spec: {
+    name: "rename_note",
+    description: "Move or rename one of your notes. Its history and its links go with it. Say why in one short line.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Path of the note inside your notebook." },
+        to: { type: "string", description: "The new path inside your notebook." },
+        why: { type: "string", description: "Why you are moving it, in one short line." },
+      },
+      required: ["path", "to", "why"],
+    },
+  },
+  async run(args, context) {
+    const path = requireText(args, "path", "The note path", { trim: true });
+    if (!path.ok) return path.receipt;
+    const to = requireText(args, "to", "The new note path", { trim: true });
+    if (!to.ok) return to.receipt;
+    const held = protectedRefusal(path.value) ?? protectedRefusal(to.value);
+    if (held !== undefined) return held;
+    const from = notebookPathOf(path.value) ?? path.value;
+    const target = notebookPathOf(to.value) ?? to.value;
+    for (const note of [from, target]) {
+      if (note === "trash" || note.startsWith("trash/")) {
+        return refuse(
+          "bad_arguments",
+          "Use trash_note to move a note to the trash.",
+          "A note in trash/ is kept there, not renamed.",
+        );
+      }
+    }
+    const why = requireText(args, "why", "The reason");
+    if (!why.ok) return why.receipt;
+    return guarded(async () => {
+      await context.notebook.rename(from, target, why.value, authorOf(context));
+      const repair = links === undefined ? { repaired: 0, dropped: 0 } : links.repairRename(from, target);
+      let summary = `Renamed ${from} to ${target}.`;
+      if (repair.repaired > 0 && repair.dropped > 0) {
+        summary += ` Repointed ${repair.repaired} link(s), dropped ${repair.dropped}.`;
+      } else if (repair.repaired > 0) {
+        summary += ` Repointed ${repair.repaired} link(s).`;
+      } else if (repair.dropped > 0) {
+        summary += ` Dropped ${repair.dropped} link(s).`;
+      }
+      return {
+        ok: true,
+        summary,
+        data: { path: from, to: target, linksRepointed: repair.repaired, linksDropped: repair.dropped },
+      };
+    });
+  },
+});
+
 const recall: Tool = {
   spec: {
     name: "recall",
@@ -479,6 +545,26 @@ const forget: Tool = {
 
 function authorOf(context: ToolContext): string {
   return `thread:${context.thread}`;
+}
+
+/** The links a read shows: one sentence for the summary and the same links for the data, or nothing at all. */
+function linksOf(
+  options: NotebookToolOptions,
+  thread: string,
+  note: string,
+): { summary: string; data: { links?: Array<{ relation: string; from: string; to: string; reason: string }> } } {
+  const found =
+    options.links === undefined ? [] : options.links.forNote(note, options.privateView?.(thread) ?? false);
+  if (found.length === 0) return { summary: "", data: {} };
+  const parts = found.map((link) =>
+    link.to === note ? `${link.from} ${link.relation} it` : `it ${link.relation} ${link.to}`,
+  );
+  return {
+    summary: ` Linked: ${parts.join("; ")}.`,
+    data: {
+      links: found.map((link) => ({ relation: link.relation, from: link.from, to: link.to, reason: link.reason })),
+    },
+  };
 }
 
 /** The refusal for a note only the body may change, or undefined when the Lar may change it. */
