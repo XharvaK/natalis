@@ -285,6 +285,9 @@ export function kantusWorldFrom(dir: string, config: EntityConfig, held: HeldVal
   const otherTokens = otherThanHelper(dir, config, held, "kantus");
   return createKantusWorld({
     dir, token, host: kantus.host, port: kantus.port, otherTokens,
+    ownerAlias: config.owner.alias,
+    entityName: config.name ?? "Agent",
+    listen: true,
     ...(config.model.vision === true ? { vision: true } : {}),
   });
 }

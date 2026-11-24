@@ -13,6 +13,7 @@ import { outwardHoldWords } from "../../entity/privacy.js";
 import { writeFileAtomic } from "../../fsutil/write-atomic.js";
 import { KANTUS_FOLDER, MAX_READ_LINES, openCapabilities, type CapabilitiesStore } from "./capabilities-store.js";
 import { KANTUS_DEFAULT_HOST, KANTUS_DEFAULT_PORT } from "./file.js";
+import { createKantusHttpLink, type KantusHttpLink } from "./http-link.js";
 import {
   isActOp, isAnalyzeOp, isReadOp, KANTUS_PLACE, KANTUS_WORLD_ID, LARGE_BODY_LIMIT, MIN_TOKEN_BYTES, tokenProblem,
   type StudioEvent, type StudioLink, type StudioReply, type StudioStatus,
@@ -54,8 +55,14 @@ export type KantusWorldOptions = {
   nowMs?: () => number;
   /** Every other token the body holds (the model key, the bot token, the helper's). The studio's token must differ. */
   otherTokens?: readonly string[];
-  /** The bridge to Kantus.exe. Without one the studio reads as detached and the cached Capabilities stay readable. */
+  /** The bridge to Kantus.exe. Without one and without `listen`, the studio reads as detached and cached Capabilities stay readable. */
   link?: StudioLink;
+  /** True when the world should own an HTTP/NDJSON StudioLink server on host:port (when no custom `link` is passed). */
+  listen?: boolean;
+  /** The summoner alias delivered on owner chat messages from Kantus ComposerComponent. */
+  ownerAlias?: string;
+  /** The Lar display name advertised in the HTTP bridge handshake. */
+  entityName?: string;
   /** Whether the model can see pictures. Only then do evidence PNGs go to it; they are kept on the shelf either way. */
   vision?: boolean;
 };
@@ -63,8 +70,10 @@ export type KantusWorldOptions = {
 export interface KantusWorld extends World {
   /** The folder the synced Capabilities/ sheets live in. */
   readonly capabilitiesRoot: string;
-  /** What the bridge will listen on. The listener itself is built by a later task. */
+  /** What the bridge listens on (resolved bound port after start when listening). */
   bridgeAddress(): { host: string; port: number };
+  /** The live HTTP bridge address while listening; null otherwise. */
+  listeningAddress(): { host: string; port: number } | null;
   /** Delivers the words queued while the studio was detached, oldest first. Returns how many were sent. */
   flushOutbox(): Promise<number>;
 }
@@ -99,7 +108,19 @@ export function createKantusWorld(options: KantusWorldOptions): KantusWorld {
   const others = [...(options.otherTokens ?? [])];
   const caps: CapabilitiesStore = openCapabilities(options.dir);
   const outboxPath = join(options.dir, KANTUS_FOLDER, OUTBOX_FILE);
-  const link = options.link;
+  const ownedLink: KantusHttpLink | undefined =
+    options.link === undefined && options.listen === true
+      ? createKantusHttpLink({
+          host: options.host ?? KANTUS_DEFAULT_HOST,
+          port: options.port ?? KANTUS_DEFAULT_PORT,
+          token: options.token,
+          entityName: options.entityName ?? "Agent",
+          caps,
+          nowMs,
+        })
+      : undefined;
+  const link: StudioLink | undefined = options.link ?? ownedLink;
+  const ownerAlias = options.ownerAlias ?? "owner";
 
   let emitter: ((event: WorldEvent) => void) | null = null;
   let keeper: WorldBody | null = null;
@@ -262,7 +283,7 @@ export function createKantusWorld(options: KantusWorldOptions): KantusWorld {
     return flushing;
   }
 
-  /** What the studio sends unasked: a change of attachment, or a note from the composer pane. */
+  /** What the studio sends unasked: a change of attachment, a summoner chat line, or a studio notice. */
   function handleStudioEvent(event: StudioEvent): void {
     const at = event.atMs ?? nowMs();
     if (event.channel === "attached" || event.channel === "detached") {
@@ -275,6 +296,26 @@ export function createKantusWorld(options: KantusWorldOptions): KantusWorld {
       if (attached) {
         void flushOutbox().catch((error: unknown) => console.error(`[kantus] the outbox could not be sent: ${messageOf(error)}`));
       }
+      return;
+    }
+    if (event.channel === "chat") {
+      const rawText = typeof event.payload["text"] === "string" ? event.payload["text"].trim() : "";
+      if (rawText === "") return;
+      const context = Array.isArray(event.payload["context"])
+        ? event.payload["context"].filter((item): item is string => typeof item === "string" && item.trim() !== "")
+        : [];
+      const text = context.length > 0 ? `${rawText}\n\n[Attached context: ${context.join(", ")}]` : rawText;
+      deliver({
+        world: KANTUS_WORLD_ID,
+        place: KANTUS_PLACE,
+        thread: KANTUS_PLACE,
+        actor: ownerAlias,
+        source: "owner",
+        text,
+        data: event.payload,
+        atMs: at,
+        wake: true,
+      });
       return;
     }
     const text = event.payload["text"];
@@ -498,6 +539,15 @@ export function createKantusWorld(options: KantusWorldOptions): KantusWorld {
       mkdirSync(join(options.dir, KANTUS_FOLDER), { recursive: true });
       emitter = emit;
       keeper = body;
+      if (ownedLink) {
+        try {
+          await ownedLink.start();
+        } catch (error) {
+          emitter = null;
+          keeper = null;
+          throw error;
+        }
+      }
       started = true;
       if (link) unsubscribe = link.onEvent(handleStudioEvent);
     },
@@ -510,6 +560,7 @@ export function createKantusWorld(options: KantusWorldOptions): KantusWorld {
       started = false;
       for (const controller of inflight) controller.abort();
       inflight.clear();
+      if (ownedLink) await ownedLink.stop();
     },
 
     async onStop() {
@@ -722,7 +773,11 @@ export function createKantusWorld(options: KantusWorldOptions): KantusWorld {
     },
 
     bridgeAddress() {
-      return { host: options.host ?? KANTUS_DEFAULT_HOST, port: options.port ?? KANTUS_DEFAULT_PORT };
+      return ownedLink?.listeningAddress() ?? { host: options.host ?? KANTUS_DEFAULT_HOST, port: options.port ?? KANTUS_DEFAULT_PORT };
+    },
+
+    listeningAddress() {
+      return ownedLink?.listeningAddress() ?? null;
     },
 
     flushOutbox,

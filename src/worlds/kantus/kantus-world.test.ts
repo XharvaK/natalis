@@ -238,12 +238,19 @@ describe("the studio's window and its turn state", () => {
     ]);
   });
 
-  it("turns what the studio sends unasked into an event on the studio thread", async () => {
+  it("turns what the studio sends unasked into an event on the studio thread, and delivers composer chat as the owner", async () => {
     const { link, events } = await started();
     link.emit({ channel: "note", payload: { text: "Session saved." }, atMs: NOW });
     expect(events.at(-1)).toMatchObject({
       world: "kantus", place: KANTUS_PLACE, thread: KANTUS_PLACE, actor: "studio", source: "outside", text: "Session saved.",
     });
+
+    link.emit({ channel: "chat", payload: { text: "Add a Rhodes turnaround.", context: ["Bars 5-8"] }, atMs: NOW });
+    expect(events.at(-1)).toMatchObject({
+      world: "kantus", place: KANTUS_PLACE, thread: KANTUS_PLACE, actor: "owner", source: "owner", wake: true,
+    });
+    expect(String((events.at(-1) as { text?: string }).text)).toContain("Add a Rhodes turnaround.");
+    expect(String((events.at(-1) as { text?: string }).text)).toContain("Bars 5-8");
   });
 });
 
