@@ -20,6 +20,7 @@ import { loadWebFile, normalizeHost, saveWebFile, WEB_FILE, WEB_SITES_MAX, type 
 import { readVault, removeVaultEntry, validVaultName } from "../worlds/web/vault.js";
 import { isPictureId, type Shelf } from "../media/shelf.js";
 import { CONTACTS_FILE, mentionedUserId, readContacts, writeContacts } from "./contacts.js";
+import { PROPOSALS_FOLDER } from "../notebook/proposals-digest.js";
 import { DISCORD_ALIASES_FILE, readUserAliases } from "../worlds/discord/aliases.js";
 
 /** A commitment the Lar proposed and the summoner has not answered yet. */
@@ -43,6 +44,8 @@ export const HELP_TEXT = [
   "!household: show the household note. !household add <line> adds a line. !household remove <n> removes line n.",
   "!proposals: list the commitments the Lar has proposed.",
   "!approve <id>: agree to one. !decline <id> [reason]: decline it.",
+  "!requests: list her requests to change her body (files under proposals/). !requests <file> shows one.",
+  "!answer <file> <text>: answer one of them. She is told, and it wakes her.",
   "!sites: list the sites the Lar may post, log in or make accounts on. !sites add <host> adds one. !sites remove <host> removes one.",
   "!vault: list the names in the Lar's vault, with the host each belongs to (never the values). !vault remove <name> deletes one.",
   "!media: list the newest pictures on the Lar's shelf. !media forget <id> removes one.",
@@ -74,6 +77,10 @@ export type SummonerDesk = {
   record: (text: string) => void;
   /** Called after the stop file changed, so the runtime does not report the same change twice. */
   stopChanged: () => void;
+  /** Answers one file under proposals/: the runtime's answerProposal. Throws when the file is not there. */
+  answerRequest?: (file: string, text: string) => void;
+  /** Hides secrets in text the summoner is shown (the runtime's scanner). */
+  redact?: (text: string) => string;
 };
 
 /** The words the body answers as commands. Any other "!" line is an ordinary message to the Lar. */
@@ -84,6 +91,8 @@ const COMMAND_WORDS: ReadonlySet<string> = new Set([
   "proposals",
   "approve",
   "decline",
+  "requests",
+  "answer",
   "sites",
   "vault",
   "media",
@@ -113,6 +122,10 @@ export async function answerSummoner(text: string, desk: SummonerDesk): Promise<
       return approve(rest, desk);
     case "decline":
       return decline(rest, desk);
+    case "requests":
+      return requests(rest, desk);
+    case "answer":
+      return answer(rest, desk);
     case "sites":
       return sites(rest, desk);
     case "vault":
@@ -517,4 +530,101 @@ function decline(rest: string, desk: SummonerDesk): string {
   const why = reason === "" ? "" : ` Reason: ${reason}`;
   desk.record(`Your summoner declined your proposed commitment ${id}: ${item.text}${why}`);
   return "Declined. Nothing was written into the commitments.";
+}
+
+// --- her requests to change her body ----------------------------------------------------------
+
+const REQUEST_TITLE_MAX = 80;
+const REQUEST_SHOW_MAX = 1800;
+const USAGE_REQUEST_FILE = "Give one file name under proposals/: !requests <file> or !answer <file> <text>.";
+const USAGE_ANSWER = "Give the file and your answer: !answer <file> <text>. !requests lists them.";
+
+type RequestPick = { file: string } | { usage: true } | { missing: true };
+
+/** The files directly under proposals/, as plain names, sorted by name. */
+function requestFiles(desk: SummonerDesk): string[] {
+  const names: string[] = [];
+  for (const entry of desk.notebook.list(PROPOSALS_FOLDER)) {
+    const prefix = `${PROPOSALS_FOLDER}/`;
+    if (!entry.path.startsWith(prefix)) continue;
+    const name = entry.path.slice(prefix.length);
+    if (name === "" || name.includes("/")) continue;
+    names.push(name);
+  }
+  return names.sort();
+}
+
+/** A request file's first line, without its leading `#` and spaces, clipped for one answer line. */
+function requestTitle(desk: SummonerDesk, name: string): string {
+  const text = desk.notebook.read(`${PROPOSALS_FOLDER}/${name}`) ?? "";
+  const first = text.split(/\r?\n/)[0] ?? "";
+  return clip(first.replace(/^[#\s]+/, ""), REQUEST_TITLE_MAX);
+}
+
+/** The name without the proposals/ prefix the summoner may have written. */
+function bareRequestName(name: string): string {
+  const prefix = `${PROPOSALS_FOLDER}/`;
+  return name.startsWith(prefix) ? name.slice(prefix.length) : name;
+}
+
+/** The file the summoner named: as given, then with .md added. A bad name is refused, never looked up. */
+function resolveRequest(bare: string, names: string[]): RequestPick {
+  if (bare === "" || bare.includes("/") || bare.includes("\\") || bare.includes("..")) return { usage: true };
+  const file = names.find((name) => name === bare) ?? names.find((name) => name === `${bare}.md`);
+  return file === undefined ? { missing: true } : { file };
+}
+
+function missingRequest(bare: string, names: string[]): string {
+  const lead = `There is no proposals/${bare}.`;
+  if (names.length === 0) return `${lead} There are no requests under proposals/.`;
+  return `${lead} Files there: ${names.join(", ")}.`;
+}
+
+function requests(rest: string, desk: SummonerDesk): string {
+  const given = words(rest)[0];
+  if (given === undefined) {
+    desk.record("Your summoner looked at your requests to change your body.");
+    const names = requestFiles(desk);
+    if (names.length === 0) return "There are no requests under proposals/.";
+    const lines = names.map((name) => `- ${name}: ${requestTitle(desk, name)}`);
+    return [
+      "Her requests (proposals/):",
+      ...lines,
+      "Show one with !requests <file>. Answer with !answer <file> <text>.",
+    ].join("\n");
+  }
+  const bare = bareRequestName(given);
+  const names = requestFiles(desk);
+  const pick = resolveRequest(bare, names);
+  if ("usage" in pick) return USAGE_REQUEST_FILE;
+  if ("missing" in pick) {
+    desk.record(`Your summoner asked to read proposals/${bare}, which is not there.`);
+    return missingRequest(bare, names);
+  }
+  desk.record(`Your summoner read your request proposals/${pick.file}.`);
+  const raw = desk.notebook.read(`${PROPOSALS_FOLDER}/${pick.file}`) ?? "";
+  const text = desk.redact === undefined ? raw : desk.redact(raw);
+  const chars = Array.from(text);
+  if (chars.length <= REQUEST_SHOW_MAX) return `proposals/${pick.file}:\n\n${text}`;
+  const head = chars.slice(0, REQUEST_SHOW_MAX).join("");
+  const cut = `(cut: ${chars.length - REQUEST_SHOW_MAX} more characters. Read the rest with natalis proposals on the host.)`;
+  return `proposals/${pick.file}:\n\n${head}\n${cut}`;
+}
+
+function answer(rest: string, desk: SummonerDesk): string {
+  const given = words(rest)[0];
+  const text = given === undefined ? "" : rest.slice(given.length).trim();
+  if (given === undefined || text === "") return USAGE_ANSWER;
+  const bare = bareRequestName(given);
+  const names = requestFiles(desk);
+  const pick = resolveRequest(bare, names);
+  if ("usage" in pick) return USAGE_REQUEST_FILE;
+  if ("missing" in pick) return missingRequest(bare, names);
+  if (desk.answerRequest === undefined) return "Answering is not wired in this body yet.";
+  try {
+    desk.answerRequest(pick.file, text);
+  } catch (err) {
+    return plainError(err);
+  }
+  return `Answered proposals/${pick.file}. She is told in her own thread, and it wakes her.`;
 }
