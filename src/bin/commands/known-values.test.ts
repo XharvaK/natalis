@@ -49,6 +49,32 @@ describe("heldValues", () => {
     expect(knownValueList(held)).toEqual([MODEL_KEY, OTHER_KEY, WORLD_KEY]);
   });
 
+  it("reads the embeddings key by its variable name, so the scanner holds it like a model key", () => {
+    const EMBEDDINGS_KEY = ["embed", "key", "4444444444"].join("-");
+    const config: EntityConfig = {
+      ...CONFIG,
+      embeddings: {
+        baseUrl: "http://127.0.0.1:6/v1",
+        model: "small-embed",
+        apiKeyEnv: "TEST_EMBEDDINGS_KEY",
+      },
+    };
+    const held = heldValues(dir, config, { env: { TEST_MODEL_KEY: MODEL_KEY, TEST_EMBEDDINGS_KEY: EMBEDDINGS_KEY } });
+
+    expect(held.embeddings).toBe(EMBEDDINGS_KEY);
+    expect(knownValueList(held)).toEqual([MODEL_KEY, EMBEDDINGS_KEY]);
+  });
+
+  it("leaves out an embeddings key that is not set, or set to nothing", () => {
+    const config: EntityConfig = {
+      ...CONFIG,
+      embeddings: { baseUrl: "http://127.0.0.1:6/v1", model: "small-embed", apiKeyEnv: "TEST_EMBEDDINGS_KEY" },
+    };
+
+    expect(heldValues(dir, config, { env: { TEST_MODEL_KEY: MODEL_KEY } }).embeddings).toBeUndefined();
+    expect(heldValues(dir, config, { env: { TEST_MODEL_KEY: MODEL_KEY, TEST_EMBEDDINGS_KEY: "" } }).embeddings).toBeUndefined();
+  });
+
   it("leaves out a variable that is not set, or set to nothing, and a key too short to be one", () => {
     const held = heldValues(dir, CONFIG, { env: { TEST_MODEL_KEY: "short", TEST_BOT_TOKEN: "" } });
 

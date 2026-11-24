@@ -151,6 +151,34 @@ describe("parseEntityConfig", () => {
   });
 });
 
+describe("the embeddings block", () => {
+  it("is absent unless entity.json names it", () => {
+    expect(parseEntityConfig(MINIMAL).embeddings).toBeUndefined();
+  });
+
+  it("parses an embeddings block through parseEmbeddings", () => {
+    const config = parseEntityConfig({
+      ...MINIMAL,
+      embeddings: { baseUrl: "https://embed.example.test/v1", model: "small-embed", apiKeyEnv: "EMBED_KEY" },
+    });
+
+    expect(config.embeddings).toEqual({
+      baseUrl: "https://embed.example.test/v1",
+      model: "small-embed",
+      apiKeyEnv: "EMBED_KEY",
+      batch: 64,
+      timeoutMs: 30_000,
+    });
+  });
+
+  it("refuses a malformed embeddings block with parseEmbeddings' own words", () => {
+    expect(() => parseEntityConfig({ ...MINIMAL, embeddings: [] })).toThrow("embeddings must be an object.");
+    expect(() => parseEntityConfig({ ...MINIMAL, embeddings: { baseUrl: "https://a.test/v1", model: "m", apiKeyEnv: "k" } })).toThrow(
+      /embeddings.apiKeyEnv must be a name in capitals/,
+    );
+  });
+});
+
 describe("loadEntityConfig", () => {
   it("reads and validates entity.json in the folder", () => {
     writeFileSync(join(dir, "entity.json"), JSON.stringify(MINIMAL), "utf8");

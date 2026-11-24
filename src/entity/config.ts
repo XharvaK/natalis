@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Ceiling } from "../contracts.js";
+import { parseEmbeddings, type EmbeddingsConfig } from "../model/embeddings-config.js";
 import type { EffortMap, FallbackModelConfig, ModelConfig, ModelPrice } from "../model/from-config.js";
 import type { ThreadKind } from "../river/ledger.js";
 import { parseClock } from "./wake-schedule.js";
@@ -59,6 +60,8 @@ export type EntityConfig = {
    * model. Its backup is the main model at the entity's effort. Left out, every world uses the main model.
    */
   worldModels?: Record<string, WorldModelConfig>;
+  /** Recall by meaning: where its texts go and which model makes the vectors. Left out, recall stays lexical. */
+  embeddings?: EmbeddingsConfig;
 };
 
 export type WorldModelConfig = {
@@ -117,7 +120,7 @@ export function parseEntityConfig(value: unknown): EntityConfig {
   const root = objectOf(value, ENTITY_FILE);
   onlyKeys(
     root,
-    ["name", "timeZone", "model", "effort", "threadEffort", "ceiling", "summoner", "owner", "holds", "tools", "limits", "rhythm", "worldModels"],
+    ["name", "timeZone", "model", "effort", "threadEffort", "ceiling", "summoner", "owner", "holds", "tools", "limits", "rhythm", "worldModels", "embeddings"],
     ENTITY_FILE,
   );
   if (root["summoner"] !== undefined && root["owner"] !== undefined) {
@@ -147,6 +150,7 @@ export function parseEntityConfig(value: unknown): EntityConfig {
   if (root["tools"] !== undefined) config.tools = parseToolPolicy(root["tools"]);
   if (root["limits"] !== undefined) config.limits = parseLimits(root["limits"]);
   if (root["worldModels"] !== undefined) config.worldModels = parseWorldModels(root["worldModels"]);
+  if (root["embeddings"] !== undefined) config.embeddings = parseEmbeddings(root["embeddings"]);
   return config;
 }
 

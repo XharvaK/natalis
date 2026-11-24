@@ -62,7 +62,10 @@ import {
   type AnswerWhere,
   type ReadbackItemView,
 } from "./permissions.js";
+import type { EmbeddingsClient } from "../model/embeddings.js";
 import { checkRiver } from "../river/integrity.js";
+import { indexHash, indexItems, type EmbeddingHit, type EmbeddingStore, type IndexItem } from "../river/embeddings.js";
+import { noteSections } from "../notebook/sections.js";
 import { indexedRiver, ViewIndex, viewKeyOfRow } from "../river/view-index.js";
 import { createSecretScanner, guardModel, guardNotebook, guardRiver, KNOWN_VALUE_KIND } from "../secrets/index.js";
 import { notebookTools } from "../tools/index.js";
@@ -331,8 +334,29 @@ type Section = ContextSection & { cls: PromptPartClass; items?: SectionItems };
 type MarkedEntry = { row: RiverRow; weight: number };
 /** U6: the marked rows a reflection turn shows, and when the oldest mark in this budget window was written. */
 type MarkedWindow = { entries: MarkedEntry[]; windowStartAtMs: number };
+/** Recall by meaning's own two lists for this turn: rows, and the note sections nearest the query. */
+type MeaningRecall = { rows: RiverRow[]; notes: EmbeddingHit[] };
 const RECALL_LIMIT = 8;
 const RECALL_WORDS = 8;
+/** Recall by meaning: the longest query text sent, and how long the query's embedding may take before the turn goes on lexical. */
+const RECALL_QUERY_CHARS = 2_000;
+const RECALL_QUERY_TIMEOUT_MS = 5_000;
+/** The reciprocal-rank constant of the fusion: a row's score from one list is 1 / (60 + its place in that list). */
+const RECALL_RRF_K = 60;
+/** The most note sections one turn's recall asks the store for. */
+const RECALL_NOTE_HITS = 3;
+/** The most row vectors one turn's recall asks the store for, before the rows already shown are dropped. */
+const RECALL_MEANING_ROWS = 20;
+/** How much of a note section recall shows; the section's own text as the note holds it now. */
+const RECALL_NOTE_SHOW = 300;
+/** One index pass: the most rows it reads and the most note items it embeds. */
+const INDEX_ROWS_MAX = 1_000;
+const INDEX_NOTES_MAX = 500;
+/** How much of one row or one note section is sent to make its vector. */
+const INDEX_ROW_CHARS = 4_000;
+const INDEX_NOTE_CHARS = 6_000;
+/** The least gap between two body notes about recall by meaning failing, per kind of note. */
+const EMBEDDING_NOTE_GAP_MS = 60 * 60_000;
 /** Conversational words a message brings that say nothing about what to remember (Q19). */
 const RECALL_STOP: ReadonlySet<string> = new Set([
   "yeah", "okay", "really", "think", "thought", "maybe", "something", "anything", "everything", "nothing", "going",
@@ -415,6 +439,11 @@ export type OpenEntityOptions = {
   stopPollMs?: number;
   /** The build's list of body commits, for the note about what changed since the last start. */
   bodyChanges?: BodyChanges;
+  /**
+   * Recall by meaning: the client that makes vectors and the store that keeps them. Left out, recall stays lexical and
+   * nothing is sent anywhere. The store belongs to the caller, which closes it.
+   */
+  embeddings?: { client: EmbeddingsClient; store: EmbeddingStore };
 };
 
 export interface Entity {
@@ -524,6 +553,7 @@ export async function openEntity(options: OpenEntityOptions): Promise<Entity> {
     ...(options.purpose === undefined ? {} : { purpose: options.purpose }),
     ...(options.wakePrecheck === undefined ? {} : { wakePrecheck: options.wakePrecheck }),
     ...(options.bodyChanges === undefined ? {} : { bodyChanges: options.bodyChanges }),
+    ...(options.embeddings === undefined ? {} : { embeddings: options.embeddings }),
     stopPollMs,
     statePath,
     dir,
@@ -928,6 +958,7 @@ type RuntimeInit = {
   state: EntityState;
   shelf: Shelf;
   bodyChanges?: BodyChanges;
+  embeddings?: { client: EmbeddingsClient; store: EmbeddingStore };
 };
 
 /**
@@ -1085,6 +1116,15 @@ class Runtime implements Entity {
   private readonly idleWaiters: Array<() => void> = [];
   private readonly abort = new AbortController();
 
+  /** Recall by meaning: the client and store, or undefined when entity.json has no embeddings block. */
+  private readonly embeddings: { client: EmbeddingsClient; store: EmbeddingStore } | undefined;
+  /** The index pass running now, so two never run at once. */
+  private indexPass: Promise<void> | undefined;
+  /** True when a turn ended while a pass ran: one more pass follows it. */
+  private indexAgain = false;
+  /** When each kind of recall-by-meaning failure note was last written, so the river gets at most one an hour. */
+  private readonly embeddingNotesAtMs = new Map<"index" | "recall", number>();
+
   /** Set when the summoner was told of the current outage. A turn that gets an answer ends the outage and clears it. */
   private outageNoticed = false;
   /** When a failed monthly proposals list may be shown again. Memory only: a restart tries again. */
@@ -1118,6 +1158,7 @@ class Runtime implements Entity {
     this.outageNoticed = init.state.outageNoticed ?? false;
     this.shelf = init.shelf;
     this.bodyChanges = init.bodyChanges;
+    this.embeddings = init.embeddings;
     // The body's outward check reads the privacy list through the same watch as the say, so a damaged list is noticed there too.
     this.body = shelfBody(init.shelf, init.nowMs, (texts) => outwardHold(this.privacyNow(), texts));
     this.ceiling = init.config.ceiling ?? DEFAULT_CEILING;
@@ -1366,6 +1407,8 @@ class Runtime implements Entity {
     if (this.limitTimer !== undefined) clearTimeout(this.limitTimer);
     this.limitTimer = undefined;
     this.abort.abort();
+    // The index pass reads the river, so it is given the abort and its end is waited for before the river closes.
+    await this.indexPass?.catch(() => undefined);
     // Answers already on their way to the summoner go out before the worlds close. The chain never rejects.
     await this.outbox;
     // The window's copies still waiting go out before the worlds close, which is when they can no longer be shown.
@@ -1700,6 +1743,192 @@ class Runtime implements Entity {
       } catch {
         // The river itself is failing; there is nothing left to record it in.
       }
+    } finally {
+      // Recall by meaning is refreshed after every live turn, in the background, so it never delays a turn.
+      this.startIndexPass();
+    }
+  }
+
+  // --- recall by meaning -------------------------------------------------------------------------
+
+  /**
+   * Starts one index pass if none runs, and sets a flag for one more when one does. The pass runs in the background, is
+   * aborted by a stop, and never delays a turn. Without an embeddings block there is nothing to start.
+   */
+  private startIndexPass(): void {
+    const embeddings = this.embeddings;
+    if (embeddings === undefined || this.stopping || this.closed) return;
+    if (this.indexPass !== undefined) {
+      this.indexAgain = true;
+      return;
+    }
+    const signal = this.abort.signal;
+    this.indexPass = this.runIndexPass(embeddings, signal)
+      .catch(() => undefined)
+      .finally(() => {
+        this.indexPass = undefined;
+        if (this.indexAgain) {
+          this.indexAgain = false;
+          this.startIndexPass();
+        }
+      });
+  }
+
+  /**
+   * One index pass: the rows and notebook sections that are allowed out get their vectors, and note entries the pass did
+   * not see leave the index. What may be sent is decided here and only here: people's messages and her own words (river
+   * rows of kind event and say), and notebook sections. Never a view row, never a summoner act, never anything under
+   * private/ or trash/, never a README, and never a body note or a receipt. A failure is recorded and shown, once an hour.
+   */
+  private async runIndexPass(embeddings: { client: EmbeddingsClient; store: EmbeddingStore }, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return;
+    const model = embeddings.client.model;
+    try {
+      const fromSeq = embeddings.store.maxSeq(model);
+      const items: IndexItem[] = [];
+      // Rows: the event and say rows past the store's newest seq, oldest first, at most 1,000 kept in one pass. The read
+      // pages forward over rows it keeps and rows it does not, so a run of view rows can never hold the pass in place.
+      let after = fromSeq;
+      for (;;) {
+        const page = this.river.read({ kinds: ["event", "say"], sinceSeq: after, limit: INDEX_ROWS_MAX });
+        for (const row of page) {
+          if (items.length >= INDEX_ROWS_MAX) break;
+          if (!indexableRow(row)) continue;
+          items.push({
+            kind: "row",
+            key: String(row.seq),
+            seq: row.seq,
+            text: clip(row.text ?? "", INDEX_ROW_CHARS),
+            private: false,
+            atMs: row.atMs,
+          });
+        }
+        const last = page[page.length - 1]?.seq;
+        if (page.length < INDEX_ROWS_MAX || items.length >= INDEX_ROWS_MAX || last === undefined) break;
+        after = last;
+      }
+
+      // Every note the notebook holds, except private/, trash/ and README files. A note with no headings is one item.
+      // The store's hashes skip an unchanged section, so the 500 limit is over the items this pass will really embed.
+      const noteItems: IndexItem[] = [];
+      const seenNotes = new Set<string>();
+      const storedNoteHashes = embeddings.store.hashes("note", model);
+      const atMs = this.nowMs();
+      for (const entry of this.notebook.list()) {
+        if (!indexableNotePath(entry.path)) continue;
+        const source = this.notebook.read(entry.path);
+        if (source === null) continue;
+        const sections = noteSections(source);
+        if (sections.length === 0) {
+          seenNotes.add(noteKey(entry.path, ""));
+          noteItems.push(noteItem(entry.path, "", source, atMs));
+          continue;
+        }
+        for (const section of sections) {
+          noteItems.push(noteItem(entry.path, section.title, section.text, atMs));
+          seenNotes.add(noteKey(entry.path, section.title));
+        }
+      }
+      // An unchanged section costs nothing to see; only the changed ones count against the pass's limit.
+      const pendingNotes = noteItems.filter((item) => storedNoteHashes.get(item.key) !== indexHash(item));
+      items.push(...pendingNotes.slice(0, INDEX_NOTES_MAX));
+
+      await indexItems(embeddings.store, embeddings.client, items, { signal });
+      if (signal.aborted) return;
+      // A renamed, trashed or private note leaves the index: its keys are the ones the store holds that this pass did not see.
+      const stale = [...storedNoteHashes.keys()].filter((key) => !seenNotes.has(key));
+      if (stale.length > 0) embeddings.store.remove("note", stale);
+    } catch (error) {
+      this.noteEmbeddingFailure("index", `Recall by meaning could not update its index: ${shortReason(error)}.`);
+    }
+  }
+
+  /**
+   * Writes one body note in her self thread about recall by meaning failing, at most once an hour for each kind of note.
+   * The note is the record: nothing here decides anything for her.
+   */
+  private noteEmbeddingFailure(kind: "index" | "recall", text: string): void {
+    const now = this.nowMs();
+    const last = this.embeddingNotesAtMs.get(kind);
+    if (last !== undefined && now - last < EMBEDDING_NOTE_GAP_MS) return;
+    this.embeddingNotesAtMs.set(kind, now);
+    try {
+      this.river.append({
+        thread: "self",
+        kind: "note",
+        source: "body",
+        text: this.scanner.redact(text),
+        data: { bodyNote: "recall_by_meaning" },
+        atMs: now,
+      });
+    } catch {
+      // A river that cannot be written has nowhere to record this; the failure still reached the log below.
+    }
+    console.error(`[natalis] ${text}`);
+  }
+
+  /** The query vector for this turn's recall, or undefined when it cannot be had within its timeout. */
+  private async recallQueryVec(text: string): Promise<Float32Array | undefined> {
+    const embeddings = this.embeddings;
+    if (embeddings === undefined || text.trim() === "") return undefined;
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // A promise of its own bounds the wait even for a client that ignores the signal, so a quiet service cannot hold a turn.
+    const timeout = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => {
+        abort.abort();
+        resolve(undefined);
+      }, RECALL_QUERY_TIMEOUT_MS);
+    });
+    try {
+      const answer = embeddings.client.embed([clip(text, RECALL_QUERY_CHARS)], abort.signal).then((vectors) => vectors[0]);
+      const vec = await Promise.race([answer, timeout]);
+      if (vec === undefined) {
+        if (abort.signal.aborted) this.noteEmbeddingFailure("recall", "Recall by meaning was not used this turn: the query took too long.");
+        return undefined;
+      }
+      return vec;
+    } catch (error) {
+      this.noteEmbeddingFailure("recall", `Recall by meaning was not used this turn: ${shortReason(error)}.`);
+      return undefined;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * This turn's meaning list: the rows and note sections nearest the query, or undefined when recall by meaning is off,
+   * its store holds nothing for the model, the query cannot be embedded in time, or it fails. In every one of those
+   * cases recall goes on lexical for this turn, and the turn still runs.
+   */
+  private async meaningRecall(fresh: readonly RiverRow[]): Promise<MeaningRecall | undefined> {
+    const embeddings = this.embeddings;
+    if (embeddings === undefined) return undefined;
+    const text = fresh.filter((row) => viewKeyOf(row) === undefined).map((row) => row.text ?? "").join("\n");
+    if (text.trim() === "") return undefined;
+    const model = embeddings.client.model;
+    try {
+      if (embeddings.store.count(model) === 0) return undefined;
+    } catch (error) {
+      this.noteEmbeddingFailure("recall", `Recall by meaning was not used this turn: ${shortReason(error)}.`);
+      return undefined;
+    }
+    const vec = await this.recallQueryVec(text);
+    if (vec === undefined) return undefined;
+    try {
+      const hits = embeddings.store.search(vec, { model, includePrivate: false, limit: RECALL_MEANING_ROWS, kind: "row" });
+      const rows: RiverRow[] = [];
+      for (const hit of hits) {
+        if (hit.seq === null) continue;
+        const [row] = this.river.read({ sinceSeq: hit.seq - 1, untilSeq: hit.seq, limit: 1 });
+        if (row === undefined || isForgotten(row)) continue;
+        rows.push(row);
+      }
+      const notes = embeddings.store.search(vec, { model, includePrivate: false, limit: RECALL_NOTE_HITS, kind: "note" });
+      return { rows, notes };
+    } catch (error) {
+      this.noteEmbeddingFailure("recall", `Recall by meaning was not used this turn: ${shortReason(error)}.`);
+      return undefined;
     }
   }
 
@@ -1763,6 +1992,8 @@ class Runtime implements Entity {
     const current = currentViewRows(fresh, newest);
     // A row in its own block is shown, so recall does not show it again.
     for (const { row } of current) shown.add(row.seq);
+    // Recall by meaning is asked before the turn is assembled, and a failure there only makes recall lexical.
+    const meaning = await this.meaningRecall(fresh);
     const { system: systemParts, tail, sizes } = this.systemText(
       thread,
       fresh,
@@ -1772,6 +2003,7 @@ class Runtime implements Entity {
       snapshot,
       this.thinkingOf(turnModel, mainName, effort),
       purpose,
+      meaning,
     );
     const recentLines = (rows: readonly RiverRow[]): string[] =>
       rows.map((row) => this.lineFor(row, viewKeyOf(row) !== undefined));
@@ -2841,6 +3073,8 @@ class Runtime implements Entity {
         });
       },
       stopChanged: () => this.syncStop(),
+      answerRequest: (file, text) => this.answerProposal(file, text),
+      redact: (text) => this.scanner.redact(text),
     };
   }
 
@@ -2940,6 +3174,7 @@ class Runtime implements Entity {
     snapshot: number,
     thinking: Thinking,
     purpose: Purpose,
+    meaning: MeaningRecall | undefined,
   ): { system: LayoutPart[]; tail: LayoutPart[]; sizes: string } {
     this.warnLifeSize(false);
     this.warnLifeView();
@@ -2983,7 +3218,9 @@ class Runtime implements Entity {
     ];
     const triggered = this.triggeredSection(thread, fresh);
     if (triggered !== undefined) changing.push(triggered);
-    const recall = this.recallSection(thread, fresh, shown);
+    // A note hit from recall by meaning does not repeat a triggered note or one of the self files already in context.
+    const shownNotes = new Set<string>([...this.selfFilePaths(), ...(triggered?.items?.keys ?? [])]);
+    const recall = this.recallSection(thread, fresh, shown, meaning, shownNotes);
     if (recall !== undefined) changing.push(recall);
     // U9: her facts, below recall and under its priority. Only the self thread and the summoner's place see them (Q9, C13).
     const facts = this.factsSection(thread, nowMs);
@@ -3342,6 +3579,14 @@ class Runtime implements Entity {
     return kind === "summoner" || kind === "self";
   }
 
+  /**
+   * The notes whose text this turn already shows whole in its system part, so a note hit from recall by meaning does not
+   * repeat them: the self files the constitution and life sections always carry. A triggered note is added by the caller.
+   */
+  private selfFilePaths(): ReadonlySet<string> {
+    return new Set<string>(["self/character.md", LIFE_PATH, HOUSEHOLD_PATH, COMMITMENTS_PATH]);
+  }
+
   /** Q19: the index as whole lines, in the notebook's order, with one pointer for the lines that do not fit. */
   private indexSection(thread: string): Section {
     const entries = this.notebookFor(thread).list().filter((entry) => {
@@ -3390,8 +3635,18 @@ class Runtime implements Entity {
     return { name: "triggered notes", text: itemsText(items, items.items.length), items, priority: 45, cls: "turn" };
   }
 
-  /** Q19: recall rows in recall's own score order, each whole, with a seq pointer for the rows that do not fit. */
-  private recallSection(thread: string, fresh: RiverRow[], shown: Set<number>): Section | undefined {
+  /**
+   * Q19: recall rows in recall's own score order, each whole, with a seq pointer for the rows that do not fit. With
+   * recall by meaning on, the lexical and meaning lists are fused by rank, so a row found only by meaning shows exactly
+   * like a lexical one, and the note sections the meaning list brings follow the rows.
+   */
+  private recallSection(
+    thread: string,
+    fresh: RiverRow[],
+    shown: Set<number>,
+    meaning: MeaningRecall | undefined,
+    shownNotes: ReadonlySet<string>,
+  ): Section | undefined {
     // River search ANDs its terms, so each word is searched on its own and the rows that match most words win.
     // Words that say nothing about the message are left out, and the rarest words are searched first.
     const name = this.config.name?.toLowerCase();
@@ -3422,22 +3677,95 @@ class Runtime implements Entity {
         else found.set(hit.row.seq, { row: hit.row, score: 1 });
       }
     }
-    if (found.size === 0) return undefined;
     const weights = this.markWeights();
-    const candidates = [...found.values()].map(({ row, score }) => ({
-      row,
-      seq: row.seq,
-      atMs: row.atMs,
-      matches: score,
-      weight: weights.get(row.seq) ?? 0,
-    }));
-    const ranked = rankRecall(candidates, this.nowMs()).slice(0, RECALL_LIMIT);
-    const items: SectionItems = {
-      items: ranked.map(({ row }) => `[#${row.seq} ${this.stamp(row.atMs)} ${row.thread} ${who(row)}] ${shownRow(row)}`),
-      keys: ranked.map(({ row }) => String(row.seq)),
+    const noteLines = this.noteRecallLines(meaning, shownNotes);
+    let ranked: Array<{ row: RiverRow }>;
+    if (meaning === undefined) {
+      // Without a meaning list, recall is exactly the lexical ranking of today: same score, same order, same rows.
+      if (found.size === 0) return undefined;
+      ranked = rankRecall(
+        [...found.values()].map(({ row, score }) => ({ row, seq: row.seq, atMs: row.atMs, matches: score, weight: weights.get(row.seq) ?? 0 })),
+        this.nowMs(),
+      ).slice(0, RECALL_LIMIT);
+    } else {
+      // The lexical list in the order the lexical search found it: most matched words first, newest seq on a tie. That
+      // order is the lexical rank in the fusion; the mark weight and recency are applied once, to the fused list below.
+      const lexical = [...found.values()].sort((a, b) => b.score - a.score || b.row.seq - a.row.seq);
+      // Reciprocal rank fusion: each list gives a row 1 / (60 + its place in that list); the sums decide the order. A
+      // row found only by meaning arrives here exactly as a lexical one does, so it shows the same way.
+      const fusion = new Map<number, { row: RiverRow; score: number }>();
+      lexical.forEach((candidate, index) => {
+        fusion.set(candidate.row.seq, { row: candidate.row, score: 1 / (RECALL_RRF_K + index + 1) });
+      });
+      for (const [index, row] of meaning.rows.entries()) {
+        if (shown.has(row.seq) || this.hiddenHere(row, thread)) continue;
+        const entry = fusion.get(row.seq);
+        const score = 1 / (RECALL_RRF_K + index + 1);
+        if (entry === undefined) fusion.set(row.seq, { row, score });
+        else entry.score += score;
+      }
+      // The fused list, then the mark weight and recency ranking recall always uses, over both lists together.
+      ranked = rankRecall(
+        [...fusion.values()].map(({ row, score }) => ({
+          row,
+          seq: row.seq,
+          atMs: row.atMs,
+          matches: score,
+          weight: weights.get(row.seq) ?? 0,
+        })),
+        this.nowMs(),
+      ).slice(0, RECALL_LIMIT);
+    }
+    if (ranked.length === 0 && noteLines.length === 0) return undefined;
+    const items = this.recallItems(ranked, noteLines);
+    return { name: "recall", text: itemsText(items, items.items.length), items, priority: 40, cls: "turn" };
+  }
+
+  /**
+   * The whole items of the recall section: one line per recalled row, shown as recall always shows one, then one line
+   * for each note section the meaning list brought.
+   */
+  private recallItems(ranked: ReadonlyArray<{ row: RiverRow }>, noteLines: ReadonlyArray<{ text: string; path: string }>): SectionItems {
+    return {
+      items: [
+        ...ranked.map(({ row }) => `[#${row.seq} ${this.stamp(row.atMs)} ${row.thread} ${who(row)}] ${shownRow(row)}`),
+        ...noteLines.map((line) => line.text),
+      ],
+      keys: [...ranked.map(({ row }) => String(row.seq)), ...noteLines.map((line) => line.path)],
       pointer: recallPointer,
     };
-    return { name: "recall", text: itemsText(items, items.items.length), items, priority: 40, cls: "turn" };
+  }
+
+  /**
+   * The note sections the meaning list found, each as one item: the path, its heading, and the first characters of the
+   * section as the note holds it now. A note that is gone, a section that is gone, and a note this turn already shows
+   * (a triggered note, or one of the self files in context) are left out.
+   */
+  private noteRecallLines(meaning: MeaningRecall | undefined, shownNotes: ReadonlySet<string>): Array<{ text: string; path: string }> {
+    if (meaning === undefined) return [];
+    const lines: Array<{ text: string; path: string }> = [];
+    const seen = new Set<string>();
+    for (const hit of meaning.notes) {
+      if (hit.kind !== "note") continue;
+      const split = hit.key.indexOf("#");
+      if (split < 0) continue;
+      const path = hit.key.slice(0, split);
+      const heading = hit.key.slice(split + 1);
+      if (shownNotes.has(path) || seen.has(path)) continue;
+      if (isPrivatePath(path) || path === "trash" || path.startsWith("trash/")) continue;
+      if (path.split("/").pop()?.startsWith(".") === true) continue;
+      const source = this.notebook.read(path);
+      if (source === null) continue;
+      const section = noteSections(source).find((candidate) => candidate.title === heading);
+      const text = heading === "" ? source : section?.text;
+      if (text === undefined) continue;
+      const body = text.trim().replace(/\s+/g, " ");
+      if (body === "") continue;
+      const cut = Array.from(body).slice(0, RECALL_NOTE_SHOW).join("");
+      lines.push({ text: heading === "" ? `[note ${path}] ${cut}` : `[note ${path}, ${heading}] ${cut}`, path });
+      seen.add(path);
+    }
+    return lines;
   }
 
   /**
@@ -4248,7 +4576,8 @@ class Runtime implements Entity {
       const bytes = readFileSync(real);
       const text = bytes.subarray(0, SAY_FILE_SNIFF_BYTES).includes(0) ? undefined : bytes.toString("utf8");
       found.push({
-        file: { path: real, name, mime: sayFileMime(name) },
+        // The exact bytes that were checked go with the say: a background job could change the file before it is sent.
+        file: { path: real, name, mime: sayFileMime(name), bytes },
         relative: withoutMount.replace(/\\/g, "/"),
         bytes: stats.size,
         ...(text === undefined ? {} : { text }),
@@ -5604,6 +5933,49 @@ function viewKeyOf(row: RiverRow): string | undefined {
   return typeof view === "string" ? view : undefined;
 }
 
+/**
+ * True when a river row may be sent to the embeddings service: an event or a say with words, not a view, not a
+ * summoner act, and not a body note. The rule lives here so every caller of the index pass obeys the same one.
+ */
+function indexableRow(row: RiverRow): boolean {
+  if (row.kind !== "event" && row.kind !== "say") return false;
+  if (viewKeyOf(row) !== undefined) return false;
+  if (row.data?.["summonerAct"] === true) return false;
+  if (row.data?.["bodyNote"] !== undefined) return false;
+  return (row.text ?? "").trim() !== "";
+}
+
+/** True for a note section that may be sent: never private/, never trash/, never a README, never a dot file. */
+function indexableNotePath(path: string): boolean {
+  if (isPrivatePath(path)) return false;
+  if (path === "trash" || path.startsWith("trash/")) return false;
+  const base = path.split("/").pop() ?? path;
+  return base !== "README.md" && !base.startsWith(".");
+}
+
+/** The key a note section is stored under: its path and its heading's title, or an empty heading for a note with none. */
+function noteKey(path: string, heading: string): string {
+  return `${path}#${heading}`;
+}
+
+function noteItem(path: string, heading: string, text: string, atMs: number): IndexItem {
+  return {
+    kind: "note",
+    key: noteKey(path, heading),
+    text: clip(text, INDEX_NOTE_CHARS),
+    private: false,
+    atMs,
+  };
+}
+
+/** A failure as one short line for a body note: the first sentence of its message, with the key kept out. */
+function shortReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const oneLineMessage = message.replace(/\s+/g, " ").trim();
+  const cut = oneLineMessage.replace(/[.](?:\s|$).*$/, "").trim();
+  return (cut === "" ? "it failed" : cut).slice(0, 200);
+}
+
 /** The sense an event carries, when data.sense is an object; undefined for every ordinary event. */
 function senseOf(event: WorldEvent): Sense | undefined {
   const value = event.data?.["sense"];
@@ -5687,9 +6059,18 @@ function markedPointer(entries: readonly MarkedEntry[]): string {
   return `${entries.length} more marked rows: seqs ${entries.map((entry) => entry.row.seq).join(", ")} (recall with seqs opens them)`;
 }
 
-/** Q19: the one line that names the recall rows a turn did not show, by seq. */
+/** Q19: the one line that names the recall rows a turn did not show, by seq, and the notes it did not show, by path. */
 function recallPointer(keys: readonly string[]): string {
-  return `${keys.length} more recall ${keys.length === 1 ? "match" : "matches"}: seqs ${keys.join(", ")} (recall with seqs opens them)`;
+  const seqs = keys.filter((key) => /^\d+$/.test(key));
+  const notes = keys.filter((key) => !/^\d+$/.test(key));
+  const parts: string[] = [];
+  if (seqs.length > 0) {
+    parts.push(`${seqs.length} more recall ${seqs.length === 1 ? "match" : "matches"}: seqs ${seqs.join(", ")} (recall with seqs opens them)`);
+  }
+  if (notes.length > 0) {
+    parts.push(`${notes.length} more ${notes.length === 1 ? "note" : "notes"} from recall: ${notes.join(", ")} (read_note opens them)`);
+  }
+  return parts.join(" ");
 }
 
 /** Q19: the one line that names the triggered notes a turn did not show, by path. */

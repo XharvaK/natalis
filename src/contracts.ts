@@ -458,7 +458,13 @@ export type Sense =
 export type SayResult = Receipt;
 
 /** A picture to send with words: a file the body holds on its shelf, named as the Lar named it. */
-export type SayFile = { path: string; name: string; mime: string };
+export type SayFile = {
+  path: string;
+  name: string;
+  mime: string;
+  /** The exact bytes to send, when the body already read and checked them. A world sends these instead of reading path. */
+  bytes?: Uint8Array;
+};
 
 export type PictureRef = { id: string; mime: string; bytes: number; name: string };
 

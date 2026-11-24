@@ -1553,18 +1553,27 @@ const PICTURE_EXTENSION: Readonly<Record<string, string>> = {
   "image/webp": "webp",
 };
 
-/** The shelf pictures a say carries, read from the files the body holds. A file that cannot be read refuses the say. */
+/**
+ * The shelf pictures a say carries, read from the files the body holds. A file the body already read and checked brings
+ * its own bytes, and those are sent instead of reading the path again. A file that cannot be read refuses the say.
+ */
 function readOutboundFiles(files: SayFile[]): { ok: true; files: OutboundFile[] } | { ok: false; receipt: Receipt } {
   const out: OutboundFile[] = [];
   for (const file of files) {
-    try {
-      out.push({ name: safeFileName(file.name, file.mime), bytes: readFileSync(file.path) });
-    } catch {
-      return {
-        ok: false,
-        receipt: refused("picture_unreadable", `the picture ${file.name} could not be read from the shelf, so nothing was sent.`, "A picture could not be read, so nothing was sent."),
-      };
+    let bytes: Uint8Array;
+    if (file.bytes !== undefined) {
+      bytes = file.bytes;
+    } else {
+      try {
+        bytes = readFileSync(file.path);
+      } catch {
+        return {
+          ok: false,
+          receipt: refused("picture_unreadable", `the picture ${file.name} could not be read from the shelf, so nothing was sent.`, "A picture could not be read, so nothing was sent."),
+        };
+      }
     }
+    out.push({ name: safeFileName(file.name, file.mime), bytes });
   }
   return { ok: true, files: out };
 }

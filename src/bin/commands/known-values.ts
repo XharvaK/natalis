@@ -16,6 +16,8 @@ export type HeldValues = {
   model?: string;
   /** The keys of backup models on other services, each when set and long enough to be a key. */
   otherModels?: string[];
+  /** The key of the embeddings service, when the config names a variable for it and the value is long enough to be a key. */
+  embeddings?: string;
   /** The bot token, when discord.json names a variable that is set. */
   discord?: string;
   /** The game helper's token, when domus.json names a variable that is set. */
@@ -43,6 +45,8 @@ export function heldValues(dir: string, config: EntityConfig, options: HeldOptio
     .map((name) => env[name])
     .filter((value): value is string => value !== undefined && value.length >= MIN_KNOWN_VALUE_LENGTH);
   if (otherModels.length > 0) held.otherModels = otherModels;
+  const embeddingsKey = config.embeddings === undefined ? undefined : env[config.embeddings.apiKeyEnv];
+  if (embeddingsKey !== undefined && embeddingsKey.length >= MIN_KNOWN_VALUE_LENGTH) held.embeddings = embeddingsKey;
   const discordPath = join(dir, DISCORD_FILE);
   if (existsSync(discordPath)) {
     const discord = parseDiscordFile(JSON.parse(readFileSync(discordPath, "utf8")) as unknown);
@@ -64,7 +68,7 @@ export function heldValues(dir: string, config: EntityConfig, options: HeldOptio
 
 /** Every value in the list, as the scanner's known values. */
 export function knownValueList(held: HeldValues): string[] {
-  return [held.model, ...(held.otherModels ?? []), held.discord, held.domus, ...held.vault]
+  return [held.model, ...(held.otherModels ?? []), held.embeddings, held.discord, held.domus, ...held.vault]
     .filter((value): value is string => value !== undefined);
 }
 
@@ -81,6 +85,7 @@ export function otherThanHelper(dir: string, config: EntityConfig, held: HeldVal
   return knownValueList({
     model: held.model,
     ...(held.otherModels === undefined ? {} : { otherModels: held.otherModels }),
+    ...(held.embeddings === undefined ? {} : { embeddings: held.embeddings }),
     discord: held.discord,
     vault,
   });

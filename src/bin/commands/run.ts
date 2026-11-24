@@ -12,7 +12,9 @@ import { CopyGuardRefused } from "../../entity/copy-guard.js";
 import { acquireLarLock, LarLockBusy, type LarLock } from "../../entity/lar-lock.js";
 import { type Entity, openEntity } from "../../entity/runtime.js";
 import { startVaultChannel, type VaultChannel } from "../../entity/vault-queue.js";
+import { createEmbeddingsClient } from "../../model/embeddings.js";
 import { modelFromConfig, worldModelsFromConfig } from "../../model/from-config.js";
+import { openEmbeddings, type EmbeddingStore } from "../../river/embeddings.js";
 import { createSecretScanner } from "../../secrets/index.js";
 import { createDiscordWorld } from "../../worlds/discord/index.js";
 import { DISCORD_ALIASES_FILE } from "../../worlds/discord/aliases.js";
@@ -56,6 +58,8 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
   let channel: VaultChannel | undefined;
   // N10: her voice organ, when voice.json is beside discord.json. Started before the worlds; stopped last.
   let organ: OrganSupervisor | undefined;
+  // Recall by meaning's vectors, when entity.json names an embeddings block. Opened before the entity and closed after it.
+  let embeddingsStore: EmbeddingStore | undefined;
   try {
     // Every key the body holds is registered with the scanner, so none can reach the model or a say. Created before the
     // worlds, so a world can register its own secrets (the web's vault values) as it starts.
@@ -169,6 +173,19 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
     } catch {
       bodyChanges = undefined;
     }
+    // Recall by meaning is on when entity.json has an embeddings block. Its key is read the way the model's is: a named
+    // variable that is not set stops the start here, before a world or a turn can run.
+    let embeddings: { client: ReturnType<typeof createEmbeddingsClient>; store: EmbeddingStore } | undefined;
+    if (config.embeddings !== undefined) {
+      const keyName = config.embeddings.apiKeyEnv;
+      const key = process.env[keyName];
+      if (key === undefined || key === "") {
+        err(`The embeddings config names the environment variable ${keyName} for its key, but it is not set.`);
+        return 1;
+      }
+      embeddingsStore = openEmbeddings(join(dir, "river.db"));
+      embeddings = { client: createEmbeddingsClient(config.embeddings, { key }), store: embeddingsStore };
+    }
     try {
       entity = await openEntity({ dir, config, model: modelFromConfig(config.model),
         worldModels: worldModelsFromConfig(config.model, config.effort, config.worldModels),
@@ -176,6 +193,7 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
         scanner,
         ...(bodyChanges === undefined ? {} : { bodyChanges }),
         ...(moved ? { moved: true } : {}),
+        ...(embeddings === undefined ? {} : { embeddings }),
       });
     } catch (error) {
       if (!(error instanceof CopyGuardRefused)) throw error;
@@ -231,6 +249,13 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
         await organ.stop();
       } catch (error) {
         err(`The voice organ did not stop cleanly: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (embeddingsStore !== undefined) {
+      try {
+        embeddingsStore.close();
+      } catch (error) {
+        err(`The embeddings store did not close cleanly: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
     lock.release();

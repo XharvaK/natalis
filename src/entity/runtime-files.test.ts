@@ -191,7 +191,11 @@ describe("say with files from her home folder", () => {
     await entity.idle();
 
     expect(fake.sent).toEqual([
-      { place: DM, text: "Read this.", files: [{ path: realpathSync(file), name: "essay.md", mime: "text/markdown" }] },
+      {
+        place: DM,
+        text: "Read this.",
+        files: [{ path: realpathSync(file), name: "essay.md", mime: "text/markdown", bytes: Buffer.from("A short essay.\n") }],
+      },
     ]);
     const row = entity.river.read({ thread: DM, kinds: ["say"], limit: 1 })[0];
     expect(row?.text).toBe("Read this.\n[file notes/essay.md, 1 KB]");
@@ -217,8 +221,18 @@ describe("say with files from her home folder", () => {
 
     expect(fake.sent[0]?.files).toEqual([
       { path: join(dir, "media", `${picture}.png`), name: "cat.png", mime: "image/png" },
-      { path: realpathSync(join(dir, "home", "notes", "a.md")), name: "a.md", mime: "text/markdown" },
-      { path: realpathSync(join(dir, "home", "notes", "b.txt")), name: "b.txt", mime: "text/plain" },
+      {
+        path: realpathSync(join(dir, "home", "notes", "a.md")),
+        name: "a.md",
+        mime: "text/markdown",
+        bytes: Buffer.from("a".repeat(1025)),
+      },
+      {
+        path: realpathSync(join(dir, "home", "notes", "b.txt")),
+        name: "b.txt",
+        mime: "text/plain",
+        bytes: Buffer.from("hi"),
+      },
     ]);
     const row = entity.river.read({ thread: DM, kinds: ["say"], limit: 1 })[0];
     expect(row?.text).toBe(`Both.\n[picture ${picture}: cat.png]\n[file notes/a.md, 2 KB]\n[file notes/b.txt, 1 KB]`);
@@ -347,6 +361,36 @@ describe("say with files from her home folder", () => {
 
     expect(fake.sent).toEqual([]);
     expect(receiptsIn(model.requests[1]).join("\n")).toContain("A voice message carries nothing else: leave out files, or leave out as_voice.");
+  });
+
+  it("sends the bytes it checked, even when the file changes on disk before the world sends it", async () => {
+    // A background job of hers rewrites the file after the body read and checked it, but before the world reads anything.
+    const sent: SayFile[][] = [];
+    const racing: World = {
+      id: "discord",
+      async start() {},
+      async stop() {},
+      async say(_place, _text, options): Promise<Receipt> {
+        homeFile("notes/essay.md", "Something else entirely.\n");
+        sent.push(options?.files ?? []);
+        return { ok: true, summary: "Delivered.", data: { refs: ["m43"] } };
+      },
+      tools: () => [],
+      now: () => "discord is open.",
+    };
+    const model = new ScriptedModel([
+      reply({ toolCalls: [call("say", { place: DM, text: "Read this.", files: ["notes/essay.md"] })] }),
+      reply({ toolCalls: [call("end_turn")] }),
+    ]);
+    const { entity, send } = await open(model, { worlds: [racing] });
+    await entity.start();
+    homeFile("notes/essay.md", "The checked essay.\n");
+
+    send("Send your essay.");
+    await entity.idle();
+
+    expect(sent).toHaveLength(1);
+    expect(Buffer.from(sent[0]?.[0]?.bytes ?? new Uint8Array()).toString("utf8")).toBe("The checked essay.\n");
   });
 });
 

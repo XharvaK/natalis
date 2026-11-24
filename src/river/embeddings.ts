@@ -65,6 +65,8 @@ export interface EmbeddingStore {
   /** Cosine similarity, exact, best first, over the rows of one model and vector length. */
   search(vec: Float32Array, options: EmbeddingSearch): EmbeddingHit[];
   count(model: string): number;
+  /** The largest seq of a row of this model, or 0 when it has none: where the next index pass starts. */
+  maxSeq(model: string): number;
   close(): void;
 }
 
@@ -104,6 +106,7 @@ export function openEmbeddings(riverPath: string): EmbeddingStore {
   const hashRows = db.prepare(`SELECT key, hash FROM ${EMBEDDINGS_TABLE} WHERE kind = ? AND model = ?`);
   const removeOne = db.prepare(`DELETE FROM ${EMBEDDINGS_TABLE} WHERE kind = ? AND key = ?`);
   const countRows = db.prepare(`SELECT COUNT(*) AS n FROM ${EMBEDDINGS_TABLE} WHERE model = ?`);
+  const maxRowSeq = db.prepare(`SELECT MAX(seq) AS n FROM ${EMBEDDINGS_TABLE} WHERE kind = 'row' AND model = ?`);
   let closed = false;
 
   const ensureOpen = (): void => {
@@ -218,6 +221,13 @@ export function openEmbeddings(riverPath: string): EmbeddingStore {
       return Number((countRows.get(model) as { n: number }).n);
     },
 
+    maxSeq(model: string): number {
+      ensureOpen();
+      checkText(model, "model");
+      const highest = (maxRowSeq.get(model) as { n: number | null }).n;
+      return highest === null ? 0 : Number(highest);
+    },
+
     close(): void {
       if (closed) return;
       closed = true;
@@ -288,7 +298,7 @@ export async function indexItems(
       stored = store.hashes(item.kind, model);
       hashesByKind.set(item.kind, stored);
     }
-    const hash = sha256(item.text);
+    const hash = indexHash(item);
     if (stored.get(item.key) === hash) {
       skipped += 1;
       continue;
@@ -320,6 +330,14 @@ export async function indexItems(
     })),
   );
   return { embedded: pending.length, skipped };
+}
+
+/**
+ * The hash an item is stored under: its privacy flag and its text. The flag is part of it, so an item whose flag
+ * changed is embedded again rather than left with a vector that says it is private.
+ */
+export function indexHash(item: { text: string; private: boolean }): string {
+  return sha256(`${item.private ? "p:" : "o:"}${item.text}`);
 }
 
 function sha256(text: string): string {

@@ -1605,6 +1605,22 @@ describe("pictures out", () => {
 });
 
 describe("files out keep their extension", () => {
+  it("sends the bytes the body checked when the file on disk has changed since", async () => {
+    const { world, fake } = await startWorld();
+    const path = join(dir, "checked.bin");
+    writeFileSync(path, "the checked words");
+    const checked = Buffer.from("the checked words");
+    // A background job of hers changes the file after the body read and checked it.
+    writeFileSync(path, "something else entirely");
+
+    const receipt = await world.say("discord:dm:owner", "Here are the notes.", {
+      files: [{ path, name: "notes.md", mime: "text/markdown", bytes: checked }],
+    });
+
+    expect(receipt.ok).toBe(true);
+    expect(fake.uploads).toEqual([{ channelId: DM_OWNER, name: "notes.md", bytes: checked.length }]);
+  });
+
   it("sends a markdown file as notes.md", async () => {
     const { world, fake } = await startWorld();
     const path = join(dir, "notes.bin");

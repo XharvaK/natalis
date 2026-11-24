@@ -116,6 +116,15 @@ describe("EmbeddingStore", () => {
     expect(store.count(MODEL)).toBe(1);
     expect(store.hashes("note", MODEL).size).toBe(1);
   });
+
+  it("gives the largest row seq of a model, and 0 when it has none", () => {
+    expect(store.maxSeq(MODEL)).toBe(0);
+    store.put([row("7", [1, 0], { seq: 7 }), note("notes/a.md#top", [1, 0]), row("3", [1, 0], { seq: 3, model: "other-embed" })]);
+
+    expect(store.maxSeq(MODEL)).toBe(7);
+    expect(store.maxSeq("other-embed")).toBe(3);
+    expect(store.maxSeq("never-used")).toBe(0);
+  });
 });
 
 describe("the forget cascade", () => {
@@ -245,6 +254,19 @@ describe("indexItems", () => {
 
     expect(result).toEqual({ embedded: 1, skipped: 2 });
     expect(calls).toEqual([["Something to embed."]]);
+  });
+
+  it("embeds an item again when only its private flag changed", async () => {
+    const calls: string[][] = [];
+    const client = fakeClient(() => [1, 0], calls);
+    await indexItems(store, client, [item({ key: "1", seq: 1, text: "A quiet thing.", private: false })]);
+
+    const result = await indexItems(store, client, [item({ key: "1", seq: 1, text: "A quiet thing.", private: true })]);
+
+    expect(result).toEqual({ embedded: 1, skipped: 0 });
+    expect(calls).toHaveLength(2);
+    expect(store.search(new Float32Array([1, 0]), { model: MODEL, includePrivate: false, limit: 10 })).toEqual([]);
+    expect(store.search(new Float32Array([1, 0]), { model: MODEL, includePrivate: true, limit: 10 }).map((hit) => hit.key)).toEqual(["1"]);
   });
 
   it("keeps the private flag it was given", async () => {

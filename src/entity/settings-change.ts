@@ -11,7 +11,7 @@ export const HIDDEN_SETTING_KEYS: ReadonlySet<string> = new Set(["baseUrl", "api
  * fails on one in neither, so a new field is classified before it can reach her river note.
  */
 export const VISIBLE_SETTING_KEYS: ReadonlySet<string> = new Set([
-  "alias", "api", "cacheMarks", "ceiling", "contextTokens", "effort", "effortMap", "effortParam", "fallback", "holds",
+  "alias", "api", "cacheMarks", "ceiling", "contextTokens", "effort", "effortMap", "effortParam", "fallback", "embeddings", "holds",
   "honesty", "idleTimeoutMs", "impersonation", "incremental", "inputPerMillion", "lifeViewChars", "lifeWarnChars",
   "limits", "maxModelCalls", "maxToolCalls", "model", "name", "nativeTools", "outputPerMillion", "owner", "price",
   "reflectBudget", "rhythm", "stream", "summoner", "threadEffort", "timeZone", "timeoutMs", "tools", "turnsPerDay", "vision",
