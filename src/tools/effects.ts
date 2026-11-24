@@ -12,6 +12,7 @@ export const READ_TOOLS: ReadonlySet<string> = new Set([
   `${BODY_WORLD}/read_note`,
   `${BODY_WORLD}/list_notes`,
   `${BODY_WORLD}/recall`,
+  `${BODY_WORLD}/list_links`,
   `${BODY_WORLD}/look`,
   `${BODY_WORLD}/permissions`,
   "discord/read_history",
