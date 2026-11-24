@@ -16,12 +16,15 @@ export const READ_TOOLS: ReadonlySet<string> = new Set([
   `${BODY_WORLD}/look`,
   `${BODY_WORLD}/permissions`,
   "discord/read_history",
+  "kantus/kantus_cap_read",
+  "kantus/kantus_read",
 ]);
 
 /** Only these tools may be idempotent, even when another spec declares it. */
 export const IDEMPOTENT_TOOLS: ReadonlySet<string> = new Set([
   "domus/game_look",
   "domus/game_snapshot",
+  "kantus/kantus_analyze",
 ]);
 
 /** The effect table's key: the world that offers the tool, then its name. */

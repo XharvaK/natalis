@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { WorldBody } from "../../contracts.js";
+import type { EntityConfig } from "../../entity/config.js";
 import { vaultChannelPath } from "../../entity/vault-queue.js";
 import { readVaultEntry } from "../../worlds/web/vault.js";
 import { vaultCommand } from "./vault.js";
-import { parseDiscordFile } from "./run.js";
+import { kantusWorldFrom, parseDiscordFile } from "./run.js";
 
 describe("discord.json", () => {
   it("reads the token's variable name, the owner and the rooms", () => {
@@ -25,6 +27,52 @@ describe("discord.json", () => {
     expect(() => parseDiscordFile({ token: "x", tokenEnv: "T", ownerUserId: "1" })).toThrow(/Unknown field "token"/);
     expect(() => parseDiscordFile({ tokenEnv: "T", ownerUserId: "mara" })).toThrow(/ownerUserId/);
     expect(() => parseDiscordFile({ tokenEnv: "T", ownerUserId: "1", rooms: ["general"] })).toThrow(/rooms/);
+  });
+});
+
+describe("kantus.json", () => {
+  const CONFIG: EntityConfig = {
+    model: { baseUrl: "http://127.0.0.1:9/v1", model: "scripted", apiKeyEnv: "TEST_MODEL_KEY", contextTokens: 32_000 },
+    owner: { alias: "summoner" },
+  };
+  const STUDIO_TOKEN = ["studio", "token", "0123456789abcdef", "more"].join("-");
+  const QUIET: WorldBody = {
+    keepPicture: () => {
+      throw new Error("this test keeps no pictures");
+    },
+    outwardHold: () => undefined,
+  };
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "natalis-kantus-run-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+  });
+
+  it("makes the studio world when kantus.json is beside entity.json, with where the bridge will listen", () => {
+    writeFileSync(join(dir, "kantus.json"), JSON.stringify({ tokenEnv: "TEST_STUDIO_TOKEN", port: 3722 }));
+
+    const world = kantusWorldFrom(dir, CONFIG, { kantus: STUDIO_TOKEN, vault: [] });
+
+    expect(world?.id).toBe("kantus");
+    expect(world?.bridgeAddress()).toEqual({ host: "127.0.0.1", port: 3722 });
+  });
+
+  it("makes no world without the file, and refuses a file whose variable is not set", () => {
+    expect(kantusWorldFrom(dir, CONFIG, { vault: [] })).toBeUndefined();
+
+    writeFileSync(join(dir, "kantus.json"), JSON.stringify({ tokenEnv: "TEST_STUDIO_TOKEN" }));
+    expect(() => kantusWorldFrom(dir, CONFIG, { vault: [] })).toThrow(/TEST_STUDIO_TOKEN.*not set/);
+  });
+
+  it("gives the world every other token to check against, the model key included", async () => {
+    writeFileSync(join(dir, "kantus.json"), JSON.stringify({ tokenEnv: "TEST_STUDIO_TOKEN" }));
+    const world = kantusWorldFrom(dir, CONFIG, { kantus: STUDIO_TOKEN, model: STUDIO_TOKEN, vault: [] });
+
+    await expect(world?.start(() => {}, QUIET)).rejects.toThrow(/equals another token/);
   });
 });
 

@@ -12,6 +12,7 @@ import { NATURE_FILE, readNature } from "../../entity/nature.js";
 import { PRIVACY_FILE, readPrivacyFile } from "../../entity/privacy.js";
 import { WELCOME_FILE } from "../../entity/runtime.js";
 import { DOMUS_FILE, parseDomusFile } from "../../worlds/domus/index.js";
+import { KANTUS_FILE, parseKantusFile } from "../../worlds/kantus/index.js";
 import { parseSandboxFile, SANDBOX_FILE } from "../../worlds/sandbox/index.js";
 import { loadWebFile, WEB_FILE } from "../../worlds/web/index.js";
 import { flagValue } from "./args.js";
@@ -118,6 +119,11 @@ export function checkLar(dir: string, env: Readonly<Record<string, string | unde
     (value) => `Domus, port ${parseDomusFile(value).port ?? 3711}.`,
     (value) => parseDomusFile(value).tokenEnv,
   );
+  world(
+    KANTUS_FILE,
+    (value) => `Kantus studio, port ${parseKantusFile(value).port}.`,
+    (value) => parseKantusFile(value).tokenEnv,
+  );
   // N10: her voice. It needs discord.json, and an organ whose program and models are on this host.
   if (existsSync(join(dir, VOICE_FILE))) {
     try {
@@ -130,7 +136,7 @@ export function checkLar(dir: string, env: Readonly<Record<string, string | unde
       fix(`${VOICE_FILE}: ${messageOf(error)}`);
     }
   }
-  if (worlds === 0) note("No world file: natalis run needs at least one (discord.json, sandbox.json, web.json, domus.json); natalis chat works without.");
+  if (worlds === 0) note("No world file: natalis run needs at least one (discord.json, sandbox.json, web.json, domus.json, kantus.json); natalis chat works without.");
 
   if (existsSync(join(dir, "river.db"))) note("This Lar is already born (it has a river). A file edit reaches it on its next turn or restart.");
   return lines;

@@ -1,6 +1,7 @@
-// The values the body holds for one Lar, which no receipt, digest or say may show: the model key, and the bot and game
-// tokens that discord.json and domus.json name by environment variable. A value is read by reference and never printed.
-// The web vault's values are added only when a command asks for them: the web world registers its own while it runs.
+// The values the body holds for one Lar, which no receipt, digest or say may show: the model key, and the bot, game and
+// studio tokens that discord.json, domus.json and kantus.json name by environment variable. A value is read by reference
+// and never printed. The web vault's values are added only when a command asks for them: the web world registers its own
+// while it runs.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -8,6 +9,7 @@ import type { EntityConfig } from "../../entity/config.js";
 import { modelKeyEnvs } from "../../model/from-config.js";
 import { MIN_KNOWN_VALUE_LENGTH } from "../../secrets/index.js";
 import { DOMUS_FILE, parseDomusFile } from "../../worlds/domus/index.js";
+import { KANTUS_FILE, parseKantusFile } from "../../worlds/kantus/index.js";
 import { readVault } from "../../worlds/web/vault.js";
 import { DISCORD_FILE, parseDiscordFile } from "./discord-file.js";
 
@@ -22,6 +24,8 @@ export type HeldValues = {
   discord?: string;
   /** The game helper's token, when domus.json names a variable that is set. */
   domus?: string;
+  /** The studio's token, when kantus.json names a variable that is set. */
+  kantus?: string;
   /** The web vault's values, when the command asked for them. */
   vault: string[];
 };
@@ -57,6 +61,12 @@ export function heldValues(dir: string, config: EntityConfig, options: HeldOptio
     const domus = parseDomusFile(JSON.parse(readFileSync(domusPath, "utf8")) as unknown);
     held.domus = nonEmpty(env[domus.tokenEnv]);
   }
+  const kantusPath = join(dir, KANTUS_FILE);
+  if (existsSync(kantusPath)) {
+    const kantus = parseKantusFile(JSON.parse(readFileSync(kantusPath, "utf8")) as unknown);
+    const token = nonEmpty(env[kantus.tokenEnv]);
+    if (token !== undefined) held.kantus = token;
+  }
   if (options.vault === true) {
     // Only values the scanner accepts are kept, as the web world keeps them.
     held.vault = Object.values(readVault(dir))
@@ -68,7 +78,7 @@ export function heldValues(dir: string, config: EntityConfig, options: HeldOptio
 
 /** Every value in the list, as the scanner's known values. */
 export function knownValueList(held: HeldValues): string[] {
-  return [held.model, ...(held.otherModels ?? []), held.embeddings, held.discord, held.domus, ...held.vault]
+  return [held.model, ...(held.otherModels ?? []), held.embeddings, held.discord, held.domus, held.kantus, ...held.vault]
     .filter((value): value is string => value !== undefined);
 }
 
@@ -76,17 +86,23 @@ function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
 }
 
+/** The world whose token is being checked, and so the one value left out: a token never matches itself. */
+export type HelperToken = "domus" | "kantus";
+
 /**
- * The values the helper's token must differ from: the model key, the bot token and every web vault value. A helper token
- * equal to a vault value would let one leak expose the other, so the vault is read here as well.
+ * The values a world token must differ from: the model key, the bot token, the other world's token and every web vault
+ * value. A token equal to a vault value would let one leak expose the other, so the vault is read here as well. The
+ * caller names its own token, which is left out; every other one is kept.
  */
-export function otherThanHelper(dir: string, config: EntityConfig, held: HeldValues): string[] {
+export function otherThanHelper(dir: string, config: EntityConfig, held: HeldValues, except: HelperToken = "domus"): string[] {
   const vault = heldValues(dir, config, { vault: true }).vault;
   return knownValueList({
     model: held.model,
     ...(held.otherModels === undefined ? {} : { otherModels: held.otherModels }),
     ...(held.embeddings === undefined ? {} : { embeddings: held.embeddings }),
     discord: held.discord,
+    ...(except === "domus" || held.domus === undefined ? {} : { domus: held.domus }),
+    ...(except === "kantus" || held.kantus === undefined ? {} : { kantus: held.kantus }),
     vault,
   });
 }

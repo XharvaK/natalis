@@ -1,12 +1,12 @@
 // `natalis run --dir <entity folder>` keeps an entity living in its worlds until the process is told to stop
 // (SIGINT or SIGTERM), then closes it cleanly. Worlds come from small files beside entity.json: discord.json,
-// sandbox.json, web.json, domus.json. Those files hold platform ids and the name of the environment variable with the token, never
-// the token itself, and they stay on the host: they are not part of the entity's notebook.
+// sandbox.json, web.json, domus.json, kantus.json. Those files hold platform ids and the name of the environment variable
+// with the token, never the token itself, and they stay on the host: they are not part of the entity's notebook.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { World } from "../../contracts.js";
-import { loadEntityConfig } from "../../entity/config.js";
+import { loadEntityConfig, type EntityConfig } from "../../entity/config.js";
 import { parseBodyChanges, type BodyChanges } from "../../entity/body-changes.js";
 import { CopyGuardRefused } from "../../entity/copy-guard.js";
 import { acquireLarLock, LarLockBusy, type LarLock } from "../../entity/lar-lock.js";
@@ -20,6 +20,7 @@ import { createDiscordWorld } from "../../worlds/discord/index.js";
 import { DISCORD_ALIASES_FILE } from "../../worlds/discord/aliases.js";
 import { CONTACTS_FILE } from "../../entity/contacts.js";
 import { createDomusWorld, DOMUS_FILE, parseDomusFile } from "../../worlds/domus/index.js";
+import { createKantusWorld, KANTUS_FILE, parseKantusFile, type KantusWorld } from "../../worlds/kantus/index.js";
 import { bodyRefusal, createSandboxWorld, defaultBodyRoot, parseSandboxFile, SANDBOX_FILE, SANDBOX_HOME } from "../../worlds/sandbox/index.js";
 import { createWebWorld, loadWebFile, WEB_FILE } from "../../worlds/web/index.js";
 import { keepVaultEntry } from "../../worlds/web/vault.js";
@@ -28,7 +29,7 @@ import { organProblems, parseVoiceFile, VOICE_FILE } from "../../voice/voice-fil
 import { createVoiceMessages, type VoiceMessages } from "../../voice/voice-messages.js";
 import { flagValue } from "./args.js";
 import { DISCORD_FILE, parseDiscordFile } from "./discord-file.js";
-import { heldValues, knownValueList, otherThanHelper } from "./known-values.js";
+import { heldValues, knownValueList, otherThanHelper, type HeldValues } from "./known-values.js";
 
 export const RUN_USAGE = "Usage: natalis run --dir <entity folder> [--moved]";
 export { DISCORD_FILE, parseDiscordFile, type DiscordFile } from "./discord-file.js";
@@ -161,6 +162,15 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
         ...(domus.port !== undefined ? { port: domus.port } : {}), otherTokens,
         ...(config.timeZone !== undefined ? { timeZone: config.timeZone } : {}), lastOwnerMs }));
     }
+    if (existsSync(join(dir, KANTUS_FILE))) {
+      try {
+        const kantus = kantusWorldFrom(dir, config, held);
+        if (kantus !== undefined) worlds.push(kantus);
+      } catch (error) {
+        err(error instanceof Error ? error.message : String(error));
+        return 1;
+      }
+    }
     if (worlds.length === 0) {
       err(`No worlds to run in: add ${DISCORD_FILE} to ${dir}, or use natalis chat for the terminal.`);
       return 1;
@@ -260,6 +270,23 @@ export async function runCommand(args: readonly string[], out: (line: string) =>
     }
     lock.release();
   }
+}
+
+/**
+ * The studio world kantus.json describes, when the file is beside entity.json. Undefined when there is no file. Throws a
+ * plain error when the file names a variable that is not set; the token's cross-check runs when the world starts.
+ */
+export function kantusWorldFrom(dir: string, config: EntityConfig, held: HeldValues): KantusWorld | undefined {
+  const path = join(dir, KANTUS_FILE);
+  if (!existsSync(path)) return undefined;
+  const kantus = parseKantusFile(JSON.parse(readFileSync(path, "utf8")) as unknown);
+  const token = held.kantus;
+  if (token === undefined) throw new Error(`${KANTUS_FILE} names ${kantus.tokenEnv} for the studio token, but it is not set.`);
+  const otherTokens = otherThanHelper(dir, config, held, "kantus");
+  return createKantusWorld({
+    dir, token, host: kantus.host, port: kantus.port, otherTokens,
+    ...(config.model.vision === true ? { vision: true } : {}),
+  });
 }
 
 /** After this long past "Stopped.", the process exits even if something still holds the event loop. */

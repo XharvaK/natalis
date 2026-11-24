@@ -9,6 +9,7 @@ import { heldValues, knownValueList, otherThanHelper } from "./known-values.js";
 const MODEL_KEY = ["model", "key", "0123456789"].join("-");
 const BOT_TOKEN = ["bot", "token", "9876543210"].join("-");
 const HELPER_TOKEN = ["helper", "token", "5555555555"].join("-");
+const STUDIO_TOKEN = ["studio", "token", "6666666666"].join("-");
 const VAULT_VALUE = ["vault", "value", "1111111111"].join("-");
 
 const CONFIG: EntityConfig = {
@@ -83,6 +84,19 @@ describe("heldValues", () => {
     expect(held.domus).toBeUndefined();
   });
 
+  it("reads the studio's token only when kantus.json is there and its variable is set", () => {
+    expect(heldValues(dir, CONFIG, { env: { TEST_STUDIO_TOKEN: STUDIO_TOKEN } }).kantus).toBeUndefined();
+
+    writeFileSync(join(dir, "kantus.json"), JSON.stringify({ tokenEnv: "TEST_STUDIO_TOKEN" }));
+    const held = heldValues(dir, CONFIG, { env: { TEST_MODEL_KEY: MODEL_KEY, TEST_STUDIO_TOKEN: STUDIO_TOKEN } });
+    expect(held).toEqual({ model: MODEL_KEY, kantus: STUDIO_TOKEN, vault: [] });
+    expect(knownValueList(held)).toEqual([MODEL_KEY, STUDIO_TOKEN]);
+
+    const empty = heldValues(dir, CONFIG, { env: { TEST_MODEL_KEY: MODEL_KEY, TEST_STUDIO_TOKEN: "" } });
+    expect(empty.kantus).toBeUndefined();
+    expect(knownValueList(empty)).toEqual([MODEL_KEY]);
+  });
+
   it("reads the web vault's values only when asked, and keeps only values the scanner accepts", () => {
     mkdirSync(join(dir, "vault"));
     writeFileSync(join(dir, "vault", "site.json"), JSON.stringify({ host: "example.org", value: VAULT_VALUE }));
@@ -110,5 +124,16 @@ describe("the tokens the helper's token must differ from", () => {
     const held = heldValues(dir, CONFIG, { env: { TEST_MODEL_KEY: MODEL_KEY, TEST_BOT_TOKEN: BOT_TOKEN, TEST_HELPER_TOKEN: HELPER_TOKEN } });
 
     expect(otherThanHelper(dir, CONFIG, held)).toEqual([MODEL_KEY, BOT_TOKEN, VAULT_VALUE]);
+  });
+
+  it("keeps every token but the one being checked: the studio's token for the helper, the helper's for the studio", () => {
+    writeFileSync(join(dir, "kantus.json"), JSON.stringify({ tokenEnv: "TEST_STUDIO_TOKEN" }));
+    const held = heldValues(dir, CONFIG, {
+      env: { TEST_MODEL_KEY: MODEL_KEY, TEST_BOT_TOKEN: BOT_TOKEN, TEST_HELPER_TOKEN: HELPER_TOKEN, TEST_STUDIO_TOKEN: STUDIO_TOKEN },
+    });
+
+    // The Domus helper's token is checked against the studio's, and the studio's against the Domus helper's.
+    expect(otherThanHelper(dir, CONFIG, held, "domus")).toEqual([MODEL_KEY, BOT_TOKEN, STUDIO_TOKEN]);
+    expect(otherThanHelper(dir, CONFIG, held, "kantus")).toEqual([MODEL_KEY, BOT_TOKEN, HELPER_TOKEN]);
   });
 });

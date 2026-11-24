@@ -18,6 +18,8 @@ import { gameListTool } from "../worlds/domus/lists.js";
 import { gameOverlaySayTool } from "../worlds/domus/overlay.js";
 import { gameAttentionTool } from "../worlds/domus/attention.js";
 import { verbTools } from "../worlds/domus/verbs.js";
+import { createKantusWorld } from "../worlds/kantus/kantus-world.js";
+import type { StudioLink } from "../worlds/kantus/wire.js";
 import { END_TURN, runTurn } from "./run-turn.js";
 
 const NOW = Date.UTC(2026, 9, 26, 12);
@@ -74,7 +76,7 @@ describe("tool effects", () => {
     expect(effectOf({ name: "mystery", description: "", parameters: {} })).toBe("write");
     expect(effectOf({ name: "recall", description: "", parameters: {} })).toBe("read");
     expect(effectOf({ name: "recall", description: "", parameters: {}, effect: "write" })).toBe("write");
-    expect([...READ_TOOLS].sort()).toEqual(["body/list_links", "body/list_notes", "body/look", "body/permissions", "body/read_note", "body/recall", "discord/read_history"]);
+    expect([...READ_TOOLS].sort()).toEqual(["body/list_links", "body/list_notes", "body/look", "body/permissions", "body/read_note", "body/recall", "discord/read_history", "kantus/kantus_cap_read", "kantus/kantus_read"]);
     for (const name of ["say", "game_act", "web_request", "write_note", "schedule_wake", "forget"]) {
       expect([...READ_TOOLS].some((key) => key.endsWith(`/${name}`))).toBe(false);
     }
@@ -207,6 +209,36 @@ describe("NIT-A: the effect table over real tool specs", () => {
       const readHistory = tools.find((tool) => tool.spec.name === "read_history")!;
       expect(effectOf({ ...readHistory.spec, world: "domus" })).toBe("write");
       expect(effectOf({ ...readHistory.spec, world: "discord" })).toBe("read");
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("classifies every Kantus tool from the world's own specs", () => {
+    const root = mkdtempSync(join(tmpdir(), "natalis-effects-kantus-"));
+    const noStudio: StudioLink = {
+      send: async () => ({ ok: false, code: "studio_detached", reason: "not attached" }),
+      status: () => ({ attached: false }),
+      onEvent: () => () => {},
+    };
+    try {
+      const world = createKantusWorld({ dir: root, token: ["kantus", "token", "0123456789abcdef", "more"].join("-"), link: noStudio });
+      const tools = inWorld(world.id, world.tools());
+      expect(tools.map((tool) => tool.spec.name).sort()).toEqual([
+        "kantus_act", "kantus_analyze", "kantus_ask_owner", "kantus_cap_read", "kantus_cap_write_overview", "kantus_read",
+      ]);
+      expect(Object.fromEntries(tools.map((tool) => [keyOf(tool.spec), effectOf(tool.spec)]))).toEqual({
+        "kantus/kantus_act": "write",
+        "kantus/kantus_analyze": "idempotent",
+        "kantus/kantus_ask_owner": "write",
+        "kantus/kantus_cap_read": "read",
+        "kantus/kantus_cap_write_overview": "write",
+        "kantus/kantus_read": "read",
+      });
+      // The same real spec under another world is not a read: the table is keyed by world and name.
+      const capRead = tools.find((tool) => tool.spec.name === "kantus_cap_read")!;
+      expect(effectOf({ ...capRead.spec, world: "domus" })).toBe("write");
+      expect(effectOf({ ...capRead.spec, world: "kantus" })).toBe("read");
     } finally {
       rmSync(root, { recursive: true, force: true, maxRetries: 5 });
     }
