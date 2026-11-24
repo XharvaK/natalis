@@ -11,6 +11,7 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import { BASE_061AF27_RIVER_DB } from "./base-tables.js";
+import { embeddingsDerivedStore } from "./embeddings.js";
 import { factsDerivedStore } from "./facts.js";
 import { linksDerivedStore } from "./links.js";
 import { observationsDerivedStore } from "./observations.js";
@@ -245,3 +246,5 @@ registerDerivedStore(factsDerivedStore);
 registerDerivedStore(linksDerivedStore);
 // U11: her own observation log. Registered here for the same reason.
 registerDerivedStore(observationsDerivedStore);
+// P9: recall by meaning. The vectors are an index and are erased with the river's own forget.
+registerDerivedStore(embeddingsDerivedStore);
