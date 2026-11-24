@@ -70,6 +70,9 @@ type Fake = {
   /** The texts setStatus was called with. */
   statuses: string[];
   statusError: Error | null;
+  /** The channel ids sendTyping was called with. */
+  typing: string[];
+  sendTypingError: Error | null;
   deliver(message: PlatformMessage): void;
   fireReaction(reaction: PlatformReaction): void;
   fireEdit(edit: PlatformEdit): void;
@@ -100,6 +103,8 @@ function fakeClient(): Fake {
     logouts: 0,
     statuses: [],
     statusError: null,
+    typing: [],
+    sendTypingError: null,
     deliver(message) {
       for (const handler of handlers) handler(message);
     },
@@ -190,6 +195,10 @@ function fakeClient(): Fake {
     async setStatus(text) {
       if (fake.statusError) throw fake.statusError;
       fake.statuses.push(text);
+    },
+    async sendTyping(channelId) {
+      if (fake.sendTypingError) throw fake.sendTypingError;
+      fake.typing.push(channelId);
     },
   };
   return fake;
@@ -708,6 +717,74 @@ describe("the summoner's typing", () => {
   });
 });
 
+describe("typing while her turn runs", () => {
+  type TurnWorld = World & { turnRunning(place: string, running: boolean): void };
+  const turnRunning = (world: World, place: string, running: boolean): void => {
+    (world as TurnWorld).turnRunning(place, running);
+  };
+
+  it("shows typing at once and again every eight seconds, until the turn ends", async () => {
+    const { world, fake } = await startWorld();
+    turnRunning(world, "discord:dm:owner", true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fake.typing).toEqual([DM_OWNER]);
+
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(fake.typing).toEqual([DM_OWNER, DM_OWNER]);
+
+    turnRunning(world, "discord:dm:owner", false);
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(fake.typing).toHaveLength(2);
+  });
+
+  it("stops showing typing after fifteen minutes even when no turn end comes", async () => {
+    const { world, fake } = await startWorld();
+    turnRunning(world, "discord:dm:owner", true);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    const shown = fake.typing.length;
+    expect(shown).toBe(113);
+
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(fake.typing).toHaveLength(shown);
+  });
+
+  it("never shows typing in a room or for an alias it does not know", async () => {
+    const { world, fake } = await startWorld();
+    turnRunning(world, "discord:room:general", true);
+    turnRunning(world, "discord:dm:nobody", true);
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(fake.typing).toEqual([]);
+  });
+
+  it("stops the pulse when sendTyping fails, without throwing", async () => {
+    const { world, fake } = await startWorld();
+    fake.sendTypingError = new Error("Missing Access");
+    expect(() => turnRunning(world, "discord:dm:owner", true)).not.toThrow();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(fake.typing).toEqual([]);
+  });
+
+  it("does not double the calls when the turn says true twice", async () => {
+    const { world, fake } = await startWorld();
+    turnRunning(world, "discord:dm:owner", true);
+    turnRunning(world, "discord:dm:owner", true);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(fake.typing).toEqual([DM_OWNER, DM_OWNER]);
+  });
+
+  it("stop clears every pulse", async () => {
+    const { world, fake } = await startWorld();
+    turnRunning(world, "discord:dm:owner", true);
+    await vi.advanceTimersByTimeAsync(0);
+    await world.stop();
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(fake.typing).toEqual([DM_OWNER]);
+  });
+});
+
 describe("her status line", () => {
   it("sets the status, refuses before start, and sets it again after a new login", async () => {
     const fake = fakeClient();
@@ -918,6 +995,91 @@ describe("debounce and cap", () => {
     expect(events).toHaveLength(1);
     expect(events[0]?.text).toBe("last words");
     expect(fake.logouts).toBe(1);
+  });
+});
+
+describe("waiting while the summoner types", () => {
+  it("holds her burst open and sends four seconds after her last typing signal", async () => {
+    const { fake, events } = await startWorld();
+    fake.deliver(incoming({ channelKind: "dm", author: OWNER_AUTHOR, content: "one" }));
+    await vi.advanceTimersByTimeAsync(1000);
+    fake.fireTyping({ userId: OWNER, channelId: DM_OWNER, channelKind: "dm" });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(events).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(3499);
+    expect(events).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.text).toBe("one");
+  });
+
+  it("never holds her burst past ten seconds after its first message", async () => {
+    const { fake, events } = await startWorld();
+    fake.deliver(incoming({ channelKind: "dm", author: OWNER_AUTHOR, content: "one" }));
+    await vi.advanceTimersByTimeAsync(1000);
+    fake.fireTyping({ userId: OWNER, channelId: DM_OWNER, channelKind: "dm" });
+    await vi.advanceTimersByTimeAsync(2000);
+    fake.fireTyping({ userId: OWNER, channelId: DM_OWNER, channelKind: "dm" });
+    await vi.advanceTimersByTimeAsync(2000);
+    fake.fireTyping({ userId: OWNER, channelId: DM_OWNER, channelKind: "dm" });
+    await vi.advanceTimersByTimeAsync(3000);
+    fake.fireTyping({ userId: OWNER, channelId: DM_OWNER, channelKind: "dm" });
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(events).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(events).toHaveLength(1);
+  });
+
+  it("still sends a burst from someone else at the plain debounce", async () => {
+    const { fake, events } = await startWorld();
+    fake.deliver(incoming({ author: MARA_AUTHOR, content: "from mara" }));
+    await vi.advanceTimersByTimeAsync(1000);
+    fake.fireTyping({ userId: OWNER, channelId: GENERAL, channelKind: "room" });
+    await vi.advanceTimersByTimeAsync(499);
+    expect(events).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.actor).toBe("mara");
+  });
+});
+
+describe("refs saved in the background", () => {
+  it("writes fifty new refs once, a second later, not fifty times", async () => {
+    const { world, fake } = await startWorld();
+    for (let i = 0; i < 50; i += 1) {
+      fake.history.push(incoming({ author: MARA_AUTHOR, content: `line ${i}` }));
+    }
+    const receipt = await toolNamed(world, "read_history").run({ place: "discord:room:general", limit: 50 });
+    expect(receipt).toMatchObject({ ok: true, data: { count: 50 } });
+    expect(existsSync(refsFilePath())).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(existsSync(refsFilePath())).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    const stored = JSON.parse(readFileSync(refsFilePath(), "utf8")) as {
+      seq: number;
+      refs: Record<string, [string, string]>;
+    };
+    expect(Object.keys(stored.refs)).toHaveLength(50);
+    expect(stored.seq).toBe(50);
+  });
+
+  it("writes pending refs when the world stops", async () => {
+    const { world, fake } = await startWorld();
+    fake.deliver(incoming({ id: MSG_MARA, author: MARA_AUTHOR, content: "keep me" }));
+    await world.stop();
+    const stored = JSON.parse(readFileSync(refsFilePath(), "utf8")) as {
+      refs: Record<string, [string, string]>;
+    };
+    expect(stored.refs.m1).toEqual([GENERAL, MSG_MARA]);
+  });
+
+  it("leaves a gap of a thousand numbers across a restart", async () => {
+    writeFileSync(refsFilePath(), JSON.stringify({ version: 1, seq: 7, refs: {} }));
+    const { world } = await startWorld();
+    const receipt = await world.say("discord:room:general", "after a restart");
+    expect(receipt).toMatchObject({ ok: true, data: { refs: ["m1008"] } });
   });
 });
 
@@ -1198,6 +1360,20 @@ describe("tools", () => {
     ]);
   });
 
+  it("shows the ref a message replies to", async () => {
+    const { world, fake } = await startWorld();
+    const at = Date.UTC(2026, 9, 11, 12, 30);
+    fake.history.push(
+      incoming({ id: "73".padEnd(18, "0"), author: MARA_AUTHOR, content: "at nine", createdAtMs: at + 60_000, replyTo: MSG_MARA }),
+      incoming({ id: MSG_MARA, author: MARA_AUTHOR, content: "see you there", createdAtMs: at }),
+    );
+    const receipt = await toolNamed(world, "read_history").run({ place: "discord:room:general", limit: 5 });
+    expect(receipt.data?.lines).toEqual([
+      `[${whenText(at, Date.now(), undefined)} mara m1] see you there`,
+      `[${whenText(at + 60_000, Date.now(), undefined)} mara m2, replying to m1] at nine`,
+    ]);
+  });
+
   it("read_history dates a message from an earlier day and gives its age, in the entity's zone", async () => {
     const now = Date.UTC(2026, 9, 25, 19, 0);
     const { world, fake } = await startWorld({ nowMs: () => now, timeZone: "Europe/Istanbul" });
@@ -1425,6 +1601,30 @@ describe("pictures out", () => {
     expect(receipt).toMatchObject({ ok: false, refused: { code: "picture_unreadable" } });
     expect(fake.sent).toEqual([]);
     expect(fake.uploads).toEqual([]);
+  });
+});
+
+describe("files out keep their extension", () => {
+  it("sends a markdown file as notes.md", async () => {
+    const { world, fake } = await startWorld();
+    const path = join(dir, "notes.bin");
+    writeFileSync(path, "hello");
+    const receipt = await world.say("discord:dm:owner", "Here are the notes.", {
+      files: [{ path, name: "notes.md", mime: "text/markdown" }],
+    });
+    expect(receipt.ok).toBe(true);
+    expect(fake.uploads).toEqual([{ channelId: DM_OWNER, name: "notes.md", bytes: 5 }]);
+  });
+
+  it("falls back to .bin when the name has no usable extension", async () => {
+    const { world, fake } = await startWorld();
+    const path = join(dir, "blob.bin");
+    writeFileSync(path, Uint8Array.from([1, 2, 3]));
+    const receipt = await world.say("discord:dm:owner", "A file.", {
+      files: [{ path, name: "diagram", mime: "application/octet-stream" }],
+    });
+    expect(receipt.ok).toBe(true);
+    expect(fake.uploads).toEqual([{ channelId: DM_OWNER, name: "diagram.bin", bytes: 3 }]);
   });
 });
 

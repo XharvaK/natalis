@@ -32,7 +32,7 @@ import type { Receipt, RiverSource, SayFile, Sense, Tool, World, WorldBody, Worl
 import { formatDuration } from "../../context/time-facts.js";
 import { PICTURE_BYTES_MAX } from "../../media/shelf.js";
 import { createAliasStore, OWNER_ALIAS, type AliasStore } from "./aliases.js";
-import { FILE_BYTES_MAX, saveFile, type FilesHome } from "./files.js";
+import { FILE_BYTES_MAX, plainFileName, saveFile, type FilesHome } from "./files.js";
 import { writeFileAtomic } from "../../fsutil/write-atomic.js";
 import { VoiceError, type HeardVoiceMessage, type MadeVoiceMessage, type VoiceMessages } from "../../voice/voice-messages.js";
 
@@ -162,6 +162,8 @@ export type PlatformClient = {
   /** N10: one voice message: an Ogg Opus file with its duration and waveform, and no text. Resolves with its id. */
   sendVoice(channelId: string, voice: OutboundVoice, replyToMessageId: string | null): Promise<string>;
   react(channelId: string, messageId: string, emoji: string): Promise<void>;
+  /** Show "typing" in a channel for a few seconds. */
+  sendTyping(channelId: string): Promise<void>;
   /** Most recent messages first. */
   history(channelId: string, limit: number): Promise<PlatformMessage[]>;
   /** The Lar's own public status line, beside her name. */
@@ -204,6 +206,8 @@ export type DiscordWorldOptions = {
   client?: PlatformClient;
   debounceMs?: number;
   maxDebounceMs?: number;
+  /** While the summoner is typing, a burst may wait this long after its first message instead. Default 10_000. */
+  typingMaxDebounceMs?: number;
   guestLimit?: { messages: number; perMs: number };
   botExchangeLimit?: number;
   /** A quiet this long between bot messages in a channel ends the run; the next bot message starts a new one. */
@@ -240,6 +244,16 @@ const OTHERS_PICTURES_PER_DAY = 50;
 const BOT_QUIET_MS = 10 * 60 * 1000;
 /** Typing shows on the now board this long after the last keypress. */
 const TYPING_FRESH_MS = 10_000;
+/** A burst waits at least this long after the summoner's last typing signal. */
+const TYPING_HOLD_MS = 4_000;
+/** New refs are written once, this long after the first of them. */
+const REFS_SAVE_DELAY_MS = 1_000;
+/** Numbers left unused across a restart, so a ref already shown is never given to another message. */
+const REFS_SEQ_GAP = 1_000;
+/** How often "typing" is shown again while her turn runs. */
+const TYPING_PULSE_MS = 8_000;
+/** A turn that never reports its end stops showing typing after this long. */
+const TYPING_PULSE_MAX_MS = 15 * 60_000;
 
 /** One line in the body's log for a refused direct message, at most once an hour per author. Never the words or an id. */
 const REFUSED_DM_LOG = "[discord] a DM from someone who is not a contact was not admitted.";
@@ -285,6 +299,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
 
   const debounceMs = options.debounceMs ?? 1500;
   const maxDebounceMs = options.maxDebounceMs ?? 5000;
+  const typingMaxDebounceMs = options.typingMaxDebounceMs ?? 10_000;
   const guestLimit = options.guestLimit ?? { messages: 4, perMs: 20_000 };
   const botExchangeLimit = options.botExchangeLimit ?? 4;
   const botQuietMs = options.botQuietMs ?? BOT_QUIET_MS;
@@ -312,6 +327,10 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
   let voiceChannel: string | null = null;
   /** Where the summoner was last seen typing, and when. */
   let typingState: { place: string; atMs: number } | null = null;
+  /** Direct-message places where a turn runs and "typing" is shown, with the timer for the next showing. */
+  const typingPulses = new Map<string, { timer: ReturnType<typeof setTimeout> | null; startedAtMs: number }>();
+  /** Places whose last turnRunning(true) still stands, including one whose channel is still being opened. */
+  const typingWanted = new Set<string>();
   /** The edit time last handled for each message id, oldest dropped first. */
   const lastEditAtMs = new Map<string, number>();
 
@@ -325,13 +344,21 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
   let messageSeq = 0;
   {
     const stored = readRefs(refsPath);
-    messageSeq = stored.seq;
+    // After a crash the last second of new refs may be lost; the gap keeps a number already shown from being reused.
+    messageSeq = existsSync(refsPath) ? stored.seq + REFS_SEQ_GAP : 0;
     for (const [ref, [channelId, messageId]] of Object.entries(stored.refs)) {
       messageRefs.set(ref, { channelId, messageId });
       refOfMessage.set(`${channelId}|${messageId}`, ref);
     }
   }
+  let refsDirty = false;
+  let refsTimer: ReturnType<typeof setTimeout> | null = null;
   function saveRefs(): void {
+    if (refsTimer !== null) {
+      clearTimeout(refsTimer);
+      refsTimer = null;
+    }
+    refsDirty = false;
     while (messageRefs.size > MAX_KEPT_REFS) {
       const oldest = messageRefs.keys().next().value as string;
       const target = messageRefs.get(oldest)!;
@@ -341,6 +368,14 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     const refs: Record<string, [string, string]> = {};
     for (const [ref, target] of messageRefs) refs[ref] = [target.channelId, target.messageId];
     writeJsonAtomic(refsPath, { version: 1, seq: messageSeq, refs });
+  }
+  function scheduleRefsSave(): void {
+    refsDirty = true;
+    if (refsTimer !== null) return;
+    refsTimer = setTimeout(() => {
+      refsTimer = null;
+      saveRefs();
+    }, REFS_SAVE_DELAY_MS);
   }
   const attachmentUrls = new Map<string, string>();
   const attachmentHandles = new Map<string, string>();
@@ -376,7 +411,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     const ref = `m${messageSeq}`;
     refOfMessage.set(key, ref);
     messageRefs.set(ref, { channelId, messageId });
-    saveRefs();
+    scheduleRefsSave();
     return ref;
   }
 
@@ -440,10 +475,23 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     return aliases.userAlias(author.id, author.displayName);
   }
 
+  /** True when the summoner's typing is what holds this burst open. */
+  function beingTyped(burst: Pending, nowMs: number): boolean {
+    if (burst.source !== "owner" || typingState === null) return false;
+    return burst.place === `${PLACE_PREFIX}${typingState.place}` && nowMs - typingState.atMs < TYPING_HOLD_MS;
+  }
+
+  /** The longest a burst may wait after its first message. */
+  function burstCapMs(burst: Pending, nowMs: number): number {
+    return beingTyped(burst, nowMs) ? typingMaxDebounceMs : maxDebounceMs;
+  }
+
   function arm(burst: Pending, nowMs: number): void {
     if (burst.timer) clearTimeout(burst.timer);
-    const untilCap = burst.startedAtMs + maxDebounceMs - nowMs;
-    const delay = Math.max(0, Math.min(debounceMs, untilCap));
+    const typed = beingTyped(burst, nowMs);
+    const untilCap = burst.startedAtMs + (typed ? typingMaxDebounceMs : maxDebounceMs) - nowMs;
+    const hold = typed && typingState !== null ? TYPING_HOLD_MS - (nowMs - typingState.atMs) : 0;
+    const delay = Math.max(0, Math.min(typed ? Math.max(debounceMs, hold) : debounceMs, untilCap));
     burst.timer = setTimeout(() => flush(burst.key), delay);
   }
 
@@ -561,7 +609,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     };
 
     const existing = pending.get(key);
-    if (existing && nowMs - existing.startedAtMs >= maxDebounceMs) void flush(key);
+    if (existing && nowMs - existing.startedAtMs >= burstCapMs(existing, nowMs)) void flush(key);
     let burst = pending.get(key);
     if (!burst) {
       burst = {
@@ -822,16 +870,85 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     });
   }
 
+  /** The summoner's typing in a place: it shows on the now board and holds her pending burst open. */
+  function recordTyping(place: string, at: number): void {
+    typingState = { place, atMs: at };
+    const burstPlace = `${PLACE_PREFIX}${place}`;
+    for (const burst of pending.values()) {
+      if (burst.source === "owner" && burst.place === burstPlace) arm(burst, at);
+    }
+  }
+
   /** Only the summoner's typing, and only in an admitted place. It makes no row. */
   function handleTyping(typing: PlatformTyping): void {
     if (!liveWorld()) return;
     if (typing.userId !== options.ownerUserId) return;
     const at = nowMs();
     if (typing.channelKind === "dm") {
-      typingState = { place: `dm:${ownerAlias}`, atMs: at };
+      recordTyping(`dm:${ownerAlias}`, at);
     } else if (typing.channelKind === "room" && roomIds.has(typing.channelId)) {
-      typingState = { place: `room:${roomSlugOf(typing.channelId, null)}`, atMs: at };
+      recordTyping(`room:${roomSlugOf(typing.channelId, null)}`, at);
     }
+  }
+
+  function stopTypingPulse(place: string): void {
+    typingWanted.delete(place);
+    const pulse = typingPulses.get(place);
+    if (!pulse) return;
+    if (pulse.timer !== null) clearTimeout(pulse.timer);
+    typingPulses.delete(place);
+  }
+
+  function showTyping(
+    place: string,
+    channelId: string,
+    pulse: { timer: ReturnType<typeof setTimeout> | null; startedAtMs: number },
+  ): void {
+    if (typingPulses.get(place) !== pulse) return;
+    const elapsed = nowMs() - pulse.startedAtMs;
+    if (elapsed >= TYPING_PULSE_MAX_MS) {
+      stopTypingPulse(place);
+      return;
+    }
+    try {
+      void client.sendTyping(channelId).catch(() => stopTypingPulse(place));
+    } catch {
+      stopTypingPulse(place);
+      return;
+    }
+    pulse.timer = setTimeout(
+      () => showTyping(place, channelId, pulse),
+      Math.min(TYPING_PULSE_MS, TYPING_PULSE_MAX_MS - elapsed),
+    );
+  }
+
+  /** Show "typing" at once and keep it up while a turn runs; a second true for a running place starts nothing new. */
+  function setTurnTyping(place: string, running: boolean): void {
+    if (!place.startsWith(`${PLACE_PREFIX}dm:`)) return;
+    if (!running) {
+      stopTypingPulse(place);
+      return;
+    }
+    if (typingWanted.has(place)) return;
+    const userId = aliases.userIdForAlias(place.slice(`${PLACE_PREFIX}dm:`.length));
+    if (!userId) return;
+    typingWanted.add(place);
+    void client.openDm(userId).then(
+      (channelId) => {
+        if (!typingWanted.has(place)) return;
+        const pulse = { timer: null as ReturnType<typeof setTimeout> | null, startedAtMs: nowMs() };
+        typingPulses.set(place, pulse);
+        showTyping(place, channelId, pulse);
+      },
+      () => {
+        typingWanted.delete(place);
+      },
+    );
+  }
+
+  function stopAllTypingPulses(): void {
+    for (const place of [...typingPulses.keys()]) stopTypingPulse(place);
+    typingWanted.clear();
   }
 
   /**
@@ -1044,7 +1161,9 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
         .filter(Boolean)
         .join(" ");
       const ref = refFor(message.channelId, message.id);
-      return `[${clock(message.createdAtMs, nowMs(), options.timeZone)} ${authorLabel(message.author)} ${ref}] ${body || "(no text)"}`;
+      const replyTo = message.replyToMessageId ? refFor(message.channelId, message.replyToMessageId) : null;
+      const shownRef = replyTo ? `${ref}, replying to ${replyTo}` : ref;
+      return `[${clock(message.createdAtMs, nowMs(), options.timeZone)} ${authorLabel(message.author)} ${shownRef}] ${body || "(no text)"}`;
     });
     return {
       ok: true,
@@ -1193,7 +1312,7 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
     },
   };
 
-  const world: World = {
+  const world: World & { turnRunning(place: string, running: boolean): void } = {
     id: WORLD_ID,
 
     async start(emit, worldBody) {
@@ -1262,6 +1381,8 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
       // No message is taken from here on. What is pending goes out, pictures and all, before the emitter closes.
       status = "stopped";
       statusReason = "stopped";
+      stopAllTypingPulses();
+      if (refsDirty) saveRefs();
       for (const key of [...pending.keys()]) void flush(key);
       await Promise.allSettled([...flushing]);
       emitter = null;
@@ -1333,6 +1454,10 @@ export function createDiscordWorld(options: DiscordWorldOptions): World {
 
     isOwnerPlace(place) {
       return place === `${PLACE_PREFIX}dm:${ownerAlias}`;
+    },
+
+    turnRunning(place, running) {
+      setTurnTyping(place, running);
     },
 
     onStop() {
@@ -1444,11 +1569,15 @@ function readOutboundFiles(files: SayFile[]): { ok: true; files: OutboundFile[] 
   return { ok: true, files: out };
 }
 
-/** A file name Discord takes: letters, digits, dash and underscore, with the extension the picture type gives. */
+/** A file name Discord takes: letters, digits, dash and underscore, with the picture type's extension or the name's own. */
 function safeFileName(name: string, mime: string): string {
-  const extension = PICTURE_EXTENSION[mime] ?? "bin";
-  const stem = name.replace(/\.[A-Za-z0-9]{1,5}$/, "").replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 48);
-  return `${stem || "picture"}.${extension}`;
+  const pictureExtension = PICTURE_EXTENSION[mime];
+  if (pictureExtension !== undefined) {
+    const stem = name.replace(/\.[A-Za-z0-9]{1,5}$/, "").replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 48);
+    return `${stem || "picture"}.${pictureExtension}`;
+  }
+  const { stem, extension } = plainFileName(name);
+  return `${stem}${extension || ".bin"}`;
 }
 
 /**
@@ -1897,6 +2026,10 @@ export function createDiscordJsClient(options: { presence: boolean }): PlatformC
       const channel = await sendable(channelId);
       const sent = await channel.send(voiceMessagePayload(voice, replyToMessageId));
       return sent.id;
+    },
+    async sendTyping(channelId) {
+      const channel = await sendable(channelId);
+      await channel.sendTyping();
     },
     async react(channelId, messageId, emoji) {
       const channel = await sendable(channelId);
